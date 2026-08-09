@@ -273,6 +273,7 @@ impl AudioFeed {
     /// between its own underrun-driven floor and its hard cap, so continuity outranks sync — a link
     /// whose jitter genuinely needs more buffer than the picture is away keeps its buffer, and the
     /// residual shows up on the HUD instead of as a dropout.
+    ///
     /// **Two depths, and they are not interchangeable.** `ring_depth` is what the audio callback
     /// owns and the only thing [`JitterPolicy`] can actually move. `in_flight` is decoded PCM
     /// already handed off but still in the chunk channel — invisible to the policy, but just as
