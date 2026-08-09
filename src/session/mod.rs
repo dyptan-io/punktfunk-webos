@@ -400,6 +400,9 @@ pub fn connect(
         stream_hz: resolved_mode.refresh_hz,
         report_decode_latency: client.wants_decode_latency(),
         keyframe_min_interval: KEYFRAME_REQUEST_MIN_INTERVAL,
+        clock_offset: client.clock_offset_shared(),
+        video_e2e: client.video_e2e_shared(),
+        present_fixed_ns: u64::from(crate::services::store::dev_override_av_trim_ms().unwrap_or(0)) * 1_000_000,
     };
     let video_stats = stats.clone();
     let video_thread = std::thread::Builder::new()
@@ -970,7 +973,7 @@ pub fn pump_audio_once(client: &NativeClient, audio: &mut crate::platform::webos
     // Logged roughly once/sec (200 packets @ 5ms/frame).
     static PACKET_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     while let Ok(packet) = client.next_audio(Duration::ZERO) {
-        match audio.play(packet.seq, &packet.data) {
+        match audio.play(packet.seq, packet.pts_ns, &packet.data) {
             Ok((peak, event)) => {
                 match event {
                     // The two queue-too-full cases and the starved case are each audible

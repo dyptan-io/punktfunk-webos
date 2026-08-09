@@ -223,6 +223,24 @@ pub fn dev_override_ndl_drop_threshold() -> Option<i32> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
+/// A/V sync trim, in milliseconds: `$HOME/av-trim-ms.conf`, absent (⇒ 0) by default.
+///
+/// This is NDL's decode + panel latency *after* its render queue drains — the one term of
+/// `session::sink::video_e2e_ns` the app cannot observe, because `NDL_DirectVideoPlay` reports
+/// nothing about presentation. It is a sweep knob for exactly the reason
+/// [`dev_override_ndl_drop_threshold`] is one: the value is unmeasurable from inside, so it has to
+/// be read off real playback, and a rebuild per candidate makes that impractical. Deliberately NOT
+/// a Settings row yet — what the default should be, and whether it even needs to be user-visible,
+/// is what the observe-only measurement decides (LG panels plausibly differ between Game Optimiser
+/// and the processing-heavy picture modes, which no single compiled-in constant would cover).
+///
+/// Sign: this value is ADDED to the video leg, so raising it tells the sync loop the picture is
+/// later than it looked, and the loop answers by holding audio back. If audio runs early, raise it.
+pub fn dev_override_av_trim_ms() -> Option<u32> {
+    let path = Path::new(&app_dir()).join("av-trim-ms.conf");
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
 /// Test/dev override: a config file dropped alongside sideloading skips straight to
 /// a connect target — predates the finding (see `docs/NOTES.md`) that SAM launch
 /// `params` reach a native app as `argv[1]` JSON on initial launch, which

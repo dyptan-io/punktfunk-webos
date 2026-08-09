@@ -36,7 +36,12 @@ tracing-appender = "0.2"
 # v0.24.0 brings the ABR sweep (eleven defects: the 20 Mbps pin, throughput measured in media
 # bytes not wire bytes, a decode ceiling that latched at the choke rate) and probe throughput
 # measured over the client's own receive interval — all client-side, so the bump is the fix.
-punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", tag = "v0.24.0", features = ["quic"] }
+# v0.26.0 is the first release carrying the audio latency programme — `JitterPolicy` (the shared
+# de-jitter state machine every other client ring runs), `AvSync`, `AudioSyncCell`,
+# `crossfade_drop`, and the redundant `0xD2` audio plane. At v0.24.0 `punktfunk_core::audio` is
+# 369 lines (layouts + `AudioGapTracker`); at v0.26.0 it is 2301. `connect`'s parameter list is
+# unchanged across the two, so this is a pin-only bump. See `docs/NOTES.md` § Audio.
+punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", tag = "v0.26.0", features = ["quic"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # mDNS LAN discovery; direct dep (not via pf-client-core — see session.rs docs).

@@ -1,8 +1,11 @@
 //! SDL2 audio-queue playback of punktfunk's Opus audio packets. Decode only (Opus →
 //! PCM) happens here — NDL is video-only (see ndl.rs docs), so this is a completely
 //! separate path from the video decode/punch-through plane.
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
+
 use anyhow::Result;
-use punktfunk_core::audio::{layout_for, AudioGapTracker};
+use punktfunk_core::audio::{layout_for, AudioGapTracker, AvSync, AvSyncObservation};
 
 /// 48 kHz, 5 ms frames — punktfunk's fixed audio framing (see punktfunk-core's
 /// audio.rs doc comments and its `multistream_layout_roundtrips_with_channel_identity`
@@ -38,18 +41,39 @@ pub enum AudioEvent {
     Resnapped,
 }
 
+/// The cells the A/V sync loop trades through, all owned by `NativeClient`: the video plane and
+/// the clock handshake write the first two, this module writes the last two, and the stats overlay
+/// reads them. They live there rather than here because neither plane owns the other — the video
+/// sink cannot see the speaker, and the audio ring cannot see the glass.
+pub struct SyncCells {
+    /// Host-minus-client clock skew, live (re-synced mid-stream).
+    pub clock_offset: Arc<AtomicI64>,
+    /// The video plane's end-to-end latency in ns; `0` = nothing on the glass yet. Written by
+    /// `session::sink`.
+    pub video_e2e: Arc<AtomicU64>,
+    /// Smoothed A/V offset in ms, positive = audio playing LATE. Published for the HUD.
+    pub av_offset_ms: Arc<AtomicI64>,
+    /// Decoded audio queued ahead of the speaker, in ms. Published for the HUD.
+    pub buffer_ms: Arc<AtomicU32>,
+}
+
 pub struct AudioPlayer {
     queue: sdl2::audio::AudioQueue<f32>,
     decoder: opus::MSDecoder,
     channels: usize,
+    /// Interleaved samples per millisecond at the negotiated layout (48 × channels).
+    per_ms: usize,
     /// Detects packets lost on the wire so they can be concealed rather than skipped —
     /// see [`AudioPlayer::play`].
     gaps: AudioGapTracker,
+    /// A/V synchronisation, **measure-only for now** — see [`AudioPlayer::observe_av`].
+    av: AvSync,
+    cells: SyncCells,
 }
 
 impl AudioPlayer {
     /// `channels` is host-resolved (client MUST build decoder from this, not own request).
-    pub fn new(sdl_audio: &sdl2::AudioSubsystem, channels: u8) -> Result<Self> {
+    pub fn new(sdl_audio: &sdl2::AudioSubsystem, channels: u8, cells: SyncCells) -> Result<Self> {
         let layout = layout_for(channels, false);
         let decoder = opus::MSDecoder::new(SAMPLE_RATE, layout.streams, layout.coupled, layout.mapping)
             .map_err(|e| anyhow::anyhow!("opus MSDecoder::new: {e}"))?;
@@ -66,8 +90,45 @@ impl AudioPlayer {
             queue,
             decoder,
             channels: layout.channels as usize,
+            per_ms: (SAMPLE_RATE / 1000) as usize * layout.channels as usize,
             gaps: AudioGapTracker::new(),
+            av: AvSync::new(layout.channels),
+            cells,
         })
+    }
+
+    /// Fold one packet into the A/V offset measurement, and publish both the offset and the ring
+    /// depth for the stats overlay.
+    ///
+    /// **This measures; it does not steer.** [`AvSync::desired_depth`] is deliberately never
+    /// called, and no target is ever handed to a playback policy. The reason is the one term this
+    /// platform cannot observe: NDL reports nothing about presentation, so
+    /// `session::sink::video_e2e_ns` carries a *calibrated constant* for the decode+panel latency
+    /// after its render queue drains. Until that constant has been read off real hardware it is
+    /// `0`, which biases the offset high — and acting on a biased offset would place audio early
+    /// by exactly the amount of the bias, a worse fault than the drift being corrected. Publishing
+    /// it on the HUD first is what turns that constant from a guess into a measurement.
+    ///
+    /// `buffered_ahead` is the device queue as it stands BEFORE this packet is added: everything
+    /// that must still play before it does.
+    fn observe_av(&mut self, pts_ns: u64, buffered_ahead: usize) {
+        // Published unconditionally — the ring's depth is worth seeing whether or not the loop is
+        // acting, and it is what makes an "audio is late" report triageable at all.
+        self.cells
+            .buffer_ms
+            .store((buffered_ahead / self.per_ms.max(1)) as u32, Ordering::Relaxed);
+        let video_e2e = self.cells.video_e2e.load(Ordering::Relaxed);
+        self.av.observe(AvSyncObservation {
+            pts_ns,
+            now_local_ns: punktfunk_core::client::now_realtime_ns(),
+            clock_offset_ns: self.cells.clock_offset.load(Ordering::Relaxed),
+            buffered_ahead,
+            // 0 = nothing on the glass yet; with no reference there is nothing to measure against.
+            video_e2e_ns: (video_e2e > 0).then_some(video_e2e),
+        });
+        self.cells
+            .av_offset_ms
+            .store(i64::from(self.av.offset_ms()), Ordering::Relaxed);
     }
 
     /// The device's actually-negotiated spec — may differ from what was requested if
@@ -78,9 +139,14 @@ impl AudioPlayer {
 
     /// Decodes Opus packet (with PLC for losses) and queues PCM.
     /// Returns peak sample (diagnostic for silent input vs speaker failure) + `AudioEvent`.
-    pub fn play(&mut self, seq: u32, opus_payload: &[u8]) -> Result<(f32, AudioEvent)> {
+    pub fn play(&mut self, seq: u32, pts_ns: u64, opus_payload: &[u8]) -> Result<(f32, AudioEvent)> {
         let bytes_per_ms = SAMPLE_RATE / 1000 * self.channels as u32 * std::mem::size_of::<f32>() as u32;
         let queued = self.queue.size();
+
+        // Measured against the queue as it stands NOW, before this packet joins it, and before the
+        // shed branches below — a packet this call decides to drop still tells the truth about
+        // where the ring sits relative to the picture.
+        self.observe_av(pts_ns, queued as usize / std::mem::size_of::<f32>());
 
         // WHY: empty queue detects stall on feeding thread (opposite remedy from over-full).
         let underrun = queued == 0;

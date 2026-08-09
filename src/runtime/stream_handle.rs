@@ -52,6 +52,22 @@ impl StreamHandle {
         }
     }
 
+    /// The cells the A/V sync loop trades through — handed to the audio player at construction.
+    pub(crate) fn sync_cells(&self) -> crate::platform::webos::audio::SyncCells {
+        crate::platform::webos::audio::SyncCells {
+            clock_offset: self.0.client.clock_offset_shared(),
+            video_e2e: self.0.client.video_e2e_shared(),
+            av_offset_ms: self.0.client.audio_av_offset_shared(),
+            buffer_ms: self.0.client.audio_buffer_ms_shared(),
+        }
+    }
+
+    /// Audio's two HUD figures: ring depth in ms, and the smoothed A/V offset in ms (positive =
+    /// audio playing behind the picture). Both are `0` until the sync loop has evidence.
+    pub(crate) fn audio_stats(&self) -> (u32, i64) {
+        (self.0.client.audio_buffer_ms(), self.0.client.audio_av_offset_ms())
+    }
+
     /// Drains decoded audio into the device. Call once per tick.
     pub(crate) fn pump_audio_once(&self, audio: &mut AudioPlayer) {
         session::pump_audio_once(&self.0.client, audio);

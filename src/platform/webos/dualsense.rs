@@ -166,10 +166,13 @@ impl Feedback {
 
     /// Folds one host feedback event into the pad state and queues a send.
     ///
-    /// Variants this pad has no hardware for are dropped: `TrackpadHaptic` is a Steam
+    /// Variants this pad has no route for are dropped: `TrackpadHaptic` is a Steam
     /// Controller voice-coil buzz, and `HidRaw` is a passthrough report for a device the host
     /// mirrors as-is — replaying either on a `DualSense` would mean writing arbitrary bytes in
-    /// the wrong protocol.
+    /// the wrong protocol. `AudioCtl` is the routing/volume half of pad audio, which this client
+    /// never asks for (it advertises no `CLIENT_CAP_PAD_AUDIO`, so no host sends it) and could
+    /// not honour anyway: the feedback path here is the Bluetooth service's state model, not a
+    /// hidraw node, so there is nothing to write a DS5 output report to.
     pub fn apply(&mut self, event: &HidOutput) {
         match event {
             HidOutput::Led { r, g, b, .. } => self.state.lightbar = Some((*r, *g, *b)),
@@ -186,7 +189,7 @@ impl Feedback {
                 }
                 self.state.triggers_owned = true;
             }
-            HidOutput::TrackpadHaptic { .. } | HidOutput::HidRaw { .. } => return,
+            HidOutput::TrackpadHaptic { .. } | HidOutput::HidRaw { .. } | HidOutput::AudioCtl { .. } => return,
         }
         // Dropping on a full queue *is* the coalescing: the waiting value is strictly older.
         if let Some(tx) = &self.tx {

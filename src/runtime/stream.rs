@@ -149,23 +149,25 @@ pub(super) fn run_inner() -> Result<()> {
         // offload) — a second unfed audio device would still claim a PulseAudio sink.
         let mut audio_player = match connected.audio_channels() {
             None => None,
-            Some(channels) => match crate::platform::webos::audio::AudioPlayer::new(&sdl_audio, channels) {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    // Same no-crash policy as the connect above, plus the video teardown a
-                    // loaded decoder now needs.
-                    tracing::error!("audio player init failed: {e:#}");
-                    connected.disconnect_quit();
-                    if connected.shutdown() {
-                        crate::platform::webos::ndl::quit();
-                    } else {
-                        tracing::warn!("session teardown timed out — skipping NDL unload for this run");
+            Some(channels) => {
+                match crate::platform::webos::audio::AudioPlayer::new(&sdl_audio, channels, connected.sync_cells()) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        // Same no-crash policy as the connect above, plus the video teardown a
+                        // loaded decoder now needs.
+                        tracing::error!("audio player init failed: {e:#}");
+                        connected.disconnect_quit();
+                        if connected.shutdown() {
+                            crate::platform::webos::ndl::quit();
+                        } else {
+                            tracing::warn!("session teardown timed out — skipping NDL unload for this run");
+                        }
+                        cursor.set_captured(false);
+                        menu_status = Some(format!("Couldn't start audio: {e:#}"));
+                        continue;
                     }
-                    cursor.set_captured(false);
-                    menu_status = Some(format!("Couldn't start audio: {e:#}"));
-                    continue;
                 }
-            },
+            }
         };
         if let Some(player) = &audio_player {
             tracing::info!(
@@ -643,6 +645,16 @@ pub(super) fn run_inner() -> Result<()> {
                             info.target_kbps / 1000,
                         ),
                     ];
+                    // Audio's own line. Before this the plane published nothing a surface could
+                    // render, so "the audio is late" had no instrument behind it at all — and on
+                    // this client the A/V offset is the number that says whether the sync loop is
+                    // working. `buf` is what is queued ahead of the speaker; `A/V` is positive when
+                    // audio plays BEHIND the picture. Both read 0 until the loop has evidence
+                    // (100 observations, and a frame on the glass to compare against).
+                    {
+                        let (buf_ms, av_ms) = connected.audio_stats();
+                        lines.push(format!("Audio buf {buf_ms} ms · A/V {av_ms:+} ms"));
+                    }
                     if let Some(line) = cpu_mem_line {
                         lines.push(line);
                     }
