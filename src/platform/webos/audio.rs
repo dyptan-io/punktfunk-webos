@@ -15,7 +15,7 @@
 //! crossfaded 5 ms shed was literally inexpressible against it. Its coarse corrections were a
 //! whole-queue `clear()` (~100 ms of silence) and an uncrossfaded 5 ms discard.
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::Arc;
 
@@ -98,7 +98,15 @@ impl AudioPlayer {
     ///
     /// The two halves are returned separately because they belong on different threads: the device
     /// stays wherever SDL was initialised, and the feed moves to the decode thread.
-    pub fn new(sdl_audio: &sdl2::AudioSubsystem, channels: u8, cells: SyncCells) -> Result<(Self, AudioFeed)> {
+    /// `sync_enabled` arms the A/V sync loop. It is the caller's read of whether the NDL present
+    /// constant has been calibrated — see [`AudioFeed::observe_av`] for why an uncalibrated loop
+    /// is worse than none.
+    pub fn new(
+        sdl_audio: &sdl2::AudioSubsystem,
+        channels: u8,
+        cells: SyncCells,
+        sync_enabled: bool,
+    ) -> Result<(Self, AudioFeed)> {
         let layout = layout_for(channels, false);
         let decoder = opus::MSDecoder::new(SAMPLE_RATE, layout.streams, layout.coupled, layout.mapping)
             .map_err(|e| anyhow::anyhow!("opus MSDecoder::new: {e}"))?;
@@ -111,6 +119,12 @@ impl AudioPlayer {
         let (recycle_tx, recycle_rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHUNK_QUEUE);
         let sync: Arc<AudioSyncCell> = Arc::default();
         let sync_cb = sync.clone();
+        // Interleaved samples sitting in the chunk channel — decoded, not yet in the ring. Part of
+        // what a packet queued now must wait behind, so it belongs in the A/V measurement; see
+        // `AudioFeed::observe_av`. Balanced by construction: added once on a successful send,
+        // subtracted once on receipt.
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let in_flight_cb = in_flight.clone();
         let device = sdl_audio
             .open_playback(None, &spec, |obtained| {
                 // Build the policy from what the device ACTUALLY negotiated, not what was asked
@@ -122,6 +136,7 @@ impl AudioPlayer {
                     ring: VecDeque::new(),
                     policy: JitterPolicy::new(WEBOS_TUNING, obtained.channels),
                     sync: sync_cb,
+                    in_flight: in_flight_cb,
                     underruns: 0,
                     sheds: 0,
                     callbacks: 0,
@@ -154,6 +169,8 @@ impl AudioPlayer {
                 av: AvSync::new(layout.channels),
                 cells,
                 sync,
+                sync_enabled,
+                in_flight,
             },
         ))
     }
@@ -181,8 +198,12 @@ pub struct AudioFeed {
     /// A/V synchronisation, **measure-only for now** — see [`AudioFeed::observe_av`].
     av: AvSync,
     cells: SyncCells,
-    /// Depth out of the callback, target in. Only the depth half is used today.
+    /// Depth out of the callback, target in.
     sync: Arc<AudioSyncCell>,
+    /// Whether to post a target back, i.e. whether to steer at all. See [`Self::observe_av`].
+    sync_enabled: bool,
+    /// Decoded samples handed off but not yet in the ring — see its construction site.
+    in_flight: Arc<AtomicUsize>,
 }
 
 impl AudioFeed {
@@ -190,9 +211,7 @@ impl AudioFeed {
     /// to the ring. Returns the peak sample — a diagnostic that separates "the host is sending
     /// silence" from "the speaker is not working".
     pub fn play(&mut self, seq: u32, pts_ns: u64, opus_payload: &[u8]) -> Result<f32> {
-        // The ring depth as the callback last saw it: everything that must still play before the
-        // packet being queued now does.
-        self.observe_av(pts_ns, self.sync.depth());
+        self.observe_av(pts_ns, self.sync.depth(), self.in_flight.load(Ordering::Relaxed));
 
         // Conceal whatever went missing immediately before this packet. libopus PLC (decode with
         // empty input) interpolates a frame; the alternative is a hard gap, i.e. a click.
@@ -225,23 +244,46 @@ impl AudioFeed {
         let mut buf = self.recycle_rx.try_recv().unwrap_or_default();
         buf.clear();
         buf.extend_from_slice(pcm);
-        let _ = self.pcm_tx.try_send(buf);
+        let n = buf.len();
+        // Counted only on a successful send, so a dropped chunk cannot strand samples in the
+        // in-flight tally forever.
+        if self.pcm_tx.try_send(buf).is_ok() {
+            self.in_flight.fetch_add(n, Ordering::Relaxed);
+        }
     }
 
     /// Fold one packet into the A/V offset measurement, and publish both the offset and the ring
     /// depth for the stats overlay.
     ///
-    /// **This measures; it does not steer.** [`AvSync::desired_depth`] is deliberately never
-    /// called, and no target is handed to [`JitterPolicy::set_sync_target`]. The reason is the one
-    /// term this platform cannot observe: NDL reports nothing about presentation, so
-    /// `session::sink::video_e2e_ns` carries a *calibrated constant* for the decode+panel latency
-    /// after its render queue drains. Until that constant has been read off real hardware it is
-    /// `0`, which biases the offset high — and acting on a biased offset would place audio early
-    /// by exactly the bias, a worse fault than the drift being corrected. Publishing it on the HUD
-    /// first is what turns that constant from a guess into a measurement.
-    fn observe_av(&mut self, pts_ns: u64, buffered_ahead: usize) {
-        // Published unconditionally — the ring's depth is worth seeing whether or not the loop is
-        // acting, and it is what makes an "audio is late" report triageable at all.
+    /// **Measuring is unconditional; steering is not.** The offset and the ring depth are always
+    /// published — they are the instrument, and a latency report with no instrument behind it is
+    /// what this whole programme exists to end. Whether a *target* is posted back depends on
+    /// [`Self::sync_enabled`].
+    ///
+    /// The gate is there because of the one term this platform cannot observe: NDL reports nothing
+    /// about presentation, so `session::sink::video_e2e_ns` carries a calibrated constant for the
+    /// decode+panel latency after its render queue drains. Uncalibrated it is `0`, which biases
+    /// the measured offset high, and steering on a biased offset places audio early by exactly the
+    /// bias — a plausible 33-83 ms against a 10 ms deadband, i.e. a bigger fault than the drift
+    /// being corrected. So the loop arms only once someone has written the measurement to
+    /// `$HOME/av-trim-ms.conf`; that file's presence IS the calibration, and removing it is the
+    /// bisect escape hatch. A settings toggle would need the same evidence to be worth offering.
+    ///
+    /// Note what is NOT gated: the proposal is only ever a request. [`JitterPolicy`] clamps it
+    /// between its own underrun-driven floor and its hard cap, so continuity outranks sync — a link
+    /// whose jitter genuinely needs more buffer than the picture is away keeps its buffer, and the
+    /// residual shows up on the HUD instead of as a dropout.
+    /// **Two depths, and they are not interchangeable.** `ring_depth` is what the audio callback
+    /// owns and the only thing [`JitterPolicy`] can actually move. `in_flight` is decoded PCM
+    /// already handed off but still in the chunk channel — invisible to the policy, but just as
+    /// real to a listener, since it must play before anything queued now does. The *measurement*
+    /// uses the sum (that is the packet's true wait); the *correction* is expressed against the
+    /// ring alone, because the policy interprets its target in ring samples. Handing the sum to
+    /// `desired_depth` would inflate every target by the channel's contents.
+    fn observe_av(&mut self, pts_ns: u64, ring_depth: usize, in_flight: usize) {
+        let buffered_ahead = ring_depth + in_flight;
+        // Published unconditionally — the depth is worth seeing whether or not the loop is acting,
+        // and it is what makes an "audio is late" report triageable at all.
         self.cells
             .buffer_ms
             .store((buffered_ahead / self.per_ms.max(1)) as u32, Ordering::Relaxed);
@@ -257,6 +299,9 @@ impl AudioFeed {
         self.cells
             .av_offset_ms
             .store(i64::from(self.av.offset_ms()), Ordering::Relaxed);
+        if self.sync_enabled {
+            self.sync.set_target(self.av.desired_depth(ring_depth));
+        }
     }
 }
 
@@ -269,8 +314,10 @@ struct RingCallback {
     /// Prime depth in MILLISECONDS, an underrun-driven adaptive floor, and a crossfaded 5 ms drift
     /// shed so latency returns to target instead of ratcheting. See [`WEBOS_TUNING`].
     policy: JitterPolicy,
-    /// Depth out to the decode thread, target in (unused until the sync loop is armed).
+    /// Depth out to the decode thread, target in.
     sync: Arc<AudioSyncCell>,
+    /// Samples still in the chunk channel; decremented as they are drained into the ring.
+    in_flight: Arc<AtomicUsize>,
     underruns: u64,
     sheds: u64,
     callbacks: u64,
@@ -281,6 +328,7 @@ impl sdl2::audio::AudioCallback for RingCallback {
 
     fn callback(&mut self, out: &mut [f32]) {
         while let Ok(mut chunk) = self.rx.try_recv() {
+            self.in_flight.fetch_sub(chunk.len(), Ordering::Relaxed);
             self.ring.extend(chunk.iter().copied());
             // Return the drained Vec to the pool; a full/closed pool just drops it.
             chunk.clear();
@@ -290,6 +338,10 @@ impl sdl2::audio::AudioCallback for RingCallback {
         // `out` is interleaved samples for this callback — exactly the `want` the policy is
         // denominated in.
         let want = out.len();
+        // Take whatever depth the decode thread's sync loop last asked for, and publish where the
+        // ring actually is so it can measure the result. `None` (nothing armed, or inside the
+        // deadband) reproduces the un-synced behaviour exactly.
+        self.policy.set_sync_target(self.sync.target());
         self.sync.publish_depth(self.ring.len());
         let step = self.policy.step(self.ring.len(), want);
         if step.drop_front > 0 {

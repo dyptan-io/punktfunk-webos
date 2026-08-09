@@ -152,8 +152,16 @@ pub(super) fn run_inner() -> Result<()> {
         let audio = match connected.audio_channels() {
             None => None,
             Some(channels) => {
-                match crate::platform::webos::audio::AudioPlayer::new(&sdl_audio, channels, connected.sync_cells())
-                    .and_then(|(player, feed)| Ok((player, connected.spawn_audio_feed(feed)?)))
+                // The A/V loop arms only once the NDL present constant has been calibrated — the
+                // trim file's presence is that calibration. See `audio::AudioFeed::observe_av`.
+                let av_calibrated = store::dev_override_av_trim_ms().is_some();
+                match crate::platform::webos::audio::AudioPlayer::new(
+                    &sdl_audio,
+                    channels,
+                    connected.sync_cells(),
+                    av_calibrated,
+                )
+                .and_then(|(player, feed)| Ok((player, connected.spawn_audio_feed(feed)?)))
                 {
                     Ok(pair) => Some(pair),
                     Err(e) => {
@@ -174,10 +182,17 @@ pub(super) fn run_inner() -> Result<()> {
             }
         };
         if let Some((player, _)) = &audio {
+            // Whether the sync loop is armed belongs in the session log, not only in a source
+            // comment: "audio sounds late" and "audio sounds early" are the same report from a
+            // user, and which one is possible depends entirely on this line.
             tracing::info!(
-                "SDL audio driver: {}, spec: {:?}",
+                "SDL audio driver: {}, spec: {:?}, A/V sync: {}",
                 sdl_audio.current_audio_driver(),
-                player.spec()
+                player.spec(),
+                match store::dev_override_av_trim_ms() {
+                    Some(ms) => format!("armed (trim {ms} ms)"),
+                    None => "measuring only (no av-trim-ms.conf)".to_string(),
+                },
             );
         }
 

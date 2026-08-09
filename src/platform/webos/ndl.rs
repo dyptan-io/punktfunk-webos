@@ -323,7 +323,20 @@ impl NdlVideo {
     }
 
     /// Feed one Opus packet to NDL (only when `audio_offloaded`).
-    /// PTS is ms since load, synced with video `play()` calls.
+    ///
+    /// ⚠ **The two planes are stamped in unrelated time bases, and NDL syncs them against each
+    /// other.** This stamps arrival wall-clock (`load_instant.elapsed()`), while video is stamped
+    /// with a host-PTS value mapped onto NDL's player clock by `HostPtsAnchor` and then smoothed by
+    /// `PtsPacer` (`session::sink`). NDL's own A/V synchronisation therefore regulates against a
+    /// fiction: the audio timeline drifts with delivery jitter while the video timeline tracks host
+    /// capture cadence.
+    ///
+    /// Left as-is deliberately. Fixing it properly means both planes sharing ONE anchor, which
+    /// means moving anchor ownership out of the sink and onto this handle behind a lock — a change
+    /// to the *working* video hot path, made for a path that is off by default (see
+    /// `NDL_AUDIO_OFFLOAD`) and that `docs/NOTES.md` records as freezing video outright on webOS
+    /// 10.3. Anyone reviving audio offload must fix this first; the symptom would be audio that
+    /// drifts against the picture over a session rather than sitting at a constant offset.
     pub fn play_audio(&self, packet: &[u8]) -> Result<()> {
         let pts_ms = self.load_instant.elapsed().as_millis() as c_longlong;
         let _ffi = self.ffi.lock().expect("NDL FFI mutex poisoned");

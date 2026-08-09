@@ -107,6 +107,8 @@ The host stamps `pts_ns` on every audio datagram; this client decoded it and thr
 
 ## Opus offload to NDL (OFF BY DEFAULT — still freezes 10.3)
 
+⚠ **A second, independent defect on this path, found 2026-08-09 and NOT fixed:** `play_audio` stamps arrival wall-clock while video is stamped host-PTS-anchored + paced, so NDL's own A/V sync regulates two unrelated timelines. Fixing it means both planes sharing one `HostPtsAnchor`, i.e. moving anchor ownership onto the `NdlVideo` handle behind a lock — a change to the working video hot path for a path that is off and broken. Whoever revives offload fixes this first. Symptom would be audio drifting against the picture over a session, not a constant offset.
+
 NDL is the sole video backend. Software Opus→SDL is the audio path; NDL hardware Opus is gated off behind the `NDL_AUDIO_OFFLOAD` const in `session/mod.rs` (flip to `true` to re-test).
 
 The wiring is byte-exact with `mariotaku/ss4s` `ndl/webos5`: `NdlAudioConfig.sample_rate` in **kHz** (`48.0`, not `48000.0`), the stereo `opus_empty_frame_211 = {0xec,0xff,0xfe}` decoder prime fed once right after a successful audio-enabled `NDL_DirectMediaLoad`, combined audio+video in one load, and feed-time PTS (`elapsed since load`, ms) on both audio and video planes — identical to ss4s's `FeedVideo`/`FeedAudio` `GetPts`. Struct layouts (`NDL_DIRECTMEDIA_AUDIO_OPUS_INFO_T`, `..._DATA_INFO_T`) verified field-for-field against the ss4s mock headers.
