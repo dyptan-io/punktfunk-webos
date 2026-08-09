@@ -82,9 +82,28 @@ CX/G5 are 32-bit userland on ARMv8-A. RustCrypto's `aes` crate has ARMv8 intrins
 
 ## Audio (software Opus path)
 
-- **Soft ceiling (60 ms) drops one 5 ms packet at a time; hard clear (100 ms) backstops bursts.** Hard clear of entire queue = ~100 ms silence per event. Soft walks queue back down.
-- **Lost packets concealed** with libopus PLC: ask `AudioGapTracker` how many precede current packet, synthesize that many PLC frames first (decode with empty input).
-- Underrun vs overrun logged separately (`Underrun`/`Dropped`/`Resnapped`/`Queued`). Underrun sources: audio feed thread too slow, or main thread stats overlay renders every 500 ms on 2-core device.
+Two threads and a ring: `session::audio_feed_pump` decodes Opus and posts chunks down a bounded channel; SDL's audio callback (`platform::webos::audio::RingCallback`) drains that into a ring it owns and serves the device from it under `punktfunk_core::audio::JitterPolicy` — the same de-jitter state machine every other punktfunk client ring runs.
+
+- **The ring primes to 25 ms before the first sample plays**, grows its target under underrun pressure (+10 ms per 3 underruns in a 5 s window, ceiling 90 ms), relaxes after a quiet spell, and sheds drift as **one crossfaded 5 ms frame** once the depth average has sat 20 ms over target for 2 s of consumed audio. Hard cap 120 ms. Preset is `WEBOS_TUNING`, local to `audio.rs`, seeded from core's `AAUDIO` (closest rationale: we own the buffer, and Wi-Fi power-save bunching lands as underruns).
+- **Lost packets concealed** with libopus PLC: ask `AudioGapTracker` how many precede current packet, synthesize that many PLC frames first (decode with empty input). Since core v0.26.0 a *single* lost datagram is instead **recovered** from the redundant `0xD2` plane, which core advertises and rebuilds on its own demux side — no client code.
+- Depth/target/underruns/sheds are logged from the callback ~every 10 s, and ring depth + A/V offset are on the stats overlay.
+
+**Blind alleys, so they aren't re-tried:**
+- **`sdl2::audio::AudioQueue` cannot carry the shared policy.** It exposes `queue_audio`/`size`/`clear` and nothing else — no partial drop — so `JitterStep`'s crossfaded shed is inexpressible against it. The pull callback is a prerequisite, not a refactor.
+- **Do not put the drain back on the main loop.** It was there because `AudioQueue` is `!Send`, which put the 5 ms audio cadence behind the UI's software rasterizer; the 500 ms stats-overlay raster was a *documented* underrun source on a 2-core panel.
+- **Do not shrink `DEVICE_BUFFER_FRAMES` below 512** to chase latency. The policy owns depth now; a smaller device quantum on this SoC buys more wakeups and more missed callbacks. 512 = 10.67 ms, and `WEBOS_TUNING`'s 25 ms base is sized to clear the `want + 5 ms` device floor it implies.
+
+## A/V sync
+
+The host stamps `pts_ns` on every audio datagram; this client decoded it and threw it away, so the A/V offset was an accident of buffer depths — and it got *worse* every time video got faster (a quicker decode path lowers the video leg and leaves the audio leg alone). `AvSync` now folds it into a measured offset.
+
+**Currently measure-only.** `AvSync::desired_depth` is never called and no target reaches `JitterPolicy`. The blocker is the video reference: NDL is submit-only (`NDL_DirectVideoPlay` reports nothing about presentation), so `session::sink::video_e2e_ns` estimates glass time as *submit instant + render-queue depth × panel interval + a fixed constant*. The first two are measured; the constant — NDL's decode+panel latency after the queue drains — is not observable from the app.
+
+- **Sign, and why it matters:** underestimating that constant by Δ biases the video figure low, the offset high, and aims the ring Δ shallower — i.e. **audio plays Δ early**. A plausible 2-5 frame NDL pipeline is 33-83 ms at 60 Hz, far outside `AvSync`'s 10 ms deadband. Shipping it at 0 and acting on it would be a bigger error than the drift being corrected.
+- **How to calibrate:** put the stats overlay up (Green), let the `A/V` figure converge (needs 100 observations and a frame on the glass), and write the converged value into `$HOME/av-trim-ms.conf`. Raising it tells the loop the picture is later than it looked, so it holds audio back.
+- ⚠ **Measure in Game Optimiser mode AND a processing-heavy picture mode.** If those differ much, the constant has to become a real setting rather than one compiled-in number. Untested.
+- ⚠ **Use `frame.pts_ns`, never the paced value.** Both are in scope at the submit site with near-identical names; the paced one has been mapped into NDL's *player* clock by `HostPtsAnchor`. Using it regulates against a fiction that still looks plausible.
+- The estimator's unit tests ship in-tree but **cannot run off-device**: `cargo test` links the whole binary and `-lNDL_directmedia` exists only in the cross sysroot.
 
 ## Opus offload to NDL (OFF BY DEFAULT — still freezes 10.3)
 

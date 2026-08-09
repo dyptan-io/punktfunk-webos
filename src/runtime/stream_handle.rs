@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use punktfunk_core::input::InputEvent;
 
-use crate::platform::webos::audio::AudioPlayer;
+use crate::platform::webos::audio::AudioFeed;
 use crate::session::{self, Connected, StreamStats};
 
 pub(crate) struct StreamHandle(pub(crate) Connected);
@@ -68,9 +68,18 @@ impl StreamHandle {
         (self.0.client.audio_buffer_ms(), self.0.client.audio_av_offset_ms())
     }
 
-    /// Drains decoded audio into the device. Call once per tick.
-    pub(crate) fn pump_audio_once(&self, audio: &mut AudioPlayer) {
-        session::pump_audio_once(&self.0.client, audio);
+    /// Starts the audio decode/feed thread. It exits on the session's stop flag, or when the
+    /// transport's audio plane closes.
+    pub(crate) fn spawn_audio_feed(&self, feed: AudioFeed) -> anyhow::Result<std::thread::JoinHandle<()>> {
+        session::spawn_audio_feed(self.0.client.clone(), feed, self.0.stop.clone())
+    }
+
+    /// Signals the audio feed thread to stop and joins it, bounded. Sets the session's stop flag,
+    /// which `shutdown()` sets moments later anyway — doing it here just means the ring stops being
+    /// fed before its device is dropped.
+    pub(crate) fn stop_audio_feed(&self, handle: std::thread::JoinHandle<()>) {
+        self.0.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        session::join_audio_feed(handle);
     }
 
     /// Drains the host→client pad feedback planes.

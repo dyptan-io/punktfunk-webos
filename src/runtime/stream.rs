@@ -147,11 +147,15 @@ pub(super) fn run_inner() -> Result<()> {
 
         // `None` when the session decodes audio somewhere other than here (punktfunk's NDL Opus
         // offload) — a second unfed audio device would still claim a PulseAudio sink.
-        let mut audio_player = match connected.audio_channels() {
+        // The device is held here for the length of the stream — dropping it stops playback — while
+        // the feed half moves to its own decode thread.
+        let audio = match connected.audio_channels() {
             None => None,
             Some(channels) => {
-                match crate::platform::webos::audio::AudioPlayer::new(&sdl_audio, channels, connected.sync_cells()) {
-                    Ok(p) => Some(p),
+                match crate::platform::webos::audio::AudioPlayer::new(&sdl_audio, channels, connected.sync_cells())
+                    .and_then(|(player, feed)| Ok((player, connected.spawn_audio_feed(feed)?)))
+                {
+                    Ok(pair) => Some(pair),
                     Err(e) => {
                         // Same no-crash policy as the connect above, plus the video teardown a
                         // loaded decoder now needs.
@@ -169,7 +173,7 @@ pub(super) fn run_inner() -> Result<()> {
                 }
             }
         };
-        if let Some(player) = &audio_player {
+        if let Some((player, _)) = &audio {
             tracing::info!(
                 "SDL audio driver: {}, spec: {:?}",
                 sdl_audio.current_audio_driver(),
@@ -539,10 +543,10 @@ pub(super) fn run_inner() -> Result<()> {
                 canvas.clear();
                 canvas.present();
             }
-            // Offloaded audio drains on its own dedicated thread instead (`session::ndl_audio_pump`).
-            if let Some(player) = &mut audio_player {
-                connected.pump_audio_once(player);
-            }
+            // Audio drains on its own threads either way now — the software path on
+            // `session::audio_feed_pump` into SDL's audio callback, the offloaded path on
+            // `session::ndl_audio_pump`. Nothing for this loop to do.
+            //
             // Unconditional so both feedback planes keep draining with no pad attached.
             connected.pump_feedback_once(controller.as_mut(), ds_feedback.as_mut());
             // Skipped while the dialog owns the canvas. Stats/log share one clear/execute/present
@@ -757,6 +761,13 @@ pub(super) fn run_inner() -> Result<()> {
         // Rumble is likewise pad state, not stream state.
         if let Some(pad) = controller.as_mut() {
             let _ = pad.set_rumble(0, 0, 0);
+        }
+        // Stop feeding before the transport goes away, and drop the device with it. Ordered ahead
+        // of `shutdown()` only for tidiness — the feed thread also exits on the session's stop flag
+        // and on the audio plane closing, and a late `try_send` into a dropped ring is a no-op.
+        if let Some((player, feed_thread)) = audio {
+            connected.stop_audio_feed(feed_thread);
+            drop(player);
         }
         // `shutdown()` joins the video thread and drops `client` so the QUIC close frame
         // actually sends. `false` means a teardown thread is wedged in FFI — skip the NDL

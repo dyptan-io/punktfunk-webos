@@ -4,10 +4,10 @@
 //! transport and hands them to a [`sink::NdlSink`] — everything from PTS pacing down to
 //! the NDL `DirectMedia` backend (the sole video backend) lives behind that seam.
 //!
-//! Audio takes one of two paths: software-decoded audio is drained from the main
-//! thread ([`pump_audio_once`]) because `sdl2::audio::AudioQueue` is `!Send`; the
-//! NDL-offloaded path has its own drain thread ([`ndl_audio_pump`]), decoupled from
-//! both the main loop and the video pump.
+//! Audio takes one of two paths, and each has a thread of its own: software-decoded audio is
+//! decoded by [`audio_feed_pump`] into the playback ring SDL's audio callback drains
+//! (`platform::webos::audio`), and the NDL-offloaded path hands raw Opus straight to NDL from
+//! [`ndl_audio_pump`]. Neither shares the main loop, which carries the UI's software rasterizer.
 pub mod pacing;
 pub mod sink;
 
@@ -966,45 +966,56 @@ fn ndl_audio_pump(client: &NativeClient, ndl: &NdlVideo, stop: &AtomicBool) {
     }
 }
 
-/// Drains and plays all pending audio packets (non-blocking). Call once per main-loop
-/// tick; runs on the main thread because `sdl2::audio::AudioQueue` is `!Send`.
-pub fn pump_audio_once(client: &NativeClient, audio: &mut crate::platform::webos::audio::AudioPlayer) {
-    use crate::platform::webos::audio::AudioEvent;
+/// Spawns the dedicated audio decode/feed thread and returns its handle.
+///
+/// A thread of its own, not a drain bolted onto the main loop. That is where this lived, forced by
+/// `sdl2::audio::AudioQueue` being `!Send` — which put the session's 5 ms audio cadence behind the
+/// UI's software rasterizer on a 2-3 core panel, and `docs/NOTES.md` already named the 500 ms
+/// stats-overlay raster as an underrun source because of it. The offloaded path
+/// ([`ndl_audio_pump`]) worked this way for the same reason, and core's `next_audio` docs ask for
+/// exactly this thread ("packets arrive every 5 ms").
+pub fn spawn_audio_feed(
+    client: Arc<NativeClient>,
+    mut feed: crate::platform::webos::audio::AudioFeed,
+    stop: Arc<AtomicBool>,
+) -> Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("punktfunk-webos-audio".into())
+        .spawn(move || audio_feed_pump(&client, &mut feed, &stop))
+        .context("spawn audio feed thread")
+}
+
+/// Joins the audio feed thread, bounded by the same timeout every other teardown join uses — a
+/// thread wedged in an Opus decode must not hold the whole app on the way back to the menu.
+pub fn join_audio_feed(handle: std::thread::JoinHandle<()>) -> bool {
+    join_with_timeout(handle, SHUTDOWN_JOIN_TIMEOUT, "audio-feed")
+}
+
+/// Pulls Opus packets off the transport, decodes them, and hands the PCM to the playback ring.
+fn audio_feed_pump(client: &NativeClient, feed: &mut crate::platform::webos::audio::AudioFeed, stop: &AtomicBool) {
+    // Same boost the video pump requests for itself — 5 ms packets are the most latency-sensitive
+    // cadence in the session. Best-effort, like every renice here.
+    // SAFETY: plain syscall — tid 0 (self) and priority value only, no pointers.
+    let _ = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -10) };
     // Logged roughly once/sec (200 packets @ 5ms/frame).
-    static PACKET_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    while let Ok(packet) = client.next_audio(Duration::ZERO) {
-        match audio.play(packet.seq, packet.pts_ns, &packet.data) {
-            Ok((peak, event)) => {
-                match event {
-                    // The two queue-too-full cases and the starved case are each audible
-                    // and have different causes, so they are never collapsed into one
-                    // message: `Underrun` means this thread was too slow, `Dropped`/
-                    // `Resnapped` mean audio arrived faster than realtime.
-                    AudioEvent::Underrun => {
-                        tracing::debug!("audio underrun (device queue ran dry before this packet)");
-                    }
-                    AudioEvent::Resnapped => {
-                        tracing::debug!(
-                            "audio resnapped (queue was >{}ms behind)",
-                            crate::platform::webos::audio::MAX_QUEUED_LAG_MS
-                        );
-                    }
-                    AudioEvent::Dropped => {
-                        tracing::debug!(
-                            "audio packet dropped (queue >{}ms, draining)",
-                            crate::platform::webos::audio::SOFT_QUEUED_LAG_MS
-                        );
-                    }
-                    AudioEvent::Queued => {
-                        let n = PACKET_COUNT.fetch_add(1, Ordering::Relaxed);
-                        if n % 200 == 0 {
-                            tracing::debug!("audio peak: {peak:.4}");
-                        }
+    let mut packets: u32 = 0;
+    while !stop.load(Ordering::Relaxed) {
+        match client.next_audio(Duration::from_millis(100)) {
+            Ok(packet) => match feed.play(packet.seq, packet.pts_ns, &packet.data) {
+                Ok(peak) => {
+                    packets = packets.wrapping_add(1);
+                    if packets % 200 == 0 {
+                        tracing::debug!("audio peak: {peak:.4}");
                     }
                 }
-            }
+                // Underruns and drift sheds are reported by the ring itself, which is the only
+                // side that knows the depth — see `platform::webos::audio`'s callback.
+                Err(e) => tracing::warn!("audio error (seq {}): {e:#}", packet.seq),
+            },
+            Err(punktfunk_core::PunktfunkError::NoFrame) => {}
             Err(e) => {
-                tracing::warn!("audio error (seq {}): {e:#}", packet.seq);
+                tracing::info!("audio feed ending: {e:#}");
+                break;
             }
         }
     }
@@ -1023,7 +1034,7 @@ pub fn send_input(client: &NativeClient, ev: &InputEvent) -> Result<()> {
 const FEEDBACK_DRAIN_BUDGET: usize = 32;
 
 /// Drains the host→client gamepad feedback planes (non-blocking) and applies them to the
-/// physical pad. Call once per main-loop tick, like [`pump_audio_once`].
+/// physical pad. Call once per main-loop tick.
 ///
 /// The two planes go to different places, because each has one route that works for every
 /// controller rather than only one:

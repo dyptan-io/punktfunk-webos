@@ -1,11 +1,28 @@
-//! SDL2 audio-queue playback of punktfunk's Opus audio packets. Decode only (Opus →
+//! SDL2 callback playback of punktfunk's Opus audio packets. Decode only (Opus →
 //! PCM) happens here — NDL is video-only (see ndl.rs docs), so this is a completely
 //! separate path from the video decode/punch-through plane.
+//!
+//! **Two threads, one ring.** [`AudioFeed`] decodes on a dedicated thread and posts interleaved
+//! f32 chunks down a bounded channel; [`RingCallback`] drains that channel into a ring it owns
+//! outright and serves SDL's audio callback from it. Nothing locks, and nothing allocates in
+//! steady state (drained chunk `Vec`s go back through a recycle channel for the feed to refill).
+//! Same shape as `pf-client-core`'s `PipeWire` ring, for the same reasons.
+//!
+//! This replaced an `sdl2::audio::AudioQueue` pushed from the main loop. Two defects went with it:
+//! the drain shared a thread with the UI's software rasterizer (`docs/NOTES.md` already named the
+//! 500 ms stats-overlay raster as an underrun source on a 2-core panel), and `AudioQueue` offers
+//! only `queue_audio`/`size`/`clear` — no partial drop — so the shared de-jitter policy's
+//! crossfaded 5 ms shed was literally inexpressible against it. Its coarse corrections were a
+//! whole-queue `clear()` (~100 ms of silence) and an uncrossfaded 5 ms discard.
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::Arc;
 
 use anyhow::Result;
-use punktfunk_core::audio::{layout_for, AudioGapTracker, AvSync, AvSyncObservation};
+use punktfunk_core::audio::{
+    crossfade_drop, layout_for, AudioGapTracker, AudioSyncCell, AvSync, AvSyncObservation, JitterPolicy, JitterTuning,
+};
 
 /// 48 kHz, 5 ms frames — punktfunk's fixed audio framing (see punktfunk-core's
 /// audio.rs doc comments and its `multistream_layout_roundtrips_with_channel_identity`
@@ -15,31 +32,43 @@ const SAMPLES_PER_FRAME: usize = 240;
 /// Max channels punktfunk ever negotiates (7.1) — sizes the scratch decode buffer.
 const MAX_CHANNELS: usize = 8;
 
-/// Device buffer: 512 frames keeps slack vs pump cadence, cuts latency by ~75ms.
-/// Obtained spec logged at session start for on-device verification.
+/// Device buffer: 512 frames (10.67 ms) keeps slack vs callback cadence. Deliberately NOT lowered
+/// further now that a real jitter policy owns the depth: a smaller quantum on a 2-3 core TV `SoC`
+/// buys more wakeups and more missed callbacks, not less latency. [`WEBOS_TUNING`]'s base target is
+/// sized to clear this quantum — see its note on the device floor.
 const DEVICE_BUFFER_FRAMES: u16 = 512;
 
-/// Soft ceiling on SDL-queued audio: above this, drop packets to let queue drain.
-/// WHY: full clear at `MAX_QUEUED_LAG_MS` was audible (100ms silence). Drops are ~5ms.
-pub const SOFT_QUEUED_LAG_MS: u32 = 60;
+/// Chunks in flight between the decode thread and the audio callback. 64 × 5 ms = 320 ms of slack,
+/// matching `pf-client-core`; the ring, not this channel, is what bounds latency.
+const CHUNK_QUEUE: usize = 64;
 
-/// Hard bound: backstop against burst between pump ticks. Clear costs one audible blip.
-pub const MAX_QUEUED_LAG_MS: u32 = 100;
-
-/// What [`AudioPlayer::play`] did with a packet — reported so the caller can log the
-/// cases that are audible, and tell an over-full queue apart from a starved one.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum AudioEvent {
-    Queued,
-    /// The device buffer had run dry before this packet arrived: the main loop didn't
-    /// feed it in time (a stall), and the gap was audible. Distinct from every
-    /// queue-too-full case below — the remedy is the opposite direction.
-    Underrun,
-    /// Dropped above [`SOFT_QUEUED_LAG_MS`] to let the queue drain.
-    Dropped,
-    /// Cleared at [`MAX_QUEUED_LAG_MS`] — the loud one.
-    Resnapped,
-}
+/// The de-jitter preset for this platform. Not one of core's four (`PIPEWIRE`, `WASAPI`,
+/// `COREAUDIO`, `AAUDIO`) — those are named for audio stacks, and this ring is shaped by the
+/// device it runs on: a 2-3 core TV `SoC` whose UI rasterizes in software on the same silicon, over
+/// a TV Wi-Fi radio `docs/NOTES.md` measures at a ~245 Mbps ceiling with 10-29 s black-hole stalls
+/// on new flows.
+///
+/// Seeded from `JitterTuning::AAUDIO`, whose rationale is the closest match — we own the buffer,
+/// and Wi-Fi power-save bunching arrives as underruns, i.e. crackle. Held locally rather than
+/// upstreamed as a fifth preset until on-glass numbers justify specific values; the fields are
+/// public and the struct is not `#[non_exhaustive]`, so this costs core nothing.
+///
+/// Two invariants checked by hand against these numbers, both of which the parent programme
+/// shipped broken once:
+///   * **The smooth shed fires strictly below the hard trim**, or drift correction is dead code and
+///     every correction is the audible drop it was meant to replace. `shed_excess_ms()` is
+///     `max(headroom/2, 2 × FRAME_MS)` = 20 ms, so the shed point is target+20 = 45 ms against a
+///     trim point of `min(target+40, 120)` = 65 ms. 45 < 65.
+///   * **The base target clears the device floor.** `effective_target` floors at `want + FRAME_MS`;
+///     at [`DEVICE_BUFFER_FRAMES`] that is 10.67 + 5 = 15.7 ms, under the 25 ms base — so the ring
+///     cannot oscillate prime → dropout → re-prime.
+const WEBOS_TUNING: JitterTuning = JitterTuning {
+    base_target_ms: 25,
+    max_target_ms: 90,
+    headroom_ms: 40,
+    hard_cap_ms: 120,
+    deprime_after: 5,
+};
 
 /// The cells the A/V sync loop trades through, all owned by `NativeClient`: the video plane and
 /// the clock handshake write the first two, this module writes the last two, and the stats overlay
@@ -57,23 +86,19 @@ pub struct SyncCells {
     pub buffer_ms: Arc<AtomicU32>,
 }
 
+/// The playback device. Holding it alive is the whole job — the ring drains on SDL's own audio
+/// thread from construction until this is dropped.
 pub struct AudioPlayer {
-    queue: sdl2::audio::AudioQueue<f32>,
-    decoder: opus::MSDecoder,
-    channels: usize,
-    /// Interleaved samples per millisecond at the negotiated layout (48 × channels).
-    per_ms: usize,
-    /// Detects packets lost on the wire so they can be concealed rather than skipped —
-    /// see [`AudioPlayer::play`].
-    gaps: AudioGapTracker,
-    /// A/V synchronisation, **measure-only for now** — see [`AudioPlayer::observe_av`].
-    av: AvSync,
-    cells: SyncCells,
+    device: sdl2::audio::AudioDevice<RingCallback>,
 }
 
 impl AudioPlayer {
-    /// `channels` is host-resolved (client MUST build decoder from this, not own request).
-    pub fn new(sdl_audio: &sdl2::AudioSubsystem, channels: u8, cells: SyncCells) -> Result<Self> {
+    /// Opens the device and returns it alongside the [`AudioFeed`] that fills it. `channels` is
+    /// host-resolved (the client MUST build its decoder from this, never from its own request).
+    ///
+    /// The two halves are returned separately because they belong on different threads: the device
+    /// stays wherever SDL was initialised, and the feed moves to the decode thread.
+    pub fn new(sdl_audio: &sdl2::AudioSubsystem, channels: u8, cells: SyncCells) -> Result<(Self, AudioFeed)> {
         let layout = layout_for(channels, false);
         let decoder = opus::MSDecoder::new(SAMPLE_RATE, layout.streams, layout.coupled, layout.mapping)
             .map_err(|e| anyhow::anyhow!("opus MSDecoder::new: {e}"))?;
@@ -82,35 +107,138 @@ impl AudioPlayer {
             channels: Some(layout.channels),
             samples: Some(DEVICE_BUFFER_FRAMES),
         };
-        let queue = sdl_audio
-            .open_queue::<f32, _>(None, &spec)
-            .map_err(|e| anyhow::anyhow!("SDL open_queue: {e}"))?;
-        queue.resume();
-        Ok(Self {
-            queue,
-            decoder,
-            channels: layout.channels as usize,
-            per_ms: (SAMPLE_RATE / 1000) as usize * layout.channels as usize,
-            gaps: AudioGapTracker::new(),
-            av: AvSync::new(layout.channels),
-            cells,
-        })
+        let (pcm_tx, pcm_rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHUNK_QUEUE);
+        let (recycle_tx, recycle_rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHUNK_QUEUE);
+        let sync: Arc<AudioSyncCell> = Arc::default();
+        let sync_cb = sync.clone();
+        let device = sdl_audio
+            .open_playback(None, &spec, |obtained| {
+                // Build the policy from what the device ACTUALLY negotiated, not what was asked
+                // for: the policy's depths are denominated in interleaved samples, so a channel
+                // count that differs here would silently scale every threshold.
+                RingCallback {
+                    rx: pcm_rx,
+                    recycle: recycle_tx,
+                    ring: VecDeque::new(),
+                    policy: JitterPolicy::new(WEBOS_TUNING, obtained.channels),
+                    sync: sync_cb,
+                    underruns: 0,
+                    sheds: 0,
+                    callbacks: 0,
+                }
+            })
+            .map_err(|e| anyhow::anyhow!("SDL open_playback: {e}"))?;
+        let obtained = *device.spec();
+        if obtained.channels != layout.channels || obtained.freq != SAMPLE_RATE as i32 {
+            // Not fatal — SDL converts — but it means the decoder and the device disagree about
+            // the frame shape, which is worth seeing in a log before it is heard.
+            tracing::warn!(
+                "audio device negotiated {}ch @{}Hz, stream is {}ch @{}Hz",
+                obtained.channels,
+                obtained.freq,
+                layout.channels,
+                SAMPLE_RATE,
+            );
+        }
+        device.resume();
+        let channels = layout.channels as usize;
+        Ok((
+            Self { device },
+            AudioFeed {
+                pcm_tx,
+                recycle_rx,
+                decoder,
+                channels,
+                per_ms: (SAMPLE_RATE / 1000) as usize * channels,
+                gaps: AudioGapTracker::new(),
+                av: AvSync::new(layout.channels),
+                cells,
+                sync,
+            },
+        ))
+    }
+
+    /// The device's actually-negotiated spec — may differ from what was requested if
+    /// the device doesn't support it exactly.
+    pub fn spec(&self) -> &sdl2::audio::AudioSpec {
+        self.device.spec()
+    }
+}
+
+/// The decode half: Opus → PCM, loss concealment, the A/V measurement, and the hand-off to the
+/// ring. Lives on its own thread (`session::audio_feed_pump`).
+pub struct AudioFeed {
+    pcm_tx: SyncSender<Vec<f32>>,
+    /// Drained chunk `Vec`s coming back from the callback for reuse — the pool half of the chunk
+    /// channel, so steady-state playback stops allocating (~200 chunks/s otherwise).
+    recycle_rx: Receiver<Vec<f32>>,
+    decoder: opus::MSDecoder,
+    channels: usize,
+    /// Interleaved samples per millisecond at the negotiated layout (48 × channels).
+    per_ms: usize,
+    /// Detects packets lost on the wire so they can be concealed rather than skipped.
+    gaps: AudioGapTracker,
+    /// A/V synchronisation, **measure-only for now** — see [`AudioFeed::observe_av`].
+    av: AvSync,
+    cells: SyncCells,
+    /// Depth out of the callback, target in. Only the depth half is used today.
+    sync: Arc<AudioSyncCell>,
+}
+
+impl AudioFeed {
+    /// Decodes one Opus packet (concealing anything lost immediately before it) and hands the PCM
+    /// to the ring. Returns the peak sample — a diagnostic that separates "the host is sending
+    /// silence" from "the speaker is not working".
+    pub fn play(&mut self, seq: u32, pts_ns: u64, opus_payload: &[u8]) -> Result<f32> {
+        // The ring depth as the callback last saw it: everything that must still play before the
+        // packet being queued now does.
+        self.observe_av(pts_ns, self.sync.depth());
+
+        // Conceal whatever went missing immediately before this packet. libopus PLC (decode with
+        // empty input) interpolates a frame; the alternative is a hard gap, i.e. a click.
+        for _ in 0..self.gaps.missing_before(seq) {
+            let mut pcm = [0f32; SAMPLES_PER_FRAME * MAX_CHANNELS];
+            let n = self
+                .decoder
+                .decode_float(&[], &mut pcm, false)
+                .map_err(|e| anyhow::anyhow!("opus PLC decode: {e}"))?;
+            self.push(&pcm[..n * self.channels]);
+        }
+
+        let mut pcm = [0f32; SAMPLES_PER_FRAME * MAX_CHANNELS];
+        let samples_per_channel = self
+            .decoder
+            .decode_float(opus_payload, &mut pcm, false)
+            .map_err(|e| anyhow::anyhow!("opus decode_float: {e}"))?;
+        let decoded = &pcm[..samples_per_channel * self.channels];
+        let peak = decoded.iter().fold(0f32, |m, &s| m.max(s.abs()));
+        self.push(decoded);
+        Ok(peak)
+    }
+
+    /// Hands one decoded chunk to the ring, reusing a pooled `Vec` where one is available.
+    ///
+    /// A full channel drops the chunk rather than blocking: this runs on the decode thread, and
+    /// blocking it would back pressure into the transport. A wedged callback is already a fault
+    /// the ring's own underrun path reports.
+    fn push(&mut self, pcm: &[f32]) {
+        let mut buf = self.recycle_rx.try_recv().unwrap_or_default();
+        buf.clear();
+        buf.extend_from_slice(pcm);
+        let _ = self.pcm_tx.try_send(buf);
     }
 
     /// Fold one packet into the A/V offset measurement, and publish both the offset and the ring
     /// depth for the stats overlay.
     ///
     /// **This measures; it does not steer.** [`AvSync::desired_depth`] is deliberately never
-    /// called, and no target is ever handed to a playback policy. The reason is the one term this
-    /// platform cannot observe: NDL reports nothing about presentation, so
+    /// called, and no target is handed to [`JitterPolicy::set_sync_target`]. The reason is the one
+    /// term this platform cannot observe: NDL reports nothing about presentation, so
     /// `session::sink::video_e2e_ns` carries a *calibrated constant* for the decode+panel latency
     /// after its render queue drains. Until that constant has been read off real hardware it is
     /// `0`, which biases the offset high — and acting on a biased offset would place audio early
-    /// by exactly the amount of the bias, a worse fault than the drift being corrected. Publishing
-    /// it on the HUD first is what turns that constant from a guess into a measurement.
-    ///
-    /// `buffered_ahead` is the device queue as it stands BEFORE this packet is added: everything
-    /// that must still play before it does.
+    /// by exactly the bias, a worse fault than the drift being corrected. Publishing it on the HUD
+    /// first is what turns that constant from a guess into a measurement.
     fn observe_av(&mut self, pts_ns: u64, buffered_ahead: usize) {
         // Published unconditionally — the ring's depth is worth seeing whether or not the loop is
         // acting, and it is what makes an "audio is late" report triageable at all.
@@ -130,75 +258,73 @@ impl AudioPlayer {
             .av_offset_ms
             .store(i64::from(self.av.offset_ms()), Ordering::Relaxed);
     }
+}
 
-    /// The device's actually-negotiated spec — may differ from what was requested if
-    /// the device doesn't support it exactly.
-    pub fn spec(&self) -> &sdl2::audio::AudioSpec {
-        self.queue.spec()
-    }
+/// The playback half, owned by SDL's audio thread. Drains the chunk channel into a ring it owns
+/// outright, then serves the callback from it under the shared de-jitter policy.
+struct RingCallback {
+    rx: Receiver<Vec<f32>>,
+    recycle: SyncSender<Vec<f32>>,
+    ring: VecDeque<f32>,
+    /// Prime depth in MILLISECONDS, an underrun-driven adaptive floor, and a crossfaded 5 ms drift
+    /// shed so latency returns to target instead of ratcheting. See [`WEBOS_TUNING`].
+    policy: JitterPolicy,
+    /// Depth out to the decode thread, target in (unused until the sync loop is armed).
+    sync: Arc<AudioSyncCell>,
+    underruns: u64,
+    sheds: u64,
+    callbacks: u64,
+}
 
-    /// Decodes Opus packet (with PLC for losses) and queues PCM.
-    /// Returns peak sample (diagnostic for silent input vs speaker failure) + `AudioEvent`.
-    pub fn play(&mut self, seq: u32, pts_ns: u64, opus_payload: &[u8]) -> Result<(f32, AudioEvent)> {
-        let bytes_per_ms = SAMPLE_RATE / 1000 * self.channels as u32 * std::mem::size_of::<f32>() as u32;
-        let queued = self.queue.size();
+impl sdl2::audio::AudioCallback for RingCallback {
+    type Channel = f32;
 
-        // Measured against the queue as it stands NOW, before this packet joins it, and before the
-        // shed branches below — a packet this call decides to drop still tells the truth about
-        // where the ring sits relative to the picture.
-        self.observe_av(pts_ns, queued as usize / std::mem::size_of::<f32>());
-
-        // WHY: empty queue detects stall on feeding thread (opposite remedy from over-full).
-        let underrun = queued == 0;
-
-        if queued > bytes_per_ms * MAX_QUEUED_LAG_MS {
-            self.queue.clear();
-            self.queue_packet(opus_payload)?;
-            return Ok((0.0, AudioEvent::Resnapped));
-        }
-        if queued > bytes_per_ms * SOFT_QUEUED_LAG_MS {
-            // WHY: decode anyway (stateful codec); skip would corrupt state and follow-up.
-            let _ = self.gaps.missing_before(seq);
-            let mut pcm = [0f32; SAMPLES_PER_FRAME * MAX_CHANNELS];
-            let _ = self.decoder.decode_float(opus_payload, &mut pcm, false);
-            return Ok((0.0, AudioEvent::Dropped));
+    fn callback(&mut self, out: &mut [f32]) {
+        while let Ok(mut chunk) = self.rx.try_recv() {
+            self.ring.extend(chunk.iter().copied());
+            // Return the drained Vec to the pool; a full/closed pool just drops it.
+            chunk.clear();
+            let _ = self.recycle.try_send(chunk);
         }
 
-        // Conceal whatever went missing immediately before this packet.
-        for _ in 0..self.gaps.missing_before(seq) {
-            let mut pcm = [0f32; SAMPLES_PER_FRAME * MAX_CHANNELS];
-            let n = self
-                .decoder
-                .decode_float(&[], &mut pcm, false)
-                .map_err(|e| anyhow::anyhow!("opus PLC decode: {e}"))?;
-            self.queue
-                .queue_audio(&pcm[..n * self.channels])
-                .map_err(|e| anyhow::anyhow!("SDL queue_audio (PLC): {e}"))?;
+        // `out` is interleaved samples for this callback — exactly the `want` the policy is
+        // denominated in.
+        let want = out.len();
+        self.sync.publish_depth(self.ring.len());
+        let step = self.policy.step(self.ring.len(), want);
+        if step.drop_front > 0 {
+            self.sheds += 1;
+            crossfade_drop(&mut self.ring, step.drop_front, step.crossfade);
         }
 
-        let peak = self.queue_packet(opus_payload)?;
-        Ok((
-            peak,
-            if underrun {
-                AudioEvent::Underrun
+        let mut ran_short = false;
+        for slot in out.iter_mut() {
+            *slot = if step.silence {
+                0.0
             } else {
-                AudioEvent::Queued
-            },
-        ))
-    }
-
-    /// Decodes one real packet into the device queue, returning its peak sample.
-    fn queue_packet(&mut self, opus_payload: &[u8]) -> Result<f32> {
-        let mut pcm = [0f32; SAMPLES_PER_FRAME * MAX_CHANNELS];
-        let samples_per_channel = self
-            .decoder
-            .decode_float(opus_payload, &mut pcm, false)
-            .map_err(|e| anyhow::anyhow!("opus decode_float: {e}"))?;
-        let decoded = &pcm[..samples_per_channel * self.channels];
-        let peak = decoded.iter().fold(0f32, |m, &s| m.max(s.abs()));
-        self.queue
-            .queue_audio(decoded)
-            .map_err(|e| anyhow::anyhow!("SDL queue_audio: {e}"))?;
-        Ok(peak)
+                self.ring.pop_front().unwrap_or_else(|| {
+                    ran_short = true;
+                    0.0
+                })
+            };
+        }
+        // No-op while un-primed (the policy ignores it), so a deliberate priming silence is never
+        // miscounted as an underrun.
+        self.policy.note_read(ran_short);
+        self.underruns += u64::from(ran_short);
+        self.callbacks += 1;
+        // ~10 s at this device quantum. The exact cadence does not matter; that the plane stops
+        // being invisible does — before this, the only audio signal in a log was a per-packet
+        // "underrun" line from the feed side, which said the queue was empty without saying how
+        // deep it was supposed to be.
+        if self.callbacks % 1_000 == 0 {
+            tracing::debug!(
+                buffer_ms = self.policy.avg_depth_ms(),
+                target_ms = self.policy.target_ms(),
+                underruns = self.underruns,
+                drift_sheds = self.sheds,
+                "audio playback"
+            );
+        }
     }
 }
