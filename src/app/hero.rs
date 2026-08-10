@@ -19,7 +19,7 @@ pub(crate) struct Hero {
     wanted: Option<String>,
     /// Id whose hero belongs on the connecting screen. `None` for Desktop.
     target: Option<String>,
-    /// Whether this launch's hero is still in flight: the menu loop waits a moment for art on
+    /// Whether this launch's hero is still in flight: the loading screen waits a moment for art on
     /// its way, but must not delay a launch with nothing to wait for.
     expected: bool,
     /// Id currently uploaded as `TileId::Hero`. Uploaded only once a launch starts —
@@ -123,10 +123,10 @@ impl Hero {
     /// Whether the loading screen is finished, so the streaming loop can take the screen.
     /// Also what starts the fade-out, once everything else it waits on is satisfied.
     ///
-    /// `presenting` is the decoder reporting live frames. The backdrop waits for it, so the
-    /// fade-out is the last thing that happens before the plane is uncovered rather than leaving
-    /// black in between — with no hero this is not consulted at all, and the plain fade to black
-    /// hands over exactly as it always did.
+    /// `presenting` is a frame having reached the decoder — NOT NDL's `PLAYING`, which lands
+    /// during the load with nothing decoded. With a hero to pan, the screen waits for it so the
+    /// fade-out is the last thing before the plane is uncovered; with none, `runtime::stream` holds
+    /// the finished launch frame instead, on the same [`ui::FIRST_FRAME_WAIT`] budget.
     pub(crate) fn handover_ready(&mut self, launch_elapsed: Duration, connected: bool, presenting: bool) -> bool {
         if launch_elapsed < ui::LAUNCH_FADE {
             return false;
@@ -137,16 +137,15 @@ impl Hero {
             return true;
         }
         if !self.showing() {
-            // Nothing on screen: hand over at the end of the fade, as it always did. A game
-            // that *has* wide art gets a grace period first — on a cold cache the hero can
-            // still be a fetch away, and would otherwise land just after the hand-off.
-            return !self.expected || launch_elapsed >= ui::LAUNCH_FADE + ui::STREAM_REVEAL_WAIT;
+            // No hero to hold the wait: hand over at the end of the fade, and `runtime::stream`
+            // keeps that finished frame up until the first frame arrives. A game that *has* wide
+            // art gets a grace period first — on a cold cache the hero can still be a fetch away,
+            // and would otherwise land just after the hand-off.
+            return !self.expected || launch_elapsed >= ui::LAUNCH_FADE + ui::HERO_ART_GRACE;
         }
-        // Held until the stream is genuinely up: the handshake landed *and* the decoder is
-        // presenting, so the fade-out runs straight into live video. Deliberately un-timed — a
-        // player that isn't ready yet is what this screen exists for, so it keeps panning rather
-        // than cut to a stream opening on black. Plus its own minimum, so a hero that arrived
-        // late isn't cut mid-fade.
+        // Held until the stream is genuinely up: the handshake landed *and* a frame reached the
+        // decoder, so the fade-out runs straight into live video rather than cutting to black. Its
+        // own minimum too, so a hero that arrived late isn't cut mid-fade.
         connected && presenting && self.since.is_some_and(|t| t.elapsed() >= ui::HERO_MIN_SHOW) && self.faded_out()
     }
 

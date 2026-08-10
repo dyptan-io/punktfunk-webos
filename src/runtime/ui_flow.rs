@@ -210,7 +210,7 @@ pub(super) fn run_ui_flow(
         // its reveal wait is satisfied too), and the hold and fade-out done.
         if let Some(t) = app.launch_anim {
             connect_done |= connect_handle.as_ref().is_none_or(|(h, _)| h.is_finished());
-            let presenting = crate::platform::webos::ndl::playing();
+            let presenting = crate::platform::webos::ndl::presenting();
             if app.hero.handover_ready(t.elapsed(), connect_done, presenting) {
                 break 'ui;
             }

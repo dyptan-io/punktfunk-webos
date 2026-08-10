@@ -1,7 +1,7 @@
 //! Safe wrapper over webOS's NDL `DirectMedia` v2 API (`NDL_Direct*`, webOS 5+).
 //! Video only; audio via SDL2. Never calls `NDL_DirectVideoSetArea` (causes stutter above 1080p).
 use std::ffi::{c_char, c_int, c_longlong, c_uint, c_void, CStr, CString};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use anyhow::{bail, Result};
@@ -157,26 +157,49 @@ const OPUS_EMPTY_FRAME: [u8; 3] = [0xec, 0xff, 0xfe];
 /// but a model that never delivers the callback must still stream.
 const LOAD_COMPLETE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2_000);
 
-/// Process-global like the NDL session itself (one load at a time); cleared right before
-/// each `NDL_DirectMediaLoad`.
-static LOAD_COMPLETED: AtomicBool = AtomicBool::new(false);
-/// The only signal the present pipeline actually started (docs/NDL-FRAMERATE-INVESTIGATION.md).
-/// Arrives only once frames are being fed, so it gates *revealing* the plane, never the feed.
-static PLAYING: AtomicBool = AtomicBool::new(false);
+/// Grace for a rejected load's callbacks to land before the video-only retry arms. The callback
+/// carries nothing identifying its load, so separating the two in TIME is the only way to stop a
+/// stale `LOADCOMPLETED` satisfying the retry's wait — and feeding an unloaded decoder is what
+/// turns a launch black.
+const CALLBACK_SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
 
-/// Records NDL load-state transitions so `load()` and the UI reveal can wait on them.
+/// How long past `load()` [`NdlVideo::ensure_loaded`] holds frames while `LOADCOMPLETED` is
+/// missing. Measured from the load, so it follows [`LOAD_COMPLETE_TIMEOUT`].
+const FEED_ANYWAY_AFTER: std::time::Duration = std::time::Duration::from_millis(1_000);
+
+/// Counters, not flags: a late event still increments, so it stays attributable to the load it
+/// came from — a per-load sticky bool cannot tell "this load completed" from "the previous one's
+/// callback arrived a moment too late". Process-global like the NDL session itself.
+static LOAD_COMPLETED_SEQ: AtomicU64 = AtomicU64::new(0);
+static UNLOAD_COMPLETED_SEQ: AtomicU64 = AtomicU64::new(0);
+/// NDL's own present-pipeline signal (docs/NDL-FRAMERATE-INVESTIGATION.md). Measured on a G5:
+/// it lands during `load()`, BEFORE any frame is fed, so it says nothing about there being a
+/// picture — kept for the log line only, never as a reveal gate (see [`PRESENTED_SEQ`]).
+static PLAYING_SEQ: AtomicU64 = AtomicU64::new(0);
+/// Bumped by the first `play()` NDL accepts for the armed load. This, not `PLAYING`, is what
+/// makes uncovering the punch-through plane safe: before it there is provably nothing on the
+/// plane, and a host that delivers its first frame seconds late (new-flow stall, startup
+/// capacity probe) would otherwise show as seconds of black.
+static PRESENTED_SEQ: AtomicU64 = AtomicU64::new(0);
+/// Counter values as of the current load, stamped by [`arm_load`]. Anything at or below these
+/// belongs to an earlier load.
+static LOAD_COMPLETED_BASE: AtomicU64 = AtomicU64::new(0);
+static PLAYING_BASE: AtomicU64 = AtomicU64::new(0);
+static PRESENTED_BASE: AtomicU64 = AtomicU64::new(0);
+
+/// Records NDL load-state transitions so `load()`, `play()` and the UI reveal can wait on them.
 extern "C" fn on_load_state(state: c_int, _num: c_longlong, _str: *const c_char) {
     let name = match state {
         NDL_STATE_LOADCOMPLETED => {
-            LOAD_COMPLETED.store(true, Ordering::SeqCst);
+            LOAD_COMPLETED_SEQ.fetch_add(1, Ordering::SeqCst);
             "LOADCOMPLETED"
         }
-        // Clears nothing: the audio-offload probe unloads then re-loads video-only, so this
-        // can land AFTER the retry's LOADCOMPLETED. `load()` and `Drop` reset the flags —
-        // they know which load they mean.
-        NDL_STATE_UNLOADCOMPLETED => "UNLOADCOMPLETED",
+        NDL_STATE_UNLOADCOMPLETED => {
+            UNLOAD_COMPLETED_SEQ.fetch_add(1, Ordering::SeqCst);
+            "UNLOADCOMPLETED"
+        }
         NDL_STATE_PLAYING => {
-            PLAYING.store(true, Ordering::SeqCst);
+            PLAYING_SEQ.fetch_add(1, Ordering::SeqCst);
             "PLAYING"
         }
         _ => "other",
@@ -184,15 +207,45 @@ extern "C" fn on_load_state(state: c_int, _num: c_longlong, _str: *const c_char)
     tracing::info!("NDL load state: {name} (0x{state:x})");
 }
 
-/// `PLAYING` for the current load: the plane is presenting and safe to uncover.
-pub fn playing() -> bool {
-    PLAYING.load(Ordering::SeqCst)
+/// Takes the counters as the baseline for the load about to be issued. Call immediately before
+/// every `NDL_DirectMediaLoad`, and after an unload so `playing()` stops reporting a dead load.
+fn arm_load() {
+    LOAD_COMPLETED_BASE.store(LOAD_COMPLETED_SEQ.load(Ordering::SeqCst), Ordering::SeqCst);
+    PLAYING_BASE.store(PLAYING_SEQ.load(Ordering::SeqCst), Ordering::SeqCst);
+    PRESENTED_BASE.store(PRESENTED_SEQ.load(Ordering::SeqCst), Ordering::SeqCst);
 }
 
-/// Blocks until the `LOADCOMPLETED` callback lands. Returns `false` on timeout.
+/// Whether `LOADCOMPLETED` has landed for the armed load.
+fn load_completed() -> bool {
+    LOAD_COMPLETED_SEQ.load(Ordering::SeqCst) > LOAD_COMPLETED_BASE.load(Ordering::SeqCst)
+}
+
+/// `PLAYING` for the current load. Diagnostics only — see [`PLAYING_SEQ`].
+pub fn playing() -> bool {
+    PLAYING_SEQ.load(Ordering::SeqCst) > PLAYING_BASE.load(Ordering::SeqCst)
+}
+
+/// Whether a frame of the current load has reached NDL: the plane has a picture and is safe to
+/// uncover.
+pub fn presenting() -> bool {
+    PRESENTED_SEQ.load(Ordering::SeqCst) > PRESENTED_BASE.load(Ordering::SeqCst)
+}
+
+/// Lets the rejected audio-enabled load's callbacks land before the video-only retry is armed:
+/// waits for its `UNLOADCOMPLETED`, then a fixed settle for anything still in flight behind it.
+fn settle_before_retry() {
+    let unloads = UNLOAD_COMPLETED_SEQ.load(Ordering::SeqCst);
+    let start = Instant::now();
+    while UNLOAD_COMPLETED_SEQ.load(Ordering::SeqCst) == unloads && start.elapsed() < CALLBACK_SETTLE {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    std::thread::sleep(CALLBACK_SETTLE);
+}
+
+/// Blocks until the armed load's `LOADCOMPLETED` lands. Returns `false` on timeout.
 fn wait_load_completed() -> bool {
     let start = Instant::now();
-    while !LOAD_COMPLETED.load(Ordering::SeqCst) {
+    while !load_completed() {
         if start.elapsed() >= LOAD_COMPLETE_TIMEOUT {
             return false;
         }
@@ -297,6 +350,10 @@ pub struct NdlVideo {
     audio_offloaded: bool,
     /// Serializes `NDL_Direct*` calls (singleton C API not documented as thread-safe).
     ffi: std::sync::Mutex<()>,
+    /// `false` while `LOADCOMPLETED` still hasn't been seen for this load — [`Self::play`]
+    /// refuses to feed until it lands or [`FEED_ANYWAY_AFTER`] passes. Latched once, so the
+    /// steady-state feed path costs one relaxed load.
+    load_confirmed: AtomicBool,
 }
 
 impl NdlVideo {
@@ -316,15 +373,17 @@ impl NdlVideo {
                 video,
                 audio: audio.to_union(),
             };
-            LOAD_COMPLETED.store(false, Ordering::SeqCst);
-            PLAYING.store(false, Ordering::SeqCst);
+            arm_load();
             // SAFETY: `info` is valid for the duration of this call.
             let ret = unsafe { NDL_DirectMediaLoad(&mut info, Some(on_load_state)) };
             if ret == 0 {
                 // `ret == 0` means the request was accepted, not that the pipeline is ready —
                 // the Opus prime below and the caller's first `play()` both need LOADCOMPLETED.
-                if !wait_load_completed() {
-                    tracing::warn!("NDL load: no LOADCOMPLETED within {LOAD_COMPLETE_TIMEOUT:?} — feeding anyway");
+                let confirmed = wait_load_completed();
+                if !confirmed {
+                    tracing::warn!(
+                        "NDL load: no LOADCOMPLETED within {LOAD_COMPLETE_TIMEOUT:?} — holding the first frames"
+                    );
                 }
                 // Prime the Opus decoder with one silent frame (ss4s does this right after a
                 // successful audio-enabled load). Best-effort — a failure here doesn't
@@ -339,6 +398,7 @@ impl NdlVideo {
                     load_instant: Instant::now(),
                     audio_offloaded: true,
                     ffi: std::sync::Mutex::new(()),
+                    load_confirmed: AtomicBool::new(confirmed),
                 });
             }
             // Fall through to video-only: audio offload is optimization, not critical.
@@ -348,25 +408,29 @@ impl NdlVideo {
                 last_error()
             );
             let _ = unsafe { NDL_DirectMediaUnload() };
+            // The rejected load's callbacks are indistinguishable from the retry's, so let them
+            // land BEFORE arming below rather than racing them.
+            settle_before_retry();
         }
         let mut info = NdlDataInfo {
             video,
             audio: NdlAudioUnion { bytes: [0; 32] },
         };
-        LOAD_COMPLETED.store(false, Ordering::SeqCst);
-        PLAYING.store(false, Ordering::SeqCst);
+        arm_load();
         // SAFETY: `info` is valid for the duration of this call.
         let ret = unsafe { NDL_DirectMediaLoad(&mut info, Some(on_load_state)) };
         if ret != 0 {
             bail!("NDL_DirectMediaLoad failed: ret={ret} error={}", last_error());
         }
-        if !wait_load_completed() {
-            tracing::warn!("NDL load: no LOADCOMPLETED within {LOAD_COMPLETE_TIMEOUT:?} — feeding anyway");
+        let confirmed = wait_load_completed();
+        if !confirmed {
+            tracing::warn!("NDL load: no LOADCOMPLETED within {LOAD_COMPLETE_TIMEOUT:?} — holding the first frames");
         }
         Ok(Self {
             load_instant: Instant::now(),
             audio_offloaded: false,
             ffi: std::sync::Mutex::new(()),
+            load_confirmed: AtomicBool::new(confirmed),
         })
     }
 
@@ -407,9 +471,31 @@ impl NdlVideo {
         self.load_instant.elapsed().as_nanos() as u64
     }
 
+    /// `Err` while this load hasn't reported `LOADCOMPLETED`: the sink then flushes, holds and
+    /// requests a keyframe — exactly what a late load needs, instead of frames into a decoder that
+    /// isn't there. Bounded by [`FEED_ANYWAY_AFTER`], since a model that never delivers the
+    /// callback must still stream.
+    fn ensure_loaded(&self) -> Result<()> {
+        if self.load_confirmed.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        if load_completed() {
+            tracing::info!("NDL LOADCOMPLETED landed {:?} after load", self.load_instant.elapsed());
+            self.load_confirmed.store(true, Ordering::Relaxed);
+            return Ok(());
+        }
+        if self.load_instant.elapsed() >= FEED_ANYWAY_AFTER {
+            tracing::warn!("NDL: still no LOADCOMPLETED after {FEED_ANYWAY_AFTER:?} — feeding anyway");
+            self.load_confirmed.store(true, Ordering::Relaxed);
+            return Ok(());
+        }
+        bail!("NDL pipeline not loaded yet — holding");
+    }
+
     /// Feed one access unit at `pts_ns` (ns since `load()`), truncated to ms for NDL.
     /// Pass a paced value, not raw `elapsed_ns()`, to preserve inter-frame spacing.
     pub fn play(&self, au: &[u8], pts_ns: u64) -> Result<()> {
+        self.ensure_loaded()?;
         let pts_ms = (pts_ns / 1_000_000) as c_longlong;
         let _ffi = self.ffi.lock().expect("NDL FFI mutex poisoned");
         // SAFETY: NDL reads `size` bytes from `buffer` synchronously and does not
@@ -417,6 +503,10 @@ impl NdlVideo {
         let ret = unsafe { NDL_DirectVideoPlay(au.as_ptr() as *mut c_void, au.len() as c_uint, pts_ms) };
         if ret != 0 {
             bail!("NDL_DirectVideoPlay failed: ret={ret} error={}", last_error());
+        }
+        if !presenting() {
+            PRESENTED_SEQ.fetch_add(1, Ordering::SeqCst);
+            tracing::info!("NDL first frame fed {:?} after load", self.load_instant.elapsed());
         }
         Ok(())
     }
@@ -515,8 +605,8 @@ impl NdlVideo {
 
 impl Drop for NdlVideo {
     fn drop(&mut self) {
-        LOAD_COMPLETED.store(false, Ordering::SeqCst);
-        PLAYING.store(false, Ordering::SeqCst);
+        // Re-arm so `playing()` stops reporting the load being torn down here.
+        arm_load();
         // SAFETY: best-effort teardown; error ignored (Drop can't propagate a Result).
         let _ = unsafe { NDL_DirectMediaUnload() };
     }

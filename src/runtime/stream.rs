@@ -1,10 +1,13 @@
 use super::*;
+use crate::platform::webos::input::{
+    webos_scancode_down as key_down, WEBOS_BLUE_SCANCODE, WEBOS_EXIT_SCANCODE, WEBOS_GREEN_SCANCODE,
+    WEBOS_HOME_SCANCODE, WEBOS_YELLOW_SCANCODE,
+};
 
-/// How long the finished menu frame is held waiting for NDL `PLAYING` before uncovering the
-/// video plane regardless. The hero loading screen waits on the same signal, and without a
-/// timeout (`app::hero::handover_ready`) — so when a hero held the screen this wait is already
-/// satisfied and returns immediately.
-const NDL_REVEAL_TIMEOUT: Duration = crate::ui::STREAM_REVEAL_WAIT;
+/// How long the finished launch frame is held waiting for the first frame to reach the decoder
+/// before uncovering the video plane regardless. The hero loading screen waits on the same signal
+/// (`app::hero::handover_ready`), so when a hero held the screen this wait returns immediately.
+const NDL_REVEAL_TIMEOUT: Duration = crate::ui::FIRST_FRAME_WAIT;
 
 pub(super) fn run_inner() -> Result<()> {
     // Stops webOS's launcher intercepting Back/Windows-Meta/Guide as its own Home shortcut
@@ -116,16 +119,18 @@ pub(super) fn run_inner() -> Result<()> {
             }
         };
         tracing::info!("session connected, entering event loop");
-        // `connect` returns past LOADCOMPLETED with the pump feeding; `PLAYING` is the decoder
-        // confirming it presents, so the reveal swaps the menu straight for live video.
-        // Bounded — never arriving must not leave a stale menu frame up.
+        // `connect` returns past LOADCOMPLETED with the pump feeding; the reveal then waits for a
+        // frame to actually reach NDL, so the menu is swapped straight for live video. NDL's own
+        // `PLAYING` is NOT that signal — it lands during `load()`, before anything is fed.
+        // Bounded — a host that never sends must not leave a stale menu frame up.
         let reveal_wait = Instant::now();
-        while !crate::platform::webos::ndl::playing() && reveal_wait.elapsed() < NDL_REVEAL_TIMEOUT {
+        while !crate::platform::webos::ndl::presenting() && reveal_wait.elapsed() < NDL_REVEAL_TIMEOUT {
             std::thread::sleep(Duration::from_millis(4));
         }
         tracing::info!(
-            "NDL reveal after {:?} (playing={})",
+            "NDL reveal after {:?} (presenting={} playing={})",
             reveal_wait.elapsed(),
+            crate::platform::webos::ndl::presenting(),
             crate::platform::webos::ndl::playing(),
         );
 
@@ -251,11 +256,16 @@ pub(super) fn run_inner() -> Result<()> {
             stats_fade.open();
         }
         let mut log_fade = crate::ui::ModalFade::<()>::new();
-        let mut green_held = false;
-        let mut yellow_held = false;
-        let mut home_held = false;
+        // Seeded from live key state, not `false`: these are rising-edge polls, and the launch
+        // itself is a keypress. A key still down when the stream loop starts (webOS's EXIT
+        // gesture in particular — a synthetic press whose key-up may never arrive) would read as
+        // a fresh press on the first tick and, for EXIT, open the disconnect dialog over the
+        // video the instant the stream began.
+        let mut green_held = key_down(WEBOS_GREEN_SCANCODE);
+        let mut yellow_held = key_down(WEBOS_YELLOW_SCANCODE);
+        let mut home_held = key_down(WEBOS_HOME_SCANCODE);
         // Blue button flips pacing live via `stats.pacing_enabled` (pure PTS math, safe mid-stream).
-        let mut blue_held = false;
+        let mut blue_held = key_down(WEBOS_BLUE_SCANCODE);
         // Transient toasts. `overlay_was_active` catches the fade-out edge so the canvas gets
         // wiped once; `stats_dst`/`log_dst` recomposite each frame at their own slower cadence.
         let mut notif = crate::ui::Notification::new();
@@ -283,7 +293,8 @@ pub(super) fn run_inner() -> Result<()> {
         // Gamepad routes to the disconnect dialog — see `DisconnectChord`.
         let mut chord = DisconnectChord::default();
         // Short Back tap forwards Esc; a held Back becomes webOS's EXIT gesture, polled below.
-        let mut exit_held = false;
+        // Seeded like the colour keys above — see there.
+        let mut exit_held = key_down(WEBOS_EXIT_SCANCODE);
         // Waits for close-fade to finish.
         let mut pending_outcome: Option<StreamOutcome> = None;
         // Set when the user confirms the disconnect dialog — distinguishes that from the

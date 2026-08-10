@@ -20,11 +20,16 @@ pub const HERO_FADE: Duration = Duration::from_millis(1_300);
 /// the hand-off is unchanged.
 pub const HERO_MIN_SHOW: Duration = Duration::from_millis(2_700);
 
-/// Longest a launch waits for one thing that may never arrive, spent on a screen the user is
-/// watching. Two of those, on the same budget: the decoder reporting that it presents
-/// (`runtime::stream`'s reveal, for the launches with no hero to hold), and a hero still being
-/// fetched off the host (`app::hero`, before it gives up and hands over without one).
-pub const STREAM_REVEAL_WAIT: Duration = Duration::from_millis(1_500);
+/// Longest the loading screen waits for a hero still being fetched off the host before handing
+/// over without one (`app::hero`).
+pub const HERO_ART_GRACE: Duration = Duration::from_millis(1_500);
+
+/// Longest a launch waits for the first frame to reach the decoder — the one budget for it,
+/// shared by the loading screen (`app::hero`) and the reveal that follows it
+/// (`runtime::stream`). A host's first delivery can be seconds late (its startup capacity probe,
+/// or a new UDP flow the AP holds — see `session`'s `PROBE_WARMUP_CAP`), and until it lands the
+/// video plane is black, so the loading screen is what the user should be looking at.
+pub const FIRST_FRAME_WAIT: Duration = Duration::from_secs(6);
 
 /// Longest the loading screen runs before handing over regardless of the connect thread.
 /// Only a backstop — `session::connect` has its own timeouts.
