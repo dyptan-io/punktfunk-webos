@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use super::*;
 
 /// How long the finished menu frame is held waiting for NDL `PLAYING` before uncovering the
@@ -229,17 +227,12 @@ pub(super) fn run_inner() -> Result<()> {
         let mut buttons = mouse::RemoteButtons::default();
         // Raw evdev mouse, only under cursor capture (uncaptured, raw deltas can't express the
         // remote's absolute pointing). Sends happen on the reader thread, not queued for the
-        // ~2ms main loop, to avoid re-resampling a 1000 Hz mouse. `forward_hid` gates sends
-        // since `disconnect.is_open()` isn't readable from that thread.
-        let forward_hid = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        // ~2ms main loop, to avoid re-resampling a 1000 Hz mouse. Active from the start so the
+        // compositor never draws its own arrow over what we're forwarding — see `evmouse`'s
+        // module docs; deactivated below whenever the disconnect dialog needs the pointer back.
         let hid_mouse = if settings.cursor_capture {
             let input = connected.input();
-            let gate = Arc::clone(&forward_hid);
-            crate::platform::webos::evmouse::HidMouse::start(move |ev| {
-                if gate.load(Ordering::Relaxed) {
-                    input.send(ev);
-                }
-            })
+            crate::platform::webos::evmouse::HidMouse::start(true, move |ev| input.send(ev))
         } else {
             None
         };
@@ -579,7 +572,12 @@ pub(super) fn run_inner() -> Result<()> {
             let want_captured = settings.cursor_capture && !disconnect.is_open();
             if want_captured != cursor.is_captured() {
                 cursor.set_captured(want_captured);
-                forward_hid.store(want_captured, Ordering::Relaxed);
+                // Deactivate with the dialog open — the remote needs the OS pointer back to
+                // navigate it, and holding the grab would just leave a HID mouse dead for that
+                // duration; deactivating also stops forwarding in the same store, see `evmouse`.
+                if let Some(hid) = &hid_mouse {
+                    hid.set_active(want_captured);
+                }
             }
             // Wider than `is_open()`: a dismissed dialog still draws (fading out) a few more
             // ticks, used below to skip the stats overlay for exactly those ticks.

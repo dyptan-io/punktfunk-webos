@@ -8,11 +8,21 @@
 //! reachable: `root:compositor 0660`, and the app's uid carries gid 505 in its supplementary
 //! groups — verified on-device, non-rooted, webOS 10.3.
 //!
-//! **Not grabbed.** No `EVIOCGRAB` — exclusive access risks a TV-wide dead mouse if this thread
-//! wedges. Cost: the compositor still draws its pointer (`cursor` stays responsible for hiding
-//! it) and still sees the motion, so the caller must drop *this device's* SDL echo or every
-//! movement doubles — the Magic Remote shares the same SDL pointer and stays usable, which is
-//! what [`HidMouse::owns_sdl_motion`] is for.
+//! **Grabbed while active.** `EVIOCGRAB` is scoped to [`HidMouse::set_active`], not held for the
+//! reader's whole life: `cursor::COMPOSITOR_CURSOR_CONTROL` is verified off on webOS 26 (see
+//! `cursor.rs`), so an ungrabbed node leaves the compositor drawing its own pointer from the same
+//! evdev reports we forward. Scoping it to "caller wants it" rather than the reader's whole life
+//! bounds a wedged thread's blast radius to "no HID input" instead of "no mouse input at all,
+//! TV-wide" — the kernel releases the grab the moment our fd closes (including on panic), and the
+//! surface-manager's own fd stays open throughout, just starved of events while ours holds it.
+//! The Magic Remote never touches an evdev node, so it's unaffected and stays usable via SDL —
+//! which is what [`HidMouse::owns_sdl_motion`] is for.
+//!
+//! **One flag, two effects.** "Grabbed" and "forwarded to the host" are the same condition by
+//! construction, not two atomics a caller has to keep in sync: [`HidMouse::set_active`]`(false)`
+//! both releases the node and stops calling `sink`, in one store — needed for the disconnect
+//! dialog, which hands the pointer back to the Magic Remote and needs a HID mouse to go quiet for
+//! the same window.
 
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
@@ -66,10 +76,22 @@ struct InputEventRaw {
     value: i32,
 }
 
-/// `_IOC(_IOC_READ, 'E', nr, len)` — the evdev query ioctls aren't in the `libc` crate.
+/// `_IOC(dir, 'E', nr, len)` — the evdev ioctls aren't in the `libc` crate.
+const fn eioc(dir: u32, nr: u32, len: u32) -> libc::c_ulong {
+    ((dir << 30) | (len << 16) | (b'E' as u32) << 8 | nr) as libc::c_ulong
+}
+
+/// `_IOC(_IOC_READ, 'E', nr, len)`.
 const fn eviocg(nr: u32, len: u32) -> libc::c_ulong {
     const IOC_READ: u32 = 2;
-    ((IOC_READ << 30) | (len << 16) | (b'E' as u32) << 8 | nr) as libc::c_ulong
+    eioc(IOC_READ, nr, len)
+}
+
+/// `EVIOCGRAB` = `_IOW('E', 0x90, int)`. The kernel reads the argument by value (`1` grabs, `0`
+/// releases), not as a pointer, despite the `_IOW` direction.
+const fn eviocgrab() -> libc::c_ulong {
+    const IOC_WRITE: u32 = 1;
+    eioc(IOC_WRITE, 0x90, 4)
 }
 
 /// How long after a report this device still owns SDL's pointer events — bridges pauses within
@@ -79,10 +101,20 @@ const IN_USE_WINDOW: Duration = Duration::from_millis(250);
 /// A HID mouse reader: one thread polling every mouse-shaped evdev node, handing each wire
 /// event straight to `sink`. Dropping it stops and joins the thread.
 pub struct HidMouse {
-    stop: Arc<AtomicBool>,
+    shared: Arc<Shared>,
     thread: Option<std::thread::JoinHandle<()>>,
-    activity: Arc<Activity>,
-    has_device: Arc<AtomicBool>,
+}
+
+/// Everything the reader thread and its caller touch across the thread boundary, one `Arc` for
+/// the lot instead of a clone-and-thread-per-field.
+struct Shared {
+    stop: AtomicBool,
+    has_device: AtomicBool,
+    /// Desired grab/forward state — see [`HidMouse::set_active`]. Read by [`reader_loop`] (to
+    /// drive `EVIOCGRAB`) and by the reader thread's gated `sink` wrapper; the per-device
+    /// *applied* grab state lives on [`Device`], not here.
+    grab: AtomicBool,
+    activity: Activity,
 }
 
 /// Last-report timestamp, shared with the main thread to tell the mouse and remote apart — SDL
@@ -96,6 +128,14 @@ struct Activity {
 }
 
 impl Activity {
+    fn new() -> Self {
+        Self {
+            base: Instant::now(),
+            motion_ms: std::sync::atomic::AtomicU64::new(0),
+            discrete_ms: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
     fn touch(&self, slot: &std::sync::atomic::AtomicU64) {
         slot.store(self.base.elapsed().as_millis() as u64, Ordering::Relaxed);
     }
@@ -113,29 +153,44 @@ impl HidMouse {
     /// by [`reader_loop`]'s own rescan; scanning here on the caller's thread would instead block
     /// every stream (re)connect for the ~40ms/node cost the module's docs describe.
     ///
-    /// `sink` runs **on the reader thread**, once per input frame, and must not block: queueing
-    /// for the main loop would re-quantize motion to tick rate, the resampling this escapes.
-    pub fn start(sink: impl Fn(&InputEvent) + Send + 'static) -> Option<Self> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = Arc::clone(&stop);
-        let activity = Arc::new(Activity {
-            base: Instant::now(),
-            motion_ms: std::sync::atomic::AtomicU64::new(0),
-            discrete_ms: std::sync::atomic::AtomicU64::new(0),
+    /// `sink` runs **on the reader thread**, once per input frame, only while active (see the
+    /// module docs), and must not block: queueing for the main loop would re-quantize motion to
+    /// tick rate, the resampling this escapes.
+    ///
+    /// `active` is the initial [`set_active`](Self::set_active) state — passed here instead of
+    /// left to a follow-up call so a caller that always wants "started active" can't forget it.
+    pub fn start(active: bool, sink: impl Fn(&InputEvent) + Send + 'static) -> Option<Self> {
+        let shared = Arc::new(Shared {
+            stop: AtomicBool::new(false),
+            has_device: AtomicBool::new(false),
+            grab: AtomicBool::new(active),
+            activity: Activity::new(),
         });
-        let thread_activity = Arc::clone(&activity);
-        let has_device = Arc::new(AtomicBool::new(false));
-        let thread_has_device = Arc::clone(&has_device);
+        let thread_shared = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
             .name("pf-evmouse".into())
-            .spawn(move || reader_loop(&sink, &thread_stop, &thread_activity, &thread_has_device))
+            .spawn(move || {
+                let gate = Arc::clone(&thread_shared);
+                let gated_sink = move |ev: &InputEvent| {
+                    if gate.grab.load(Ordering::Relaxed) {
+                        sink(ev);
+                    }
+                };
+                reader_loop(&gated_sink, &thread_shared)
+            })
             .ok()?;
         Some(Self {
-            stop,
+            shared,
             thread: Some(thread),
-            activity,
-            has_device,
         })
+    }
+
+    /// Grab (or release) every open mouse node exclusively, and — same flag — start or stop
+    /// calling `sink` with what they report (see the module docs). Applied on the reader thread's
+    /// own cadence (bounded by [`POLL_TIMEOUT_MS`]), including to any node that shows up after
+    /// this call, so callers don't need to re-invoke it on hot-plug.
+    pub fn set_active(&self, active: bool) {
+        self.shared.grab.store(active, Ordering::Relaxed);
     }
 
     /// Whether the reader currently owns at least one open mouse node — `false` right after
@@ -143,26 +198,28 @@ impl HidMouse {
     /// Callers use this instead of `is_some()`/`is_none()` to tell "no HID mouse yet" apart from
     /// "not asked for one", since the reader thread always exists once `start` returns `Some`.
     pub fn has_device(&self) -> bool {
-        self.has_device.load(Ordering::Relaxed)
+        self.shared.has_device.load(Ordering::Relaxed)
     }
 
     /// True while the mouse moved within [`IN_USE_WINDOW`] — caller should drop SDL's echo of it.
     pub fn owns_sdl_motion(&self) -> bool {
-        self.activity.recent(&self.activity.motion_ms)
+        self.shared.activity.recent(&self.shared.activity.motion_ms)
     }
 
     /// Same question for SDL's buttons/wheel; also true during motion, so a click mid-drag is
     /// covered even if its echo arrives before this reader's own read of it.
     pub fn owns_sdl_clicks(&self) -> bool {
-        self.activity.recent(&self.activity.discrete_ms) || self.owns_sdl_motion()
+        self.shared.activity.recent(&self.shared.activity.discrete_ms) || self.owns_sdl_motion()
     }
 }
 
 impl Drop for HidMouse {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.shared.stop.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             // Bounded by `POLL_TIMEOUT_MS` — unlike luna-backed workers, this join can't wedge.
+            // Each open `Device` closes on this same join, which is also what releases any
+            // `EVIOCGRAB` still held — the kernel drops it on `close()`, no explicit ungrab needed.
             let _ = thread.join();
         }
     }
@@ -177,6 +234,13 @@ struct Device {
     dx: i32,
     dy: i32,
     scroll: mouse::ScrollAccumulator,
+    /// Mirrors `commons-evmouse`'s `dev_fd_t.grab`: tracks what's actually applied to `fd`, not
+    /// just requested, so a failed `EVIOCGRAB` (device gone, already grabbed elsewhere) is
+    /// retried on the next call instead of silently believed.
+    grabbed: bool,
+    /// Which `want` value the last failed ioctl was for, so a device stuck failing every retry
+    /// (device gone, held elsewhere) warns once per state change instead of once per poll cycle.
+    grab_warned_for: Option<bool>,
 }
 
 impl Drop for Device {
@@ -248,6 +312,8 @@ fn open_mouse(path: &Path) -> Probe {
         dx: 0,
         dy: 0,
         scroll: mouse::ScrollAccumulator::default(),
+        grabbed: false,
+        grab_warned_for: None,
     };
     let rel = event_bits(fd, EV_REL);
     let abs = event_bits(fd, EV_ABS);
@@ -283,6 +349,31 @@ fn bit(bits: &[u8; 128], code: u16) -> bool {
     idx < bits.len() && bits[idx] & (1 << (code % 8)) != 0
 }
 
+/// Applies `want` to every device whose `grabbed` disagrees — same idempotent check as
+/// `commons-evmouse`'s `evmouse_set_grab`, so a steady state costs no ioctls at all.
+fn apply_grab(devices: &mut [Device], want: bool) {
+    for dev in devices {
+        if dev.grabbed == want {
+            continue;
+        }
+        // SAFETY: plain integer ioctl (see `eviocgrab`'s doc); the kernel reads the argument by
+        // value. Failure just means the double cursor persists, not a wedged device.
+        let rc = unsafe { libc::ioctl(dev.fd, eviocgrab(), libc::c_int::from(want)) };
+        if rc < 0 {
+            if dev.grab_warned_for != Some(want) {
+                tracing::warn!(
+                    "EVIOCGRAB({want}) failed on {}: {}",
+                    dev.path.display(),
+                    std::io::Error::last_os_error()
+                );
+                dev.grab_warned_for = Some(want);
+            }
+            continue;
+        }
+        dev.grabbed = want;
+    }
+}
+
 /// `EVIOCGNAME` — for the log line, so a bug report from an unknown dongle names it.
 fn device_name(fd: RawFd) -> Option<String> {
     let mut buf = [0u8; 256];
@@ -295,7 +386,7 @@ fn device_name(fd: RawFd) -> Option<String> {
     Some(String::from_utf8_lossy(&buf[..len]).into_owned())
 }
 
-fn reader_loop(sink: &impl Fn(&InputEvent), stop: &AtomicBool, activity: &Activity, has_device: &AtomicBool) {
+fn reader_loop(sink: &impl Fn(&InputEvent), shared: &Shared) {
     // Scan at the default niceness: `open`/`ioctl` cost here is the driver's, not scheduling
     // delay, so boosting priority wouldn't speed it up — it would just pull CPU from the video
     // pump during exactly the busiest window (stream connect) for no benefit.
@@ -304,7 +395,7 @@ fn reader_loop(sink: &impl Fn(&InputEvent), stop: &AtomicBool, activity: &Activi
     if devices.is_empty() {
         tracing::info!("no HID mouse on /dev/input yet — using SDL pointer until one appears");
     } else {
-        has_device.store(true, Ordering::Relaxed);
+        shared.has_device.store(true, Ordering::Relaxed);
     }
     // Nice -10, like the video pump, from here on: at nice 0 this thread lost the CPU to
     // boosted decode threads for up to 28ms at a stretch while a 1kHz mouse kept reporting —
@@ -316,14 +407,17 @@ fn reader_loop(sink: &impl Fn(&InputEvent), stop: &AtomicBool, activity: &Activi
     // Rebuilt only on device-set change — a moving 1kHz mouse makes `poll` return continuously,
     // so rebuilding every iteration was a malloc/free per read burst.
     let mut fds = pollfds(&devices);
-    while !stop.load(Ordering::Relaxed) {
+    while !shared.stop.load(Ordering::Relaxed) {
+        // No-op unless the state flipped; also covers the first iteration, so no separate
+        // pre-loop call is needed.
+        apply_grab(&mut devices, shared.grab.load(Ordering::Relaxed));
         let iter_start = Instant::now();
         // SAFETY: `fds` is a valid slice of `nfds` pollfds for the duration of the call.
         let rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, POLL_TIMEOUT_MS) };
         if rc > 0 {
             for (i, pfd) in fds.iter().enumerate() {
                 if pfd.revents & libc::POLLIN != 0 {
-                    read_device(&mut devices[i], sink, activity);
+                    read_device(&mut devices[i], sink, &shared.activity);
                 }
             }
             // An unplugged node polls ready forever with POLLERR/HUP; checked cheaply since
@@ -338,7 +432,7 @@ fn reader_loop(sink: &impl Fn(&InputEvent), stop: &AtomicBool, activity: &Activi
                     seen.retain(|p| *p != gone.path);
                 }
                 fds = pollfds(&devices);
-                has_device.store(!devices.is_empty(), Ordering::Relaxed);
+                shared.has_device.store(!devices.is_empty(), Ordering::Relaxed);
             }
             // Each pass above already drained and flushed everything pending, so a mouse
             // reporting faster than `MOTION_INTERVAL` just means going straight back into
@@ -359,7 +453,7 @@ fn reader_loop(sink: &impl Fn(&InputEvent), stop: &AtomicBool, activity: &Activi
                 if !found.is_empty() {
                     devices.extend(found);
                     fds = pollfds(&devices);
-                    has_device.store(true, Ordering::Relaxed);
+                    shared.has_device.store(true, Ordering::Relaxed);
                 }
             }
         }
