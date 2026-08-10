@@ -39,12 +39,12 @@ video decode, and webOS packaging.
 - About & licenses screen with the build version and full third-party notices.
 - Hardware H.264/H.265 decode via webOS's NDL DirectMedia API; audio via SDL2/PulseAudio.
 - Gamepad feedback back to the controller — rumble for any pad, plus DualSense adaptive triggers,
-  haptics and lightbar. **Requires webOS 6.0+** (see note below).
+  haptics and lightbar. **Requires a newer webOS version** (see note below).
 - Magic Remote friendly: d-pad navigation, pointer hover/click, number-pad PIN/IP entry, and the
   Red button as a Back/disconnect substitute.
 
-> **Controller feedback needs webOS 6.0+.** Rumble, DualSense triggers, haptics and lightbar all
-> rely on the kernel's `hid-playstation` driver, which LG ships only on webOS 6.0+ (C1 and later).
+> **Controller feedback needs newer webOS version.** Rumble, DualSense triggers, haptics and lightbar all
+> rely on the kernel's `hid-playstation` driver, which LG ships only on latest webOS versions 24+.
 > On webOS 5.x (e.g. the CX) the pad still works as an *input*, but no feedback reaches it.
 
 <details>

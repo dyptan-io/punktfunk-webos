@@ -266,6 +266,11 @@ pub struct App {
     pub settings: Settings,
     /// Persists settings off UI thread to avoid blocking.
     pub(crate) settings_writer: store::SettingsWriter,
+    /// The attached pad's type per `gamepad::detect_type`, refreshed on hotplug in
+    /// `runtime::ui_flow`. `None` with no pad attached or an unrecognized one. Only meaningful
+    /// when `settings.gamepad_type` is `Auto` — an explicit pick doesn't need this to know what
+    /// it's driving, but the Controller row's `DualSense` caption does (see `settings_rows`).
+    pub(crate) detected_gamepad_type: Option<store::GamepadType>,
     pub settings_focused: usize,
     /// Scroll state for overflowing modal content.
     pub(crate) scroll: ui::ScrollWindow,
@@ -517,6 +522,7 @@ impl App {
             launch_anim_idx: None,
             settings,
             settings_writer: store::SettingsWriter::spawn(),
+            detected_gamepad_type: None,
             settings_focused: 0,
             scroll: ui::ScrollWindow::new(),
             settings_scroll: ui::ScrollWindow::new(),
@@ -1244,7 +1250,7 @@ impl App {
         let overlay = Self::dropdown_overlay_rect_at_px(content, dd.row, scroll_px);
         let options_len = match self.screen {
             Screen::Diagnostics => ui::LOG_LEVEL_OPTIONS.len(),
-            _ => ui::dropdown_options(&self.settings, ui::settings_logical_row(&self.settings, dd.row)).len(),
+            _ => ui::dropdown_options(&self.settings, ui::settings_logical_row(&self.settings, dd.row), self.detected_gamepad_type).len(),
         };
         (0..options_len).find(|&i| ui::dropdown_option_rect(overlay, i).contains_point((x, y)))
     }
@@ -2038,7 +2044,11 @@ impl App {
         // (Home, AddHost) or when Wake has nothing to focus (no MAC on record,
         // see `handle_wake_event`'s matching guard).
         let focus_key = match self.screen {
-            Screen::Settings => Some(ModalFocusKey::SettingsRow(self.settings_focused, self.settings)),
+            Screen::Settings => Some(ModalFocusKey::SettingsRow(
+                self.settings_focused,
+                self.settings,
+                self.detected_gamepad_type,
+            )),
             Screen::Wake => self
                 .wake
                 .as_ref()
@@ -2105,7 +2115,7 @@ impl App {
                 let tile = match self.screen {
                     Screen::Settings => {
                         let (_, content) = self.settings_layout(screen_w, screen_h);
-                        let rows = ui::settings_rows(&self.settings);
+                        let rows = self.settings_rows();
                         let dropdown_open = self.dropdown.as_ref().is_some_and(|dd| dd.row == self.settings_focused);
                         let target_on = rows.get(self.settings_focused).is_some_and(|r| r.value == "On");
                         ui::render_focus_row_tile(
@@ -2339,7 +2349,7 @@ impl App {
                 _ => {
                     let (_, content) = self.settings_layout(screen_w, screen_h);
                     let logical = ui::settings_logical_row(&self.settings, dd.row);
-                    (ui::dropdown_options(&self.settings, logical), content.width())
+                    (ui::dropdown_options(&self.settings, logical, self.detected_gamepad_type), content.width())
                 }
             };
 
@@ -2428,11 +2438,11 @@ impl App {
                     let dropdown_row = self.dropdown.as_ref().map(|dd| dd.row);
                     let key = (
                         Screen::Settings,
-                        ScrollContentKey::Settings(self.settings, dropdown_row),
+                        ScrollContentKey::Settings(self.settings, dropdown_row, self.detected_gamepad_type),
                     );
                     let stale = !matches!(&tiles.scroll_content_tile, Some((k, _)) if *k == key);
                     if stale {
-                        let rows = ui::settings_rows(&self.settings);
+                        let rows = self.settings_rows();
                         let tile = ui::render_focus_rows_tile(text_cache, fonts, &rows, content.width(), dropdown_row)?;
                         tiles.scroll_content_tile = Some((key, tile));
                         // Settings' whole row list always fits one tile — no windowing.
@@ -2487,7 +2497,7 @@ impl App {
         let mut scratch = Painter::new(screen_w, screen_h);
         self.render_settings(&mut scratch, text_cache, fonts, screen_w, screen_h)?;
         let (_, content) = self.settings_layout(screen_w, screen_h);
-        let rows = ui::settings_rows(&self.settings);
+        let rows = self.settings_rows();
         let _ = ui::render_focus_rows_tile(text_cache, fonts, &rows, content.width(), None)?;
         let _ = ui::render_focus_row_tile(text_cache, fonts, &rows, content.width(), 0, false, 0.0)?;
         Ok(())
@@ -2835,7 +2845,7 @@ impl App {
                     let overlay_rect = Self::dropdown_overlay_rect_at_px(content, row, scroll_px);
                     let options_len = match screen {
                         Screen::Diagnostics => ui::LOG_LEVEL_OPTIONS.len(),
-                        _ => ui::dropdown_options(&self.settings, ui::settings_logical_row(&self.settings, row)).len(),
+                        _ => ui::dropdown_options(&self.settings, ui::settings_logical_row(&self.settings, row), self.detected_gamepad_type).len(),
                     };
                     cmds.push(DrawCmd::Tex {
                         tile: Tile::DropdownOverlay,

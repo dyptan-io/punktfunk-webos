@@ -3,10 +3,23 @@
 use crate::app::App;
 use crate::app::DROPDOWN_FADE;
 use crate::ui::render::Rect;
-use crate::ui::{self, Painter};
+use crate::ui::{self, FocusRow, Painter};
 use anyhow::Result;
 
 impl App {
+    /// The Controller row's `DualSense` caption needs the *effective* type — the explicit pick,
+    /// or (on `Auto`) whatever's actually plugged in — not the stored preference alone, since
+    /// `Auto` on its own says nothing about what pad the caption should warn about.
+    pub(crate) fn settings_rows(&self) -> Vec<FocusRow> {
+        let effective = if self.settings.gamepad_type == crate::services::store::GamepadType::Auto {
+            self.detected_gamepad_type.unwrap_or_default()
+        } else {
+            self.settings.gamepad_type
+        };
+        let dualsense_limited = effective.is_dualsense() && !crate::platform::webos::dualsense::hid_playstation_bound();
+        ui::settings_rows(&self.settings, dualsense_limited, self.detected_gamepad_type)
+    }
+
     /// How many settings rows are *fully* visible. Capped at the live row count so a hidden
     /// row (HDR on an explicit H.264 pick) leaves no empty slot.
     ///

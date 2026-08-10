@@ -180,7 +180,17 @@ pub fn resolution_label(width: u32, height: u32) -> String {
         .map_or_else(|| format!("{width}x{height}"), |(_, _, s)| s.to_string())
 }
 
-pub fn settings_rows(settings: &Settings) -> Vec<FocusRow> {
+/// `dualsense_limited`: the effective controller type (explicit pick, or auto-detected pad) is
+/// a `DualSense`/`Edge` and the TV's kernel isn't running `hid-playstation` — see
+/// `platform::webos::dualsense::hid_playstation_bound`. Computed by the caller, not here: this
+/// module stays platform-neutral (see `experimental_rows`'s `rooted` parameter for the same
+/// pattern).
+///
+/// `detected`: the attached pad's type per `gamepad::detect_type`, `None` with nothing
+/// attached or an unrecognized pad. Only changes what "Automatic" reads as (see
+/// `gamepad_auto_label`) — it doesn't affect `dualsense_limited`, which the caller already
+/// folded this into.
+pub fn settings_rows(settings: &Settings, dualsense_limited: bool, detected: Option<GamepadType>) -> Vec<FocusRow> {
     let bitrate_frac = if settings.bitrate_kbps == BITRATE_AUTOMATIC {
         0.0
     } else {
@@ -260,12 +270,16 @@ pub fn settings_rows(settings: &Settings) -> Vec<FocusRow> {
         FocusRow {
             icon: ICON_GAMEPAD,
             label: "Controller".into(),
-            value: gamepad_label(settings.gamepad_type).into(),
+            value: if settings.gamepad_type == GamepadType::Auto {
+                gamepad_auto_label(detected)
+            } else {
+                gamepad_label(settings.gamepad_type).into()
+            },
             kind: RowKind::Dropdown,
             fraction: 0.0,
             danger: false,
             menu: None,
-            subtext: None,
+            subtext: dualsense_limited.then(|| RowSubtext::caution("Limited support by your WebOS version")),
         },
         FocusRow::action(ICON_MOUSE, "Cursor"),
         FocusRow::action(ICON_BUG, "Experimental"),
@@ -484,6 +498,13 @@ pub fn gamepad_label(t: GamepadType) -> &'static str {
     }
 }
 
+/// "Automatic", or "Automatic (`DualSense`)" once a recognized pad is attached — what `Auto`
+/// will actually resolve to for this session (see `gamepad::detect_type`), rather than leaving
+/// the user to guess.
+pub fn gamepad_auto_label(detected: Option<GamepadType>) -> String {
+    detected.map_or_else(|| "Automatic".to_string(), |t| format!("Automatic ({})", gamepad_label(t)))
+}
+
 /// Supported channel counts.
 pub const AUDIO_CHANNELS: [(u8, &str); 3] = [(2, "Stereo"), (6, "5.1 surround"), (8, "7.1 surround")];
 
@@ -495,14 +516,23 @@ fn audio_label(channels: u8) -> String {
 }
 
 /// Dropdown labels for a row.
-pub fn dropdown_options(settings: &Settings, row_index: usize) -> Vec<String> {
+pub fn dropdown_options(settings: &Settings, row_index: usize, detected: Option<GamepadType>) -> Vec<String> {
     let _ = settings;
     match row_index {
         ROW_RESOLUTION => RESOLUTIONS.iter().map(|(w, h, _)| resolution_label(*w, *h)).collect(),
         ROW_FRAMERATE => REFRESH_RATES.iter().map(|hz| format!("{hz} Hz")).collect(),
         ROW_CODEC => codec_options().iter().map(|&p| codec_label(p).to_string()).collect(),
         ROW_AUDIO => AUDIO_CHANNELS.iter().map(|(_, s)| (*s).to_string()).collect(),
-        ROW_GAMEPAD => GAMEPAD_TYPES.iter().map(|&t| gamepad_label(t).to_string()).collect(),
+        ROW_GAMEPAD => GAMEPAD_TYPES
+            .iter()
+            .map(|&t| {
+                if t == GamepadType::Auto {
+                    gamepad_auto_label(detected)
+                } else {
+                    gamepad_label(t).to_string()
+                }
+            })
+            .collect(),
         _ => Vec::new(),
     }
 }

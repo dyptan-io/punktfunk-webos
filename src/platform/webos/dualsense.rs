@@ -127,6 +127,37 @@ pub fn find_address() -> Option<String> {
     })
 }
 
+/// Whether an attached `DualSense`/`Edge` is bound to the kernel's `hid-playstation` driver
+/// (registered as `playstation`) rather than falling back to `hid-generic`.
+///
+/// The Bluetooth output report this module builds is a `hid-playstation` behavior, not a
+/// property of the `luna` call: on a TV whose kernel never got that driver backported, the pad
+/// still pairs and shows `connectedProfiles: ["hid"]`, and `hid/internal/sendData` still answers
+/// `returnValue: true` for every report — but nothing reaches the pad, silently. Verified on a
+/// webOS 5/6-class set (kernel 4.4.84): `/sys/bus/hid/devices/0005:054C:0CE6.0002/driver` links to
+/// `hid-generic`, and neither the lightbar nor the player LEDs moved for a report identical to
+/// the one confirmed working on webOS 10.3. This is the caption Settings shows for that case.
+pub fn hid_playstation_bound() -> bool {
+    let devices = std::fs::read_to_string("/proc/bus/input/devices").unwrap_or_default();
+    devices.split("\n\n").any(|block| {
+        let is_dualsense = block
+            .lines()
+            .any(|l| l.starts_with("N: Name=") && l.to_ascii_lowercase().contains("dualsense"));
+        if !is_dualsense {
+            return false;
+        }
+        // The evdev node's `Sysfs=` line points at `<hid-device>/input/inputN`; the driver
+        // binding lives on the HID device itself, one level up.
+        let Some(sysfs) = block.lines().find_map(|l| l.strip_prefix("S: Sysfs=")) else {
+            return false;
+        };
+        let Some(device_dir) = sysfs.split("/input/input").next() else {
+            return false;
+        };
+        std::fs::read_link(format!("/sys{device_dir}/driver")).is_ok_and(|d| d.file_name().is_some_and(|f| f == "playstation"))
+    })
+}
+
 /// Owns the pad's feedback state and the thread that ships it.
 ///
 /// The thread exists because a send is a fork/exec of `luna-send-pub` (see [`crate::platform::webos::luna`]),

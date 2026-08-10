@@ -238,6 +238,7 @@ pub(super) fn run_ui_flow(
                         Ok(c) => {
                             tracing::info!("controller connected: {}", c.name());
                             *controller = Some(c);
+                            app.detected_gamepad_type = gamepad::detect_type(game_controller);
                         }
                         Err(e) => tracing::warn!("controller open failed: {e}"),
                     }
@@ -245,6 +246,7 @@ pub(super) fn run_ui_flow(
                 }
                 Event::ControllerDeviceRemoved { .. } => {
                     *controller = None;
+                    app.detected_gamepad_type = None;
                     // An unplugged pad sends no releases — drop any armed chord.
                     chord.clear();
                     continue;

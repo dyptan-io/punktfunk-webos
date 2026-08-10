@@ -2,7 +2,7 @@
 //!
 //! Split out of the former single-file `ui.rs`; see `super`'s module docs.
 use super::*;
-use crate::core::model::{LogLevelOverride, Settings};
+use crate::core::model::{GamepadType, LogLevelOverride, Settings};
 use crate::core::screen::Screen;
 use crate::ui::render::Color;
 use crate::ui::render::Rect;
@@ -420,7 +420,9 @@ pub fn render_confirm_dialog_shell(
 /// so value changes (not just focus moves) invalidate the tile.
 #[derive(PartialEq)]
 pub enum ModalFocusKey {
-    SettingsRow(usize, Settings),
+    /// The detected pad type rides along because the Controller row's "Automatic (...)" value
+    /// depends on it, not just on `Settings` — a hotplug alone doesn't touch `Settings` at all.
+    SettingsRow(usize, Settings, Option<GamepadType>),
     WakeToggle(bool),
     WakeButton(usize),
     PairingDigit(usize, u8),
@@ -443,8 +445,8 @@ pub enum ModalFocusKey {
 /// Scrollable modal content keys. Paired with Screen for staleness checks.
 #[derive(Clone, PartialEq)]
 pub enum ScrollContentKey {
-    /// Settings row list + open dropdown row.
-    Settings(Settings, Option<usize>),
+    /// Settings row list + open dropdown row + detected pad type (see `ModalFocusKey::SettingsRow`).
+    Settings(Settings, Option<usize>, Option<GamepadType>),
     /// About window's start line.
     About(usize),
 }
