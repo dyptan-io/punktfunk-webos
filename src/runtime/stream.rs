@@ -303,6 +303,10 @@ pub(super) fn run_inner() -> Result<()> {
             {
                 hid_device_seen = true;
                 cursor.disable_sdl_relative();
+                // Only now is the node grabbed, so only now can a compositor hide stick — the one
+                // at connect raced the reader thread's scan. Usually a no-op, since the call
+                // above re-issued it already; kept so the retract doesn't hinge on that.
+                cursor.reassert_hidden();
             }
             for event in events.poll_iter() {
                 use sdl2::event::Event;

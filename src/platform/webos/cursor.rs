@@ -1,6 +1,13 @@
 //! Two layers can draw the local pointer: SDL's own cursor (`show_cursor`, works) and the
 //! compositor's (`SDL_webOSCursorVisibility`, global state, re-shown on activity — see
-//! [`restore_on_exit`]). **The compositor layer is currently off**, see [`COMPOSITOR_CURSOR_CONTROL`].
+//! [`restore_on_exit`]).
+//!
+//! The compositor layer is normally kept quiet by `evmouse`'s `EVIOCGRAB` — starved of reports,
+//! it stops drawing. But starving only stops *future* draws: an arrow already on screen when the
+//! stream starts stays painted until something retracts it, which is why the hide is also
+//! requested outright on each [`Cursor::apply`] and again once the grab is actually in place
+//! ([`Cursor::reassert_hidden`]). The 4 Hz re-assert *loop* stays off, see
+//! [`COMPOSITOR_REASSERT`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -15,9 +22,11 @@ extern "C" {
     fn SDL_webOSCursorVisibility(visible: SDL_bool) -> SDL_bool;
 }
 
-/// Off: verified on webOS 26 the compositor keeps drawing its arrow regardless. Kept, not
-/// deleted, in case a firmware/SDL-fork fix makes flipping this worth it.
-const COMPOSITOR_CURSOR_CONTROL: bool = false;
+/// Polling re-assert is off: verified on webOS 26 the compositor re-shows its arrow regardless,
+/// so the loop only spent Wayland requests. Kept, not deleted, in case a firmware/SDL-fork fix
+/// makes flipping this worth it. The one-shot retracts are unconditional — a different question
+/// from whether the hide *sticks* against later pointer activity.
+const COMPOSITOR_REASSERT: bool = false;
 
 /// Compositor gives no "took the pointer back" event, so re-hiding just polls on activity,
 /// capped here at 4 Wayland requests/sec.
@@ -70,17 +79,29 @@ impl Cursor {
         let _ = OWNER_THREAD.set(std::thread::current().id());
         self.mouse.show_cursor(!self.captured);
         self.mouse.set_relative_mouse_mode(self.captured && self.sdl_relative);
-        if COMPOSITOR_CURSOR_CONTROL {
-            set_compositor_visible(!self.captured);
-            // Stays false while the flag is off, making the two fns below no-ops for free.
-            COMPOSITOR_HIDDEN.store(self.captured, Ordering::Relaxed);
-        }
+        set_compositor_visible(!self.captured);
+        COMPOSITOR_HIDDEN.store(self.captured, Ordering::Relaxed);
         self.last_assert = Instant::now();
     }
 
-    /// Re-asserts the hide when due; no-op unless hidden and [`COMPOSITOR_CURSOR_CONTROL`] is on.
+    /// Asks the compositor once more to drop its pointer. For the point where the evdev grab has
+    /// actually landed — [`apply`](Self::apply) runs before `evmouse`'s background scan finds a
+    /// node, so any motion in that window can repaint the arrow it just retracted. No-op while
+    /// uncaptured.
+    pub fn reassert_hidden(&mut self) {
+        // The interval doubles as a debounce: callers pair this with a state change that already
+        // ran `apply` (`disable_sdl_relative`), and repeating its request in the same tick would
+        // be a pure duplicate.
+        if !self.captured || self.last_assert.elapsed() < REASSERT_INTERVAL {
+            return;
+        }
+        set_compositor_visible(false);
+        self.last_assert = Instant::now();
+    }
+
+    /// Re-asserts the hide when due; no-op unless hidden and [`COMPOSITOR_REASSERT`] is on.
     pub fn on_pointer_activity(&mut self) {
-        if !COMPOSITOR_CURSOR_CONTROL {
+        if !COMPOSITOR_REASSERT {
             return;
         }
         if !COMPOSITOR_HIDDEN.load(Ordering::Relaxed) {
