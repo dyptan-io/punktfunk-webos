@@ -121,15 +121,14 @@ pub const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// `timeout`. Returns `false` (and leaks the watcher, still waiting on the real join) if it
 /// didn't finish in time.
 ///
-/// `ndl_related` marks a thread that may still be calling into NDL (video/audio pumps, not the
-/// QUIC client-drop) — on timeout it poisons NDL (`ndl::poison`) and spawns a second, detached
-/// watcher that waits unboundedly for the real join, calling `ndl::thread_recovered()` to clear
-/// the poison once it lands. No faster recovery exists — see `ndl::LEAKED_THREADS`.
+/// `on_wedged` is handed the channel the (still-running) watcher reports the real join on, so a
+/// caller whose thread holds something the rest of the app must wait for can keep watching it —
+/// see [`ndl_leak_watch`]. Not called at all when the join lands in time.
 fn join_with_timeout<T: Send + 'static>(
     handle: std::thread::JoinHandle<T>,
     timeout: Duration,
     name: &str,
-    ndl_related: bool,
+    on_wedged: impl FnOnce(std::sync::mpsc::Receiver<()>),
 ) -> bool {
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new()
@@ -151,16 +150,32 @@ fn join_with_timeout<T: Send + 'static>(
             "{name} thread did not finish within {timeout:?} — leaking it \
              (likely a wedged NDL/FFI or QUIC-close call)"
         );
-        if ndl_related {
-            crate::platform::webos::ndl::poison();
-            // `watcher` keeps running `handle.join()` on its own; this just waits on its
-            // `tx` to notice when that finally lands, instead of leaving the leak permanent.
-            std::thread::spawn(move || {
-                let _ = rx.recv();
-                crate::platform::webos::ndl::thread_recovered();
-            });
-        }
+        on_wedged(rx);
         false
+    }
+}
+
+/// Refuses NDL until a wedged pump thread actually returns. `joined` is the leaked watcher's
+/// channel — it keeps running `handle.join()` regardless, so this only has to notice when that
+/// finally lands, instead of leaving the refusal permanent. No faster recovery exists: see
+/// `ndl::LEAKED_THREADS`.
+///
+/// Only for threads that may still be inside an `NDL_Direct*` call (the video/audio pumps). The
+/// QUIC client-drop wedges the same way but touches no NDL, so it passes `|_| {}`.
+fn ndl_leak_watch(joined: std::sync::mpsc::Receiver<()>) {
+    let guard = crate::platform::webos::ndl::poison();
+    let watching = std::thread::Builder::new()
+        .name("punktfunk-webos-ndl-leak".into())
+        .spawn(move || {
+            let _ = joined.recv();
+            drop(guard);
+        });
+    if watching.is_err() {
+        // The failed spawn dropped the guard with its closure, un-refusing NDL while the thread is
+        // still wedged. Nothing is left to observe the recovery, so refuse for the rest of the
+        // process — a restart is the only way back, which beats racing a live FFI call.
+        std::mem::forget(crate::platform::webos::ndl::poison());
+        tracing::error!("could not watch the wedged NDL thread — streaming refused until restart");
     }
 }
 
@@ -168,25 +183,24 @@ impl Connected {
     /// Stop and join threads, then drop `NativeClient`. Call `disconnect_quit()` first for
     /// graceful shutdown. Returns `false` if any step didn't finish within
     /// [`SHUTDOWN_JOIN_TIMEOUT`] — the caller must then skip `ndl::quit()`, since the thread
-    /// still running may still be inside an NDL FFI call that a concurrent unload would race.
-    /// A wedged video/audio join also poisons NDL until it actually finishes (see
-    /// `join_with_timeout`) — otherwise a later `NdlVideo::load()` would race whatever that
-    /// leaked thread is still doing.
+    /// still running may still be inside an NDL FFI call that a concurrent unload would race. A
+    /// wedged video/audio join additionally refuses new loads until it finishes — see
+    /// [`ndl_leak_watch`].
     pub fn shutdown(self) -> bool {
         self.stop.store(true, Ordering::Relaxed);
-        let mut clean = join_with_timeout(self.video_thread, SHUTDOWN_JOIN_TIMEOUT, "video", true);
+        let mut clean = join_with_timeout(self.video_thread, SHUTDOWN_JOIN_TIMEOUT, "video", ndl_leak_watch);
         if let Some(audio) = self.audio_thread {
-            clean &= join_with_timeout(audio, SHUTDOWN_JOIN_TIMEOUT, "audio", true);
+            clean &= join_with_timeout(audio, SHUTDOWN_JOIN_TIMEOUT, "audio", ndl_leak_watch);
         }
         // `NativeClient::drop` joins its own QUIC-close worker thread internally — bound
         // that the same way, on its own thread, rather than blocking here directly. Doesn't
-        // touch NDL, so a wedge here doesn't poison it, only skips `ndl::quit()` this run.
+        // touch NDL, so a wedge here doesn't refuse it, only skips `ndl::quit()` this run.
         let client = self.client;
         clean &= join_with_timeout(
             std::thread::spawn(move || drop(client)),
             SHUTDOWN_JOIN_TIMEOUT,
             "client-drop",
-            false,
+            |_| {},
         );
         clean
     }
@@ -1008,9 +1022,9 @@ pub fn spawn_audio_feed(
 
 /// Joins the audio feed thread, bounded by the same timeout every other teardown join uses — a
 /// thread wedged in an Opus decode must not hold the whole app on the way back to the menu.
-/// Software Opus → SDL2, not NDL, so a wedge here doesn't poison NDL.
+/// Software Opus → SDL2, not NDL, so a wedge here needs no [`ndl_leak_watch`].
 pub fn join_audio_feed(handle: std::thread::JoinHandle<()>) -> bool {
-    join_with_timeout(handle, SHUTDOWN_JOIN_TIMEOUT, "audio-feed", false)
+    join_with_timeout(handle, SHUTDOWN_JOIN_TIMEOUT, "audio-feed", |_| {})
 }
 
 /// Pulls Opus packets off the transport, decodes them, and hands the PCM to the playback ring.

@@ -224,28 +224,38 @@ static INIT_DONE: AtomicBool = AtomicBool::new(false);
 ///
 /// No way to force this: an OS thread can't be safely cancelled mid-FFI-call, and racing
 /// `NDL_DirectMediaUnload` against it is the exact hazard this guards against. So `load()`
-/// refuses while nonzero, and [`thread_recovered`] clears it in-process (no restart) once the
+/// refuses while nonzero, and dropping the [`LeakGuard`] clears it in-process (no restart) once the
 /// leaked thread actually returns — its `NdlVideo::drop` has run the real unload by then.
 static LEAKED_THREADS: AtomicUsize = AtomicUsize::new(0);
 
-/// Marks one NDL-touching thread as leaked (see [`LEAKED_THREADS`]). Pair with exactly one
-/// later [`thread_recovered`] call once that same thread actually joins.
-pub fn poison() {
+/// One leaked NDL-touching thread, for as long as this value lives (see [`LEAKED_THREADS`]).
+///
+/// A guard rather than a `poison`/`recovered` pair of calls, because the counter has exactly two
+/// failure modes and both are silent: a missed decrement refuses streaming until the app restarts,
+/// and an extra one re-permits it while a thread is still inside NDL — the race this exists to
+/// prevent. Ownership makes the pairing structural, so neither can be written by accident.
+pub struct LeakGuard(());
+
+impl Drop for LeakGuard {
+    fn drop(&mut self) {
+        if LEAKED_THREADS.fetch_sub(1, Ordering::SeqCst) == 1 {
+            tracing::info!("NDL recovered: the wedged decode thread finished and unloaded cleanly — streaming re-enabled");
+        }
+    }
+}
+
+/// Marks one NDL-touching thread as leaked until the returned guard drops — which the caller must
+/// arrange to happen when that same thread actually finishes, however late. Leaking the guard
+/// (`mem::forget`) is the deliberate "nothing will ever tell us it recovered" case.
+#[must_use = "NDL stays poisoned until this guard drops — hold it until the wedged thread returns"]
+pub fn poison() -> LeakGuard {
     if LEAKED_THREADS.fetch_add(1, Ordering::SeqCst) == 0 {
         tracing::error!(
             "NDL poisoned: a decode thread is wedged past its join deadline — streaming \
              refused until it actually finishes (no safe way to force it sooner)"
         );
     }
-}
-
-/// Call once the thread that triggered a matching [`poison`] actually finishes, however late —
-/// its `Arc<NdlVideo>` has dropped by then, which already ran the real `NDL_DirectMediaUnload`,
-/// so a fresh `load()` is safe again as soon as every leaked thread has cleared.
-pub fn thread_recovered() {
-    if LEAKED_THREADS.fetch_sub(1, Ordering::SeqCst) == 1 {
-        tracing::info!("NDL recovered: the wedged decode thread finished and unloaded cleanly — streaming re-enabled");
-    }
+    LeakGuard(())
 }
 
 /// Whether any leaked thread might still be live — see [`LEAKED_THREADS`].
