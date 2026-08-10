@@ -6,6 +6,13 @@ use crate::core::event::MenuEvent;
 /// Only usable hardware Back; Home button SIGTERMs the app.
 pub const WEBOS_BACK_KEYCODE: i32 = 2_097_155;
 
+/// Magic Remote Red button keycode. Confirmed on-device: Red arrives as a plain `KeyDown`
+/// carrying only this keycode and *no* scancode — the `SDL_SCANCODE_WEBOS_RED = 486` the SDL
+/// fork documents never shows up in the keyboard-state array, so polling it (the way Green,
+/// Yellow and Blue are read) finds nothing. Same `0x200000 + n` family as
+/// [`WEBOS_BACK_KEYCODE`], which behaves identically.
+pub const WEBOS_RED_KEYCODE: i32 = 2_097_169;
+
 pub fn menu_event_for_key(keycode: sdl2::keyboard::Keycode) -> Option<MenuEvent> {
     use sdl2::keyboard::Keycode;
     Some(match keycode {
@@ -76,7 +83,8 @@ impl StickMenuNav {
 
 /// webOS Magic Remote scancodes — outside rust-sdl2's enum, needs raw polling.
 /// `SDL_SCANCODE_WEBOS_{RED,GREEN,YELLOW,BLUE} = 486..489` in `webosbrew/SDL-webOS`'s `SDL_scancode.h`.
-/// Red (486) never reaches the app on-device (OS-intercepted), so Blue drives the pacing toggle.
+/// Red has no usable scancode here — it arrives as a bare keycode instead, see
+/// [`WEBOS_RED_KEYCODE`]. Which is also why Blue, not Red, drives the pacing toggle.
 pub const WEBOS_GREEN_SCANCODE: i32 = 487;
 pub const WEBOS_YELLOW_SCANCODE: i32 = 488;
 pub const WEBOS_BLUE_SCANCODE: i32 = 489;

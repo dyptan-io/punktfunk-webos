@@ -68,6 +68,10 @@ impl App {
                     self.settings_writer.save(self.settings);
                     self.open_about();
                 }
+                crate::ui::ROW_CURSOR => {
+                    self.settings_writer.save(self.settings);
+                    self.open_cursor_settings();
+                }
                 crate::ui::ROW_EXPERIMENTAL => {
                     self.settings_writer.save(self.settings);
                     self.open_experimental();
@@ -112,7 +116,6 @@ impl App {
         let row = crate::ui::settings_logical_row(&self.settings, display_row);
         let toggled_from = match row {
             crate::ui::ROW_HDR => Some(self.settings.hdr_enabled),
-            crate::ui::ROW_CURSOR_CAPTURE => Some(self.settings.cursor_capture),
             _ => None,
         };
         if crate::ui::adjust_setting(&mut self.settings, row, forward) {

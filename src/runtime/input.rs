@@ -17,7 +17,7 @@ pub(super) const EXIT_HOLD: Duration = Duration::from_millis(1000);
 
 /// How long OK must be held on a focused Home game card to pin/unpin it instead
 /// of launching it — see `pin_hold_gate`.
-pub(super) const PIN_HOLD: Duration = Duration::from_millis(500);
+pub(super) const PIN_HOLD: Duration = crate::core::event::LONG_PRESS;
 
 /// An in-flight hold-to-pin gesture: OK is down on a pinnable Home card. The
 /// toggle fires the moment `PIN_HOLD` elapses (so the pin visibly lands under
@@ -545,6 +545,7 @@ fn dispatch_menu_event(
         Screen::PinLimit => app.handle_pin_limit_event(menu_ev),
         Screen::Diagnostics => app.handle_diagnostics_event(menu_ev),
         Screen::Experimental => app.handle_experimental_event(menu_ev),
+        Screen::CursorSettings => app.handle_cursor_settings_event(menu_ev),
         Screen::SendLogs => app.handle_send_logs_event(menu_ev),
     }
     EventAction::Next
@@ -590,7 +591,12 @@ pub(super) fn handle_ui_event(
             }
             // List-modal screens (row-per-page, not pixel scroll): one detent
             // moves focus exactly one row, same as an Up/Down key press.
-            Screen::Settings | Screen::HostMenu | Screen::WakeSettings | Screen::Diagnostics | Screen::Experimental
+            Screen::Settings
+            | Screen::HostMenu
+            | Screen::WakeSettings
+            | Screen::Diagnostics
+            | Screen::Experimental
+            | Screen::CursorSettings
                 if wheel_y != 0 =>
             {
                 let menu_ev = if wheel_y > 0 { MenuEvent::Up } else { MenuEvent::Down };

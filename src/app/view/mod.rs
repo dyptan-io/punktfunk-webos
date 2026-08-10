@@ -3,6 +3,7 @@
 //! Logic counterparts live in `app::state`.
 mod about;
 mod addhost;
+mod cursorsettings;
 mod diagnostics;
 mod edithost;
 mod experimental;

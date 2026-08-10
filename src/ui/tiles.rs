@@ -434,6 +434,8 @@ pub enum ModalFocusKey {
     DiagnosticsRow(usize, LogLevelOverride, bool, bool),
     /// (focused row, frame-pacing on, game-mode on) — any change invalidates the tile.
     ExperimentalRow(usize, bool, bool),
+    /// (focused row, cursor-capture on, cursor-gestures on) — any change invalidates the tile.
+    CursorSettingsRow(usize, bool, bool),
     /// Which `Screen::SendLogs` button is focused (0 = Cancel, 1 = Send).
     SendLogsButton(usize),
 }

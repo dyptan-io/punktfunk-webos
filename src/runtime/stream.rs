@@ -223,6 +223,10 @@ pub(super) fn run_inner() -> Result<()> {
         };
 
         let mut scroll_acc = mouse::ScrollAccumulator::default();
+        // Every button the client synthesizes rather than forwards: the remote's OK gestures and
+        // its Red key — see `RemoteButtons`. Fed only the remote's own input; a real HID mouse's
+        // clicks never reach it.
+        let mut buttons = mouse::RemoteButtons::default();
         // Raw evdev mouse, only under cursor capture (uncaptured, raw deltas can't express the
         // remote's absolute pointing). Sends happen on the reader thread, not queued for the
         // ~2ms main loop, to avoid re-resampling a 1000 Hz mouse. `forward_hid` gates sends
@@ -356,6 +360,21 @@ pub(super) fn run_inner() -> Result<()> {
                             connected.send_input(&ev);
                         }
                     }
+                    // Magic Remote Red — the right button (see `RemoteButtons::red`). Like Back
+                    // it carries only a keycode (see `WEBOS_RED_KEYCODE`); `repeat: false` so the
+                    // OS's auto-repeat while it's held doesn't restate the press.
+                    Event::KeyDown {
+                        keycode: Some(k),
+                        repeat: false,
+                        ..
+                    } if k.into_i32() == crate::platform::webos::input::WEBOS_RED_KEYCODE => {
+                        buttons.red(true, |ev| connected.send_input(ev));
+                    }
+                    Event::KeyUp { keycode: Some(k), .. }
+                        if k.into_i32() == crate::platform::webos::input::WEBOS_RED_KEYCODE =>
+                    {
+                        buttons.red(false, |ev| connected.send_input(ev));
+                    }
                     // Magic Remote Back has no scancode — forwarded as Esc. A held Back never
                     // arrives here; webOS delivers it as the EXIT gesture polled below instead.
                     Event::KeyDown {
@@ -406,14 +425,41 @@ pub(super) fn run_inner() -> Result<()> {
                             // Relative only for the remote alone: SDL's warp emulation is off
                             // whenever the evdev reader owns motion, so the remote sends
                             // absolute — also the better fit for a device the user aims.
-                            let ev = if settings.cursor_capture && !hid_device_seen {
+                            let relative = settings.cursor_capture && !hid_device_seen;
+                            let ev = if relative {
                                 mouse::move_relative_event(xrel, yrel)
                             } else {
                                 mouse::move_event(x, y, display_mode.w as u32, display_mode.h as u32)
                             };
+                            // Drift/drag arbitration for an OK press in flight, off whichever of
+                            // the two the pointer actually reports meaningfully. Runs *before*
+                            // the motion is forwarded: when this is the motion that commits to a
+                            // drag, the host must see the button go down at the press point and
+                            // only then the travel, or the drag grabs `DRAG_SLOP` px late — which
+                            // moves a window by the wrong offset and starts a selection
+                            // rectangle in the wrong place.
+                            if relative {
+                                buttons.motion_rel(xrel, yrel, |ev| connected.send_input(ev));
+                            } else {
+                                buttons.motion_abs(x, y, |ev| connected.send_input(ev));
+                            }
                             connected.send_input(&ev);
                         }
                     }
+                    // With `cursor_gestures` on, the remote's only pointer button carries
+                    // three gestures. Off (the default), and for every other button, and for
+                    // a real mouse's clicks, the arms below pass the press straight through
+                    // as they always have.
+                    Event::MouseButtonDown {
+                        mouse_btn: sdl2::mouse::MouseButton::Left,
+                        x,
+                        y,
+                        ..
+                    } if !hid_clicks && settings.cursor_gestures => buttons.ok_press(x, y),
+                    Event::MouseButtonUp {
+                        mouse_btn: sdl2::mouse::MouseButton::Left,
+                        ..
+                    } if !hid_clicks && settings.cursor_gestures => buttons.ok_release(|ev| connected.send_input(ev)),
                     Event::MouseButtonDown { mouse_btn, .. } if !hid_clicks => {
                         if let Some(ev) = mouse::button_event(mouse_btn, true) {
                             connected.send_input(&ev);
@@ -438,6 +484,16 @@ pub(super) fn run_inner() -> Result<()> {
                     }
                     _ => {}
                 }
+            }
+            // An open dialog swallows pointer input from here on, so no release ever arrives for
+            // whatever is down — the same trap `DisconnectChord::clear` covers for the pad. Done
+            // here rather than at each `open` site so every path into the dialog is covered.
+            // Otherwise: a held OK commits to a drag once `DRAG_HOLD` is up, and a stationary
+            // hold emits no events at all, so this tick is the only thing that can notice.
+            if disconnect.is_open() {
+                buttons.release_held(|ev| connected.send_input(ev));
+            } else {
+                buttons.tick(|ev| connected.send_input(ev));
             }
             // Chord held long enough — open the dialog, then forget it so it fires once per hold.
             if !disconnect.is_open() && chord.held_for(EXIT_HOLD) {

@@ -16,6 +16,8 @@ pub enum Screen {
     Diagnostics,
     /// Experimental/unstable toggles (see `app/experimental.rs`).
     Experimental,
+    /// Pointer/cursor behaviour, grouped off Settings (see `app/cursorsettings.rs`).
+    CursorSettings,
     /// "Send logs to developer" confirmation (see `app/sendlogs.rs`).
     SendLogs,
 }

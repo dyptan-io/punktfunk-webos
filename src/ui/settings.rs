@@ -75,9 +75,11 @@ pub const ROW_AUDIO: usize = 5;
 /// real settings: it's the only input-side one, and picking `DualSense` is what turns on
 /// adaptive triggers (`crate::platform::webos::dualsense`).
 pub const ROW_GAMEPAD: usize = 6;
-/// Directly below Controller — the other input-side setting. See
-/// `store::Settings::cursor_capture`.
-pub const ROW_CURSOR_CAPTURE: usize = 7;
+/// Not a setting — a link to `Screen::CursorSettings`, directly below Controller since it's
+/// the other input-side entry. Both pointer toggles live behind it (see `cursor_rows`) rather
+/// than on this list: neither is something a user sets more than once, and pairing them makes
+/// the gesture toggle discoverable next to the capture mode it interacts with.
+pub const ROW_CURSOR: usize = 7;
 /// Not a setting — a link to `Screen::Experimental` (unstable toggles, currently the
 /// frame pacer). Grouped off the main list so an untested option isn't one keystroke away.
 pub const ROW_EXPERIMENTAL: usize = 8;
@@ -94,6 +96,11 @@ pub const SETTINGS_ROW_COUNT: usize = 11;
 pub const EXP_ROW_FRAME_PACER: usize = 0;
 /// Only present on rooted TVs (see `experimental_rows`), so it's the last row when shown.
 pub const EXP_ROW_GAME_MODE: usize = 1;
+
+/// Cursor modal row indices (see `cursor_rows`).
+pub const CURSOR_ROW_CAPTURE: usize = 0;
+pub const CURSOR_ROW_GESTURES: usize = 1;
+pub const CURSOR_ROW_COUNT: usize = 2;
 
 /// Live experimental-row count without building the rows — the Game mode row is only offered on
 /// a rooted TV (see `experimental_rows`), so the screen is one row shorter otherwise. Used by the
@@ -260,24 +267,7 @@ pub fn settings_rows(settings: &Settings) -> Vec<FocusRow> {
             menu: None,
             subtext: None,
         },
-        FocusRow {
-            icon: ICON_MOUSE,
-            label: "Cursor capture".into(),
-            value: if settings.cursor_capture {
-                "On".into()
-            } else {
-                "Off".into()
-            },
-            kind: RowKind::Toggle,
-            fraction: 0.0,
-            danger: false,
-            menu: None,
-            subtext: Some(RowSubtext::hint(if settings.cursor_capture {
-                "Capture (games)"
-            } else {
-                "Desktop (absolute)"
-            })),
-        },
+        FocusRow::action(ICON_MOUSE, "Cursor"),
         FocusRow::action(ICON_BUG, "Experimental"),
         FocusRow::action(ICON_WRENCH, "Diagnostics"),
         // The build version rides along as this row's value, so it's visible without
@@ -364,6 +354,44 @@ pub fn diagnostics_rows(settings: &Settings) -> Vec<FocusRow> {
         },
         FocusRow::action(ICON_SEND, "Send logs to developer")
             .with_subtext(RowSubtext::hint("If a developer asked you to")),
+    ]
+}
+
+/// Cursor modal rows: how the pointer is handled in-stream. Order must match `CURSOR_ROW_*`.
+pub fn cursor_rows(settings: &Settings) -> Vec<FocusRow> {
+    vec![
+        FocusRow {
+            icon: ICON_MOUSE,
+            label: "Capture".into(),
+            value: if settings.cursor_capture {
+                "On".into()
+            } else {
+                "Off".into()
+            },
+            kind: RowKind::Toggle,
+            fraction: 0.0,
+            danger: false,
+            menu: None,
+            subtext: Some(RowSubtext::hint(if settings.cursor_capture {
+                "Capture (games)"
+            } else {
+                "Desktop (absolute)"
+            })),
+        },
+        FocusRow {
+            icon: ICON_TOUCH,
+            label: "Gestures".into(),
+            value: if settings.cursor_gestures {
+                "On".into()
+            } else {
+                "Off".into()
+            },
+            kind: RowKind::Toggle,
+            fraction: 0.0,
+            danger: false,
+            menu: None,
+            subtext: Some(RowSubtext::hint("Hold OK to right-click or red remote button")),
+        },
     ]
 }
 
@@ -566,10 +594,6 @@ pub fn adjust_setting(settings: &mut Settings, row_index: usize, forward: bool) 
         }
         ROW_HDR => {
             settings.hdr_enabled = !settings.hdr_enabled;
-            true
-        }
-        ROW_CURSOR_CAPTURE => {
-            settings.cursor_capture = !settings.cursor_capture;
             true
         }
         ROW_CODEC => {

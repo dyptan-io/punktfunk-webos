@@ -228,6 +228,11 @@ pub(crate) enum ModalShellKey {
         game_mode: bool,
         hover_close: bool,
     },
+    CursorSettings {
+        cursor_capture: bool,
+        cursor_gestures: bool,
+        hover_close: bool,
+    },
     /// Fixed warning copy + two buttons; only the close (X) hover varies.
     SendLogs {
         hover_close: bool,
@@ -300,6 +305,8 @@ pub struct App {
     pub diagnostics_focused: usize,
     /// Focused row of `Screen::Experimental`; its own cursor for the same reason.
     pub experimental_focused: usize,
+    /// Focused row of `Screen::CursorSettings`; its own cursor for the same reason.
+    pub cursor_settings_focused: usize,
     /// Which `Screen::SendLogs` button has focus: `0` = "Cancel", `1` = "Send".
     /// Defaults to Cancel (see `open_send_logs`) — sending logs off-device is a
     /// privacy-relevant action, so it shouldn't be one accidental OK press away.
@@ -523,6 +530,7 @@ impl App {
             wake_settings_focused: 0,
             diagnostics_focused: 0,
             experimental_focused: 0,
+            cursor_settings_focused: 0,
             send_logs_focused: 0,
             send_logs_rx: None,
             edit_host_index: None,
@@ -823,6 +831,10 @@ impl App {
                 self.handle_experimental_event(MenuEvent::Back);
                 None
             }
+            Screen::CursorSettings => {
+                self.handle_cursor_settings_event(MenuEvent::Back);
+                None
+            }
             Screen::SendLogs => {
                 self.handle_send_logs_event(MenuEvent::Back);
                 None
@@ -1066,12 +1078,13 @@ impl App {
                 changed
             }
             // Identical row-list geometry; only which focus field they carry differs.
-            Screen::Diagnostics | Screen::Experimental => {
+            Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings => {
                 let Some(row) = self.modal_list_row_at(x, y, screen_w, screen_h, fonts) else {
                     return false;
                 };
                 let focused = match self.screen {
                     Screen::Diagnostics => &mut self.diagnostics_focused,
+                    Screen::CursorSettings => &mut self.cursor_settings_focused,
                     _ => &mut self.experimental_focused,
                 };
                 let changed = *focused != row;
@@ -1286,6 +1299,10 @@ impl App {
                 let subtitle = self.experimental_subtitle();
                 Self::experimental_card_rect(screen_w, screen_h, fonts, &subtitle, self.experimental_row_count())
             }
+            Screen::CursorSettings => {
+                let subtitle = self.cursor_settings_subtitle();
+                Self::cursor_settings_card_rect(screen_w, screen_h, fonts, &subtitle)
+            }
             Screen::SendLogs => ui::confirm_dialog_card(screen_w, screen_h, fonts, Self::SEND_LOGS_SUBTITLE),
         })
     }
@@ -1315,6 +1332,7 @@ impl App {
             Screen::HostMenu => (self.host_menu_subtitle(), self.host_menu_actions().len()),
             Screen::Diagnostics => (self.diagnostics_subtitle(), ui::DIAGNOSTICS_ROW_COUNT),
             Screen::Experimental => (self.experimental_subtitle(), self.experimental_row_count()),
+            Screen::CursorSettings => (self.cursor_settings_subtitle(), ui::CURSOR_ROW_COUNT),
             _ => return None,
         };
         let content = ui::list_modal_content_rect(card, fonts, &subtitle, rows);
@@ -1478,6 +1496,13 @@ impl App {
                 if let Some(row) = self.modal_list_row_at(x, y, screen_w, screen_h, fonts) {
                     self.experimental_focused = row;
                     self.handle_experimental_event(MenuEvent::Confirm);
+                }
+                None
+            }
+            Screen::CursorSettings => {
+                if let Some(row) = self.modal_list_row_at(x, y, screen_w, screen_h, fonts) {
+                    self.cursor_settings_focused = row;
+                    self.handle_cursor_settings_event(MenuEvent::Confirm);
                 }
                 None
             }
@@ -1935,6 +1960,11 @@ impl App {
                 game_mode: self.settings.game_mode,
                 hover_close: self.hover_close,
             }),
+            Screen::CursorSettings => Some(ModalShellKey::CursorSettings {
+                cursor_capture: self.settings.cursor_capture,
+                cursor_gestures: self.settings.cursor_gestures,
+                hover_close: self.hover_close,
+            }),
             Screen::SendLogs => Some(ModalShellKey::SendLogs {
                 hover_close: self.hover_close,
             }),
@@ -1992,6 +2022,9 @@ impl App {
                 }
                 Screen::Experimental => {
                     self.render_experimental(&mut p, text_cache, fonts, screen_w, screen_h)?;
+                }
+                Screen::CursorSettings => {
+                    self.render_cursor_settings(&mut p, text_cache, fonts, screen_w, screen_h)?;
                 }
                 Screen::SendLogs => {
                     self.render_send_logs(&mut p, text_cache, fonts, screen_w, screen_h)?;
@@ -2051,6 +2084,11 @@ impl App {
                 self.experimental_focused,
                 self.settings.video_pacing,
                 self.settings.game_mode,
+            )),
+            Screen::CursorSettings => Some(ModalFocusKey::CursorSettingsRow(
+                self.cursor_settings_focused,
+                self.settings.cursor_capture,
+                self.settings.cursor_gestures,
             )),
             Screen::SendLogs => Some(ModalFocusKey::SendLogsButton(self.send_logs_focused)),
             // Neither has a single focused widget: the address form is one always-active
@@ -2232,6 +2270,22 @@ impl App {
                             self.experimental_focused,
                             false,
                             self.toggle_frac(target_on, self.experimental_focused),
+                        )?
+                    }
+                    Screen::CursorSettings => {
+                        let subtitle = self.cursor_settings_subtitle();
+                        let rows = self.cursor_settings_rows();
+                        let card = Self::cursor_settings_card_rect(screen_w, screen_h, fonts, &subtitle);
+                        let content = ui::list_modal_content_rect(card, fonts, &subtitle, rows.len());
+                        let target_on = rows.get(self.cursor_settings_focused).is_some_and(|r| r.value == "On");
+                        ui::render_focus_row_tile(
+                            text_cache,
+                            fonts,
+                            &rows,
+                            content.width(),
+                            self.cursor_settings_focused,
+                            false,
+                            self.toggle_frac(target_on, self.cursor_settings_focused),
                         )?
                     }
                     Screen::SendLogs => {
@@ -2887,6 +2941,12 @@ impl App {
                         let card = Self::experimental_card_rect(screen_w, screen_h, fonts, &subtitle, rows);
                         let content = ui::list_modal_content_rect(card, fonts, &subtitle, rows);
                         Some(ui::focus_row_rect(content, self.experimental_focused))
+                    }
+                    Screen::CursorSettings => {
+                        let subtitle = self.cursor_settings_subtitle();
+                        let card = Self::cursor_settings_card_rect(screen_w, screen_h, fonts, &subtitle);
+                        let content = ui::list_modal_content_rect(card, fonts, &subtitle, ui::CURSOR_ROW_COUNT);
+                        Some(ui::focus_row_rect(content, self.cursor_settings_focused))
                     }
                     Screen::SendLogs => Some(Self::confirm_focus_button_rect(
                         screen_w,

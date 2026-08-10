@@ -229,6 +229,13 @@ pub struct Settings {
     /// on stream exit. `serde(default)` so an existing settings.json loads as `false`.
     #[serde(default)]
     pub game_mode: bool,
+    /// Resolve the Magic Remote's OK button into left click / right click / drag by how long
+    /// it's held (see `platform::webos::mouse::RemoteButtons`). Off by default — with it
+    /// off, OK stays the plain immediate left click it has always been, since a remote with
+    /// no working Red button then has no other way to left-click. Off also means no added
+    /// wait on the release. `serde(default)` so an existing settings.json loads as `false`.
+    #[serde(default)]
+    pub cursor_gestures: bool,
 }
 
 fn default_audio_channels() -> u8 {
@@ -261,6 +268,7 @@ impl Default for Settings {
             gamepad_type: GamepadType::Auto,
             cursor_capture: default_cursor_capture(),
             game_mode: false,
+            cursor_gestures: false,
         }
     }
 }

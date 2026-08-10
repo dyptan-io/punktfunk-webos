@@ -3,6 +3,7 @@
 //! Rendering counterparts live in `app::view`.
 mod about;
 pub(crate) mod addhost;
+mod cursorsettings;
 pub(crate) mod diagnostics;
 mod edithost;
 mod experimental;

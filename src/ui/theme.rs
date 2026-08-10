@@ -44,3 +44,4 @@ pub const ICON_VISIBILITY: &str = "\u{E8F4}";
 pub const ICON_SEND: &str = "\u{E163}";
 pub const ICON_GAMEPAD: &str = "\u{E338}";
 pub const ICON_MOUSE: &str = "\u{E323}";
+pub const ICON_TOUCH: &str = "\u{E913}";
