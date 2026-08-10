@@ -48,6 +48,12 @@ pub(super) fn run_ui_flow(
 
     canvas.window_mut().show();
     let mut app = App::new(identity.clone());
+    // `App` is fresh every menu entry, but the pad isn't: a controller attached before a
+    // stream stays attached across it (no `ControllerDeviceAdded`/`Removed` fires on return,
+    // since nothing about the device changed), so without this seed the Controller row's
+    // "Automatic (...)" label would go blank on every return from streaming until the pad was
+    // physically unplugged and replugged.
+    app.detected_gamepad_type = gamepad::detect_type(game_controller);
     // The GPU tile cache is the render loop's, not App's — App holds only screen state
     // (see docs/REMAINING_IMPROVEMENTS.md A2). Recreated per menu entry, same as `app`.
     let mut tiles = crate::ui::TileCache::new();
