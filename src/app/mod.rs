@@ -248,9 +248,6 @@ pub struct App {
     pub(crate) pinned_count: usize,
     /// Host answered library fetch (gates Desktop card).
     pub(crate) games_loaded: bool,
-    /// Cached `games` position of the host's own desktop entry — recomputed with the
-    /// library and its pin order, since `grid_layout` needs it several times per redraw.
-    pub(crate) desktop_pos: Option<usize>,
     pub(crate) games_rx: Option<std::sync::mpsc::Receiver<crate::services::library::GamesLoaded>>,
     pub home_status: Option<String>,
     /// Cover art pixmaps by game id.
@@ -503,7 +500,6 @@ impl App {
             games: Vec::new(),
             pinned_count: 0,
             games_loaded: false,
-            desktop_pos: None,
             games_rx: None,
             home_status: None,
             art: std::collections::HashMap::new(),
@@ -1082,9 +1078,8 @@ impl App {
                 *focused = row;
                 changed
             }
-            // Nothing on the display-PIN layout is focusable, so there is no hover target.
             Screen::Pairing => {
-                let card = self.pairing_card_rect(screen_w, screen_h, fonts);
+                let card = Self::pairing_card_rect(screen_w, screen_h, fonts);
                 if Self::pairing_request_button_rect(card, fonts).contains_point((x, y)) {
                     let changed = self.pairing_focus != PairingFocus::RequestAccess;
                     self.pairing_focus = PairingFocus::RequestAccess;
@@ -1260,7 +1255,7 @@ impl App {
         Some(match self.screen {
             Screen::Home => return None,
             Screen::Settings => self.settings_layout(screen_w, screen_h).0,
-            Screen::Pairing => self.pairing_card_rect(screen_w, screen_h, fonts),
+            Screen::Pairing => Self::pairing_card_rect(screen_w, screen_h, fonts),
             Screen::AddHost => self.address_card_rect(screen_w, screen_h, fonts),
             Screen::Wake => Self::wake_card_rect(screen_w, screen_h, self.wake.as_ref()?, fonts),
             Screen::ForgetHost => {
@@ -1413,11 +1408,10 @@ impl App {
                 self.handle_settings_event(MenuEvent::Confirm, screen_h);
                 None
             }
-            // The display-PIN layout has no button to click.
             Screen::Pairing => {
                 // The Magic Remote pointer is the most reliable input on this TV, so the
                 // "Request access" button is clickable directly: focus it and confirm.
-                let card = self.pairing_card_rect(screen_w, screen_h, fonts);
+                let card = Self::pairing_card_rect(screen_w, screen_h, fonts);
                 if Self::pairing_request_button_rect(card, fonts).contains_point((x, y)) {
                     self.pairing_focus = PairingFocus::RequestAccess;
                     self.handle_pairing_event(MenuEvent::Confirm);
@@ -2017,8 +2011,6 @@ impl App {
                 .as_ref()
                 .filter(|w| !w.mac.is_empty())
                 .map(|w| ModalFocusKey::WakeButton(w.focused)),
-            // The display-PIN layout draws everything into the shell — nothing is focusable, so
-            // it has no focus tile at all.
             Screen::Pairing => Some(match self.pairing_focus {
                 PairingFocus::Pin => {
                     ModalFocusKey::PairingDigit(self.pin_digit_index, self.pin_digits[self.pin_digit_index])
@@ -2118,7 +2110,7 @@ impl App {
                             self.pin_digits[self.pin_digit_index],
                         )?,
                         PairingFocus::RequestAccess => {
-                            let card = self.pairing_card_rect(screen_w, screen_h, fonts);
+                            let card = Self::pairing_card_rect(screen_w, screen_h, fonts);
                             let btn = Self::pairing_request_button_rect(card, fonts);
                             ui::render_pairing_button_tile(
                                 text_cache,
@@ -2838,7 +2830,7 @@ impl App {
                         )
                     }),
                     Screen::Pairing => {
-                        let card = self.pairing_card_rect(screen_w, screen_h, fonts);
+                        let card = Self::pairing_card_rect(screen_w, screen_h, fonts);
                         Some(match self.pairing_focus {
                             PairingFocus::Pin => {
                                 let digit_y = Self::pairing_pin_row_y(card, fonts);

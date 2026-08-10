@@ -110,7 +110,7 @@ impl App {
             })
     }
 
-    /// Handles host menu events; may return `ConnectTarget` (currently never does).
+    /// Handles host menu events.
     pub(crate) fn handle_host_menu_event(&mut self, ev: MenuEvent) {
         let len = self.host_menu_actions().len();
         if crate::ui::list_nav(&mut self.menu_focused, len, ev) {

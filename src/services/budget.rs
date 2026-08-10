@@ -6,12 +6,13 @@ use std::time::Duration;
 /// and a long wait on a black launch scrim buys nothing. Also the per-request TCP connect budget.
 pub const HANDSHAKE: Duration = Duration::from_secs(5);
 
-/// A host that answered but isn't ready to stream yet: the park-until-approved TOFU connection,
-/// and a PIN handshake waiting on someone to walk to their PC. A shorter budget sent the user
+/// A host that answered but isn't ready to stream yet: an unpinned connection waiting on the
+/// host's operator to approve this client, and a PIN handshake waiting on someone to walk to
+/// their PC. A shorter budget sent the user
 /// back to the menu with "couldn't connect" against a host that was merely still starting.
 pub const HOST_WAIT: Duration = Duration::from_secs(185);
 
-/// The ambient reachability dot's per-host budget, for every protocol. Short on purpose: an
+/// The ambient reachability dot's per-host budget. Short on purpose: an
 /// unreachable host on a LAN fails fast (no route / refused), and one slow enough to miss this is
 /// not meaningfully "available". Not [`HANDSHAKE`] — nobody is waiting on this answer, so it is
 /// allowed to be wrong about a sluggish host rather than hold the sweep open.

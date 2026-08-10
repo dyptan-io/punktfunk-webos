@@ -132,7 +132,7 @@ impl App {
         port: u16,
     ) -> std::sync::mpsc::Receiver<crate::services::library::GamesLoaded> {
         let known = known_hosts.iter().find(|h| h.host == host && h.port == port);
-        let fingerprint = known.and_then(crate::services::store::KnownHost::pin);
+        let fingerprint = known.and_then(|k| k.fingerprint);
         let mgmt_port = known
             .and_then(|h| h.mgmt_port)
             .unwrap_or(crate::services::library::DEFAULT_MGMT_PORT);

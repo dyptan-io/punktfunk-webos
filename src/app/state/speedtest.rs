@@ -62,7 +62,7 @@ impl App {
             .known_hosts
             .iter()
             .find(|h| h.host == host && h.port == port)
-            .and_then(crate::services::store::KnownHost::pin);
+            .and_then(|k| k.fingerprint);
 
         self.speed_test_name = name;
         self.speed_test = Some(SpeedTestState::Connecting);

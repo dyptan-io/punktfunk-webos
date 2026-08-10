@@ -1,9 +1,8 @@
-//! One live stream.
+//! The streaming loop's view of a live session.
 //!
-//! A wrapper around [`Connected`] rather than the session type itself, so the streaming loop has
-//! one place to reach for the handful of figures it needs (stats, overlay, teardown) instead of
-//! peering into the session's internals at each site. Verbs are named after the punktfunk ones
-//! the loop already called (`disconnect_quit`, `is_session_ended`, `shutdown`).
+//! Inherent methods on [`Connected`] for the handful of figures the loop needs (stats, overlay,
+//! teardown), kept here rather than in `session` because every one of them is shaped by what the
+//! loop asks for, not by how the session works.
 
 use std::sync::Arc;
 
@@ -11,8 +10,6 @@ use punktfunk_core::input::InputEvent;
 
 use crate::platform::webos::audio::AudioFeed;
 use crate::session::{self, Connected, StreamStats};
-
-pub(crate) struct StreamHandle(pub(crate) Connected);
 
 /// The input path, cloned for a thread that sends off the main loop (the HID-mouse reader).
 #[derive(Clone)]
@@ -24,61 +21,61 @@ impl InputSender {
     }
 }
 
-impl StreamHandle {
+impl Connected {
     pub(crate) fn input(&self) -> InputSender {
-        InputSender(self.0.client.clone())
+        InputSender(self.client.clone())
     }
 
     pub(crate) fn send_input(&self, ev: &InputEvent) {
-        let _ = session::send_input(&self.0.client, ev);
+        let _ = session::send_input(&self.client, ev);
     }
 
     pub(crate) fn stats(&self) -> &Arc<StreamStats> {
-        &self.0.stats
+        &self.stats
     }
 
     /// Whether HDR is being applied, for the Game-mode picture pick.
     pub(crate) fn hdr(&self) -> bool {
-        self.0.hdr
+        self.hdr
     }
 
     /// Channels to open the SDL audio device with, or `None` when the session needs no local
     /// device (NDL audio offload took the stream).
     pub(crate) fn audio_channels(&self) -> Option<u8> {
-        if self.0.audio_offloaded {
+        if self.audio_offloaded {
             None
         } else {
-            Some(self.0.client.audio_channels)
+            Some(self.client.audio_channels)
         }
     }
 
     /// The cells the A/V sync loop trades through — handed to the audio player at construction.
     pub(crate) fn sync_cells(&self) -> crate::platform::webos::audio::SyncCells {
         crate::platform::webos::audio::SyncCells {
-            clock_offset: self.0.client.clock_offset_shared(),
-            video_e2e: self.0.client.video_e2e_shared(),
-            av_offset_ms: self.0.client.audio_av_offset_shared(),
-            buffer_ms: self.0.client.audio_buffer_ms_shared(),
+            clock_offset: self.client.clock_offset_shared(),
+            video_e2e: self.client.video_e2e_shared(),
+            av_offset_ms: self.client.audio_av_offset_shared(),
+            buffer_ms: self.client.audio_buffer_ms_shared(),
         }
     }
 
     /// Audio's two HUD figures: ring depth in ms, and the smoothed A/V offset in ms (positive =
     /// audio playing behind the picture). Both are `0` until the sync loop has evidence.
     pub(crate) fn audio_stats(&self) -> (u32, i64) {
-        (self.0.client.audio_buffer_ms(), self.0.client.audio_av_offset_ms())
+        (self.client.audio_buffer_ms(), self.client.audio_av_offset_ms())
     }
 
     /// Starts the audio decode/feed thread. It exits on the session's stop flag, or when the
     /// transport's audio plane closes.
     pub(crate) fn spawn_audio_feed(&self, feed: AudioFeed) -> anyhow::Result<std::thread::JoinHandle<()>> {
-        session::spawn_audio_feed(self.0.client.clone(), feed, self.0.stop.clone())
+        session::spawn_audio_feed(self.client.clone(), feed, self.stop.clone())
     }
 
     /// Signals the audio feed thread to stop and joins it, bounded. Sets the session's stop flag,
     /// which `shutdown()` sets moments later anyway — doing it here just means the ring stops being
     /// fed before its device is dropped.
     pub(crate) fn stop_audio_feed(&self, handle: std::thread::JoinHandle<()>) {
-        self.0.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         session::join_audio_feed(handle);
     }
 
@@ -88,11 +85,11 @@ impl StreamHandle {
         controller: Option<&mut sdl2::controller::GameController>,
         feedback: Option<&mut crate::platform::webos::dualsense::Feedback>,
     ) {
-        session::pump_feedback_once(&self.0.client, controller, feedback);
+        session::pump_feedback_once(&self.client, controller, feedback);
     }
 
     pub(crate) fn is_session_ended(&self) -> bool {
-        self.0.client.is_session_ended()
+        self.client.is_session_ended()
     }
 
     /// The sentence for the menu toast when the session ended on its own. Nothing here separates
@@ -102,18 +99,13 @@ impl StreamHandle {
     }
 
     pub(crate) fn disconnect_quit(&self) {
-        self.0.client.disconnect_quit();
-    }
-
-    /// `false` = teardown timed out, so the caller must skip `ndl::quit()`.
-    pub(crate) fn shutdown(self) -> bool {
-        self.0.shutdown()
+        self.client.disconnect_quit();
     }
 
     /// The stats overlay's figures. Grouped into one call so the overlay block has one lookup
     /// rather than six.
     pub(crate) fn overlay_info(&self) -> OverlayInfo {
-        let client = &self.0.client;
+        let client = &self.client;
         let mode = client.mode();
         OverlayInfo {
             width: mode.width,
@@ -133,7 +125,7 @@ impl StreamHandle {
     }
 }
 
-/// See [`StreamHandle::overlay_info`].
+/// See [`Connected::overlay_info`].
 pub(crate) struct OverlayInfo {
     pub width: u32,
     pub height: u32,

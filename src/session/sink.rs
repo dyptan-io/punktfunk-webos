@@ -84,7 +84,6 @@ pub enum SinkResult {
     /// Skipped — still frozen, waiting for a re-anchor.
     Held,
     /// Skipped or failed, and the throttle allows asking the host for a keyframe now.
-    /// The caller sends it however its protocol does.
     NeedKeyframe,
 }
 
@@ -144,15 +143,12 @@ impl VideoPlayer {
     }
 }
 
-/// Everything protocol-specific the sink needs to know up front.
+/// Everything the sink needs to know up front.
 pub struct SinkConfig {
     /// The host's frame cadence. Drives both the pacing grid and the backlog→latency fold.
     pub stream_hz: u32,
     /// Whether the host asked for decode-latency reports (its ABR controller).
     pub report_decode_latency: bool,
-    /// Minimum spacing between [`SinkResult::NeedKeyframe`] results — see
-    /// each protocol's own constant for why this is per-protocol.
-    pub keyframe_min_interval: Duration,
     /// Host-minus-client clock skew, live (`NativeClient::clock_offset_shared`). Read per
     /// published frame, never cached — the handshake re-syncs it mid-stream.
     pub clock_offset: Arc<AtomicI64>,
@@ -163,6 +159,10 @@ pub struct SinkConfig {
     /// [`video_e2e_ns`], from the user's A/V trim setting.
     pub present_fixed_ns: u64,
 }
+
+/// Minimum spacing between [`SinkResult::NeedKeyframe`] results: the request travels on its own
+/// QUIC control stream, so a tight interval costs nothing but the request itself.
+const KEYFRAME_REQUEST_MIN_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The NDL implementation: [`VideoPlayer`] + [`PtsPacer`] + [`StreamStats`].
 pub struct NdlSink {
@@ -222,7 +222,7 @@ impl NdlSink {
     fn take_keyframe_slot(&mut self) -> bool {
         let ready = self
             .last_keyframe_request
-            .is_none_or(|t| t.elapsed() >= self.cfg.keyframe_min_interval);
+            .is_none_or(|t| t.elapsed() >= KEYFRAME_REQUEST_MIN_INTERVAL);
         if ready {
             self.last_keyframe_request = Some(Instant::now());
         }

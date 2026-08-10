@@ -56,9 +56,9 @@ impl App {
         }
     }
 
-    /// The active pairing card, sized from the layout plus room for an up-to-two-line status.
-    /// Every geometry caller goes through this, so the sizing is done in exactly one place.
-    pub(crate) fn pairing_card_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Rect {
+    /// The pairing card, sized from the layout plus room for an up-to-two-line status. Every
+    /// geometry caller goes through this, so the sizing is done in exactly one place.
+    pub(crate) fn pairing_card_rect(screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Rect {
         Self::simple_modal_card(screen_w, screen_h, |probe| {
             let status_room = 2 * (fonts.raster.height(fonts.value) + 6);
             let status_y = Self::pairing_layout(probe, fonts).status_y;
@@ -84,7 +84,7 @@ impl App {
         screen_w: u32,
         screen_h: u32,
     ) -> Result<()> {
-        let card = self.pairing_card_rect(screen_w, screen_h, fonts);
+        let card = Self::pairing_card_rect(screen_w, screen_h, fonts);
         let l = Self::pairing_layout(card, fonts);
         self.draw_modal_shell(painter, text_cache, fonts.raster, fonts.icon, card)?;
 

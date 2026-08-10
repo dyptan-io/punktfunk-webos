@@ -18,7 +18,7 @@ use crate::ui::render::{DrawCmd, TileId as Tile};
 use crate::ui::MenuEvent;
 
 /// `ConnectOutcome`: connect thread (started early to overlap animation) + settings.
-type ConnectOutcome = (std::thread::JoinHandle<Result<StreamHandle>>, store::Settings);
+type ConnectOutcome = (std::thread::JoinHandle<Result<session::Connected>>, store::Settings);
 
 /// Resolves a `GamepadType::Auto` preference against the attached controller, for this
 /// session only.
@@ -47,7 +47,7 @@ fn spawn_connect(
     identity: (String, String),
     target: crate::app::ConnectTarget,
     settings: store::Settings,
-) -> Result<std::thread::JoinHandle<Result<StreamHandle>>> {
+) -> Result<std::thread::JoinHandle<Result<session::Connected>>> {
     let (host, port, fp, launch) = (target.host, target.port, target.fingerprint, target.launch);
     std::thread::Builder::new()
         .name("punktfunk-webos-connect".into())
@@ -74,8 +74,9 @@ fn spawn_connect(
                 identity,
                 fp,
                 launch,
-                // Only an unpinned host parks (until its operator approves); a pinned one is either
-                // reachable now or off, and a long budget there just holds the black launch scrim.
+                // An unpinned host waits on its operator approving this client; a pinned one is
+                // either reachable now or off, and a long budget there just holds the black
+                // launch scrim.
                 if fp.is_some() {
                     crate::services::budget::HANDSHAKE
                 } else {
@@ -87,7 +88,6 @@ fn spawn_connect(
                 settings.gamepad_type,
                 settings.cursor_capture,
             )
-            .map(StreamHandle)
         })
         .context("spawn connect thread")
 }
@@ -282,10 +282,9 @@ enum StreamOutcome {
 }
 
 mod input;
+mod session_ext;
 mod stream;
-mod stream_handle;
 mod ui_flow;
 use input::*;
 use stream::run_inner;
-use stream_handle::StreamHandle;
 use ui_flow::run_ui_flow;

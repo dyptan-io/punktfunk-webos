@@ -117,10 +117,6 @@ pub fn clock_ticks_per_sec() -> u64 {
 /// Also the ceiling the stream teardown waits on (a different mechanism, same rationale).
 pub const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// The keyframe-request throttle: the request travels on its own QUIC control stream, so a
-/// tight interval costs nothing but the request itself.
-const KEYFRAME_REQUEST_MIN_INTERVAL: Duration = Duration::from_millis(100);
-
 /// Joins `handle` from a watcher thread so a hang inside it can't block the caller past
 /// `timeout`. Returns `false` (and leaks the watcher, still waiting on the real join) if it
 /// didn't finish in time.
@@ -399,7 +395,6 @@ pub fn connect(
     let sink_cfg = SinkConfig {
         stream_hz: resolved_mode.refresh_hz,
         report_decode_latency: client.wants_decode_latency(),
-        keyframe_min_interval: KEYFRAME_REQUEST_MIN_INTERVAL,
         clock_offset: client.clock_offset_shared(),
         video_e2e: client.video_e2e_shared(),
         present_fixed_ns: u64::from(crate::services::store::dev_override_av_trim_ms().unwrap_or(0)) * 1_000_000,
@@ -865,9 +860,8 @@ fn video_pump(
                     last_dropped_seen = dropped_now;
                 }
                 if (gap || dropped) && !sink.holding() {
-                    // Which of the two fired is the protocol-specific half of the freeze
-                    // the sink logs next — a sequence hole vs. a frame the transport itself
-                    // gave up on point at different faults.
+                    // Logged alongside the freeze the sink reports next: a sequence hole and a
+                    // frame the transport itself gave up on point at different faults.
                     tracing::warn!("loss: gap={gap} dropped={dropped} (frame {})", frame.frame_index);
                 }
                 let flags = FrameFlags {
