@@ -94,9 +94,7 @@ fn video_e2e_ns(
 /// Split out as a free function purely so it is testable — [`NdlSink`] owns a live NDL handle and
 /// cannot be built off-device.
 fn decode_report_us(feed_elapsed: Duration, backlog: u64, cushion: u64, frame_interval_ns: u64) -> u32 {
-    let queued_ns = backlog
-        .saturating_sub(cushion)
-        .saturating_mul(frame_interval_ns);
+    let queued_ns = backlog.saturating_sub(cushion).saturating_mul(frame_interval_ns);
     let decode_us = u64::try_from(feed_elapsed.as_micros())
         .unwrap_or(u64::MAX)
         .saturating_add(queued_ns / 1_000);
@@ -308,23 +306,19 @@ impl NdlSink {
     /// `None` is a failed query, not an empty queue.
     ///
     /// Called unconditionally, because it has TWO consumers: the ABR decode figure
-    /// ([`Self::decode_us`]) and the A/V sync loop's video reference ([`video_e2e_ns`]). It used to
-    /// live inside `decode_us`, which runs only when the host asked for decode latency — so against
-    /// any host that did not, the cached depth stayed pinned at `0` for the entire session, silently
-    /// zeroing the queue term in the video reference while every number still looked plausible.
+    /// ([`Self::decode_us`]) and the A/V sync loop's video reference ([`video_e2e_ns`]). Polling it
+    /// only when the host asks for decode latency pins the depth at `0` against hosts that never
+    /// do, silently zeroing the queue term in the video reference.
     fn poll_backlog(&mut self) -> Option<u64> {
         if self.last_backlog_poll.is_none_or(|t| t.elapsed() >= BACKLOG_POLL) {
             self.last_backlog_poll = Some(Instant::now());
-            self.backlog_cached = self
-                .player
-                .render_buffer_length()
-                .and_then(|b| u64::try_from(b).ok());
+            self.backlog_cached = self.player.render_buffer_length().and_then(|b| u64::try_from(b).ok());
             // A freeze flushes NDL, so a depth polled while held is an emptied buffer, not this
             // mode's settled lead. Learning from it would clamp the cushion back to the floor for
             // [`CUSHION_MIN_POLLS`] after every loss event — and at 60Hz one unaccounted frame is
             // 16.6ms, straight back over the ABR's decode-rise threshold. The cached depth itself
             // still updates: A/V sync wants the truth, only the learned cushion is held steady.
-            if let (false, Some(depth)) = (self.holding(), self.backlog_cached) {
+            if let Some(depth) = self.backlog_cached.filter(|_| !self.holding()) {
                 if self.backlog_recent.len() == CUSHION_MIN_POLLS {
                     self.backlog_recent.pop_front();
                 }
@@ -365,8 +359,7 @@ impl NdlSink {
     /// is the one the decode figure was computed from — a second, unsynchronized reading can
     /// disagree with it — and every `NDL_DirectVideoGetRenderBufferLength` stays on one cadence.
     pub fn poll_backlog_depth(&mut self) -> Option<i32> {
-        self.poll_backlog()
-            .map(|d| i32::try_from(d).unwrap_or(i32::MAX))
+        self.poll_backlog().map(|d| i32::try_from(d).unwrap_or(i32::MAX))
     }
 
     /// Present one access unit, or decide not to. `pts_ns` is the host's capture-clock

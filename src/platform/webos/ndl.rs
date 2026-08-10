@@ -230,16 +230,17 @@ static LEAKED_THREADS: AtomicUsize = AtomicUsize::new(0);
 
 /// One leaked NDL-touching thread, for as long as this value lives (see [`LEAKED_THREADS`]).
 ///
-/// A guard rather than a `poison`/`recovered` pair of calls, because the counter has exactly two
-/// failure modes and both are silent: a missed decrement refuses streaming until the app restarts,
-/// and an extra one re-permits it while a thread is still inside NDL — the race this exists to
-/// prevent. Ownership makes the pairing structural, so neither can be written by accident.
+/// A guard rather than a `poison`/`recovered` pair of calls: both ways of mispairing them are
+/// silent — a missed decrement refuses streaming until restart, an extra one re-permits it while a
+/// thread is still inside NDL. Ownership makes the pairing structural.
 pub struct LeakGuard(());
 
 impl Drop for LeakGuard {
     fn drop(&mut self) {
         if LEAKED_THREADS.fetch_sub(1, Ordering::SeqCst) == 1 {
-            tracing::info!("NDL recovered: the wedged decode thread finished and unloaded cleanly — streaming re-enabled");
+            tracing::info!(
+                "NDL recovered: the wedged decode thread finished and unloaded cleanly — streaming re-enabled"
+            );
         }
     }
 }
@@ -258,16 +259,11 @@ pub fn poison() -> LeakGuard {
     LeakGuard(())
 }
 
-/// Whether any leaked thread might still be live — see [`LEAKED_THREADS`].
-pub fn is_poisoned() -> bool {
-    LEAKED_THREADS.load(Ordering::SeqCst) > 0
-}
-
-/// `Err` while [`is_poisoned`], with the message the user sees. One gate, one wording: `load()`
-/// enforces it and `session::connect` checks it early to avoid holding a host session slot for a
-/// connect that can only end here.
+/// `Err` while any leaked thread might still be live (see [`LEAKED_THREADS`]). One gate, one
+/// wording: `load()` enforces it and `session::connect` checks it early to avoid holding a host
+/// session slot for a connect that can only end here.
 pub fn ensure_not_poisoned() -> Result<()> {
-    if is_poisoned() {
+    if LEAKED_THREADS.load(Ordering::SeqCst) > 0 {
         bail!("NDL is still tearing down a wedged decode thread from the previous session — try reconnecting shortly");
     }
     Ok(())

@@ -48,9 +48,8 @@ const ABR_PROBE_KBPS: &str = "300000";
 fn main() -> anyhow::Result<()> {
     // Set before anything spawns a thread: `set_var` is not thread-safe, and core reads this
     // while building its data-plane pump during `connect`. An older core simply ignores it.
-    //
-    // No `PUNKTFUNK_ABR_MAX_MBPS` alongside it: the probe above already measures this link's
-    // ceiling, and a second, compiled-in cap would override a measurement with a guess.
+    // Deliberately no `PUNKTFUNK_ABR_MAX_MBPS` alongside it — the probe measures this link's
+    // ceiling, and a compiled-in cap would override that measurement with a guess.
     std::env::set_var("PUNKTFUNK_ABR_PROBE_KBPS", ABR_PROBE_KBPS);
     runtime::run()
 }
