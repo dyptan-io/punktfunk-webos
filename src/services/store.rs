@@ -211,34 +211,37 @@ impl Drop for SettingsWriter {
     }
 }
 
-/// Test/dev override for NDL's undocumented frame-drop threshold: a single integer in
-/// `$HOME/ndl-drop-threshold.conf`, absent by default.
+/// One value, one file in `$HOME`, absent by default — the sweep-knob mechanism every
+/// `dev_override_*` below shares. Absent file, unreadable file and unparseable contents are all
+/// the same answer: `None`, i.e. use the compiled-in behaviour.
 ///
-/// Exists because the value's units aren't documented anywhere (the SDK header declares
-/// `NDL_DirectVideoSetFrameDropThreshold` and stops), so it has to be swept against real
-/// playback — and a full rebuild/redeploy per candidate value makes that impractical.
-/// Same reasoning, and the same mechanism, as `dev_override_connect` below.
-pub fn dev_override_ndl_drop_threshold() -> Option<i32> {
-    let path = Path::new(&app_dir()).join("ndl-drop-threshold.conf");
+/// These exist because their values cannot be derived from inside the app (undocumented SDK
+/// units, panel latency NDL never reports, a link that has to be measured), so they have to be
+/// swept against real playback — and a rebuild/redeploy per candidate makes that impractical.
+fn dev_override<T: std::str::FromStr>(file: &str) -> Option<T> {
+    let path = Path::new(&app_dir()).join(file);
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// NDL's undocumented frame-drop threshold: `$HOME/ndl-drop-threshold.conf`. The SDK header
+/// declares `NDL_DirectVideoSetFrameDropThreshold` and says nothing about its units.
+pub fn dev_override_ndl_drop_threshold() -> Option<i32> {
+    dev_override("ndl-drop-threshold.conf")
 }
 
 /// A/V sync trim, in milliseconds: `$HOME/av-trim-ms.conf`, absent (⇒ 0) by default.
 ///
 /// This is NDL's decode + panel latency *after* its render queue drains — the one term of
 /// `session::sink::video_e2e_ns` the app cannot observe, because `NDL_DirectVideoPlay` reports
-/// nothing about presentation. It is a sweep knob for exactly the reason
-/// [`dev_override_ndl_drop_threshold`] is one: the value is unmeasurable from inside, so it has to
-/// be read off real playback, and a rebuild per candidate makes that impractical. Deliberately NOT
-/// a Settings row yet — what the default should be, and whether it even needs to be user-visible,
-/// is what the observe-only measurement decides (LG panels plausibly differ between Game Optimiser
-/// and the processing-heavy picture modes, which no single compiled-in constant would cover).
+/// nothing about presentation. Deliberately NOT a Settings row yet — what the default should be,
+/// and whether it even needs to be user-visible, is what the observe-only measurement decides (LG
+/// panels plausibly differ between Game Optimiser and the processing-heavy picture modes, which no
+/// single compiled-in constant would cover).
 ///
 /// Sign: this value is ADDED to the video leg, so raising it tells the sync loop the picture is
 /// later than it looked, and the loop answers by holding audio back. If audio runs early, raise it.
 pub fn dev_override_av_trim_ms() -> Option<u32> {
-    let path = Path::new(&app_dir()).join("av-trim-ms.conf");
-    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+    dev_override("av-trim-ms.conf")
 }
 
 /// Test/dev override: a config file dropped alongside sideloading skips straight to

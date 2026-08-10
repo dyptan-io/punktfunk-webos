@@ -147,12 +147,13 @@ pub(super) fn run_inner() -> Result<()> {
         // offload) — a second unfed audio device would still claim a PulseAudio sink.
         // The device is held here for the length of the stream — dropping it stops playback — while
         // the feed half moves to its own decode thread.
+        // The A/V loop arms only once the NDL present constant has been calibrated — the trim
+        // file's presence is that calibration. See `audio::AudioFeed::observe_av`.
+        let av_trim_ms = store::dev_override_av_trim_ms();
         let audio = match connected.audio_channels() {
             None => None,
             Some(channels) => {
-                // The A/V loop arms only once the NDL present constant has been calibrated — the
-                // trim file's presence is that calibration. See `audio::AudioFeed::observe_av`.
-                let av_calibrated = store::dev_override_av_trim_ms().is_some();
+                let av_calibrated = av_trim_ms.is_some();
                 match crate::platform::webos::audio::AudioPlayer::new(
                     &sdl_audio,
                     channels,
@@ -187,7 +188,7 @@ pub(super) fn run_inner() -> Result<()> {
                 "SDL audio driver: {}, spec: {:?}, A/V sync: {}",
                 sdl_audio.current_audio_driver(),
                 player.spec(),
-                match store::dev_override_av_trim_ms() {
+                match av_trim_ms {
                     Some(ms) => format!("armed (trim {ms} ms)"),
                     None => "measuring only (no av-trim-ms.conf)".to_string(),
                 },

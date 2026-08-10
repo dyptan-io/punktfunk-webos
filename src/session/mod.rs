@@ -120,7 +120,17 @@ pub const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// Joins `handle` from a watcher thread so a hang inside it can't block the caller past
 /// `timeout`. Returns `false` (and leaks the watcher, still waiting on the real join) if it
 /// didn't finish in time.
-fn join_with_timeout<T: Send + 'static>(handle: std::thread::JoinHandle<T>, timeout: Duration, name: &str) -> bool {
+///
+/// `ndl_related` marks a thread that may still be calling into NDL (video/audio pumps, not the
+/// QUIC client-drop) — on timeout it poisons NDL (`ndl::poison`) and spawns a second, detached
+/// watcher that waits unboundedly for the real join, calling `ndl::thread_recovered()` to clear
+/// the poison once it lands. No faster recovery exists — see `ndl::LEAKED_THREADS`.
+fn join_with_timeout<T: Send + 'static>(
+    handle: std::thread::JoinHandle<T>,
+    timeout: Duration,
+    name: &str,
+    ndl_related: bool,
+) -> bool {
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name(format!("punktfunk-webos-join-{name}"))
@@ -141,6 +151,15 @@ fn join_with_timeout<T: Send + 'static>(handle: std::thread::JoinHandle<T>, time
             "{name} thread did not finish within {timeout:?} — leaking it \
              (likely a wedged NDL/FFI or QUIC-close call)"
         );
+        if ndl_related {
+            crate::platform::webos::ndl::poison();
+            // `watcher` keeps running `handle.join()` on its own; this just waits on its
+            // `tx` to notice when that finally lands, instead of leaving the leak permanent.
+            std::thread::spawn(move || {
+                let _ = rx.recv();
+                crate::platform::webos::ndl::thread_recovered();
+            });
+        }
         false
     }
 }
@@ -150,19 +169,24 @@ impl Connected {
     /// graceful shutdown. Returns `false` if any step didn't finish within
     /// [`SHUTDOWN_JOIN_TIMEOUT`] — the caller must then skip `ndl::quit()`, since the thread
     /// still running may still be inside an NDL FFI call that a concurrent unload would race.
+    /// A wedged video/audio join also poisons NDL until it actually finishes (see
+    /// `join_with_timeout`) — otherwise a later `NdlVideo::load()` would race whatever that
+    /// leaked thread is still doing.
     pub fn shutdown(self) -> bool {
         self.stop.store(true, Ordering::Relaxed);
-        let mut clean = join_with_timeout(self.video_thread, SHUTDOWN_JOIN_TIMEOUT, "video");
+        let mut clean = join_with_timeout(self.video_thread, SHUTDOWN_JOIN_TIMEOUT, "video", true);
         if let Some(audio) = self.audio_thread {
-            clean &= join_with_timeout(audio, SHUTDOWN_JOIN_TIMEOUT, "audio");
+            clean &= join_with_timeout(audio, SHUTDOWN_JOIN_TIMEOUT, "audio", true);
         }
         // `NativeClient::drop` joins its own QUIC-close worker thread internally — bound
-        // that the same way, on its own thread, rather than blocking here directly.
+        // that the same way, on its own thread, rather than blocking here directly. Doesn't
+        // touch NDL, so a wedge here doesn't poison it, only skips `ndl::quit()` this run.
         let client = self.client;
         clean &= join_with_timeout(
             std::thread::spawn(move || drop(client)),
             SHUTDOWN_JOIN_TIMEOUT,
             "client-drop",
+            false,
         );
         clean
     }
@@ -230,6 +254,9 @@ pub fn connect(
     gamepad_type: crate::services::store::GamepadType,
     cursor_capture: bool,
 ) -> Result<Connected> {
+    // Fails before touching the network: a full handshake would only end in `NdlVideo::load()`
+    // rejecting the same gate, pointlessly holding the host's pending-session slot for `timeout`.
+    crate::platform::webos::ndl::ensure_not_poisoned()?;
     // HDR only ever applies to HEVC. An explicit H.264 pick disables it end to end
     // (the Settings toggle is hidden too — see `ui::hdr_row_shown`); on Automatic the
     // caps are still advertised and the host resolves the codec, with application gated
@@ -833,7 +860,7 @@ fn video_pump(
                 stats.bytes.fetch_add(frame.data.len() as u64, Ordering::Relaxed);
                 if last_heartbeat.elapsed() >= Duration::from_secs(2) {
                     last_heartbeat = Instant::now();
-                    let backlog = sink.backlog();
+                    let backlog = sink.poll_backlog_depth();
                     stats.render_backlog.store(backlog.unwrap_or(-1), Ordering::Relaxed);
                     // `backlog` separates "the decoder is behind" from "frames are
                     // arriving late" — indistinguishable before this, since play()
@@ -845,7 +872,7 @@ fn video_pump(
                     // exactly the situation it exists for, a freeze reported off a
                     // plain sideloaded run with no telemetry listener. Half a line per
                     // second is affordable; a second round trip to reproduce is not.
-                    tracing::debug!(
+                    tracing::info!(
                         "video: {frames_received} frames, holding={}, dropped={}, backlog={}",
                         sink.holding(),
                         client.frames_dropped(),
@@ -889,7 +916,7 @@ fn video_pump(
                     // INFO for the same reason as the main heartbeat above — and this
                     // arm is the one that says "nothing is arriving at all", which is a
                     // different fault from "arriving but not presenting".
-                    tracing::debug!("video: {frames_received} frames (idle)");
+                    tracing::info!("video: {frames_received} frames (idle)");
                 }
             }
             Err(e) => {
@@ -981,8 +1008,9 @@ pub fn spawn_audio_feed(
 
 /// Joins the audio feed thread, bounded by the same timeout every other teardown join uses — a
 /// thread wedged in an Opus decode must not hold the whole app on the way back to the menu.
+/// Software Opus → SDL2, not NDL, so a wedge here doesn't poison NDL.
 pub fn join_audio_feed(handle: std::thread::JoinHandle<()>) -> bool {
-    join_with_timeout(handle, SHUTDOWN_JOIN_TIMEOUT, "audio-feed")
+    join_with_timeout(handle, SHUTDOWN_JOIN_TIMEOUT, "audio-feed", false)
 }
 
 /// Pulls Opus packets off the transport, decodes them, and hands the PCM to the playback ring.

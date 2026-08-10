@@ -23,6 +23,28 @@ const FEED_BACKPRESSURE_WARN: Duration = Duration::from_millis(20);
 /// How often the sink refreshes NDL's render-buffer depth for the decode-latency signal —
 /// three samples per 750 ms ABR report window; see [`NdlSink::decode_us`].
 const BACKLOG_POLL: Duration = Duration::from_millis(250);
+/// Render-buffer frames NDL holds as a *standing* present cushion, excluded from the ABR decode
+/// figure (see [`NdlSink::decode_us`]). NDL presents off its own clock, so a healthy session
+/// sits at 1-2 frames of depth indefinitely — lead, not backlog. Folded in raw it manufactures a
+/// constant 8-17ms of apparent decode latency, crossing `abr`'s 15ms decode-rise threshold and
+/// backing off bitrate for no real reason (observed on the CX 2026-08-10: 1440p120 driven from
+/// 25 Mbps to the 5 Mbps floor with zero loss and flat OWD). Subtracting it keeps the real
+/// signal — a queue that GROWS past this is genuine falling-behind — while dropping the constant.
+///
+/// Only a floor: the settled depth is NDL's business and one frame is 16.6ms at 60Hz, so a mode
+/// idling at three frames would reproduce the bug against a fixed two. The excluded depth is the
+/// rolling min over [`CUSHION_MIN_POLLS`], clamped into this..=[`CUSHION_MAX_FRAMES`] — this value
+/// covers only the first seconds, before that minimum has seen a settled queue.
+const STANDING_CUSHION_FRAMES: u64 = 2;
+/// Polls whose minimum depth is the self-calibrating cushion (see [`STANDING_CUSHION_FRAMES`]).
+/// 20 × [`BACKLOG_POLL`] = 5s: long enough that `abr`'s two-window (1.5s) decode backoff still
+/// fires on a queue that genuinely grows, short enough to follow a mode or content change.
+const CUSHION_MIN_POLLS: usize = 20;
+/// Ceiling on the self-calibrated cushion. Without it, a decoder that stays overloaded for longer
+/// than [`CUSHION_MIN_POLLS`] teaches the rolling minimum its own backlog and the signal goes
+/// quiet — the same baseline-absorption trap this fix exists to escape, just faster. Lead is a
+/// couple of frames by construction, so anything past this is queue, and queue must stay visible.
+const CUSHION_MAX_FRAMES: u64 = 4;
 
 /// This frame's video end-to-end latency, in the shape [`punktfunk_core::audio::AvSync`] compares
 /// against: the instant it reaches the glass expressed in the HOST capture clock, minus its host
@@ -63,6 +85,33 @@ fn video_e2e_ns(
         .checked_add(i128::from(pipeline_ns))?
         .checked_add(i128::from(clock_offset_ns))?;
     u64::try_from(glass_host_ns.checked_sub(i128::from(frame_pts_ns))?).ok()
+}
+
+/// The decode-stage latency reported to `punktfunk_core::abr`: submission time plus the part of
+/// NDL's render queue that is genuinely backlog. See [`NdlSink::decode_us`] for why the queue
+/// belongs in it at all, and [`STANDING_CUSHION_FRAMES`] for why `cushion` comes out first.
+///
+/// Split out as a free function purely so it is testable — [`NdlSink`] owns a live NDL handle and
+/// cannot be built off-device.
+fn decode_report_us(feed_elapsed: Duration, backlog: u64, cushion: u64, frame_interval_ns: u64) -> u32 {
+    let queued_ns = backlog
+        .saturating_sub(cushion)
+        .saturating_mul(frame_interval_ns);
+    let decode_us = u64::try_from(feed_elapsed.as_micros())
+        .unwrap_or(u64::MAX)
+        .saturating_add(queued_ns / 1_000);
+    u32::try_from(decode_us).unwrap_or(u32::MAX)
+}
+
+/// The depth [`decode_report_us`] treats as present lead rather than backlog: the rolling minimum
+/// of recent poll samples, clamped into [`STANDING_CUSHION_FRAMES`]..=[`CUSHION_MAX_FRAMES`].
+/// Empty (no poll yet) yields the floor, never 0 — a session's first windows are exactly when the
+/// buffer is still filling and a raw fold does its damage.
+fn cushion_frames(samples: impl Iterator<Item = u64>) -> u64 {
+    samples
+        .min()
+        .unwrap_or(0)
+        .clamp(STANDING_CUSHION_FRAMES, CUSHION_MAX_FRAMES)
 }
 
 /// What the pump knows about a frame that the sink can't work out for itself.
@@ -169,20 +218,26 @@ pub struct NdlSink {
     player: VideoPlayer,
     stats: Arc<StreamStats>,
     cfg: SinkConfig,
-    frame_period_us: u64,
     /// The panel's actual drain cadence, reconciled against the stream rate — the same interval
     /// the pacer runs on. NDL drains at panel cadence whether or not pacing is enabled, so this,
-    /// not the stream rate, is what converts a render-queue depth into time in [`video_e2e_ns`].
+    /// not the stream rate, is what converts a render-queue depth into time — for BOTH consumers of
+    /// that conversion ([`video_e2e_ns`] and [`NdlSink::decode_us`]), so one depth cannot mean two
+    /// different latencies.
     frame_interval_ns: u64,
     /// Always instantiated — the Blue button can flip pacing on mid-stream, so the state
-    /// must exist even when it starts off. Pacer interval reconciles against the panel's
-    /// measured refresh; the backlog fold stays on the stream rate (host's actual cadence).
+    /// must exist even when it starts off.
     pacer: PtsPacer,
     /// NDL host-PTS→player-clock mapping, reset in lockstep with the pacer.
     host_anchor: HostPtsAnchor,
     /// Previous-frame pacing state, so an off→on flip can re-anchor cleanly.
     pacing_was_on: bool,
-    backlog_cached: u64,
+    /// Last polled depth, `None` if that query failed — which must not read as an empty queue.
+    backlog_cached: Option<u64>,
+    /// Recent poll depths, newest last — their minimum is the cushion the decode figure excludes
+    /// (see [`STANDING_CUSHION_FRAMES`]). Bounded at [`CUSHION_MIN_POLLS`].
+    backlog_recent: std::collections::VecDeque<u64>,
+    /// Cached [`Self::refresh_cushion`] result — read per presented frame, written per poll.
+    cushion_frames: u64,
     last_backlog_poll: Option<Instant>,
     last_keyframe_request: Option<Instant>,
     /// Freeze-until-reanchor: while holding, frames are skipped rather than fed — the
@@ -201,13 +256,14 @@ impl NdlSink {
         Self {
             player,
             stats,
-            frame_period_us: 1_000_000 / u64::from(stream_hz),
             frame_interval_ns,
             pacer: PtsPacer::new(frame_interval_ns),
             host_anchor: HostPtsAnchor::new(),
             pacing_was_on,
             cfg,
-            backlog_cached: 0,
+            backlog_cached: None,
+            backlog_recent: std::collections::VecDeque::with_capacity(CUSHION_MIN_POLLS),
+            cushion_frames: STANDING_CUSHION_FRAMES,
             last_backlog_poll: None,
             last_keyframe_request: None,
             hold_started: None,
@@ -240,34 +296,41 @@ impl NdlSink {
     /// stays fast, which left the controller's decode-rise signal (`abr::DECODE_RISE_US`,
     /// built precisely for "the decoder saturates before the link does") effectively
     /// blind on this client. The render-buffer backlog IS that standing decode queue, so
-    /// it's folded in as `backlog × frame_period`. Polled on a cadence rather than every
-    /// frame — three samples per 750 ms ABR report window is plenty, and assuming an NDL
-    /// query is cheap enough for per-frame use is exactly the mistake docs/NOTES.md warns
-    /// against; between polls the cached depth is reused.
-    fn decode_us(&mut self, feed_elapsed: Duration, backlog: u64) -> u32 {
-        let decode_us = u64::try_from(feed_elapsed.as_micros())
-            .unwrap_or(u64::MAX)
-            .saturating_add(backlog.saturating_mul(self.frame_period_us));
-        u32::try_from(decode_us).unwrap_or(u32::MAX)
+    /// it's folded in as queue-above-cushion × the drain interval (see [`decode_report_us`]).
+    /// Polled on a cadence rather than every frame — three samples per 750 ms ABR report window is
+    /// plenty, and assuming an NDL query is cheap enough for per-frame use is exactly the mistake
+    /// docs/NOTES.md warns against; between polls the cached depth is reused.
+    fn decode_us(&self, feed_elapsed: Duration, backlog: u64) -> u32 {
+        decode_report_us(feed_elapsed, backlog, self.cushion_frames, self.frame_interval_ns)
     }
 
     /// NDL's render-queue depth, refreshed on [`BACKLOG_POLL`]'s cadence and cached between polls.
+    /// `None` is a failed query, not an empty queue.
     ///
-    /// Called unconditionally, because it now has TWO consumers: the ABR decode figure
+    /// Called unconditionally, because it has TWO consumers: the ABR decode figure
     /// ([`Self::decode_us`]) and the A/V sync loop's video reference ([`video_e2e_ns`]). It used to
     /// live inside `decode_us`, which runs only when the host asked for decode latency — so against
-    /// any host that did not, the cached depth stayed pinned at `0` for the entire session. That
-    /// would have silently zeroed the queue term in the video reference, i.e. deleted the one part
-    /// of the estimate that actually tracks the decoder falling behind, while every number involved
-    /// still looked plausible.
-    fn poll_backlog(&mut self) -> u64 {
+    /// any host that did not, the cached depth stayed pinned at `0` for the entire session, silently
+    /// zeroing the queue term in the video reference while every number still looked plausible.
+    fn poll_backlog(&mut self) -> Option<u64> {
         if self.last_backlog_poll.is_none_or(|t| t.elapsed() >= BACKLOG_POLL) {
             self.last_backlog_poll = Some(Instant::now());
             self.backlog_cached = self
                 .player
                 .render_buffer_length()
-                .and_then(|b| u64::try_from(b).ok())
-                .unwrap_or(0);
+                .and_then(|b| u64::try_from(b).ok());
+            // A freeze flushes NDL, so a depth polled while held is an emptied buffer, not this
+            // mode's settled lead. Learning from it would clamp the cushion back to the floor for
+            // [`CUSHION_MIN_POLLS`] after every loss event — and at 60Hz one unaccounted frame is
+            // 16.6ms, straight back over the ABR's decode-rise threshold. The cached depth itself
+            // still updates: A/V sync wants the truth, only the learned cushion is held steady.
+            if let (false, Some(depth)) = (self.holding(), self.backlog_cached) {
+                if self.backlog_recent.len() == CUSHION_MIN_POLLS {
+                    self.backlog_recent.pop_front();
+                }
+                self.backlog_recent.push_back(depth);
+                self.cushion_frames = cushion_frames(self.backlog_recent.iter().copied());
+            }
         }
         self.backlog_cached
     }
@@ -296,9 +359,14 @@ impl NdlSink {
         self.hold_started.is_some()
     }
 
-    /// Decoder backlog depth, or `None` if the backend can't report one.
-    pub fn backlog(&self) -> Option<i32> {
-        self.player.render_buffer_length()
+    /// Decoder backlog depth for the heartbeat/overlay, or `None` if NDL can't report one.
+    ///
+    /// Polls ([`Self::poll_backlog`]) rather than querying NDL directly, so the depth the log prints
+    /// is the one the decode figure was computed from — a second, unsynchronized reading can
+    /// disagree with it — and every `NDL_DirectVideoGetRenderBufferLength` stays on one cadence.
+    pub fn poll_backlog_depth(&mut self) -> Option<i32> {
+        self.poll_backlog()
+            .map(|d| i32::try_from(d).unwrap_or(i32::MAX))
     }
 
     /// Present one access unit, or decide not to. `pts_ns` is the host's capture-clock
@@ -376,7 +444,9 @@ impl NdlSink {
             );
         }
 
-        let backlog = self.poll_backlog();
+        // A failed query counts as no queue for both consumers below: neither the ABR figure nor the
+        // A/V reference has a better guess, and both already treat 0 as "nothing to add".
+        let backlog = self.poll_backlog().unwrap_or(0);
         if play_result.is_ok() {
             // Only a frame NDL actually accepted is on its way to the glass. A failed feed is
             // followed by a flush and a hold below, where the reference would be meaningless.
@@ -408,7 +478,9 @@ impl NdlSink {
 
 #[cfg(test)]
 mod tests {
-    use super::video_e2e_ns;
+    use std::time::Duration;
+
+    use super::{cushion_frames, decode_report_us, video_e2e_ns, CUSHION_MAX_FRAMES, STANDING_CUSHION_FRAMES};
 
     /// 60 Hz, the cadence the pacing grid reconciles to on most panels.
     const HZ60_NS: u64 = 16_666_666;
@@ -478,5 +550,65 @@ mod tests {
         assert_eq!(video_e2e_ns(i128::MIN, i64::MIN, u64::MAX, 0, 0, 0), None);
         // A saturating queue term must not wrap into a small, believable-looking number.
         assert_eq!(video_e2e_ns(SUBMIT, 0, PTS, u64::MAX, HZ60_NS, 0), None);
+    }
+
+    /// 120 Hz — the mode the ABR collapse was observed at (CX, 2026-08-10).
+    const HZ120_NS: u64 = 8_333_333;
+    const FEED: Duration = Duration::from_micros(400);
+
+    /// The regression the cushion exists for: folded in raw, a standing 2-frame lead reported
+    /// ~16.8 ms of "decode latency" every window and walked the rate to the floor. At the settled
+    /// depth the report must be feed time and nothing else.
+    #[test]
+    fn a_standing_present_cushion_reports_no_decode_latency() {
+        for depth in 0..=STANDING_CUSHION_FRAMES {
+            assert_eq!(
+                decode_report_us(FEED, depth, STANDING_CUSHION_FRAMES, HZ120_NS),
+                400,
+                "depth {depth} should read as lead, not queue"
+            );
+        }
+    }
+
+    /// The signal the fold exists for, still intact: a queue GROWING past the cushion is the
+    /// decoder falling behind, and each extra frame is one drain interval of real latency.
+    #[test]
+    fn queue_above_the_cushion_is_reported() {
+        let two_over = decode_report_us(FEED, STANDING_CUSHION_FRAMES + 2, STANDING_CUSHION_FRAMES, HZ120_NS);
+        assert_eq!(two_over, 400 + 2 * 8_333);
+        // And deeper is strictly worse — monotonic, or the controller can't act on it.
+        let one_over = decode_report_us(FEED, STANDING_CUSHION_FRAMES + 1, STANDING_CUSHION_FRAMES, HZ120_NS);
+        assert!(two_over > one_over, "{two_over} !> {one_over}");
+    }
+
+    /// Runs on the video thread per presented frame, so garbage must saturate rather than panic or
+    /// wrap into a believable figure (`u32::MAX` µs is ~71 min — no threshold mistakes it for calm).
+    #[test]
+    fn an_implausible_queue_saturates_instead_of_wrapping() {
+        assert_eq!(decode_report_us(FEED, u64::MAX, 0, u64::MAX), u32::MAX);
+        assert_eq!(decode_report_us(Duration::MAX, 0, 0, HZ120_NS), u32::MAX);
+    }
+
+    /// No samples yet is exactly when a raw fold does its damage — the buffer is still filling — so
+    /// assume the cushion rather than an empty queue.
+    #[test]
+    fn the_cushion_never_starts_at_zero() {
+        assert_eq!(cushion_frames(std::iter::empty()), STANDING_CUSHION_FRAMES);
+        assert_eq!(cushion_frames([0, 0, 1].into_iter()), STANDING_CUSHION_FRAMES);
+    }
+
+    /// A mode that settles deeper than the floor teaches its own lead — one frame is 16.6 ms at
+    /// 60 Hz, so a fixed floor of two would put such a mode straight back over the threshold.
+    #[test]
+    fn a_deeper_settled_queue_raises_the_cushion() {
+        assert_eq!(cushion_frames([4, 3, 5, 3].into_iter()), 3);
+    }
+
+    /// …but only so far. A decoder that stays overloaded past the sample window would otherwise
+    /// teach the minimum its own backlog and mute the signal — the same baseline-absorption trap
+    /// this fix exists to escape, just faster.
+    #[test]
+    fn a_sustained_overload_cannot_teach_the_cushion_away() {
+        assert_eq!(cushion_frames([40, 38, 44].into_iter()), CUSHION_MAX_FRAMES);
     }
 }
