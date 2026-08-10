@@ -147,7 +147,79 @@ impl GamepadType {
     pub fn is_dualsense(self) -> bool {
         matches!(self, Self::DualSense | Self::DualSenseEdge)
     }
+
+    /// Settings' display label — `None` only for `Auto`, which has no catalog entry (it isn't
+    /// a pad, it's "figure out the pad"; see `gamepad_auto_label` for what it shows instead).
+    pub fn label(self) -> Option<&'static str> {
+        GAMEPAD_CATALOG.iter().find(|s| s.kind == self).map(|s| s.label)
+    }
+
+    /// Identifies an attached pad by its real USB vendor/product id — not by SDL's reported
+    /// name, which can be too generic to use (a `DualShock 4` over Bluetooth reports plain
+    /// `"Wireless Controller"`, no `dualshock`/`ps4` substring at all, and — unhelpfully — a
+    /// substring an Xbox pad's own name also contains; verified on-device via
+    /// `/proc/bus/input/devices`: `N: Name="Wireless Controller"`, `Vendor=054c Product=05c4`).
+    /// Ids are stable across a whole pad lineup; names aren't.
+    pub fn for_ids(vendor: u16, product: u16) -> Option<Self> {
+        GAMEPAD_CATALOG
+            .iter()
+            .find(|s| s.vendor == vendor && (s.products.is_empty() || s.products.contains(&product)))
+            .map(|s| s.kind)
+    }
 }
+
+/// One entry per pad this client tells apart by hardware id, in the order Settings offers them
+/// (right after `Auto`, which isn't itself a pad and so has no entry here). The single source
+/// for a `GamepadType`'s label and the USB ids that identify it — see [`GamepadType::label`]
+/// and [`GamepadType::for_ids`], which are the only things allowed to read it directly.
+pub(crate) struct GamepadSpec {
+    pub(crate) kind: GamepadType,
+    label: &'static str,
+    vendor: u16,
+    /// Empty matches any product from this vendor — Xbox spans many pad generations that
+    /// don't need telling apart (mapping it doesn't change what's sent to the host, which
+    /// already defaults to an Xbox pad; it only makes the "Automatic (Xbox)" label correct).
+    /// Every other entry pins the exact ids it's actually known by.
+    products: &'static [u16],
+}
+
+const SONY_VENDOR_ID: u16 = 0x054C;
+const NINTENDO_VENDOR_ID: u16 = 0x057E;
+const MICROSOFT_VENDOR_ID: u16 = 0x045E;
+
+pub(crate) const GAMEPAD_CATALOG: [GamepadSpec; 5] = [
+    GamepadSpec {
+        kind: GamepadType::DualSense,
+        label: "DualSense",
+        vendor: SONY_VENDOR_ID,
+        products: &[0x0CE6],
+    },
+    GamepadSpec {
+        kind: GamepadType::DualSenseEdge,
+        label: "DualSense Edge",
+        vendor: SONY_VENDOR_ID,
+        products: &[0x0DF2],
+    },
+    GamepadSpec {
+        kind: GamepadType::DualShock4,
+        label: "DualShock 4",
+        vendor: SONY_VENDOR_ID,
+        // v1 and the slim v2 revision — both the same pad as far as this client cares.
+        products: &[0x05C4, 0x09CC],
+    },
+    GamepadSpec {
+        kind: GamepadType::XboxOne,
+        label: "Xbox",
+        vendor: MICROSOFT_VENDOR_ID,
+        products: &[],
+    },
+    GamepadSpec {
+        kind: GamepadType::SwitchPro,
+        label: "Switch Pro",
+        vendor: NINTENDO_VENDOR_ID,
+        products: &[0x2009],
+    },
+];
 
 /// Override for the on-device log verbosity, settable live from the Diagnostics
 /// screen — see `logger::set_level_override`.
@@ -293,4 +365,65 @@ pub struct GameEntry {
     pub title: String,
     #[serde(default)]
     pub art: Artwork,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GamepadType;
+
+    /// Every non-`Auto` variant must have a catalog entry — `label()` fails silently (`None`)
+    /// rather than refusing to compile if one's missing. The `match` below has no wildcard
+    /// arm, so adding a `GamepadType` variant breaks this test's compile until it's listed
+    /// here too — the reminder to also add it to `GAMEPAD_CATALOG`.
+    #[test]
+    fn catalog_covers_every_kind_but_auto() {
+        fn check(kind: GamepadType) {
+            match kind {
+                GamepadType::Auto => assert!(kind.label().is_none(), "Auto must not have a catalog entry"),
+                GamepadType::XboxOne
+                | GamepadType::DualShock4
+                | GamepadType::DualSense
+                | GamepadType::DualSenseEdge
+                | GamepadType::SwitchPro => assert!(kind.label().is_some(), "{kind:?} has no GAMEPAD_CATALOG entry"),
+            }
+        }
+        check(GamepadType::Auto);
+        check(GamepadType::XboxOne);
+        check(GamepadType::DualShock4);
+        check(GamepadType::DualSense);
+        check(GamepadType::DualSenseEdge);
+        check(GamepadType::SwitchPro);
+    }
+
+    #[test]
+    fn known_pads_are_recognized_by_id() {
+        assert_eq!(GamepadType::for_ids(0x054C, 0x05C4), Some(GamepadType::DualShock4));
+        assert_eq!(GamepadType::for_ids(0x054C, 0x09CC), Some(GamepadType::DualShock4));
+        assert_eq!(GamepadType::for_ids(0x054C, 0x0CE6), Some(GamepadType::DualSense));
+        assert_eq!(GamepadType::for_ids(0x054C, 0x0DF2), Some(GamepadType::DualSenseEdge));
+        assert_eq!(GamepadType::for_ids(0x057E, 0x2009), Some(GamepadType::SwitchPro));
+    }
+
+    /// Any Microsoft product id counts — unlike Sony/Nintendo, Xbox isn't pinned to one pad
+    /// generation, since mapping it changes nothing about the session (the host's default
+    /// already builds an Xbox pad); this only feeds the Settings label.
+    #[test]
+    fn any_xbox_product_id_is_recognized() {
+        assert_eq!(GamepadType::for_ids(0x045E, 0x02FF), Some(GamepadType::XboxOne));
+        assert_eq!(GamepadType::for_ids(0x045E, 0x0B12), Some(GamepadType::XboxOne));
+    }
+
+    /// A genuinely unrecognized vendor must stay unmapped so the host keeps choosing.
+    #[test]
+    fn unknown_pads_defer_to_the_host() {
+        assert_eq!(GamepadType::for_ids(0x1234, 0x5678), None);
+    }
+
+    /// A product id matching a Sony pad by coincidence, under a different vendor, must not
+    /// be mistaken for one — the (vendor, product) pair is what's mapped, not either alone.
+    #[test]
+    fn product_id_alone_is_not_enough() {
+        assert_eq!(GamepadType::for_ids(0x045E, 0x05C4), None);
+        assert_eq!(GamepadType::for_ids(0x054C, 0x2009), None);
+    }
 }
