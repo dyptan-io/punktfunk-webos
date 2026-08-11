@@ -13,7 +13,8 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 pub use crate::core::model::{
-    upsert_known_host, CodecPref, GamepadType, KnownHost, LogLevelOverride, Persisted, Settings, DESKTOP_PIN_ID,
+    upsert_known_host, CodecPref, GamepadType, KnownHost, LogLevelOverride, Persisted, Settings, VideoBackend,
+    DESKTOP_PIN_ID,
 };
 pub use crate::services::paths::app_dir;
 pub use identity::load_or_create_identity;
@@ -42,33 +43,24 @@ pub fn load() -> Persisted {
         None => legacy::migrate(Settings::default()),
     };
     apply_launch_overrides(&mut state);
-    clamp_to_video_caps(&mut state.settings);
+    // A document written on a more capable TV can hold HEVC, HDR and 7.1 on a device with none
+    // of them — leaving a *set* value whose row the UI hides.
+    state.settings.clamp_to_caps();
     state
 }
 
-/// Normalise a document to what this TV's video backend can do (`core::caps`).
-///
-/// A file written on a webOS 5+ TV can hold HEVC, HDR and 7.1 on a device with none of them —
-/// leaving a *set* value whose row the UI now hides. `session::connect` clamps the wire anyway;
-/// this stops the persisted document itself from disagreeing.
-fn clamp_to_video_caps(settings: &mut Settings) {
-    let caps = crate::core::caps::video_caps();
-    if !caps.h265 && settings.codec == CodecPref::Hevc {
-        tracing::info!("settings: HEVC isn't decodable on this TV's video backend — using Automatic");
-        settings.codec = CodecPref::Auto;
-    }
-    if !caps.hdr && settings.hdr_enabled {
-        tracing::info!("settings: HDR isn't presentable on this TV's video backend — turning it off");
-        settings.hdr_enabled = false;
-    }
-    if settings.audio_channels > caps.max_channels {
-        tracing::info!(
-            "settings: {} audio channels exceeds this TV's {} — clamping",
-            settings.audio_channels,
-            caps.max_channels,
-        );
-        settings.audio_channels = caps.max_channels;
-    }
+/// Just the persisted backend pick, for `core::caps` at startup. Not [`load`]: that clamps
+/// against the caps this very value decides, so it has to be read first. Reads either
+/// document shape (same reasoning as [`persisted_log_level`]).
+pub fn persisted_video_backend() -> VideoBackend {
+    let Some(doc) = read_document() else {
+        return VideoBackend::default();
+    };
+    let settings = doc.get("settings").unwrap_or(&doc);
+    settings
+        .get("video_backend")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
 }
 
 pub fn save(state: &Persisted) -> Result<()> {

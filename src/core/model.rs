@@ -86,6 +86,19 @@ pub fn upsert_known_host(hosts: &mut Vec<KnownHost>, mut new: KnownHost) {
     *existing = new;
 }
 
+/// Video decode backend, selectable in Settings on webOS 3.5-4.x only — see
+/// [`crate::core::caps`]. On webOS 5+ NDL v2 is the only path and the row is hidden.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoBackend {
+    /// NDL `DirectMedia` — v2 on webOS 5+, v1 on 3.5-4.x (H.264/SDR there).
+    #[default]
+    Ndl,
+    /// SMP (`libplayerAPIs_C.so`): HEVC and HDR on a TV whose NDL generation has
+    /// neither, plus `pauseAtDecodeTime` pacing. Falls back to NDL if the load fails.
+    Smp,
+}
+
 /// Codec preference selectable in Settings — a *preference*, not a demand. The host
 /// resolves the session codec from the client's advertised set via its own precedence
 /// ladder (HEVC > H.264), honouring the preference only when its encoder can
@@ -186,6 +199,10 @@ pub struct Settings {
     pub hdr_enabled: bool,
     /// Preferred session codec — see [`CodecPref`].
     pub codec: CodecPref,
+    /// Which decode pipeline to load — see [`VideoBackend`]. Only offered on webOS 3.5-4.x;
+    /// takes effect on the next stream, and changes what this client advertises
+    /// (`core::caps::set_backend`).
+    pub video_backend: VideoBackend,
     /// Whether the in-stream stats overlay (resolution/codec, measured fps, drops,
     /// decoder feed time) is drawn in the top-right corner during a stream. Off by
     /// default; takes effect on the next stream.
@@ -247,6 +264,7 @@ impl Default for Settings {
             hdr_enabled: true,
             stats_overlay: false,
             codec: CodecPref::Auto,
+            video_backend: VideoBackend::Ndl,
             audio_channels: 2,
             log_level_override: LogLevelOverride::Info,
             show_logs: false,
@@ -255,6 +273,31 @@ impl Default for Settings {
             cursor_capture: true,
             game_mode: false,
             cursor_gestures: false,
+        }
+    }
+}
+
+impl Settings {
+    /// Normalise to what the active backend can present (`core::caps`). Called on load and
+    /// whenever the backend row changes, so the document never holds a *set* value whose row
+    /// the UI has just hidden. `session::connect` clamps the wire regardless.
+    pub fn clamp_to_caps(&mut self) {
+        let caps = crate::core::caps::video_caps();
+        if !caps.h265 && self.codec == CodecPref::Hevc {
+            tracing::info!("settings: HEVC isn't decodable on this video backend — using Automatic");
+            self.codec = CodecPref::Auto;
+        }
+        if !caps.hdr && self.hdr_enabled {
+            tracing::info!("settings: HDR isn't presentable on this video backend — turning it off");
+            self.hdr_enabled = false;
+        }
+        if self.audio_channels > caps.max_channels {
+            tracing::info!(
+                "settings: {} audio channels exceeds this backend's {} — clamping",
+                self.audio_channels,
+                caps.max_channels,
+            );
+            self.audio_channels = caps.max_channels;
         }
     }
 }

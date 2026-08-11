@@ -82,6 +82,7 @@ impl App {
                 }
                 logical @ (crate::ui::ROW_RESOLUTION
                 | crate::ui::ROW_FRAMERATE
+                | crate::ui::ROW_VIDEO_BACKEND
                 | crate::ui::ROW_CODEC
                 | crate::ui::ROW_AUDIO
                 | crate::ui::ROW_GAMEPAD) => {

@@ -14,6 +14,7 @@ use punktfunk_core::quic;
 
 use crate::platform::webos::ndl::v1::NdlV1Video;
 use crate::platform::webos::ndl::NdlVideo;
+use crate::platform::webos::smp::SmpVideo;
 use crate::session::pacing::{reconciled_pace_interval_ns, HostPtsAnchor, PtsPacer};
 use crate::session::StreamStats;
 
@@ -134,8 +135,10 @@ pub enum SinkResult {
     NeedKeyframe,
 }
 
-/// The video-decode backend this session runs on, one of the two NDL `DirectMedia` generations
-/// (`device::ndl_generation` picks). Everything above this type is generation-blind.
+/// The video-decode backend this session runs on: one of the two NDL `DirectMedia` generations
+/// (`device::ndl_generation` picks), or SMP where the user selected it
+/// (`Settings::video_backend`, offered on webOS 3.5-4.x only). Everything above this type is
+/// backend-blind.
 ///
 /// V2 is Arc'd because the audio-offload path shares the handle with `ndl_audio_pump`; NDL
 /// unloads process-globally, so unload waits for both threads (`Arc::drop`).
@@ -145,17 +148,12 @@ pub enum VideoPlayer {
     /// webOS 3.5-4.x: H.264 SDR, feed-order presentation, none of the above (see
     /// `platform::webos::ndl::v1`).
     V1(NdlV1Video),
+    /// SMP: HEVC + HDR + `pauseAtDecodeTime` on a legacy TV (see
+    /// `platform::webos::smp`).
+    Smp(SmpVideo),
 }
 
 impl VideoPlayer {
-    pub fn new(ndl: Arc<NdlVideo>) -> Self {
-        Self::V2(ndl)
-    }
-
-    pub fn new_v1(ndl: NdlV1Video) -> Self {
-        Self::V1(ndl)
-    }
-
     /// Feed access unit; return (result, `feed_duration`) for ABR latency reporting.
     /// `pts_ns` must already be in NDL's PTS clock domain (see [`Self::pace_base_ns`]).
     fn play(&self, au: &[u8], pts_ns: u64) -> (anyhow::Result<()>, Duration) {
@@ -164,6 +162,7 @@ impl VideoPlayer {
             Self::V2(ndl) => ndl.play(au, pts_ns),
             // v1's feed takes no timestamp at all — frames present as fed.
             Self::V1(ndl) => ndl.play(au),
+            Self::Smp(sf) => sf.play(au, pts_ns),
         };
         (result, t.elapsed())
     }
@@ -175,24 +174,29 @@ impl VideoPlayer {
     /// of feed-time wall-clock, keeping delivery jitter out of the pacer's drift-clamp
     /// anchor. Without `anchor` (pacing off) NDL falls back to raw player time.
     ///
-    /// V1 has nothing to pace against — no PTS input, no player clock — so the host PTS returns
-    /// untouched and the pacer's output is discarded at the feed. Pacing is inert there.
+    /// SMP is mapped the same way as V2 — its PTS domain is nanoseconds since *its own* load
+    /// (ss4s feeds `now - openTime`), not the host's clock, so an unmapped host PTS would sit an
+    /// arbitrary epoch away and `pauseAtDecodeTime` would hold every frame. V1 has nothing to pace
+    /// against at all (no PTS input, no player clock), so the host PTS returns untouched there and
+    /// the pacer's output is discarded at the feed.
     fn pace_base_ns(&self, frame_pts_ns: u64, anchor: Option<&mut HostPtsAnchor>) -> u64 {
-        let Self::V2(ndl) = self else {
-            return frame_pts_ns;
+        let player_clock_ns = match self {
+            Self::V2(ndl) => ndl.elapsed_ns(),
+            Self::Smp(sf) => sf.elapsed_ns(),
+            Self::V1(_) => return frame_pts_ns,
         };
-        let player_clock_ns = ndl.elapsed_ns();
         match anchor {
             Some(a) => a.map(frame_pts_ns, player_clock_ns),
             None => player_clock_ns,
         }
     }
 
-    /// V1 has no render-buffer API, so nothing to flush — the sink's freeze still holds frames.
+    /// Neither V1 nor SMP has a render-buffer to flush (SMP drains its own buffer and
+    /// resets on an IDR) — the sink's freeze still holds frames.
     fn flush(&self) -> anyhow::Result<()> {
         match self {
             Self::V2(ndl) => ndl.flush(),
-            Self::V1(_) => Ok(()),
+            Self::V1(_) | Self::Smp(_) => Ok(()),
         }
     }
 
@@ -200,33 +204,34 @@ impl VideoPlayer {
     pub fn set_color_info(&self, meta: Option<&quic::HdrMeta>, color: quic::ColorInfo) -> anyhow::Result<()> {
         match self {
             Self::V2(ndl) => ndl.set_color_info(meta, color),
+            Self::Smp(sf) => sf.set_color_info(meta, color),
             Self::V1(_) => Ok(()),
         }
     }
 
-    /// Whether the backend decodes audio itself. Never on V1: its `NDL_DirectAudio*` has no Opus
-    /// source type.
+    /// Whether the backend decodes audio itself. Only ever V2: V1's `NDL_DirectAudio*` has no
+    /// Opus source type, and SMP is loaded `needAudio: false`.
     pub fn audio_offloaded(&self) -> bool {
         match self {
             Self::V2(ndl) => ndl.audio_offloaded(),
-            Self::V1(_) => false,
+            Self::V1(_) | Self::Smp(_) => false,
         }
     }
 
-    /// Shared NDL handle when audio-offloaded; None on a video-only load or on V1.
+    /// Shared NDL handle when audio-offloaded; None on a video-only load or any other backend.
     pub fn ndl_audio_handle(&self) -> Option<Arc<NdlVideo>> {
         match self {
             Self::V2(ndl) => ndl.audio_offloaded().then(|| ndl.clone()),
-            Self::V1(_) => None,
+            Self::V1(_) | Self::Smp(_) => None,
         }
     }
 
-    /// NDL render-buffer backlog. `None` if the query fails, or on V1 which has no such query —
+    /// NDL render-buffer backlog. `None` if the query fails, or on a backend with no such query —
     /// the sink treats both as "no queue to add".
     fn render_buffer_length(&self) -> Option<i32> {
         match self {
             Self::V2(ndl) => ndl.render_buffer_length(),
-            Self::V1(_) => None,
+            Self::V1(_) | Self::Smp(_) => None,
         }
     }
 
@@ -235,6 +240,7 @@ impl VideoPlayer {
         match self {
             Self::V2(_) => "NDL v2",
             Self::V1(_) => "NDL v1",
+            Self::Smp(_) => "SMP",
         }
     }
 }

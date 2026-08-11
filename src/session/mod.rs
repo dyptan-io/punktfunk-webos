@@ -26,7 +26,7 @@ use punktfunk_core::quic;
 use crate::core::caps::video_caps;
 use crate::platform::webos::ndl::v1::NdlV1Video;
 use crate::platform::webos::ndl::{NdlCodec, NdlVideo};
-use crate::services::store::CodecPref;
+use crate::services::store::{CodecPref, VideoBackend};
 use crate::session::sink::{FrameFlags, NdlSink, SinkConfig, SinkResult, VideoPlayer};
 
 pub struct Connected {
@@ -243,6 +243,7 @@ pub fn connect(
     launch: Option<String>,
     timeout: Duration,
     codec_pref: CodecPref,
+    video_backend: VideoBackend,
     video_pacing: bool,
     gamepad_type: crate::services::store::GamepadType,
     cursor_capture: bool,
@@ -262,7 +263,7 @@ pub fn connect(
     let hdr_enabled = hdr_enabled && caps.hdr;
     let audio_channels = audio_channels.min(caps.max_channels);
     // HDR only ever applies to HEVC. An explicit H.264 pick disables it end to end
-    // (the Settings toggle is hidden too — see `ui::hdr_row_shown`); on Automatic the
+    // (the Settings toggle is hidden too — see `ui::settings`'s `row_shown`); on Automatic the
     // caps are still advertised and the host resolves the codec, with application gated
     // on the *negotiated* codec being HEVC further below.
     let hdr_enabled = hdr_enabled && codec_pref != CodecPref::H264;
@@ -349,26 +350,27 @@ pub fn connect(
     let codec =
         NdlCodec::from_wire(client.codec).with_context(|| format!("unsupported codec 0x{:02x}", client.codec))?;
     let app_id = crate::platform::webos::ndl::app_id();
-    let player = match crate::platform::webos::device::ndl_generation() {
-        crate::platform::webos::device::NdlGeneration::V2 => VideoPlayer::new(Arc::new(
-            NdlVideo::load(
-                &app_id,
-                resolved_mode.width as i32,
-                resolved_mode.height as i32,
-                codec,
-                ndl_audio_config(client.audio_channels),
-            )
-            .context("NDL load")?,
+    let (width, height) = (resolved_mode.width as i32, resolved_mode.height as i32);
+    // SMP is only ever selectable where NDL is the narrow v1 generation and the wrapper actually
+    // loaded (`core::caps`, `smp::available`), so trying it here can't displace the v2 path every
+    // working TV takes. A load that still fails falls back to NDL rather than taking the app down
+    // — but only H.264 survives that fallback, since v1 decodes nothing else.
+    let smp = matches!(video_backend, VideoBackend::Smp)
+        .then(|| {
+            crate::platform::webos::smp::SmpVideo::load(&app_id, width, height, fps, codec)
+                .inspect_err(|e| tracing::warn!("SMP load failed ({e:#}) — falling back to NDL"))
+                .ok()
+        })
+        .flatten();
+    let player = match (smp, crate::platform::webos::device::ndl_generation()) {
+        (Some(sf), _) => VideoPlayer::Smp(sf),
+        (None, crate::platform::webos::device::NdlGeneration::V2) => VideoPlayer::V2(Arc::new(
+            NdlVideo::load(&app_id, width, height, codec, ndl_audio_config(client.audio_channels))
+                .context("NDL load")?,
         )),
-        crate::platform::webos::device::NdlGeneration::V1 => VideoPlayer::new_v1(
-            NdlV1Video::load(
-                &app_id,
-                resolved_mode.width as i32,
-                resolved_mode.height as i32,
-                codec,
-            )
-            .context("NDL v1 load")?,
-        ),
+        (None, crate::platform::webos::device::NdlGeneration::V1) => {
+            VideoPlayer::V1(NdlV1Video::load(&app_id, width, height, codec).context("NDL v1 load")?)
+        }
     };
     tracing::info!(
         "{} loaded ({codec:?} {}x{}@{fps}fps)",

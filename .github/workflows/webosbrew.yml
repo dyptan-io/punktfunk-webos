@@ -70,9 +70,9 @@ jobs:
       - name: Verify .ipk against firmware symbol data
         run: |
           set -uo pipefail
-          # webOS 5.x+ only: NDL DirectMedia/DirectVideo don't exist before that.
+          # webOS 4.x+ only.
           # Markdown so the same text reads as a table in the job summary.
-          webosbrew-ipk-verify dist/*.ipk --fw-releases '>=5' \
+          webosbrew-ipk-verify dist/*.ipk --fw-releases '>=4' \
             --details --format markdown | tee -a "$GITHUB_STEP_SUMMARY"
           exit "${PIPESTATUS[0]}"
 
