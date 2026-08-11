@@ -237,6 +237,9 @@ pub fn run() -> Result<()> {
     // Logged before anything else can fail: a report from a model neither developer
     // owns is only actionable if the log says what it was running on.
     crate::platform::webos::device::DeviceInfo::detect().log();
+    // Before settings load or any UI exists: `store::load` clamps against this and
+    // `ui::settings` hides what it can't offer.
+    crate::core::caps::install(crate::platform::webos::device::video_caps());
 
     // A panic on ANY thread otherwise goes only to stderr, which a SAM-launched
     // native app has no terminal for — the app simply vanishes back to the

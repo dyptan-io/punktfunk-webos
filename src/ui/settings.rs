@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::caps::{video_caps, VideoCaps};
 use crate::services::store::{CodecPref, GamepadType, LogLevelOverride, Settings};
 
 /// User-requested presets: 1080p, 1440p, 4K.
@@ -120,23 +121,37 @@ pub const DIAG_ROW_SHOW_LOGS: usize = 2;
 pub const DIAG_ROW_SEND_LOGS: usize = 3;
 pub const DIAGNOSTICS_ROW_COUNT: usize = 4;
 
-/// HDR only applies to HEVC — the host never resolves HDR for an explicit H.264
-/// session, and the toggle would be a no-op. On Automatic the row stays (the host may
-/// still resolve HEVC); it's hidden only when H.264 is picked explicitly. Application
-/// is gated on the *negotiated* codec too — see `session::connect`.
-pub fn hdr_row_shown(settings: &Settings) -> bool {
-    settings.codec != CodecPref::H264
+/// Whether one focusable row is offered, given the settings and what this TV's video backend can
+/// do.
+///
+/// **One predicate per row; every condition for that row combines inside it.** Visibility is
+/// asked for from four places (row list, row count, display↔logical mapping, focus clamping) and
+/// any disagreement is a row you can focus but not see. So all conditions live here — setting-
+/// dependent and backend-dependent alike — and the rest derives from
+/// [`settings_visible_logical_rows`].
+fn row_shown(row: usize, settings: &Settings, caps: VideoCaps) -> bool {
+    match row {
+        // HDR only applies to HEVC: the host never resolves it for an explicit H.264 session, so
+        // the toggle would be a no-op (Automatic keeps the row — HEVC may still be resolved). A
+        // backend without HDR has nothing to toggle either way. Application is gated on the
+        // *negotiated* codec too — see `session::connect`.
+        ROW_HDR => settings.codec != CodecPref::H264 && caps.hdr,
+        _ => true,
+    }
 }
 
-/// Logical `ROW_*` indices currently visible, in display order. The HDR row is dropped
-/// (rather than shown disabled) on an explicit H.264 pick. Every visibility-aware helper
-/// derives from this one list.
+/// Whether the HDR row is offered — see [`row_shown`], which is where its conditions live.
+pub fn hdr_row_shown(settings: &Settings) -> bool {
+    row_shown(ROW_HDR, settings, video_caps())
+}
+
+/// Logical `ROW_*` indices currently visible, in display order — the single source of truth
+/// every visibility-aware helper derives from. Hidden rows are dropped rather than shown
+/// disabled, so the list renumbers itself and no caller carries a fixed index.
 pub fn settings_visible_logical_rows(settings: &Settings) -> Vec<usize> {
+    let caps = video_caps();
     (0..SETTINGS_ROW_COUNT)
-        .filter(|&row| match row {
-            ROW_HDR => hdr_row_shown(settings),
-            _ => true,
-        })
+        .filter(|&row| row_shown(row, settings, caps))
         .collect()
 }
 
@@ -463,9 +478,14 @@ pub fn wake_settings_rows(auto_send: bool) -> Vec<FocusRow> {
     }]
 }
 
-/// The codec choices offered. NDL decodes H.264/HEVC only, so the list is fixed.
+/// The codec choices offered. NDL decodes H.264/HEVC only, and `Hevc` is dropped rather than
+/// shown-and-ignored on a backend without it (the wire clamps it away anyway).
 pub fn codec_options() -> Vec<CodecPref> {
-    vec![CodecPref::Auto, CodecPref::H264, CodecPref::Hevc]
+    let mut options = vec![CodecPref::Auto, CodecPref::H264];
+    if video_caps().h265 {
+        options.push(CodecPref::Hevc);
+    }
+    options
 }
 
 pub fn codec_label(pref: CodecPref) -> &'static str {
@@ -505,8 +525,14 @@ pub fn gamepad_auto_label(detected: Option<GamepadType>) -> String {
     detected.map_or_else(|| "Automatic".to_string(), |t| format!("Automatic ({})", gamepad_label(t)))
 }
 
-/// Supported channel counts.
-pub const AUDIO_CHANNELS: [(u8, &str); 3] = [(2, "Stereo"), (6, "5.1 surround"), (8, "7.1 surround")];
+/// Every channel count this client can label; what is *offered* is [`audio_channel_options`].
+const AUDIO_CHANNELS: [(u8, &str); 3] = [(2, "Stereo"), (6, "5.1 surround"), (8, "7.1 surround")];
+
+/// The channel counts offered, filtered to what the active backend can present.
+pub fn audio_channel_options() -> Vec<(u8, &'static str)> {
+    let max = video_caps().max_channels;
+    AUDIO_CHANNELS.iter().copied().filter(|(c, _)| *c <= max).collect()
+}
 
 fn audio_label(channels: u8) -> String {
     AUDIO_CHANNELS
@@ -522,7 +548,7 @@ pub fn dropdown_options(settings: &Settings, row_index: usize, detected: Option<
         ROW_RESOLUTION => RESOLUTIONS.iter().map(|(w, h, _)| resolution_label(*w, *h)).collect(),
         ROW_FRAMERATE => REFRESH_RATES.iter().map(|hz| format!("{hz} Hz")).collect(),
         ROW_CODEC => codec_options().iter().map(|&p| codec_label(p).to_string()).collect(),
-        ROW_AUDIO => AUDIO_CHANNELS.iter().map(|(_, s)| (*s).to_string()).collect(),
+        ROW_AUDIO => audio_channel_options().iter().map(|(_, s)| (*s).to_string()).collect(),
         ROW_GAMEPAD => GAMEPAD_TYPES
             .iter()
             .map(|&t| {
@@ -549,7 +575,7 @@ pub fn dropdown_current_index(settings: &Settings, row_index: usize) -> usize {
             .position(|hz| *hz == settings.refresh_hz)
             .unwrap_or(0),
         ROW_CODEC => codec_options().iter().position(|&p| p == settings.codec).unwrap_or(0),
-        ROW_AUDIO => AUDIO_CHANNELS
+        ROW_AUDIO => audio_channel_options()
             .iter()
             .position(|(c, _)| *c == settings.audio_channels)
             .unwrap_or(0),
@@ -580,7 +606,7 @@ pub fn apply_dropdown_choice(settings: &mut Settings, row_index: usize, choice_i
             }
         }
         ROW_AUDIO => {
-            if let Some((channels, _)) = AUDIO_CHANNELS.get(choice_index) {
+            if let Some((channels, _)) = audio_channel_options().get(choice_index) {
                 settings.audio_channels = *channels;
             }
         }
@@ -634,7 +660,7 @@ pub fn adjust_setting(settings: &mut Settings, row_index: usize, forward: bool) 
         }
         ROW_AUDIO => {
             let idx = dropdown_current_index(settings, ROW_AUDIO);
-            let next = cycle_index(idx, AUDIO_CHANNELS.len(), forward);
+            let next = cycle_index(idx, audio_channel_options().len(), forward);
             apply_dropdown_choice(settings, ROW_AUDIO, next);
             true
         }

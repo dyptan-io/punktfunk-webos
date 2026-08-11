@@ -17,7 +17,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{reload, Layer};
 
-pub use launch::launch_level_override;
+pub use launch::{launch_level_override, webos_sdk_override};
 pub use level::{resolved_level, set_level_override};
 pub use ring::{recent_lines, set_ring_capture};
 pub use sink::latest_log_file;

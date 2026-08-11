@@ -23,6 +23,8 @@ use punktfunk_core::input::InputEvent;
 use punktfunk_core::packet::{FLAG_SOF, USER_FLAG_RECOVERY_ANCHOR};
 use punktfunk_core::quic;
 
+use crate::core::caps::video_caps;
+use crate::platform::webos::ndl::v1::NdlV1Video;
 use crate::platform::webos::ndl::{NdlCodec, NdlVideo};
 use crate::services::store::CodecPref;
 use crate::session::sink::{FrameFlags, NdlSink, SinkConfig, SinkResult, VideoPlayer};
@@ -248,6 +250,17 @@ pub fn connect(
     // Fails before touching the network: a full handshake would only end in `NdlVideo::load()`
     // rejecting the same gate, pointlessly holding the host's pending-session slot for `timeout`.
     crate::platform::webos::ndl::ensure_not_poisoned()?;
+    // **The authoritative capability gate.** Codec, colour path and channel count are settled by
+    // the handshake, BEFORE any decoder opens, so a document carried over from a more capable TV
+    // must be clamped here and not merely hidden in the UI: HEVC negotiated onto an H.264-only
+    // decoder is a frozen black stream with no second chance once `Welcome` has resolved.
+    let caps = video_caps();
+    let codec_pref = match codec_pref {
+        CodecPref::Hevc if !caps.h265 => CodecPref::Auto,
+        pref => pref,
+    };
+    let hdr_enabled = hdr_enabled && caps.hdr;
+    let audio_channels = audio_channels.min(caps.max_channels);
     // HDR only ever applies to HEVC. An explicit H.264 pick disables it end to end
     // (the Settings toggle is hidden too — see `ui::hdr_row_shown`); on Automatic the
     // caps are still advertised and the host resolves the codec, with application gated
@@ -266,7 +279,12 @@ pub fn connect(
     // Advertised decode set + soft preference. NDL decodes H.264/HEVC only, so those are
     // the only codecs ever advertised — the host's precedence ladder can never auto-pick a
     // path this client can't present.
-    let video_codecs = quic::CODEC_HEVC | quic::CODEC_H264;
+    // Never offered without HEVC, so the host's precedence ladder can't auto-pick it either.
+    let video_codecs = if caps.h265 {
+        quic::CODEC_HEVC | quic::CODEC_H264
+    } else {
+        quic::CODEC_H264
+    };
     let preferred_codec = match codec_pref {
         CodecPref::Auto => 0,
         CodecPref::H264 => quic::CODEC_H264,
@@ -330,20 +348,34 @@ pub fn connect(
     let fps = resolved_mode.refresh_hz.max(1);
     let codec =
         NdlCodec::from_wire(client.codec).with_context(|| format!("unsupported codec 0x{:02x}", client.codec))?;
-    let ndl = NdlVideo::load(
-        &crate::platform::webos::ndl::app_id(),
-        resolved_mode.width as i32,
-        resolved_mode.height as i32,
-        codec,
-        ndl_audio_config(client.audio_channels),
-    )
-    .context("NDL load")?;
+    let app_id = crate::platform::webos::ndl::app_id();
+    let player = match crate::platform::webos::device::ndl_generation() {
+        crate::platform::webos::device::NdlGeneration::V2 => VideoPlayer::new(Arc::new(
+            NdlVideo::load(
+                &app_id,
+                resolved_mode.width as i32,
+                resolved_mode.height as i32,
+                codec,
+                ndl_audio_config(client.audio_channels),
+            )
+            .context("NDL load")?,
+        )),
+        crate::platform::webos::device::NdlGeneration::V1 => VideoPlayer::new_v1(
+            NdlV1Video::load(
+                &app_id,
+                resolved_mode.width as i32,
+                resolved_mode.height as i32,
+                codec,
+            )
+            .context("NDL v1 load")?,
+        ),
+    };
     tracing::info!(
-        "NDL loaded ({codec:?} {}x{}@{fps}fps)",
+        "{} loaded ({codec:?} {}x{}@{fps}fps)",
+        player.backend_name(),
         resolved_mode.width,
         resolved_mode.height,
     );
-    let player = VideoPlayer::new(Arc::new(ndl));
 
     // Forward the negotiated colorimetry to the decoder for BOTH HDR and SDR
     // streams. The SDR case is not optional: punktfunk encodes BT.709, but with

@@ -168,6 +168,10 @@ tasks:
 
         NC_PID=""
         set -- {{.APP_ID}}
+        if [ -n "{{.WEBOS_SDK}}" ]; then
+          echo "forcing detected webOS SDK version: {{.WEBOS_SDK}}" >&2
+          set -- "$@" -p "webos_sdk={{.WEBOS_SDK}}"
+        fi
         if [ -n "$TELEMETRY" ]; then
           PORT="${TELEMETRY##*:}"
           ( while true; do nc -l "$PORT"; done ) &

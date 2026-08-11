@@ -35,7 +35,7 @@ Layered by module, deps point inward (acyclic). Leaves first:
 - **`platform/webos/`** — SDL2/hardware boundary (all `#[cfg(target_os = "linux")]`):
   `compositor` (translates `ui::DrawList` → SDL textures, owns the texture cache),
   `input` (SDL events → `InputEvent`), `text_sdl` (SDL2_ttf impl of `TextRaster`),
-  video (`ndl`/`luna`), `audio`, `device`, `gamepad`/`keyboard`/`mouse`/
+  video (`ndl/` — `ffi` dlopen tables, `v2`, `v1`; plus `luna`), `audio`, `device`, `gamepad`/`keyboard`/`mouse`/
   `dualsense`, C build shims.
 - **`app/`** — the `App` state machine. Per-screen `impl App` blocks split by concern:
   `app::state::<screen>` (event handling/transitions) and `app::view::<screen>` (geometry +
@@ -58,7 +58,10 @@ in `Cargo.toml`). webOS target reports Linux same as dev box; macOS/Windows get 
 `services` too. Keep new modules ungated unless they link SDL2/webOS libs.
 
 **Two decode paths**: video via NDL DirectMedia (`platform/webos/ndl.rs`, opaque
-decode+present), audio client-side Opus (`platform/webos/audio.rs`). Loss recovery:
+decode+present), audio client-side Opus (`platform/webos/audio.rs`). NDL is `dlopen`'d (never
+linked — see `docs/NOTES.md`) and comes in two generations: v2 on webOS 5+, v1 on 3.5-4.x
+(H.264/SDR, no PTS), picked by `device::ndl_generation()` from the detected `sdkVersion`;
+`core::caps` publishes the resulting limits to the wire, the UI and settings load. Loss recovery:
 `session`'s `video_pump` reimplements freeze-until-reanchor directly — upstream `ReanchorGate`
 assumes decode/present split NDL lacks.
 
