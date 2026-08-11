@@ -146,12 +146,13 @@ fn cycle_log_overlay() {
         LogOverlayState::Live => {
             let mut snap = frozen_log_lines().lock().unwrap_or_else(PoisonError::into_inner);
             *snap = crate::logger::recent_lines(crate::ui::LOG_OVERLAY_LINES);
+            drop(snap);
+            // Nothing reads the ring while frozen — stop capturing so logging threads
+            // (the video pump above all) drop back to a single atomic load per event.
+            crate::logger::set_ring_capture(false);
             LogOverlayState::Frozen
         }
-        LogOverlayState::Frozen => {
-            crate::logger::set_ring_capture(false);
-            LogOverlayState::Off
-        }
+        LogOverlayState::Frozen => LogOverlayState::Off,
     };
     LOG_OVERLAY_STATE.store(next as u8, Ordering::Relaxed);
 }
