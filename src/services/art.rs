@@ -145,7 +145,7 @@ fn write_raw(path: &std::path::Path, magic: u32, width: u32, height: u32, pixels
     header[0..4].copy_from_slice(&magic.to_le_bytes());
     header[4..8].copy_from_slice(&width.to_le_bytes());
     header[8..12].copy_from_slice(&height.to_le_bytes());
-    let _ = crate::services::store::write_atomic_parts(path, &[&header, pixels], "art raw cache");
+    let _ = crate::services::atomic::write_parts(path, &[&header, pixels], "art raw cache");
 }
 
 /// Read raw cache, if present and written with this magic (and so this pixel convention —
@@ -515,7 +515,7 @@ fn worker(config: &WorkerConfig, rx: &Receiver<ArtRequest>, tx: &Sender<ArtLoade
                 };
                 // Write-then-rename, never truncate-in-place: a kill mid-write would
                 // otherwise leave a truncated file that gets served from cache forever.
-                let _ = crate::services::store::write_atomic_parts(&cached, &[&fetched], "art bytes cache");
+                let _ = crate::services::atomic::write_parts(&cached, &[&fetched], "art bytes cache");
                 fetched
             }
         };

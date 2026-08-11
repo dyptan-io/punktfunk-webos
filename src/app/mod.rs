@@ -494,12 +494,14 @@ fn known_entries(known_hosts: &[store::KnownHost]) -> Vec<HostEntry> {
 
 impl App {
     pub fn new(identity: (String, String)) -> Self {
-        let loaded = store::load_state();
+        let loaded = store::load();
+        // The writer's baseline is the document as loaded, so an unchanged launch never writes.
+        let state_writer = store::StateWriter::spawn(loaded.clone());
         let store::Persisted {
             settings,
             known_hosts,
             selected_host,
-        } = loaded.clone();
+        } = loaded;
         let entries = known_entries(&known_hosts);
         let (discovered, discovery_daemon) = match crate::services::discovery::browse() {
             Some((rx, daemon)) => (rx, Some(daemon)),
@@ -525,7 +527,7 @@ impl App {
             launch_anim: None,
             launch_anim_idx: None,
             settings,
-            state_writer: store::StateWriter::spawn(loaded),
+            state_writer,
             detected_gamepad_type: None,
             settings_focused: 0,
             scroll: ui::ScrollWindow::new(),

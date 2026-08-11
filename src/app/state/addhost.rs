@@ -41,15 +41,11 @@ impl App {
                 name,
                 host: host.clone(),
                 port,
-                mgmt_port: None,
-                mac: Vec::new(),
-                // upsert_known_host keeps an existing record's wol_auto
-                wol_auto: false,
-                // upsert_known_host keeps an existing record's pins
+                // Only reaches a genuinely new host: `upsert_known_host` keeps an existing
+                // record's pins, wol_auto and fingerprint, so re-adding a paired host neither
+                // unpairs it nor resets its preferences.
                 pinned: vec![store::DESKTOP_PIN_ID.to_string()],
-                // Defaults to unpaired. `upsert_known_host` keeps an existing record's
-                // fingerprint, so re-adding a paired host doesn't unpair it.
-                ..store::KnownHost::default()
+                ..KnownHost::default()
             },
         );
         self.persist();

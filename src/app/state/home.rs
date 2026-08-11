@@ -583,11 +583,13 @@ impl App {
         let (host, port) = (h.host.clone(), h.port);
         crate::services::art::clear_host_cache(&host, port);
         self.known_hosts.retain(|k| !(k.host == host && k.port == port));
-        self.persist();
         self.rebuild_entries();
         if self.selected_host.as_ref() == Some(&(host, port)) {
             self.clear_selected_host();
         }
+        // After the selection clear: persisting first would leave `selected_host` in the document
+        // pointing at the host just forgotten.
+        self.persist();
         let sidebar_len = self.sidebar_len();
         if let HomeFocus::Sidebar(i) = &mut self.home_focus {
             if *i >= sidebar_len {
