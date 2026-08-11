@@ -2,9 +2,8 @@
 //!
 //! Split out of the former single-file `ui.rs`; see `super`'s module docs.
 
-/// punktfunk's conventional host port (see `store::dev_override_connect`'s
-/// fallback) — what a bare address means, so the add-host screen only *has* to
-/// ask for an IP; an explicit `:port` suffix overrides it.
+/// punktfunk's conventional host port — what a bare address means, so the add-host
+/// screen only *has* to ask for an IP; an explicit `:port` suffix overrides it.
 pub const FIXED_HOST_PORT: u16 = 9777;
 
 /// Manual "add host" entry state: one free-form field holding `ip[:port]`

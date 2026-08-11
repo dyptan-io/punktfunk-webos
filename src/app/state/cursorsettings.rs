@@ -32,7 +32,7 @@ impl App {
                 self.switch_anim = Some((Instant::now(), from, self.cursor_settings_focused));
             }
             (_, MenuEvent::Back) => {
-                self.settings_writer.save(self.settings);
+                self.persist();
                 self.screen = Screen::Settings;
                 self.scroll = self.settings_scroll;
             }

@@ -3,10 +3,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 
 pub use crate::core::model::{
-    CodecPref, ColorRangeOverride, GamepadType, KnownHost, LogLevelOverride, Settings, DESKTOP_PIN_ID,
+    CodecPref, GamepadType, KnownHost, LogLevelOverride, Persisted, Settings, DESKTOP_PIN_ID,
 };
 pub(crate) use crate::services::paths::app_dir;
 
@@ -25,17 +24,6 @@ pub fn load_or_create_identity() -> Result<(String, String)> {
     std::fs::write(&cert_path, &identity.0).context("write client-cert.pem")?;
     std::fs::write(&key_path, &identity.1).context("write client-key.pem")?;
     Ok(identity)
-}
-
-fn known_hosts_path() -> PathBuf {
-    app_dir().join("known-hosts.json")
-}
-
-pub fn load_known_hosts() -> Vec<KnownHost> {
-    std::fs::read_to_string(known_hosts_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
 }
 
 /// Write-then-rename, never truncate-in-place: `std::fs::write` truncates first,
@@ -64,11 +52,6 @@ pub(crate) fn write_atomic_parts(path: &Path, parts: &[&[u8]], what: &str) -> Re
     std::fs::rename(&tmp, path).with_context(|| format!("rename {what} into place"))
 }
 
-pub fn save_known_hosts(hosts: &[KnownHost]) -> Result<()> {
-    let json = serde_json::to_string_pretty(hosts).context("serialize known hosts")?;
-    write_atomic(known_hosts_path(), &json, "known-hosts.json")
-}
-
 /// Upserts by `(host, port)`, keeping the existing fingerprint if the new record is unpaired
 /// (a fresh mDNS discovery shouldn't clobber a paired host) — same reasoning for `mac`,
 /// learned separately (see `App::drain_discovery`) and not necessarily known again at the
@@ -92,60 +75,121 @@ pub fn upsert_known_host(hosts: &mut Vec<KnownHost>, mut new: KnownHost) {
     }
 }
 
-fn selected_host_path() -> PathBuf {
-    app_dir().join("selected-host.json")
-}
-
-/// The sidebar host row the user last had active — so relaunching the app lands
-/// back on its game grid instead of an unfocused sidebar. `(host, port)`, not an
-/// index: `known_hosts` order isn't stable across a forget/re-add.
-#[derive(Clone, Serialize, Deserialize)]
-struct SelectedHost {
-    host: String,
-    port: u16,
-}
-
-pub fn load_selected_host() -> Option<(String, u16)> {
-    let s = std::fs::read_to_string(selected_host_path()).ok()?;
-    let sel: SelectedHost = serde_json::from_str(&s).ok()?;
-    Some((sel.host, sel.port))
-}
-
-pub fn save_selected_host(host: &str, port: u16) -> Result<()> {
-    let json = serde_json::to_string_pretty(&SelectedHost {
-        host: host.to_string(),
-        port,
-    })
-    .context("serialize selected host")?;
-    write_atomic(selected_host_path(), &json, "selected-host.json")
-}
-
-fn settings_path() -> PathBuf {
+fn state_path() -> PathBuf {
     app_dir().join("settings.json")
 }
 
-pub fn load_settings() -> Settings {
-    let mut settings: Settings = std::fs::read_to_string(settings_path())
+/// Pre-consolidation files, deleted by the migration in [`load_state`]. Only `known-hosts.json`
+/// is carried over: a pairing is a fingerprint the host approved once, and losing it means
+/// re-pairing. The other two are deleted unread — `selected-host` rewrites itself on the next
+/// pick, and `av-trim-ms` fed a calibration this client no longer has.
+const LEGACY_FILES: [&str; 3] = ["known-hosts.json", "selected-host.json", "av-trim-ms.conf"];
+
+/// Loads the whole persisted document. Absent, unreadable and unparseable all answer with
+/// defaults — a torn file must not take the app down ([`write_atomic`] is what prevents one).
+///
+/// Migrates the pre-consolidation layout in place, so callers never see the old shape.
+pub fn load_state() -> Persisted {
+    let doc = std::fs::read_to_string(state_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    // A nested `settings` key means the current shape. Otherwise the fields sit at the top level
+    // — or the file is missing entirely, which still needs migrating, since pairing a host wrote
+    // `known-hosts.json` without ever writing settings.
+    let legacy_settings = match doc {
+        Some(doc) if doc.get("settings").is_some() => {
+            let mut state: Persisted = serde_json::from_value(doc).unwrap_or_default();
+            apply_launch_overrides(&mut state);
+            return state;
+        }
+        Some(doc) => serde_json::from_value(doc).unwrap_or_default(),
+        None => Settings::default(),
+    };
+    let mut state = migrate_legacy(legacy_settings);
+    apply_launch_overrides(&mut state);
+    state
+}
+
+/// Just the persisted log level, for `logger`'s startup filter. Not [`load_state`]: that migrates,
+/// and this runs before the subscriber exists, so the migration's log lines would be dropped.
+/// Reads either document shape.
+pub fn persisted_log_level() -> LogLevelOverride {
+    if let Some(level) = crate::logger::launch_level_override() {
+        return level;
+    }
+    let Some(doc) = std::fs::read_to_string(state_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+    else {
+        return LogLevelOverride::default();
+    };
+    let settings = doc.get("settings").unwrap_or(&doc);
+    settings
+        .get("log_level_override")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// `task deploy TELEMETRY=...` dev convenience: `TELEMETRY_LEVEL` picks the level this launch
+/// starts at (and what Diagnostics displays), overriding whatever was last persisted — see
+/// `logger::launch_level_override`. Absent, the persisted value stands (Info on a fresh install).
+///
+/// `StateWriter`'s baseline is taken after this, so a launch that only overrides the level writes
+/// nothing. It is NOT otherwise held out of the document, though: the override lands in `App`'s
+/// `Settings`, so the next unrelated save persists it and a later plain launch starts at the
+/// overridden level. Pre-dates the consolidation; fixing it means separating the level the logger
+/// runs at from the one Diagnostics displays and saves.
+fn apply_launch_overrides(state: &mut Persisted) {
+    if let Some(level) = crate::logger::launch_level_override() {
+        state.settings.log_level_override = level;
+    }
+}
+
+/// Folds the pre-consolidation host list into the document and writes it, once. Absent legacy
+/// files are not an error: a fresh install has none, nor does one already migrated.
+fn migrate_legacy(settings: Settings) -> Persisted {
+    let present: Vec<&str> = LEGACY_FILES
+        .into_iter()
+        .filter(|f| app_dir().join(f).exists())
+        .collect();
+    let known_hosts: Vec<KnownHost> = std::fs::read_to_string(app_dir().join("known-hosts.json"))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
-    // `task deploy TELEMETRY=...` dev convenience: TELEMETRY_LEVEL picks the level
-    // this launch starts at (and what Diagnostics displays), overriding whatever
-    // was last persisted — see `logger::launch_level_override`. Absent, the
-    // persisted value stands (Info on a fresh install).
-    if let Some(level) = crate::logger::launch_level_override() {
-        settings.log_level_override = level;
+    let state = Persisted {
+        settings,
+        known_hosts,
+        selected_host: None,
+    };
+    if present.is_empty() {
+        return state;
     }
-    settings
+    // Synchronous rather than through `StateWriter`: the write is what licenses deleting the old
+    // files, and doing it here keeps the writer's baseline equal to what is on disk.
+    match save_state(&state) {
+        Ok(()) => {
+            // Only once the document is in place, so a failed write leaves them to migrate from
+            // again.
+            for file in present.iter() {
+                let _ = std::fs::remove_file(app_dir().join(file));
+            }
+            tracing::info!(
+                "migrated {} host(s) into settings.json, removed {present:?}",
+                state.known_hosts.len()
+            );
+        }
+        Err(e) => tracing::warn!("legacy state migration failed, leaving old files in place: {e:#}"),
+    }
+    state
 }
 
-pub fn save_settings(settings: &Settings) -> Result<()> {
-    let json = serde_json::to_string_pretty(settings).context("serialize settings")?;
-    write_atomic(settings_path(), &json, "settings.json")
+pub fn save_state(state: &Persisted) -> Result<()> {
+    let json = serde_json::to_string_pretty(state).context("serialize app state")?;
+    write_atomic(state_path(), &json, "settings.json")
 }
 
-/// Persists `Settings` on a dedicated background thread instead of the caller's —
-/// `save_settings`'s write-then-rename blocks on real disk I/O (measured ~100-200ms
+/// Persists the document on a dedicated background thread instead of the caller's —
+/// `save_state`'s write-then-rename blocks on real disk I/O (measured ~100-200ms
 /// on-device), which is fine for the occasional save but was stalling the UI thread
 /// on every single settings-row adjustment (bitrate slider steps, a toggle flip),
 /// reading as input lag on the very controls someone expects to feel instant.
@@ -153,108 +197,79 @@ pub fn save_settings(settings: &Settings) -> Result<()> {
 /// A single long-lived writer thread, not one spawn per save: rapid adjustments
 /// (holding the bitrate slider) replace the pending value rather than queuing every
 /// intermediate one, so a burst of changes costs one disk write of the final state,
-/// not N — and, since one thread ever calls `save_settings`, writes can't complete
+/// not N — and, since one thread ever calls `save_state`, writes can't complete
 /// out of order the way N independently-spawned threads racing the filesystem could.
-pub struct SettingsWriter {
-    pending: std::sync::Arc<(std::sync::Mutex<Option<Settings>>, std::sync::Condvar)>,
+///
+/// It carries the whole document, so a host edit and a settings change can't race into
+/// disagreeing files — whichever snapshot lands last came from the same in-memory state.
+///
+/// **Unchanged snapshots never reach the disk.** Callers hand over the whole document, and several
+/// fire on events that usually change nothing (an mDNS reply repeating a known MAC, re-selecting
+/// the active host, leaving Settings untouched). With `spawn`'s baseline being what was just
+/// loaded, an unchanged launch writes zero times: durable state, not a scratch file.
+pub struct StateWriter {
+    pending: std::sync::Arc<(std::sync::Mutex<Option<Persisted>>, std::sync::Condvar)>,
+    /// The last snapshot queued. Separate from `pending`, which the worker empties as it writes —
+    /// the comparison has to outlive that.
+    last: std::sync::Mutex<Persisted>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// `None` only after `Drop` has taken and joined it.
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
-impl SettingsWriter {
-    pub fn spawn() -> Self {
-        let state = std::sync::Arc::new((std::sync::Mutex::new(None::<Settings>), std::sync::Condvar::new()));
+impl StateWriter {
+    /// `baseline` is the document as loaded from disk, so a save matching it is a no-op.
+    pub fn spawn(baseline: Persisted) -> Self {
+        let state = std::sync::Arc::new((std::sync::Mutex::new(None::<Persisted>), std::sync::Condvar::new()));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_state = state.clone();
         let worker_stop = stop.clone();
         let thread = std::thread::spawn(move || {
             let (lock, cvar) = &*worker_state;
             loop {
-                let mut guard = lock.lock().expect("settings-writer mutex poisoned");
+                let mut guard = lock.lock().expect("state-writer mutex poisoned");
                 while guard.is_none() && !worker_stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    guard = cvar.wait(guard).expect("settings-writer mutex poisoned");
+                    guard = cvar.wait(guard).expect("state-writer mutex poisoned");
                 }
-                let Some(settings) = guard.take() else {
+                let Some(state) = guard.take() else {
                     return; // stopped with nothing pending
                 };
                 drop(guard);
-                let _ = save_settings(&settings);
+                let _ = save_state(&state);
             }
         });
         Self {
             pending: state,
+            last: std::sync::Mutex::new(baseline),
             stop,
             thread: Some(thread),
         }
     }
 
-    /// Queues `settings` to be written, replacing any not-yet-written value already
-    /// queued. Returns immediately — never touches disk on the calling thread.
-    pub fn save(&self, settings: Settings) {
+    /// Queues `state`, replacing any snapshot not yet written and dropping one equal to the last
+    /// queued. Returns immediately — never writes on the calling thread.
+    pub fn save(&self, state: Persisted) {
+        let mut last = self.last.lock().expect("state-writer mutex poisoned");
+        if *last == state {
+            return;
+        }
+        last.clone_from(&state);
+        drop(last);
         let (lock, cvar) = &*self.pending;
-        *lock.lock().expect("settings-writer mutex poisoned") = Some(settings);
+        *lock.lock().expect("state-writer mutex poisoned") = Some(state);
         cvar.notify_one();
     }
 }
 
-impl Drop for SettingsWriter {
+impl Drop for StateWriter {
     /// Wakes the worker with `stop` set so it exits after flushing any pending save,
     /// then joins it — otherwise every menu re-entry (a fresh `App`, a fresh
-    /// `SettingsWriter`) leaked one thread parked forever on the `Condvar`.
+    /// `StateWriter`) leaked one thread parked forever on the `Condvar`.
     fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         self.pending.1.notify_one();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-    }
-}
-
-/// One value, one file in `$HOME`, absent by default — the sweep-knob mechanism every
-/// `dev_override_*` below shares. Absent file, unreadable file and unparseable contents are all
-/// the same answer: `None`, i.e. use the compiled-in behaviour.
-///
-/// These exist because their values cannot be derived from inside the app (undocumented SDK
-/// units, panel latency NDL never reports, a link that has to be measured), so they have to be
-/// swept against real playback — and a rebuild/redeploy per candidate makes that impractical.
-fn dev_override<T: std::str::FromStr>(file: &str) -> Option<T> {
-    let path = Path::new(&app_dir()).join(file);
-    std::fs::read_to_string(path).ok()?.trim().parse().ok()
-}
-
-/// NDL's undocumented frame-drop threshold: `$HOME/ndl-drop-threshold.conf`. The SDK header
-/// declares `NDL_DirectVideoSetFrameDropThreshold` and says nothing about its units.
-pub fn dev_override_ndl_drop_threshold() -> Option<i32> {
-    dev_override("ndl-drop-threshold.conf")
-}
-
-/// A/V sync trim, in milliseconds: `$HOME/av-trim-ms.conf`, absent (⇒ 0) by default.
-///
-/// This is NDL's decode + panel latency *after* its render queue drains — the one term of
-/// `session::sink::video_e2e_ns` the app cannot observe, because `NDL_DirectVideoPlay` reports
-/// nothing about presentation. Deliberately NOT a Settings row yet — what the default should be,
-/// and whether it even needs to be user-visible, is what the observe-only measurement decides (LG
-/// panels plausibly differ between Game Optimiser and the processing-heavy picture modes, which no
-/// single compiled-in constant would cover).
-///
-/// Sign: this value is ADDED to the video leg, so raising it tells the sync loop the picture is
-/// later than it looked, and the loop answers by holding audio back. If audio runs early, raise it.
-pub fn dev_override_av_trim_ms() -> Option<u32> {
-    dev_override("av-trim-ms.conf")
-}
-
-/// Test/dev override: a config file dropped alongside sideloading skips straight to
-/// a connect target — predates the finding (see `docs/NOTES.md`) that SAM launch
-/// `params` reach a native app as `argv[1]` JSON on initial launch, which
-/// `logger.rs` uses instead for telemetry. Still supported for quick bring-up
-/// testing; the UI flow below is the normal path.
-pub fn dev_override_connect() -> Option<(String, u16)> {
-    let path = Path::new(&app_dir()).join("connect.conf");
-    let content = std::fs::read_to_string(path).ok()?;
-    let target = content.split_whitespace().nth(1)?;
-    match target.split_once(':') {
-        Some((h, p)) => Some((h.to_string(), p.parse().ok()?)),
-        None => Some((target.to_string(), 9777)),
     }
 }

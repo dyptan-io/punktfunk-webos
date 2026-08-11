@@ -68,11 +68,11 @@ impl App {
             (ui::DIAG_ROW_SEND_LOGS, MenuEvent::Confirm) => {
                 // Persist any pending diagnostics changes before leaving the screen —
                 // the confirmation modal's buttons return to Home, not back here.
-                self.settings_writer.save(self.settings);
+                self.persist();
                 self.open_send_logs();
             }
             (_, MenuEvent::Back) => {
-                self.settings_writer.save(self.settings);
+                self.persist();
                 self.screen = Screen::Settings;
                 self.scroll = self.settings_scroll;
             }

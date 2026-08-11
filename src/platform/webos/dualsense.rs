@@ -162,7 +162,7 @@ pub fn hid_playstation_bound() -> bool {
 ///
 /// The thread exists because a send is a fork/exec of `luna-send-pub` (see [`crate::platform::webos::luna`]),
 /// which must never land on the render/input loop. Queue depth is one with latest-wins
-/// replacement — the same discipline as [`crate::services::store::SettingsWriter`] — because the state
+/// replacement — the same discipline as [`crate::services::store::StateWriter`] — because the state
 /// is absolute: a superseded update carries no information the newer one lacks.
 pub struct Feedback {
     state: State,
@@ -254,7 +254,7 @@ impl Feedback {
 impl Drop for Feedback {
     fn drop(&mut self) {
         // Closing the channel ends `sender_loop`; joining lets a send in flight (and anything
-        // `release` just queued) complete — the same reason `SettingsWriter` joins its writer.
+        // `release` just queued) complete — the same reason `StateWriter` joins its writer.
         drop(self.tx.take());
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();

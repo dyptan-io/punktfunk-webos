@@ -65,19 +65,19 @@ impl App {
                 // Settings are saved on the way out so the visit's changes aren't lost
                 // behind the navigation.
                 crate::ui::ROW_ABOUT => {
-                    self.settings_writer.save(self.settings);
+                    self.persist();
                     self.open_about();
                 }
                 crate::ui::ROW_CURSOR => {
-                    self.settings_writer.save(self.settings);
+                    self.persist();
                     self.open_cursor_settings();
                 }
                 crate::ui::ROW_EXPERIMENTAL => {
-                    self.settings_writer.save(self.settings);
+                    self.persist();
                     self.open_experimental();
                 }
                 crate::ui::ROW_DIAGNOSTICS => {
-                    self.settings_writer.save(self.settings);
+                    self.persist();
                     self.open_diagnostics();
                 }
                 logical @ (crate::ui::ROW_RESOLUTION
@@ -98,12 +98,12 @@ impl App {
             },
             // Leaving Settings (Back key or the modal's close-X, both funnel
             // through `App::back`) — save once for whatever changed during
-            // this visit instead of once per row/keystroke. `settings_writer`
+            // this visit instead of once per row/keystroke. `StateWriter`
             // still queues the write on a background thread either way (see
             // its docs), but there's no reason to touch disk at all more than
             // once per Settings visit.
             MenuEvent::Back => {
-                self.settings_writer.save(self.settings);
+                self.persist();
                 self.screen = Screen::Home;
             }
             MenuEvent::Secondary => {}

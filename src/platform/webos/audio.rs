@@ -98,15 +98,7 @@ impl AudioPlayer {
     ///
     /// The two halves are returned separately because they belong on different threads: the device
     /// stays wherever SDL was initialised, and the feed moves to the decode thread.
-    /// `sync_enabled` arms the A/V sync loop. It is the caller's read of whether the NDL present
-    /// constant has been calibrated — see [`AudioFeed::observe_av`] for why an uncalibrated loop
-    /// is worse than none.
-    pub fn new(
-        sdl_audio: &sdl2::AudioSubsystem,
-        channels: u8,
-        cells: SyncCells,
-        sync_enabled: bool,
-    ) -> Result<(Self, AudioFeed)> {
+    pub fn new(sdl_audio: &sdl2::AudioSubsystem, channels: u8, cells: SyncCells) -> Result<(Self, AudioFeed)> {
         let layout = layout_for(channels, false);
         let decoder = opus::MSDecoder::new(SAMPLE_RATE, layout.streams, layout.coupled, layout.mapping)
             .map_err(|e| anyhow::anyhow!("opus MSDecoder::new: {e}"))?;
@@ -169,7 +161,6 @@ impl AudioPlayer {
                 av: AvSync::new(layout.channels),
                 cells,
                 sync,
-                sync_enabled,
                 in_flight,
             },
         ))
@@ -198,10 +189,8 @@ pub struct AudioFeed {
     /// A/V synchronisation, **measure-only for now** — see [`AudioFeed::observe_av`].
     av: AvSync,
     cells: SyncCells,
-    /// Depth out of the callback, target in.
+    /// Depth out of the callback.
     sync: Arc<AudioSyncCell>,
-    /// Whether to post a target back, i.e. whether to steer at all. See [`Self::observe_av`].
-    sync_enabled: bool,
     /// Decoded samples handed off but not yet in the ring — see its construction site.
     in_flight: Arc<AtomicUsize>,
 }
@@ -255,24 +244,14 @@ impl AudioFeed {
     /// Fold one packet into the A/V offset measurement, and publish both the offset and the ring
     /// depth for the stats overlay.
     ///
-    /// **Measuring is unconditional; steering is not.** The offset and the ring depth are always
+    /// **Measure-only, deliberately: nothing steers.** The offset and the ring depth are
     /// published — they are the instrument, and a latency report with no instrument behind it is
-    /// what this whole programme exists to end. Whether a *target* is posted back depends on
-    /// [`Self::sync_enabled`].
+    /// what this whole programme exists to end — but no target is ever posted back to
+    /// [`JitterPolicy`], so `AvSync::desired_depth` goes uncalled.
     ///
-    /// The gate is there because of the one term this platform cannot observe: NDL reports nothing
-    /// about presentation, so `session::sink::video_e2e_ns` carries a calibrated constant for the
-    /// decode+panel latency after its render queue drains. Uncalibrated it is `0`, which biases
-    /// the measured offset high, and steering on a biased offset places audio early by exactly the
-    /// bias — a plausible 33-83 ms against a 10 ms deadband, i.e. a bigger fault than the drift
-    /// being corrected. So the loop arms only once someone has written the measurement to
-    /// `$HOME/av-trim-ms.conf`; that file's presence IS the calibration, and removing it is the
-    /// bisect escape hatch. A settings toggle would need the same evidence to be worth offering.
-    ///
-    /// Note what is NOT gated: the proposal is only ever a request. [`JitterPolicy`] clamps it
-    /// between its own underrun-driven floor and its hard cap, so continuity outranks sync — a link
-    /// whose jitter genuinely needs more buffer than the picture is away keeps its buffer, and the
-    /// residual shows up on the HUD instead of as a dropout.
+    /// The blocker is the video reference: `session::sink::video_e2e_ns` omits a term NDL never
+    /// reports, which biases this offset high by that whole term — its docs carry the arithmetic
+    /// and what arming the loop would take.
     ///
     /// **Two depths, and they are not interchangeable.** `ring_depth` is what the audio callback
     /// owns and the only thing [`JitterPolicy`] can actually move. `in_flight` is decoded PCM
@@ -300,9 +279,6 @@ impl AudioFeed {
         self.cells
             .av_offset_ms
             .store(i64::from(self.av.offset_ms()), Ordering::Relaxed);
-        if self.sync_enabled {
-            self.sync.set_target(self.av.desired_depth(ring_depth));
-        }
     }
 }
 

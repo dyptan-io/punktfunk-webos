@@ -24,7 +24,7 @@ type ConnectOutcome = (std::thread::JoinHandle<Result<session::Connected>>, stor
 /// session only.
 ///
 /// Session-only on purpose: the returned `Settings` drives the handshake and the stream
-/// loop, while `App`'s own copy (what `SettingsWriter` persists and what the Settings row
+/// loop, while `App`'s own copy (what `StateWriter` persists and what the Settings row
 /// displays) keeps saying `Automatic`. Resolving into the stored value instead would turn
 /// a preference that means "match my pad" into a fixed pad kind the next time a different
 /// controller was plugged in.
@@ -72,18 +72,12 @@ fn spawn_connect(
                 settings.hdr_enabled,
                 settings.audio_channels,
                 identity,
-                fp,
+                Some(fp),
                 launch,
-                // An unpinned host waits on its operator approving this client; a pinned one is
-                // either reachable now or off, and a long budget there just holds the black
-                // launch scrim.
-                if fp.is_some() {
-                    crate::services::budget::HANDSHAKE
-                } else {
-                    crate::services::budget::HOST_WAIT
-                },
+                // A pinned host is reachable now or off, so a long budget would only hold the
+                // black launch scrim. Waiting on an operator is the pairing flow's job.
+                crate::services::budget::HANDSHAKE,
                 settings.codec,
-                settings.color_range_override,
                 settings.video_pacing,
                 settings.gamepad_type,
                 settings.cursor_capture,

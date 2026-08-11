@@ -151,7 +151,7 @@ impl App {
                         pinned: vec![store::DESKTOP_PIN_ID.to_string()],
                     },
                 );
-                let _ = store::save_known_hosts(&self.known_hosts);
+                self.persist();
                 self.rebuild_entries();
                 self.sidebar_dirty = true;
                 self.screen = Screen::Home;

@@ -44,7 +44,7 @@ impl App {
         };
         let from = known.wol_auto;
         known.wol_auto = !from;
-        let _ = store::save_known_hosts(&self.known_hosts);
+        self.persist();
         // Captures the value it's flipping *from*, so the knob slides rather than
         // snapping — same contract as the Settings modal's switch rows.
         self.switch_anim = Some((Instant::now(), from, self.wake_settings_focused));

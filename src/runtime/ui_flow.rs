@@ -27,25 +27,6 @@ pub(super) fn run_ui_flow(
     // the loop at a steady ~60Hz regardless of work cost, which comfortably samples
     // every 33ms spinner frame.
     const TICK_BUDGET: Duration = Duration::from_millis(16);
-    // Test/dev override: skip the UI entirely if a connect.conf was dropped
-    // alongside sideloading (see store.rs docs) — the UI flow is the normal path.
-    // Bypasses the library screen too (`launch: None`, a plain desktop session).
-    if let Some((host, port)) = store::dev_override_connect() {
-        tracing::info!("dev override: connecting to {host}:{port}");
-        let settings = resolve_gamepad_type(store::load_settings(), game_controller);
-        let handle = spawn_connect(
-            identity.clone(),
-            crate::app::ConnectTarget {
-                host,
-                port,
-                fingerprint: None,
-                launch: None,
-            },
-            settings,
-        )?;
-        return Ok(Some((handle, settings)));
-    }
-
     canvas.window_mut().show();
     let mut app = App::new(identity.clone());
     // The GPU tile cache is the render loop's, not App's — App holds only screen state
@@ -196,7 +177,7 @@ pub(super) fn run_ui_flow(
             if let Some(target) = app.take_ready_launch() {
                 // In-memory settings, not `store::load_settings()`: a just-flipped
                 // toggle (e.g. video pacing) is persisted asynchronously by
-                // `SettingsWriter`, so re-reading disk here could race the write and
+                // `StateWriter`, so re-reading disk here could race the write and
                 // connect with the stale value. `app.settings` is updated synchronously.
                 let settings = resolve_gamepad_type(app.settings, game_controller);
                 let handle = spawn_connect(identity.clone(), target, settings)?;

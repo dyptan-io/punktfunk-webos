@@ -58,13 +58,15 @@ const CUSHION_MAX_FRAMES: u64 = 4;
 /// standing render queue. That middle term is the one that MOVES — a decoder falling behind
 /// buffers deeper — and it is precisely the ratchet the sync loop exists to cancel.
 ///
-/// **`present_fixed_ns` is a calibration, not a guess.** It is NDL's decode + panel latency after
-/// the queue drains, which the app cannot observe at all. Underestimating it by Δ biases this
-/// figure low, biases the measured A/V offset high, and so aims the audio ring Δ *shallower* —
-/// i.e. **audio plays Δ early**. At 60 Hz a plausible 2–5 frame pipeline is 33–83 ms, far outside
-/// `AvSync`'s 10 ms deadband, so shipping it at 0 is not a conservative default but a systematic
-/// error larger than the thing being corrected. It is measured observe-only first; see
-/// `docs/NOTES.md` § "A/V sync".
+/// **The estimate omits one term, and that is why nothing steers on it.** NDL's decode + panel
+/// latency *after* the queue drains cannot be observed from the app at all, so it is simply absent
+/// here — which biases this figure low, biases the measured A/V offset high, and would aim the
+/// audio ring correspondingly shallow, i.e. **play audio early by the whole missing term**. At
+/// 60 Hz a plausible 2–5 frame pipeline is 33–83 ms, far outside `AvSync`'s 10 ms deadband, so
+/// acting on this would be a systematic error larger than the drift being corrected. Hence
+/// measure-only: the offset reaches the stats overlay and no target reaches `JitterPolicy` (see
+/// `platform::webos::audio`'s `observe_av`). Arming it means measuring that term on real hardware
+/// first and folding it back in as a constant — `docs/NOTES.md` § "A/V sync" has the procedure.
 ///
 /// `None` when the arithmetic would place the frame on the glass *before* its own capture — a
 /// wall-clock step, a stale PTS, or a host clock that has not settled. The caller then publishes
@@ -76,11 +78,8 @@ fn video_e2e_ns(
     frame_pts_ns: u64,
     backlog_frames: u64,
     frame_interval_ns: u64,
-    present_fixed_ns: u64,
 ) -> Option<u64> {
-    let pipeline_ns = backlog_frames
-        .saturating_mul(frame_interval_ns)
-        .saturating_add(present_fixed_ns);
+    let pipeline_ns = backlog_frames.saturating_mul(frame_interval_ns);
     let glass_host_ns = submit_realtime_ns
         .checked_add(i128::from(pipeline_ns))?
         .checked_add(i128::from(clock_offset_ns))?;
@@ -202,9 +201,6 @@ pub struct SinkConfig {
     /// Where [`video_e2e_ns`] is published for the audio plane
     /// (`NativeClient::video_e2e_shared`). `0` = nothing on the glass yet.
     pub video_e2e: Arc<AtomicU64>,
-    /// NDL's decode + panel latency after its render queue drains — the calibrated constant in
-    /// [`video_e2e_ns`], from the user's A/V trim setting.
-    pub present_fixed_ns: u64,
 }
 
 /// Minimum spacing between [`SinkResult::NeedKeyframe`] results: the request travels on its own
@@ -341,7 +337,6 @@ impl NdlSink {
             frame_pts_ns,
             backlog,
             self.frame_interval_ns,
-            self.cfg.present_fixed_ns,
         );
         if let Some(ns) = e2e {
             self.cfg.video_e2e.store(ns, Ordering::Relaxed);
@@ -482,7 +477,7 @@ mod tests {
     const PTS: u64 = 1_970_000_000;
 
     fn base() -> Option<u64> {
-        video_e2e_ns(SUBMIT, 0, PTS, 0, HZ60_NS, 0)
+        video_e2e_ns(SUBMIT, 0, PTS, 0, HZ60_NS)
     }
 
     #[test]
@@ -496,28 +491,21 @@ mod tests {
     #[test]
     fn the_render_queue_adds_its_own_drain_time() {
         assert_eq!(
-            video_e2e_ns(SUBMIT, 0, PTS, 3, HZ60_NS, 0),
+            video_e2e_ns(SUBMIT, 0, PTS, 3, HZ60_NS),
             Some(30_000_000 + 3 * HZ60_NS)
         );
         // And a deeper queue is strictly later — the ratchet the sync loop exists to cancel.
-        let shallow = video_e2e_ns(SUBMIT, 0, PTS, 1, HZ60_NS, 0).unwrap();
-        let deep = video_e2e_ns(SUBMIT, 0, PTS, 6, HZ60_NS, 0).unwrap();
+        let shallow = video_e2e_ns(SUBMIT, 0, PTS, 1, HZ60_NS).unwrap();
+        let deep = video_e2e_ns(SUBMIT, 0, PTS, 6, HZ60_NS).unwrap();
         assert!(deep > shallow, "{deep} !> {shallow}");
-    }
-
-    /// The calibrated constant. At 0 the estimate is biased LOW by NDL's whole decode+panel
-    /// pipeline, which is the systematic error the observe-only pass exists to measure.
-    #[test]
-    fn the_fixed_present_latency_is_added() {
-        assert_eq!(video_e2e_ns(SUBMIT, 0, PTS, 0, HZ60_NS, 50_000_000), Some(80_000_000));
     }
 
     /// The glass instant is expressed in the HOST clock, so the skew term shifts it directly. A
     /// host running ahead of the client makes the same frame land later in host terms.
     #[test]
     fn clock_skew_moves_the_glass_instant() {
-        assert_eq!(video_e2e_ns(SUBMIT, 7_000_000, PTS, 0, HZ60_NS, 0), Some(37_000_000));
-        assert_eq!(video_e2e_ns(SUBMIT, -7_000_000, PTS, 0, HZ60_NS, 0), Some(23_000_000));
+        assert_eq!(video_e2e_ns(SUBMIT, 7_000_000, PTS, 0, HZ60_NS), Some(37_000_000));
+        assert_eq!(video_e2e_ns(SUBMIT, -7_000_000, PTS, 0, HZ60_NS), Some(23_000_000));
     }
 
     /// A frame cannot reach the glass before it was captured. A wall-clock step or an unsettled
@@ -525,7 +513,7 @@ mod tests {
     /// overfill the ring outright — so it is rejected, not clamped.
     #[test]
     fn a_frame_landing_before_its_own_capture_is_rejected() {
-        assert_eq!(video_e2e_ns(1_000_000_000, 0, 2_000_000_000, 0, HZ60_NS, 0), None);
+        assert_eq!(video_e2e_ns(1_000_000_000, 0, 2_000_000_000, 0, HZ60_NS), None);
     }
 
     /// This runs on the video thread for every presented frame, so the failure mode it guards is a
@@ -539,10 +527,10 @@ mod tests {
     /// belt-and-braces against garbage arguments, and this gate is about the panic.
     #[test]
     fn implausible_inputs_return_none_rather_than_panicking() {
-        assert_eq!(video_e2e_ns(i128::MAX, i64::MAX, 0, u64::MAX, u64::MAX, u64::MAX), None);
-        assert_eq!(video_e2e_ns(i128::MIN, i64::MIN, u64::MAX, 0, 0, 0), None);
+        assert_eq!(video_e2e_ns(i128::MAX, i64::MAX, 0, u64::MAX, u64::MAX), None);
+        assert_eq!(video_e2e_ns(i128::MIN, i64::MIN, u64::MAX, 0, 0), None);
         // A saturating queue term must not wrap into a small, believable-looking number.
-        assert_eq!(video_e2e_ns(SUBMIT, 0, PTS, u64::MAX, HZ60_NS, 0), None);
+        assert_eq!(video_e2e_ns(SUBMIT, 0, PTS, u64::MAX, HZ60_NS), None);
     }
 
     /// 120 Hz — the mode the ABR collapse was observed at (CX, 2026-08-10).

@@ -5,16 +5,16 @@ use serde::{Deserialize, Serialize};
 pub struct ConnectTarget {
     pub host: String,
     pub port: u16,
-    /// The pinned host fingerprint. `None` only on the dev-override path, which connects
-    /// before any pairing record exists.
-    pub fingerprint: Option<[u8; 32]>,
+    /// The pinned host fingerprint. Always present: the pin *is* the pair state, and
+    /// every launch path bails on an unpaired host before building one of these.
+    pub fingerprint: [u8; 32],
     /// Library entry id to launch, or `None` for desktop.
     pub launch: Option<String>,
 }
 
 /// `Default` exists so the literals that build one can spread `..KnownHost::default()` over the
 /// fields they don't care about.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KnownHost {
     pub name: String,
     pub host: String,
@@ -80,19 +80,6 @@ pub enum CodecPref {
     Auto,
     H264,
     Hevc,
-}
-
-/// Override for the VUI `video_full_range_flag` sent to the decoder — see
-/// `session::connect`'s colour-info splice. `Auto` forwards the host's own
-/// `ColorInfo.full_range` unchanged; `Full`/`Limited` force it, to test whether the
-/// panel's own default (rather than what the stream signals) is what's washing out.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ColorRangeOverride {
-    #[default]
-    Auto,
-    Full,
-    Limited,
 }
 
 /// Which controller the host should present to the game, selectable in Settings.
@@ -187,11 +174,6 @@ pub struct Settings {
     /// pinned at stereo. `#[serde(default …)]` so an existing settings.json loads as 2.
     #[serde(default = "default_audio_channels")]
     pub audio_channels: u8,
-    /// Forces the VUI range flag sent to the decoder regardless of what the host
-    /// signals — see [`ColorRangeOverride`]. Debug aid for the washed-out-colour
-    /// investigation; takes effect on the next connect.
-    #[serde(default)]
-    pub color_range_override: ColorRangeOverride,
     /// On-device log verbosity — see [`LogLevelOverride`]. Persisted, so a user's
     /// choice in Diagnostics survives restarts (fresh install defaults to `Info`);
     /// applied live via `logger::set_level_override` the moment it's changed. A
@@ -261,7 +243,6 @@ impl Default for Settings {
             stats_overlay: false,
             codec: CodecPref::Auto,
             audio_channels: default_audio_channels(),
-            color_range_override: ColorRangeOverride::Auto,
             log_level_override: LogLevelOverride::Info,
             show_logs: false,
             video_pacing: false,
@@ -273,14 +254,35 @@ impl Default for Settings {
     }
 }
 
-/// Cover-art paths for a title (host-relative, fetched via mTLS).
-/// art.rs prefers `portrait`, falls back to `header`. `hero`/`logo` unused.
+/// Everything this app persists, as one document — `settings.json`, written by
+/// `services::store::StateWriter`.
+///
+/// One file rather than one per concern: separate files can disagree after a mid-write power
+/// cut, which on a TV is the normal way to turn it off. Only the credentials
+/// (`client-{cert,key}.pem`) stay outside, so a settings document that fails to parse can fall
+/// back to defaults without silently discarding the identity every host has pinned.
+///
+/// `PartialEq` is load-bearing: `services::store::StateWriter` skips writing an unchanged
+/// snapshot.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Persisted {
+    #[serde(default)]
+    pub settings: Settings,
+    #[serde(default)]
+    pub known_hosts: Vec<KnownHost>,
+    /// The sidebar host row the user last had active — so relaunching lands back on its game
+    /// grid instead of an unfocused sidebar. `(host, port)`, not an index: `known_hosts` order
+    /// isn't stable across a forget/re-add.
+    #[serde(default)]
+    pub selected_host: Option<(String, u16)>,
+}
+
+/// Cover-art paths for a title (host-relative, fetched via mTLS). Cards prefer
+/// `portrait` then `header` then `hero`; the hero backdrop prefers `hero`.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[allow(dead_code)]
 pub struct Artwork {
     pub portrait: Option<String>,
     pub hero: Option<String>,
-    pub logo: Option<String>,
     pub header: Option<String>,
 }
 

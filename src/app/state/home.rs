@@ -236,7 +236,7 @@ impl App {
             return;
         };
         known.toggle_pin(&id);
-        let _ = store::save_known_hosts(&self.known_hosts);
+        self.persist();
 
         self.reorder_games_by_pin();
         if let Some(new_idx) = self.grid_idx_for_pin_id(&id, columns) {
@@ -300,7 +300,7 @@ impl App {
 
         if still_pinned != pinned_ids {
             self.known_hosts[known_idx].pinned = still_pinned;
-            let _ = store::save_known_hosts(&self.known_hosts);
+            self.persist();
         }
     }
 
@@ -407,8 +407,8 @@ impl App {
 
     /// Selects host and kicks off async library fetch; avoids blocking the UI thread (used to freeze input).
     pub(crate) fn select_host(&mut self, host: String, port: u16, mgmt_port: Option<u16>) {
-        let _ = store::save_selected_host(&host, port);
         self.selected_host = Some((host.clone(), port));
+        self.persist();
         let name = self
             .known_hosts
             .iter()
@@ -527,10 +527,9 @@ impl App {
         };
         // The pin is also the pair state: no pin means the host was never paired, so there is
         // nothing to connect with.
-        let fingerprint = known.fingerprint;
-        if fingerprint.is_none() {
+        let Some(fingerprint) = known.fingerprint else {
             return;
-        }
+        };
         let (launch, title) = match self.grid_card_at(idx, columns) {
             Some(GridCard::Desktop) => (None, "Desktop".to_string()),
             Some(GridCard::Game(game)) => (Some(game.id.clone()), game.title.clone()),
@@ -584,7 +583,7 @@ impl App {
         let (host, port) = (h.host.clone(), h.port);
         crate::services::art::clear_host_cache(&host, port);
         self.known_hosts.retain(|k| !(k.host == host && k.port == port));
-        let _ = store::save_known_hosts(&self.known_hosts);
+        self.persist();
         self.rebuild_entries();
         if self.selected_host.as_ref() == Some(&(host, port)) {
             self.clear_selected_host();

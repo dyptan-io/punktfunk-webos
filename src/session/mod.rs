@@ -24,22 +24,8 @@ use punktfunk_core::packet::{FLAG_SOF, USER_FLAG_RECOVERY_ANCHOR};
 use punktfunk_core::quic;
 
 use crate::platform::webos::ndl::{NdlCodec, NdlVideo};
-use crate::services::store::{CodecPref, ColorRangeOverride};
+use crate::services::store::CodecPref;
 use crate::session::sink::{FrameFlags, NdlSink, SinkConfig, SinkResult, VideoPlayer};
-
-impl ColorRangeOverride {
-    /// Force the VUI `full_range` flag per the user override before it's handed to
-    /// the decoder; `Auto` leaves the host-signalled value untouched. NDL's native
-    /// HDR-info struct has no range field so this is a no-op there — see
-    /// `ndl.rs` `set_color_info`.
-    pub(crate) fn apply(self, color: &mut quic::ColorInfo) {
-        match self {
-            Self::Full => color.full_range = 1,
-            Self::Limited => color.full_range = 0,
-            Self::Auto => {}
-        }
-    }
-}
 
 pub struct Connected {
     pub client: Arc<NativeClient>,
@@ -255,7 +241,6 @@ pub fn connect(
     launch: Option<String>,
     timeout: Duration,
     codec_pref: CodecPref,
-    color_range_override: ColorRangeOverride,
     video_pacing: bool,
     gamepad_type: crate::services::store::GamepadType,
     cursor_capture: bool,
@@ -360,17 +345,6 @@ pub fn connect(
     );
     let player = VideoPlayer::new(Arc::new(ndl));
 
-    // An on-device sweep value for NDL's undocumented frame-drop threshold, if one has
-    // been dropped in (see `store::dev_override_ndl_drop_threshold`). Never set by
-    // default — the units aren't documented and a guessed pacing change to this decoder
-    // is exactly what `docs/NOTES.md` warns against shipping unverified.
-    if let Some(threshold) = crate::services::store::dev_override_ndl_drop_threshold() {
-        match crate::platform::webos::ndl::NdlVideo::set_frame_drop_threshold(threshold) {
-            Ok(()) => tracing::info!("NDL frame-drop threshold override: {threshold}"),
-            Err(e) => tracing::warn!("NDL frame-drop threshold override failed: {e:#}"),
-        }
-    }
-
     // Forward the negotiated colorimetry to the decoder for BOTH HDR and SDR
     // streams. The SDR case is not optional: punktfunk encodes BT.709, but with
     // missing/"unspecified" VUI colour info in the bitstream this panel guesses
@@ -385,27 +359,16 @@ pub fn connect(
     let host_hdr = client.color.is_hdr();
     let is_hdr = host_hdr && matches!(codec, NdlCodec::H265);
     let initial_meta = is_hdr.then(cx_display_hdr);
-    // What the host actually signalled in `Welcome`, before any user override —
-    // the reference point for the washed-out-colour investigation.
+    // What the host signalled in `Welcome`, before the SDR colorimetry fix below acts on it.
     tracing::info!(
-        "host colour info: hdr={host_hdr} apply_hdr={is_hdr} codec={codec:?} transfer={} primaries={} matrix={} full_range={}",
+        "host colour info: hdr={host_hdr} apply_hdr={is_hdr} codec={codec:?} transfer={} primaries={} matrix={}",
         client.color.transfer,
         client.color.primaries,
         client.color.matrix,
-        client.color.full_range,
     );
-    let mut color = client.color;
-    color_range_override.apply(&mut color);
-    if let Err(e) = player.set_color_info(initial_meta.as_ref(), color) {
+    if let Err(e) = player.set_color_info(initial_meta.as_ref(), client.color) {
         tracing::warn!("NDL colour metadata failed: {e:#}");
     }
-    tracing::debug!(
-        "colour metadata sent: transfer={} primaries={} matrix={} full_range={} (override={color_range_override:?})",
-        color.transfer,
-        color.primaries,
-        color.matrix,
-        color.full_range,
-    );
 
     let audio_offloaded = player.audio_offloaded();
     tracing::info!(
@@ -430,7 +393,6 @@ pub fn connect(
         report_decode_latency: client.wants_decode_latency(),
         clock_offset: client.clock_offset_shared(),
         video_e2e: client.video_e2e_shared(),
-        present_fixed_ns: u64::from(crate::services::store::dev_override_av_trim_ms().unwrap_or(0)) * 1_000_000,
     };
     let video_stats = stats.clone();
     let video_thread = std::thread::Builder::new()
@@ -445,7 +407,6 @@ pub fn connect(
                 video_stop,
                 video_stats,
                 is_hdr,
-                color_range_override,
             )
         })
         .context("spawn video thread")?;
@@ -825,7 +786,6 @@ fn video_pump(
     stop: Arc<AtomicBool>,
     stats: Arc<StreamStats>,
     is_hdr: bool,
-    color_range_override: ColorRangeOverride,
 ) {
     client.register_hot_thread();
     // Summarized at info, not left as per-tid debug lines: whether these renices work at
@@ -944,9 +904,7 @@ fn video_pump(
                     meta.max_cll,
                     meta.max_fall,
                 );
-                let mut color = client.color;
-                color_range_override.apply(&mut color);
-                if let Err(e) = sink.set_color_info(Some(&meta), color) {
+                if let Err(e) = sink.set_color_info(Some(&meta), client.color) {
                     tracing::warn!("NDL set_color_info: {e:#}");
                 }
             }

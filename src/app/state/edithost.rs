@@ -63,7 +63,7 @@ impl App {
                 pinned: old.pinned.clone(),
             },
         );
-        let _ = store::save_known_hosts(&self.known_hosts);
+        self.persist();
         self.rebuild_entries();
 
         // Keep selection updated to new address

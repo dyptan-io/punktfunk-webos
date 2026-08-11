@@ -152,19 +152,10 @@ pub(super) fn run_inner() -> Result<()> {
         // offload) — a second unfed audio device would still claim a PulseAudio sink.
         // The device is held here for the length of the stream — dropping it stops playback — while
         // the feed half moves to its own decode thread.
-        // The A/V loop arms only once the NDL present constant has been calibrated — the trim
-        // file's presence is that calibration. See `audio::AudioFeed::observe_av`.
-        let av_trim_ms = store::dev_override_av_trim_ms();
         let audio = match connected.audio_channels() {
             None => None,
             Some(channels) => {
-                let av_calibrated = av_trim_ms.is_some();
-                match crate::platform::webos::audio::AudioPlayer::new(
-                    &sdl_audio,
-                    channels,
-                    connected.sync_cells(),
-                    av_calibrated,
-                )
+                match crate::platform::webos::audio::AudioPlayer::new(&sdl_audio, channels, connected.sync_cells())
                 .and_then(|(player, feed)| Ok((player, connected.spawn_audio_feed(feed)?)))
                 {
                     Ok(pair) => Some(pair),
@@ -186,17 +177,12 @@ pub(super) fn run_inner() -> Result<()> {
             }
         };
         if let Some((player, _)) = &audio {
-            // Whether the sync loop is armed belongs in the session log, not only in a source
-            // comment: "audio sounds late" and "audio sounds early" are the same report from a
-            // user, and which one is possible depends entirely on this line.
+            // Logged, not just commented: "audio sounds late" and "early" are the same user
+            // report, and only knowing whether anything steered separates them.
             tracing::info!(
-                "SDL audio driver: {}, spec: {:?}, A/V sync: {}",
+                "SDL audio driver: {}, spec: {:?}, A/V sync: measuring only",
                 sdl_audio.current_audio_driver(),
                 player.spec(),
-                match av_trim_ms {
-                    Some(ms) => format!("armed (trim {ms} ms)"),
-                    None => "measuring only (no av-trim-ms.conf)".to_string(),
-                },
             );
         }
 

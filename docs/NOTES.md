@@ -63,7 +63,7 @@ Host side: a game only emits trigger effects when it sees a `DualSense`, so pad 
 
 ## Runtime gotchas (LG CX/G5)
 
-- Apps install to `/media/developer/apps/usr/palm/applications/<appid>/` = `$HOME` (writable dir for logs, `connect.conf`).
+- Apps install to `/media/developer/apps/usr/palm/applications/<appid>/` = `$HOME` (writable dir for logs, `settings.json`, the art cache and the client identity PEMs).
 - `luna-send` over raw ssh **needs `ssh -tt`** (real PTY) or output silently swallowed — the task
   targets go through `ares-install`/`ares-launch` instead, which don't have this problem.
 - **Black screen despite decode**: launch through real app lifecycle (`luna-send .../launch`, SAM jailed uid). NDL punch-through only composites for SAM-managed foreground app.
@@ -100,8 +100,8 @@ The host stamps `pts_ns` on every audio datagram; this client decoded it and thr
 **Currently measure-only.** `AvSync::desired_depth` is never called and no target reaches `JitterPolicy`. The blocker is the video reference: NDL is submit-only (`NDL_DirectVideoPlay` reports nothing about presentation), so `session::sink::video_e2e_ns` estimates glass time as *submit instant + render-queue depth × panel interval + a fixed constant*. The first two are measured; the constant — NDL's decode+panel latency after the queue drains — is not observable from the app.
 
 - **Sign, and why it matters:** underestimating that constant by Δ biases the video figure low, the offset high, and aims the ring Δ shallower — i.e. **audio plays Δ early**. A plausible 2-5 frame NDL pipeline is 33-83 ms at 60 Hz, far outside `AvSync`'s 10 ms deadband. Shipping it at 0 and acting on it would be a bigger error than the drift being corrected.
-- **How to calibrate:** put the stats overlay up (Green), let the `A/V` figure converge (needs 100 observations and a frame on the glass), and write the converged value into `$HOME/av-trim-ms.conf`. Raising it tells the loop the picture is later than it looked, so it holds audio back.
-- ⚠ **Measure in Game Optimiser mode AND a processing-heavy picture mode.** If those differ much, the constant has to become a real setting rather than one compiled-in number. Untested.
+- **How to measure it:** put the stats overlay up (Green) and let the `A/V` figure converge (needs 100 observations and a frame on the glass). That figure is the offset *including* the missing constant, so it reads high by exactly the constant — which is what makes it measurable. There is no knob to write it into: the constant is absent from the estimate entirely, and arming the loop means adding it back to `session::sink::video_e2e_ns` as a compiled-in term plus posting `AvSync::desired_depth` to `JitterPolicy` in `audio::AudioFeed::observe_av`.
+- ⚠ **Measure in Game Optimiser mode AND a processing-heavy picture mode.** If those differ much, the constant has to become a real Settings row rather than one compiled-in number. Untested.
 - ⚠ **Use `frame.pts_ns`, never the paced value.** Both are in scope at the submit site with near-identical names; the paced one has been mapped into NDL's *player* clock by `HostPtsAnchor`. Using it regulates against a fiction that still looks plausible.
 - The estimator's unit tests ship in-tree but **cannot run off-device**: `cargo test` links the whole binary and `-lNDL_directmedia` exists only in the cross sysroot.
 

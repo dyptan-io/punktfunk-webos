@@ -52,7 +52,7 @@ impl App {
                 ..store::KnownHost::default()
             },
         );
-        let _ = store::save_known_hosts(&self.known_hosts);
+        self.persist();
         self.rebuild_entries();
         self.home_focus = HomeFocus::Sidebar(
             self.entries

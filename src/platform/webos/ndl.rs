@@ -139,7 +139,6 @@ extern "C" {
     fn NDL_DirectVideoPlay(buffer: *mut c_void, size: c_uint, pts: c_longlong) -> c_int;
     fn NDL_DirectVideoFlushRenderBuffer() -> c_int;
     fn NDL_DirectVideoGetRenderBufferLength(length: *mut c_int) -> c_int;
-    fn NDL_DirectVideoSetFrameDropThreshold(threshold: c_int) -> c_int;
     fn NDL_DirectAudioPlay(buffer: *mut c_void, size: c_uint, pts: c_longlong) -> c_int;
     fn NDL_DirectVideoSetHDRInfo(hdr_info: NdlHdrInfo) -> c_int;
 }
@@ -574,19 +573,6 @@ impl NdlVideo {
         // SAFETY: `length` is a valid, writable `c_int` for the duration of the call.
         let ret = unsafe { NDL_DirectVideoGetRenderBufferLength(&mut length) };
         (ret == 0).then_some(length)
-    }
-
-    /// Set NDL's frame-drop threshold (units undocumented, never guessed).
-    pub fn set_frame_drop_threshold(threshold: i32) -> Result<()> {
-        // SAFETY: plain integer argument, no pointers.
-        let ret = unsafe { NDL_DirectVideoSetFrameDropThreshold(threshold as c_int) };
-        if ret != 0 {
-            bail!(
-                "NDL_DirectVideoSetFrameDropThreshold({threshold}) failed: ret={ret} error={}",
-                last_error()
-            );
-        }
-        Ok(())
     }
 
     pub fn flush(&self) -> Result<()> {

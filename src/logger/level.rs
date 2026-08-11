@@ -19,7 +19,7 @@ static ORDINAL: AtomicU8 = AtomicU8::new(3);
 
 /// Startup filter level, mapped from persisted/launch-override settings.
 pub fn resolved_level() -> Level {
-    to_level(crate::services::store::load_settings().log_level_override)
+    to_level(crate::services::store::persisted_log_level())
 }
 
 /// Applies immediately from Diagnostics screen; no-op before `init_subscriber`.

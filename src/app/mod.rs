@@ -265,7 +265,7 @@ pub struct App {
     pub(crate) launch_anim_idx: Option<usize>,
     pub settings: Settings,
     /// Persists settings off UI thread to avoid blocking.
-    pub(crate) settings_writer: store::SettingsWriter,
+    pub(crate) state_writer: store::StateWriter,
     /// The attached pad's type per `gamepad::detect_type`, refreshed on hotplug in
     /// `runtime::ui_flow`. `None` with no pad attached or an unrecognized one. Only meaningful
     /// when `settings.gamepad_type` is `Auto` — an explicit pick doesn't need this to know what
@@ -494,8 +494,12 @@ fn known_entries(known_hosts: &[store::KnownHost]) -> Vec<HostEntry> {
 
 impl App {
     pub fn new(identity: (String, String)) -> Self {
-        let known_hosts = store::load_known_hosts();
-        let settings = store::load_settings();
+        let loaded = store::load_state();
+        let store::Persisted {
+            settings,
+            known_hosts,
+            selected_host,
+        } = loaded.clone();
         let entries = known_entries(&known_hosts);
         let (discovered, discovery_daemon) = match crate::services::discovery::browse() {
             Some((rx, daemon)) => (rx, Some(daemon)),
@@ -521,7 +525,7 @@ impl App {
             launch_anim: None,
             launch_anim_idx: None,
             settings,
-            settings_writer: store::SettingsWriter::spawn(),
+            state_writer: store::StateWriter::spawn(loaded),
             detected_gamepad_type: None,
             settings_focused: 0,
             scroll: ui::ScrollWindow::new(),
@@ -586,7 +590,7 @@ impl App {
         };
         // Restore the last-active sidebar host (if it's still known and paired)
         // so relaunching the app lands back on its game grid.
-        if let Some((host, port)) = store::load_selected_host() {
+        if let Some((host, port)) = selected_host {
             if let Some(h) = app
                 .known_hosts
                 .iter()
@@ -699,7 +703,7 @@ impl App {
             }
         }
         if mac_learned {
-            let _ = store::save_known_hosts(&self.known_hosts);
+            self.persist();
         }
         if let Some((host, port, mgmt_port)) = woke {
             self.wake_succeeded(host, port, mgmt_port, "mDNS");
@@ -1523,6 +1527,16 @@ impl App {
         }
     }
     // --------------------------------------------------------------- render --
+
+    /// Queues the whole document for the background writer. Every mutation of settings, hosts or
+    /// selection comes through here rather than writing its own slice.
+    pub(crate) fn persist(&self) {
+        self.state_writer.save(store::Persisted {
+            settings: self.settings,
+            known_hosts: self.known_hosts.clone(),
+            selected_host: self.selected_host.clone(),
+        });
+    }
 
     /// The `KnownHost` record backing `selected_host`, if any — shared by every
     /// pin-related lookup (the focused card's badge, `toggle_focused_pin`).
