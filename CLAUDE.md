@@ -2,7 +2,7 @@
 
 ## What this is
 
-Native LG webOS TV client for [punktfunk](https://git.unom.io/unom/punktfunk) — low-latency desktop/game streaming. Targets webOS 5.x+. Built on `punktfunk-core` (pinned git dep), not upstream `pf-client-core` (drags FFmpeg/PipeWire/SDL3).
+Native LG webOS TV client for [punktfunk](https://git.unom.io/unom/punktfunk) — low-latency desktop/game streaming. Targets webOS 5.x+. Built on `punktfunk-core` (pinned git dep).
 
 ## Commands
 

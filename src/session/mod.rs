@@ -1066,8 +1066,9 @@ const FEEDBACK_DRAIN_BUDGET: usize = 32;
 ///
 /// The two planes go to different places, because each has one route that works for every
 /// controller rather than only one:
-///   * **rumble** → SDL's evdev force feedback (`GameController::set_rumble`), which works on
-///     any pad the TV has bound, `DualSense` included;
+///   * **rumble** → SDL's evdev force feedback (`GameController::set_rumble`, plus
+///     `set_rumble_triggers` for the impulse-trigger motors on pads that have them), which works
+///     on any pad the TV has bound, `DualSense` included;
 ///   * **`DualSense` HID feedback** (adaptive triggers, lightbar, player LEDs) → the Bluetooth
 ///     service, since SDL's own `DualSense` path needs a hidraw node the app's jail doesn't have
 ///     (see [`crate::platform::webos::dualsense`]).
@@ -1081,7 +1082,13 @@ pub fn pump_feedback_once(
     mut feedback: Option<&mut crate::platform::webos::dualsense::Feedback>,
 ) {
     // `next_rumble_command` is the policy-engine API: it already resolves lease expiry, stale
-    // legacy hosts and close-drain zeros, so commands apply verbatim — `(0, 0)` stops now.
+    // legacy hosts and close-drain zeros, so commands apply verbatim — all-zero stops now.
+    //
+    // Queried once per tick, not per command: SDL walks its joystick list for this, and a hotplug
+    // arrives as a new `GameController` rather than changing this answer mid-drain.
+    let has_triggers = controller
+        .as_deref()
+        .is_some_and(sdl2::controller::GameController::has_rumble_triggers);
     let mut budget = FEEDBACK_DRAIN_BUDGET;
     while budget > 0 {
         let Ok(cmd) = client.next_rumble_command(Duration::ZERO) else {
@@ -1098,6 +1105,16 @@ pub fn pump_feedback_once(
             // Errors here are the common "this pad has no rumble motors" case, not a fault:
             // logging per command would spam a tick loop, and there is no recovery to attempt.
             let _ = pad.set_rumble(cmd.low, cmd.high, cmd.backstop_ms);
+            // Dropping the trigger pair on a pad without those motors is the correct degrade;
+            // folding it into the handles would turn a racing title's continuous trigger stream
+            // into a handle motor droning flat-out for the whole race.
+            if has_triggers {
+                let _ = pad.set_rumble_triggers(
+                    cmd.left_trigger,
+                    cmd.right_trigger,
+                    cmd.backstop_ms,
+                );
+            }
         }
     }
 
