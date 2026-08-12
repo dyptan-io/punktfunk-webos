@@ -1,6 +1,6 @@
 //! `dlopen`/`dlsym` table for `libplayerAPIs_C.so` (the C wrapper `c_shim.cpp` builds around the
-//! device's C++-only `libplayerAPIs.so`), plus the SDL exported-window entry points SMP
-//! punch-through needs.
+//! device's C++-only `libplayerAPIs.so`). The SDL exported-window entry points punch-through
+//! needs live in `platform::webos::sdl_webos`, resolved the same way.
 //!
 //! Loaded, never linked — same rule as `ndl::ffi` and for the same reason (`docs/NOTES.md`): the
 //! wrapper may be missing from a hand-built package, and a `DT_NEEDED` on it would then stop the
@@ -9,7 +9,6 @@ use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::OnceLock;
 
 use anyhow::Result;
-use sdl2::sys::SDL_Rect;
 
 use crate::platform::webos::dl;
 
@@ -20,13 +19,6 @@ pub const EVENT_STR_VIDEO_INFO: c_int = 0x4;
 pub const EVENT_LOADCOMPLETED: c_int = 0x16;
 
 pub type LoadCb = unsafe extern "C" fn(c_int, i64, *const c_char, *mut c_void);
-
-#[link(name = "SDL2")]
-extern "C" {
-    pub fn SDL_webOSCreateExportedWindow(hint: c_int) -> *const c_char;
-    pub fn SDL_webOSSetExportedWindow(window_id: *const c_char, src: *const SDL_Rect, dst: *const SDL_Rect) -> c_int;
-    pub fn SDL_webOSDestroyExportedWindow(window_id: *const c_char);
-}
 
 /// The `StarfishMediaAPIs_C` functions this backend calls (see `c_shim.cpp`).
 pub struct Fns {

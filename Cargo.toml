@@ -77,3 +77,10 @@ serde_json = "1"
 # use lto="thin" for faster dev iteration.
 lto = "fat"
 codegen-units = 1
+
+# `task preview`: debug is too slow to watch (software rasterization), but `release`'s fat LTO
+# makes every rebuild a coffee break and its crypto inlining is irrelevant off-device.
+[profile.preview]
+inherits = "release"
+lto = false
+codegen-units = 16

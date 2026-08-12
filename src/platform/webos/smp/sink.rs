@@ -16,9 +16,9 @@ use std::sync::OnceLock;
 use anyhow::{bail, Result};
 use sdl2::sys::SDL_Rect;
 
-use super::ffi;
 use crate::platform::webos::device;
 use crate::platform::webos::dl;
+use crate::platform::webos::sdl_webos;
 
 const LIB_NAME: &CStr = c"libAcbAPI.so";
 
@@ -123,8 +123,9 @@ impl Sink {
     }
 
     fn create_window() -> Result<Self> {
+        let sdl = sdl_webos::fns()?;
         // SAFETY: SDL call with no arguments to keep alive.
-        let raw = unsafe { ffi::SDL_webOSCreateExportedWindow(0) };
+        let raw = unsafe { (sdl.create_exported_window)(0) };
         if raw.is_null() {
             bail!("SDL_webOSCreateExportedWindow returned null");
         }
@@ -176,8 +177,10 @@ impl Sink {
                     w: SURFACE_W,
                     h: SURFACE_H,
                 };
-                // SAFETY: both rects and the id outlive the call.
-                unsafe { ffi::SDL_webOSSetExportedWindow(id.as_ptr(), &src, &dst) };
+                if let Ok(sdl) = sdl_webos::fns() {
+                    // SAFETY: both rects and the id outlive the call.
+                    unsafe { (sdl.set_exported_window)(id.as_ptr(), &src, &dst) };
+                }
             }
         }
     }
@@ -259,8 +262,12 @@ impl Drop for Sink {
                     unsafe { (fns.destroy)(id) };
                 }
             }
-            // SAFETY: last use of the id; SDL owns nothing else here.
-            Self::Window(ref id) => unsafe { ffi::SDL_webOSDestroyExportedWindow(id.as_ptr()) },
+            Self::Window(ref id) => {
+                if let Ok(sdl) = sdl_webos::fns() {
+                    // SAFETY: last use of the id; SDL owns nothing else here.
+                    unsafe { (sdl.destroy_exported_window)(id.as_ptr()) };
+                }
+            }
         }
     }
 }

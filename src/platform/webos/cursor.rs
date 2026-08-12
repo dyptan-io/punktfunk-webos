@@ -17,10 +17,7 @@ use std::time::{Duration, Instant};
 use sdl2::mouse::MouseUtil;
 use sdl2::sys::SDL_bool;
 
-extern "C" {
-    /// SDL-webOS extension; `SDL_FALSE` self-gates on TVs without `wl_webos_input_manager`.
-    fn SDL_webOSCursorVisibility(visible: SDL_bool) -> SDL_bool;
-}
+use super::sdl_webos;
 
 /// Polling re-assert is off: verified on webOS 26 the compositor re-shows its arrow regardless,
 /// so the loop only spent Wayland requests. Kept, not deleted, in case a firmware/SDL-fork fix
@@ -116,8 +113,12 @@ impl Cursor {
 }
 
 fn set_compositor_visible(visible: bool) -> bool {
-    // SAFETY: plain integer argument, no pointers; caller is the SDL video thread.
-    let supported = unsafe { SDL_webOSCursorVisibility(bool_to_sdl(!visible)) } == SDL_bool::SDL_TRUE;
+    // Unresolved (stock SDL2) reports "unsupported", same as a TV without
+    // `wl_webos_input_manager`; the caller then uses SDL's own `show_cursor`.
+    let supported = sdl_webos::fns().is_ok_and(|fns| {
+        // SAFETY: plain integer argument, no pointers; caller is the SDL video thread.
+        unsafe { (fns.cursor_visibility)(bool_to_sdl(!visible)) == SDL_bool::SDL_TRUE }
+    });
     // Logged once, for stray-cursor bug reports.
     if !SUPPORT_LOGGED.swap(true, Ordering::Relaxed) {
         tracing::info!(

@@ -136,24 +136,27 @@ tasks:
           mv "dist/${APP_ID}_${APP_VERSION}_arm.ipk" "dist/${APP_ID}_${PKG_VERSION}_arm.ipk"
         fi
 
+  # Not `internal`, only undocumented: `deploy:preview` re-enters it from a shell command,
+  # which go-task refuses for internal tasks. Without a desc it stays out of `task --list`.
   docker-run:
-    internal: true
     requires:
       vars: [TARGET_TASK]
     vars:
       CODEGEN_UNITS: '{{if eq .RELEASE_LTO "fat"}}1{{else}}16{{end}}'
     cmds:
-      - >-
-        docker run --rm --platform linux/arm64 -e DEBIAN_FRONTEND=noninteractive
-        -e CARGO_PROFILE_RELEASE_LTO={{.RELEASE_LTO}}
-        -e CARGO_PROFILE_RELEASE_CODEGEN_UNITS={{.CODEGEN_UNITS}}
-        {{.DOCKER_MOUNTS}} {{.RUST_IMAGE}}
-        sh -c '
-          apt-get update -qq &&
-          apt-get install -y -qq --no-install-recommends apt-utils cmake curl ca-certificates git pkg-config build-essential xz-utils python3 > /dev/null &&
-          if ! command -v task > /dev/null 2>&1; then
-            curl -sL https://taskfile.dev/install.sh | sh -s -- -d -b /opt/punktfunk-webos-tools/bin > /dev/null;
-          fi &&
-          task {{.TARGET_TASK}} PROBES={{.PROBES}}
-        '
-
+      - |
+        set -eu
+        TTY=""
+        [ -t 0 ] && TTY="-it"
+        docker run --rm $TTY --platform linux/arm64 -e DEBIAN_FRONTEND=noninteractive \
+          -e CARGO_PROFILE_RELEASE_LTO={{.RELEASE_LTO}} \
+          -e CARGO_PROFILE_RELEASE_CODEGEN_UNITS={{.CODEGEN_UNITS}} \
+          {{.EXTRA_DOCKER}} {{.DOCKER_MOUNTS}} {{.RUST_IMAGE}} \
+          sh -c '
+            apt-get update -qq &&
+            apt-get install -y -qq --no-install-recommends apt-utils cmake curl ca-certificates git pkg-config build-essential xz-utils python3 {{.EXTRA_APT}} > /dev/null &&
+            if ! command -v task > /dev/null 2>&1; then
+              curl -sL https://taskfile.dev/install.sh | sh -s -- -d -b /opt/punktfunk-webos-tools/bin > /dev/null;
+            fi &&
+            task {{.TARGET_TASK}} PROBES={{.PROBES}}
+          '

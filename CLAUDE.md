@@ -36,7 +36,7 @@ Layered by module, deps point inward (acyclic). Leaves first:
   `compositor` (translates `ui::DrawList` → SDL textures, owns the texture cache),
   `input` (SDL events → `InputEvent`), `text_sdl` (SDL2_ttf impl of `TextRaster`),
   video (`ndl/` — `ffi` dlopen tables, `v2`, `v1`; `smp/`; plus `luna`), `audio`, `device`, `gamepad`/`keyboard`/`mouse`/
-  `dualsense`, C build shims.
+  `dualsense`, `sdl_webos` (the SDL fork's own entry points, `dlopen`'d), C build shims.
 - **`app/`** — the `App` state machine. Per-screen `impl App` blocks split by concern:
   `app::state::<screen>` (event handling/transitions) and `app::view::<screen>` (geometry +
   draw-list building).
@@ -49,13 +49,9 @@ the `Screen` enum has eight dispatch sites across `app/mod.rs` and `runtime/` (c
 all at once, mechanical but safe). Rendering: `tiny_skia` software framebuffer,
 redraw-on-change (`dirty` flag, no time-based animation).
 
-**Platform gating**: only SDL2/webOS-linked layers are `#[cfg(target_os = "linux")]` in
-`main.rs` — `app`, `platform`, `session`, `runtime`. Platform-independent layers (`core`,
-`ui`, `services`, `errors`, `logger`) ungated, build on any host (their deps —
-`tiny-skia`, `image`, `ureq`, `rustls` — are base; only `sdl2`/`opus`/`libc` stay Linux-gated
-in `Cargo.toml`). webOS target reports Linux same as dev box; macOS/Windows get a stub
-`anyhow::bail!` in `main()` — builds stay green without SDL2, and now typecheck `ui`/`core`/
-`services` too. Keep new modules ungated unless they link SDL2/webOS libs.
+**Platform gating**: one target — Linux (webOS armv7 cross target, or a plain Linux box).
+`platform/webos/sdl_webos.rs` resolves the `webosbrew/SDL-webOS` fork's own entry points the
+same way (a stock SDL2 exports none of them).
 
 **Two decode paths**: video via NDL DirectMedia (`platform/webos/ndl/`, opaque
 decode+present), audio client-side Opus (`platform/webos/audio.rs`). NDL is `dlopen`'d (never

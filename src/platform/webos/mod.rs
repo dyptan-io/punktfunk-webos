@@ -12,5 +12,6 @@ pub mod keyboard;
 pub mod luna;
 pub mod mouse;
 pub mod ndl;
+pub mod sdl_webos;
 pub mod smp;
 pub mod text_sdl;

@@ -11,6 +11,24 @@ Verified against LG CX (webOS 5.6) and G5 (webOS 10.3). Load-bearing decisions o
 - **SDL2 must be webosbrew fork** (release-2.30.12-webos.5, not generic SDL2). Only fork has Wayland shell-integration (`QT_WAYLAND_SHELL_INTEGRATION=webos`). On-device system copy is 2.0.10 (too old). Bundle own libSDL2 with `$ORIGIN/../lib` RPATH (set in `build.rs`).
 - **cmake/opus**: `punktfunk-core`'s `quic` feature needs CMAKE_POLICY_VERSION_MINIMUM=3.5 (modern CMake refuses vendored libopus's old minimum).
 
+## UI preview (container)
+
+`task deploy:preview` runs the app in a container on a virtual 1080p display and serves it over
+VNC (`vnc://localhost:5900`, or `http://localhost:6080/vnc.html`), so UI work needs no TV and no
+host tools beyond Docker. Same image, mounts and cache volumes as the cross-build tasks (it goes
+through `toolchain:docker-run` like they do); SDL2, Xvfb, x11vnc and noVNC are apt-installed per
+run.
+
+- **Build with the `preview` profile** (release codegen, no LTO). `tiny_skia` rasterizes in
+  software; a `dev` build spends tens of ms a frame there and reads as input lag, on top of
+  llvmpipe and the VNC round trip. `PROFILE=dev` if the rebuild time matters more.
+- **No GPU and no mDNS.** llvmpipe means animation timing here is not the TV's, and Docker's
+  "host" is the Linux VM, so `services::discovery` sees no LAN multicast — add hosts by hand.
+  Unicast is unaffected, so a hand-entered host pairs and speed-tests for real.
+- **Launch params reach the app as the argv[1] JSON SAM sends on a TV**, so `WEBOS_SDK=4.0.0`
+  exercises the NDL v1 path here too. Telemetry is wired to a listener inside the container, so
+  logs land in the terminal at `TELEMETRY_LEVEL` with nothing to configure.
+
 ## UI rendering
 
 Hybrid software/GPU: `tiny_skia` rasterizes tiles, SDL2 composites. Redraw-on-change (no every-tick render). Key facts:

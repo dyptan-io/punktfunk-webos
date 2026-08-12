@@ -4,17 +4,16 @@
 //! stack (`ndl_player.c`) — reconciled interval, host-PTS anchoring, and drift-clamped
 //! smoothing. Enabled only when the frame-pacing setting is on (see [`crate::session`]).
 
-// Read-only panel-refresh query from the `webosbrew/SDL-webOS` fork.
-#[link(name = "SDL2")]
-extern "C" {
-    fn SDL_webOSGetRefreshRate(rate: *mut std::os::raw::c_int) -> std::os::raw::c_int;
-}
+use crate::platform::webos::sdl_webos;
 
-/// Returns panel refresh in Hz, or `None` on query failure/implausible values.
+/// Returns panel refresh in Hz, or `None` on query failure/implausible values — including
+/// an SDL that has no such query (`platform::webos::sdl_webos`), where the caller falls back
+/// to the stream's own rate.
 fn panel_refresh_hz() -> Option<u32> {
+    let fns = sdl_webos::fns().ok()?;
     let mut rate: std::os::raw::c_int = 0;
     // SAFETY: single out-param, no aliasing; read-only panel query.
-    let ok = unsafe { SDL_webOSGetRefreshRate(&mut rate) };
+    let ok = unsafe { (fns.get_refresh_rate)(&mut rate) };
     (ok != 0 && (20..=240).contains(&rate)).then_some(rate as u32)
 }
 
