@@ -243,8 +243,8 @@ pub fn run() -> Result<()> {
     let ndl_caps = crate::platform::webos::device::video_caps();
     // Probed here, not at connect time: the SMP pick is what makes the handshake advertise HEVC,
     // and by the time a load failure shows up the codec is already negotiated — NDL v1 would then
-    // refuse the very stream the fallback exists to carry. Only asked where the row can be
-    // offered at all (webOS 5+ has no choice to make, and the probe `dlopen`s the wrapper).
+    // refuse the very stream the fallback exists to carry. Only probed where the row can be offered
+    // at all, since the probe `dlopen`s the wrapper.
     let smp_available = ndl_caps != crate::core::caps::VideoCaps::FULL && crate::platform::webos::smp::available();
     crate::core::caps::install(ndl_caps, smp_available);
     // The backend pick widens the caps on a legacy TV, so it has to be applied before anything

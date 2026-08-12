@@ -261,9 +261,9 @@ pub fn settings_rows(settings: &Settings, dualsense_limited: bool, detected: Opt
             danger: false,
             menu: None,
             // The whole reason the row exists on this TV: NDL is the v1 surface here, so it
-            // decodes H.264 SDR into a fixed 1080p plane and ignores the resolution/HDR rows.
+            // decodes H.264 SDR only — hence the hidden HDR row. Resolution is unaffected.
             subtext: Some(match settings.video_backend {
-                VideoBackend::Ndl => RowSubtext::caution("No HDR or HEVC, 1080p only on this TV"),
+                VideoBackend::Ndl => RowSubtext::caution("No HDR or HEVC on this TV"),
                 VideoBackend::Smp => RowSubtext::hint("HDR and HEVC, falls back to NDL if it fails"),
             }),
         },
@@ -326,14 +326,14 @@ pub fn settings_rows(settings: &Settings, dualsense_limited: bool, detected: Opt
     ];
     debug_assert_eq!(rows.len(), SETTINGS_ROW_COUNT, "one row per logical index, in order");
     // Driven by the one visibility source of truth rather than repeating its conditions, so a row
-    // hidden there can never linger here. Highest index first, so an earlier removal doesn't shift
-    // a later one; hidden rows are dropped rather than disabled.
+    // hidden there can never linger here.
     let visible = settings_visible_logical_rows(settings);
-    for row in (0..SETTINGS_ROW_COUNT).rev() {
-        if !visible.contains(&row) {
-            rows.remove(row);
-        }
-    }
+    let mut logical = 0;
+    rows.retain(|_| {
+        let keep = visible.contains(&logical);
+        logical += 1;
+        keep
+    });
     rows
 }
 
@@ -548,7 +548,10 @@ pub fn gamepad_label(t: GamepadType) -> &'static str {
 /// will actually resolve to for this session (see `gamepad::detect_type`), rather than leaving
 /// the user to guess.
 pub fn gamepad_auto_label(detected: Option<GamepadType>) -> String {
-    detected.map_or_else(|| "Automatic".to_string(), |t| format!("Automatic ({})", gamepad_label(t)))
+    detected.map_or_else(
+        || "Automatic".to_string(),
+        |t| format!("Automatic ({})", gamepad_label(t)),
+    )
 }
 
 /// Every channel count this client can label; what is *offered* is [`audio_channel_options`].

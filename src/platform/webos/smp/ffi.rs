@@ -5,10 +5,15 @@
 //! Loaded, never linked — same rule as `ndl::ffi` and for the same reason (`docs/NOTES.md`): the
 //! wrapper may be missing from a hand-built package, and a `DT_NEEDED` on it would then stop the
 //! process before `main()`.
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::OnceLock;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
+use sdl2::sys::SDL_Rect;
+
+use crate::platform::webos::dl;
+
+const LIB_NAME: &CStr = c"libplayerAPIs_C.so";
 
 /// SMP load-event ids this backend acts on (`StarfishMediaAPIs_C.h`).
 pub const EVENT_STR_VIDEO_INFO: c_int = 0x4;
@@ -16,18 +21,10 @@ pub const EVENT_LOADCOMPLETED: c_int = 0x16;
 
 pub type LoadCb = unsafe extern "C" fn(c_int, i64, *const c_char, *mut c_void);
 
-#[repr(C)]
-pub struct SdlRect {
-    pub x: c_int,
-    pub y: c_int,
-    pub w: c_int,
-    pub h: c_int,
-}
-
 #[link(name = "SDL2")]
 extern "C" {
     pub fn SDL_webOSCreateExportedWindow(hint: c_int) -> *const c_char;
-    pub fn SDL_webOSSetExportedWindow(window_id: *const c_char, src: *const SdlRect, dst: *const SdlRect) -> c_int;
+    pub fn SDL_webOSSetExportedWindow(window_id: *const c_char, src: *const SDL_Rect, dst: *const SDL_Rect) -> c_int;
     pub fn SDL_webOSDestroyExportedWindow(window_id: *const c_char);
 }
 
@@ -51,50 +48,19 @@ unsafe impl Sync for Fns {}
 
 /// Resolved once; a miss is a named error the caller turns into "fall back to NDL".
 pub fn fns() -> Result<&'static Fns> {
-    static FNS: OnceLock<Option<Fns>> = OnceLock::new();
-    FNS.get_or_init(resolve)
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("SMP unavailable: libplayerAPIs_C.so did not load — see the log"))
-}
-
-fn resolve() -> Option<Fns> {
-    match resolve_inner() {
-        Ok(fns) => Some(fns),
-        Err(e) => {
-            tracing::warn!("SMP: {e:#}");
-            None
-        }
-    }
-}
-
-fn resolve_inner() -> Result<Fns> {
-    // SAFETY: a NUL-terminated literal; RTLD_GLOBAL matches how ss4s loads it.
-    let lib = unsafe { libc::dlopen(c"libplayerAPIs_C.so".as_ptr(), libc::RTLD_LAZY | libc::RTLD_GLOBAL) };
-    if lib.is_null() {
-        bail!("dlopen(libplayerAPIs_C.so) failed — not packaged, or SMP absent on this TV");
-    }
-
-    macro_rules! need {
-        ($sym:literal) => {{
-            // SAFETY: dlsym-verified non-null pointer, transmuted to the field's fn-pointer type.
-            let ptr = unsafe { libc::dlsym(lib, concat!($sym, "\0").as_ptr() as *const c_char) };
-            if ptr.is_null() {
-                bail!(concat!("libplayerAPIs_C.so missing symbol: ", $sym));
-            }
-            unsafe { std::mem::transmute_copy(&ptr) }
-        }};
-    }
-
-    Ok(Fns {
-        create: need!("StarfishMediaAPIs_create"),
-        media_id: need!("StarfishMediaAPIs_getMediaID"),
-        load: need!("StarfishMediaAPIs_load"),
-        feed: need!("StarfishMediaAPIs_feed"),
-        play: need!("StarfishMediaAPIs_play"),
-        push_eos: need!("StarfishMediaAPIs_pushEOS"),
-        unload: need!("StarfishMediaAPIs_unload"),
-        destroy: need!("StarfishMediaAPIs_destroy"),
-        notify_fg: need!("StarfishMediaAPIs_notifyForeground"),
-        set_hdr_info: need!("StarfishMediaAPIs_setHdrInfo"),
+    static FNS: OnceLock<std::result::Result<Fns, String>> = OnceLock::new();
+    dl::cached(&FNS, LIB_NAME, |lib| {
+        Ok(Fns {
+            create: lib.sym(c"StarfishMediaAPIs_create")?,
+            media_id: lib.sym(c"StarfishMediaAPIs_getMediaID")?,
+            load: lib.sym(c"StarfishMediaAPIs_load")?,
+            feed: lib.sym(c"StarfishMediaAPIs_feed")?,
+            play: lib.sym(c"StarfishMediaAPIs_play")?,
+            push_eos: lib.sym(c"StarfishMediaAPIs_pushEOS")?,
+            unload: lib.sym(c"StarfishMediaAPIs_unload")?,
+            destroy: lib.sym(c"StarfishMediaAPIs_destroy")?,
+            notify_fg: lib.sym(c"StarfishMediaAPIs_notifyForeground")?,
+            set_hdr_info: lib.sym(c"StarfishMediaAPIs_setHdrInfo")?,
+        })
     })
 }

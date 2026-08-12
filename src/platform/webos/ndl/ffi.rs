@@ -94,16 +94,19 @@ pub(super) struct HdrInfo {
     pub(super) reserved: [u8; 32],
 }
 
-/// `NDL_DIRECTVIDEO_DATA_INFO_T` (v1). ss4s sets only these two fields.
+/// `NDL_DIRECTVIDEO_DATA_INFO_T` (v1). `source` (`NDL_DIRECTVIDEO_SRC_TYPE`) is always `NONE`
+/// (0) but must be declared: `NDL_DirectVideoOpen` reads all 12 bytes, so omitting it hands the
+/// library four bytes of stack garbage.
 #[repr(C)]
 pub(super) struct V1VideoInfo {
     pub(super) width: c_int,
     pub(super) height: c_int,
+    pub(super) source: c_int,
 }
 
 // --- Callback and function types -------------------------------------------------------------
 
-/// `NDL_DirectMediaInit`'s resource-released callback. Always `None` here (as in ss4s).
+/// `NDL_DirectMediaInit`'s resource-released callback. Always `None` here.
 pub(super) type ResourceReleased = Option<extern "C" fn(*const c_char)>;
 /// v2's load-state callback: `(state, num, str)`.
 pub(super) type LoadStateCallback = Option<extern "C" fn(c_int, c_longlong, *const c_char)>;

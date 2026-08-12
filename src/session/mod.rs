@@ -24,6 +24,7 @@ use punktfunk_core::packet::{FLAG_SOF, USER_FLAG_RECOVERY_ANCHOR};
 use punktfunk_core::quic;
 
 use crate::core::caps::video_caps;
+use crate::platform::webos::device::{self, NdlGeneration};
 use crate::platform::webos::ndl::v1::NdlV1Video;
 use crate::platform::webos::ndl::{NdlCodec, NdlVideo};
 use crate::services::store::{CodecPref, VideoBackend};
@@ -203,7 +204,7 @@ fn ndl_audio_config(resolved_channels: u8) -> Option<crate::platform::webos::ndl
     }
     (resolved_channels == 2).then_some(crate::platform::webos::ndl::NdlAudioConfig {
         channels: 2,
-        // NDL wants the sample rate in **kHz**, not Hz (ss4s passes `sampleRate / 1000.0`).
+        // NDL wants the sample rate in **kHz**, not Hz.
         // punktfunk's audio plane is fixed at 48 kHz (see `audio.rs`'s SAMPLE_RATE).
         // Passing Hz here was the offload-freeze root cause.
         sample_rate: 48.0,
@@ -221,6 +222,34 @@ pub(crate) fn cx_display_hdr() -> quic::HdrMeta {
         min_display_mastering_luminance: 5,
         max_cll: 800,
         max_fall: 150,
+    }
+}
+
+/// SMP is only selectable where NDL is the narrow v1 generation and the wrapper loaded
+/// (`core::caps`, `smp::available`), so trying it can't displace the v2 path. A load that still
+/// fails falls back to NDL, but only H.264 survives that — v1 decodes nothing else.
+fn open_player(
+    backend: VideoBackend,
+    app_id: &str,
+    width: i32,
+    height: i32,
+    fps: u32,
+    codec: NdlCodec,
+    audio_channels: u8,
+) -> Result<VideoPlayer> {
+    if matches!(backend, VideoBackend::Smp) {
+        match crate::platform::webos::smp::SmpVideo::load(app_id, width, height, fps, codec) {
+            Ok(sf) => return Ok(VideoPlayer::Smp(sf)),
+            Err(e) => tracing::warn!("SMP load failed ({e:#}) — falling back to NDL"),
+        }
+    }
+    match device::ndl_generation() {
+        NdlGeneration::V2 => Ok(VideoPlayer::V2(Arc::new(
+            NdlVideo::load(app_id, width, height, codec, ndl_audio_config(audio_channels)).context("NDL load")?,
+        ))),
+        NdlGeneration::V1 => Ok(VideoPlayer::V1(
+            NdlV1Video::load(app_id, width, height, codec).context("NDL v1 load")?,
+        )),
     }
 }
 
@@ -351,27 +380,7 @@ pub fn connect(
         NdlCodec::from_wire(client.codec).with_context(|| format!("unsupported codec 0x{:02x}", client.codec))?;
     let app_id = crate::platform::webos::ndl::app_id();
     let (width, height) = (resolved_mode.width as i32, resolved_mode.height as i32);
-    // SMP is only ever selectable where NDL is the narrow v1 generation and the wrapper actually
-    // loaded (`core::caps`, `smp::available`), so trying it here can't displace the v2 path every
-    // working TV takes. A load that still fails falls back to NDL rather than taking the app down
-    // — but only H.264 survives that fallback, since v1 decodes nothing else.
-    let smp = matches!(video_backend, VideoBackend::Smp)
-        .then(|| {
-            crate::platform::webos::smp::SmpVideo::load(&app_id, width, height, fps, codec)
-                .inspect_err(|e| tracing::warn!("SMP load failed ({e:#}) — falling back to NDL"))
-                .ok()
-        })
-        .flatten();
-    let player = match (smp, crate::platform::webos::device::ndl_generation()) {
-        (Some(sf), _) => VideoPlayer::Smp(sf),
-        (None, crate::platform::webos::device::NdlGeneration::V2) => VideoPlayer::V2(Arc::new(
-            NdlVideo::load(&app_id, width, height, codec, ndl_audio_config(client.audio_channels))
-                .context("NDL load")?,
-        )),
-        (None, crate::platform::webos::device::NdlGeneration::V1) => {
-            VideoPlayer::V1(NdlV1Video::load(&app_id, width, height, codec).context("NDL v1 load")?)
-        }
-    };
+    let player = open_player(video_backend, &app_id, width, height, fps, codec, client.audio_channels)?;
     tracing::info!(
         "{} loaded ({codec:?} {}x{}@{fps}fps)",
         player.backend_name(),
@@ -404,10 +413,10 @@ pub fn connect(
         tracing::warn!("NDL colour metadata failed: {e:#}");
     }
 
-    let audio_offloaded = player.audio_offloaded();
+    let ndl_audio = player.ndl_audio_handle();
     tracing::info!(
         "audio path: {} (host resolved {} channel(s))",
-        if audio_offloaded {
+        if ndl_audio.is_some() {
             "NDL hardware Opus decode"
         } else {
             "software Opus decode -> SDL2"
@@ -419,7 +428,6 @@ pub fn connect(
     let stats = Arc::new(StreamStats::default());
     // Seed the live pacing flag from the setting; the Blue button flips it from here on.
     stats.pacing_enabled.store(video_pacing, Ordering::Relaxed);
-    let ndl_audio = player.ndl_audio_handle();
     let video_client = client.clone();
     let video_stop = stop.clone();
     let sink_cfg = SinkConfig {
@@ -435,15 +443,10 @@ pub fn connect(
             // Built here, not on the caller's thread: the pacer queries the panel refresh
             // rate through SDL on construction, and that stayed on the video thread before.
             let sink = NdlSink::new(player, video_stats.clone(), sink_cfg);
-            video_pump(
-                video_client,
-                sink,
-                video_stop,
-                video_stats,
-                is_hdr,
-            )
+            video_pump(video_client, sink, video_stop, video_stats, is_hdr)
         })
         .context("spawn video thread")?;
+    let audio_offloaded = ndl_audio.is_some();
     let audio_thread = match ndl_audio {
         Some(ndl) => {
             let audio_client = client.clone();
@@ -1101,11 +1104,7 @@ pub fn pump_feedback_once(
             // folding it into the handles would turn a racing title's continuous trigger stream
             // into a handle motor droning flat-out for the whole race.
             if has_triggers {
-                let _ = pad.set_rumble_triggers(
-                    cmd.left_trigger,
-                    cmd.right_trigger,
-                    cmd.backstop_ms,
-                );
+                let _ = pad.set_rumble_triggers(cmd.left_trigger, cmd.right_trigger, cmd.backstop_ms);
             }
         }
     }

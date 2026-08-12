@@ -6,16 +6,15 @@
 //! punch-through plane (v1 can't; see [`super::v1`]).
 use std::ffi::{c_int, c_longlong, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 
 use super::{arm_load, ensure_init, ensure_not_poisoned, ffi, settle_before_retry, wait_load_completed};
-use super::{NdlCodec, FRAME_FED, LOAD_COMPLETED};
+use super::{lock_ffi, mark_frame_fed_logged, NdlCodec, LOAD_COMPLETED};
 
-/// One silent stereo Opus frame (ss4s `opus_empty_frame_211`) fed once post-load to make
-/// sure the NDL Opus decoder is ready before real audio arrives.
+/// One silent stereo Opus frame, fed once post-load to make sure the NDL Opus decoder is ready
+/// before real audio arrives.
 const OPUS_EMPTY_FRAME: [u8; 3] = [0xec, 0xff, 0xfe];
 
 /// How long past `load()` [`NdlVideo::ensure_loaded`] holds frames while `LOADCOMPLETED` is
@@ -50,8 +49,6 @@ pub struct NdlVideo {
     /// PTS in ms since load (NDL's local clock, not wall-clock or host capture clock).
     load_instant: Instant,
     audio_offloaded: bool,
-    /// Serializes `NDL_Direct*` calls (singleton C API not documented as thread-safe).
-    ffi: Mutex<()>,
     /// `false` while `LOADCOMPLETED` still hasn't been seen for this load — [`Self::play`]
     /// refuses to feed until it lands or [`FEED_ANYWAY_AFTER`] passes. Latched once, so the
     /// steady-state feed path costs one relaxed load.
@@ -74,8 +71,8 @@ impl NdlVideo {
         if let Some(audio) = audio {
             match Self::try_load(fns, video, audio.to_union(), true) {
                 Ok(loaded) => {
-                    // Prime the Opus decoder with one silent frame (ss4s does this right after a
-                    // successful audio-enabled load). Best-effort — a failure here doesn't
+                    // Prime the Opus decoder with one silent frame, right after a successful
+                    // audio-enabled load. Best-effort — a failure here doesn't
                     // invalidate the load, so it's logged but not propagated.
                     let mut frame = OPUS_EMPTY_FRAME;
                     // SAFETY: NDL reads `size` bytes synchronously, no pointer retained.
@@ -122,7 +119,6 @@ impl NdlVideo {
             fns,
             load_instant: Instant::now(),
             audio_offloaded,
-            ffi: Mutex::new(()),
             load_confirmed: AtomicBool::new(confirmed),
         })
     }
@@ -150,7 +146,7 @@ impl NdlVideo {
     /// drifts against the picture over a session rather than sitting at a constant offset.
     pub fn play_audio(&self, packet: &[u8]) -> Result<()> {
         let pts_ms = self.load_instant.elapsed().as_millis() as c_longlong;
-        let _ffi = self.ffi.lock().expect("NDL FFI mutex poisoned");
+        let _ffi = lock_ffi();
         // SAFETY: NDL reads `size` bytes synchronously and does not retain the pointer.
         let ret = unsafe { (self.fns.audio_play)(packet.as_ptr() as *mut c_void, packet.len() as c_uint, pts_ms) };
         if ret != 0 {
@@ -189,16 +185,14 @@ impl NdlVideo {
     pub fn play(&self, au: &[u8], pts_ns: u64) -> Result<()> {
         self.ensure_loaded()?;
         let pts_ms = (pts_ns / 1_000_000) as c_longlong;
-        let _ffi = self.ffi.lock().expect("NDL FFI mutex poisoned");
+        let _ffi = lock_ffi();
         // SAFETY: NDL reads `size` bytes from `buffer` synchronously and does not
         // retain the pointer.
         let ret = unsafe { (self.fns.video_play)(au.as_ptr() as *mut c_void, au.len() as c_uint, pts_ms) };
         if ret != 0 {
             bail!("NDL_DirectVideoPlay failed: ret={ret} error={}", ffi::last_error());
         }
-        if FRAME_FED.bump_first() {
-            tracing::info!("NDL first frame fed {:?} after load", self.load_instant.elapsed());
-        }
+        mark_frame_fed_logged("NDL", self.load_instant);
         Ok(())
     }
 
@@ -241,11 +235,14 @@ impl NdlVideo {
             matrix_coeffs: c_int::from(color.matrix),
             reserved: [0; 32],
         };
-        let _ffi = self.ffi.lock().expect("NDL FFI mutex poisoned");
+        let _ffi = lock_ffi();
         // SAFETY: passed by value; no pointers or aliasing.
         let ret = unsafe { (self.fns.set_hdr_info)(info) };
         if ret != 0 {
-            bail!("NDL_DirectVideoSetHDRInfo failed: ret={ret} error={}", ffi::last_error());
+            bail!(
+                "NDL_DirectVideoSetHDRInfo failed: ret={ret} error={}",
+                ffi::last_error()
+            );
         }
         Ok(())
     }
@@ -254,14 +251,14 @@ impl NdlVideo {
     /// Rising length = decoder behind; flat near-zero with stutter = upstream problem.
     pub fn render_buffer_length(&self) -> Option<i32> {
         let mut length: c_int = 0;
-        let _ffi = self.ffi.lock().expect("NDL FFI mutex poisoned");
+        let _ffi = lock_ffi();
         // SAFETY: `length` is a valid, writable `c_int` for the duration of the call.
         let ret = unsafe { (self.fns.get_render_buffer_length)(&mut length) };
         (ret == 0).then_some(length)
     }
 
     pub fn flush(&self) -> Result<()> {
-        let _ffi = self.ffi.lock().expect("NDL FFI mutex poisoned");
+        let _ffi = lock_ffi();
         // SAFETY: no arguments.
         let ret = unsafe { (self.fns.flush_render_buffer)() };
         if ret != 0 {

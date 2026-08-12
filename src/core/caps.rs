@@ -8,11 +8,10 @@
 //! reads as [`VideoCaps::FULL`]** — today's webOS 5+ behaviour, so host builds, tests and any
 //! pre-install path see exactly what shipped before this existed.
 //!
-//! Two values, not one: the *NDL baseline* the platform installs (fixed for the run — it's what
-//! this TV's NDL generation can do) and the *active* caps, which also depend on the user's
-//! backend pick and therefore change while the app runs (see [`set_backend`]).
+//! Stored, not derived: the NDL baseline (fixed for the run) and whether the pick is SMP (changes
+//! while the app runs, see [`set_backend`]). [`video_caps`] is a function of the two.
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{OnceLock, RwLock};
+use std::sync::OnceLock;
 
 use crate::core::model::VideoBackend;
 
@@ -47,42 +46,37 @@ impl VideoCaps {
 
 /// What NDL can do on this TV — the platform's answer, fixed for the run.
 static NDL_BASELINE: OnceLock<VideoCaps> = OnceLock::new();
-/// The active caps, recomputed by [`set_backend`]. `None` until [`install`].
-static ACTIVE: RwLock<Option<VideoCaps>> = RwLock::new(None);
+/// Whether the current pick is SMP, i.e. whether the baseline is widened.
+static SMP_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Whether SMP is a legal pick at all — true only when NDL on this TV is the narrow v1
 /// generation (the whole reason to offer another backend) *and* SMP can actually load. The
 /// second half is not cosmetic: the pick widens what the handshake advertises, so offering a
 /// backend that will fail to load buys an HEVC session no fallback can decode.
 static SMP_SELECTABLE: AtomicBool = AtomicBool::new(false);
 
-/// Publish the detected NDL caps and whether the platform found SMP loadable. Call once, before
-/// settings load or any UI is built; later calls are ignored (the first install is what
-/// consumers have already read).
+/// Publish the detected NDL caps and whether SMP is selectable — the caller owns that gate in full
+/// (it has to, to skip the `dlopen` probe where the row can't be offered), so it is stored verbatim.
+/// Call once, before settings load or any UI is built; later calls are ignored.
 pub fn install(ndl_caps: VideoCaps, smp_available: bool) {
     if NDL_BASELINE.set(ndl_caps).is_err() {
         tracing::warn!("video caps already installed — ignoring {ndl_caps:?}");
         return;
     }
-    SMP_SELECTABLE.store(ndl_caps != VideoCaps::FULL && smp_available, Ordering::Relaxed);
-    *ACTIVE.write().expect("caps lock poisoned") = Some(ndl_caps);
+    SMP_SELECTABLE.store(smp_available, Ordering::Relaxed);
 }
 
 /// Point the active caps at `backend`. SMP drives the same silicon through a richer front-end,
 /// which does have HEVC and HDR on the releases NDL v1 does not — so the pick widens what this
 /// client advertises, and the row/wire clamps follow from here.
 pub fn set_backend(backend: VideoBackend) {
-    let caps = match backend {
-        VideoBackend::Smp if smp_selectable() => VideoCaps::FULL,
-        _ => ndl_baseline(),
-    };
-    let mut active = ACTIVE.write().expect("caps lock poisoned");
-    if active.replace(caps) != Some(caps) {
-        tracing::info!("video caps now {caps:?} ({backend:?})");
+    let smp = backend == VideoBackend::Smp && smp_selectable();
+    if SMP_ACTIVE.swap(smp, Ordering::Relaxed) != smp {
+        tracing::info!("video caps now {:?} ({backend:?})", video_caps());
     }
 }
 
 /// The NDL caps the platform installed, or [`VideoCaps::FULL`] if nothing was installed.
-pub fn ndl_baseline() -> VideoCaps {
+fn ndl_baseline() -> VideoCaps {
     NDL_BASELINE.get().copied().unwrap_or(VideoCaps::FULL)
 }
 
@@ -93,8 +87,9 @@ pub fn smp_selectable() -> bool {
 
 /// The active caps (see the module docs).
 pub fn video_caps() -> VideoCaps {
-    ACTIVE
-        .read()
-        .expect("caps lock poisoned")
-        .unwrap_or(VideoCaps::FULL)
+    if SMP_ACTIVE.load(Ordering::Relaxed) {
+        VideoCaps::FULL
+    } else {
+        ndl_baseline()
+    }
 }

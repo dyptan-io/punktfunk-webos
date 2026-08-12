@@ -2,6 +2,7 @@ pub mod audio;
 pub mod compositor;
 pub mod cursor;
 pub mod device;
+pub(crate) mod dl;
 pub mod dualsense;
 pub mod evmouse;
 pub mod game_mode;

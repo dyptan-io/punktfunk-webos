@@ -1,8 +1,7 @@
 //! Where SMP's decoded video actually lands — and it is **not** the same mechanism across
-//! releases. ss4s ships two `StarfishResource` implementations and picks by webOS major; this
-//! module is those two, behind one enum:
+//! releases. Two exist, picked by webOS major; this module is both, behind one enum:
 //!
-//! - [`Sink::Acb`] — webOS 3.5-4.x (`smp_resource_acb.c`). The app registers an
+//! - [`Sink::Acb`] — webOS 3.5-4.x. The app registers an
 //!   *appswitching-control-block* (`libAcbAPI.so`), binds SMP's media id to it, and drives
 //!   `LOADED`/`PLAYING`/`UNLOADED` state plus the display window through it. There is no
 //!   exported window on these releases, and no `windowId` in the load payload.
@@ -15,15 +14,19 @@ use std::ffi::{c_char, c_int, c_long, CStr, CString};
 use std::sync::OnceLock;
 
 use anyhow::{bail, Result};
+use sdl2::sys::SDL_Rect;
 
 use super::ffi;
-use crate::platform::webos::device::{self, NdlGeneration};
+use crate::platform::webos::device;
+use crate::platform::webos::dl;
+
+const LIB_NAME: &CStr = c"libAcbAPI.so";
 
 /// `AcbAPI.h` enum values (from the webOS NDK sysroot).
 ///
 /// `PLAYER_TYPE_MSE` is **10**, not its ordinal position: the enum opens with `GROUP = 0` and
 /// `VIDEO = 0` sharing a value, so every later variant sits one below where counting the lines
-/// would put it. ss4s passes the named constant and never has to think about this; we do.
+/// would put it, so the value has to be hardcoded rather than counted.
 const PLAYER_TYPE_MSE: c_int = 10;
 const SINK_TYPE_MAIN: c_int = 0;
 const APPSTATE_FOREGROUND: c_int = 1;
@@ -50,47 +53,22 @@ unsafe impl Send for AcbFns {}
 unsafe impl Sync for AcbFns {}
 
 fn acb_fns() -> Result<&'static AcbFns> {
-    static FNS: OnceLock<Option<AcbFns>> = OnceLock::new();
-    FNS.get_or_init(|| match resolve_acb() {
-        Ok(fns) => Some(fns),
-        Err(e) => {
-            tracing::warn!("SMP ACB sink: {e:#}");
-            None
-        }
-    })
-    .as_ref()
-    .ok_or_else(|| anyhow::anyhow!("libAcbAPI.so unavailable — SMP has nowhere to composite on this TV"))
-}
-
-fn resolve_acb() -> Result<AcbFns> {
-    // SAFETY: NUL-terminated literal.
-    let lib = unsafe { libc::dlopen(c"libAcbAPI.so".as_ptr(), libc::RTLD_LAZY | libc::RTLD_GLOBAL) };
-    if lib.is_null() {
-        bail!("dlopen(libAcbAPI.so) failed");
-    }
-    macro_rules! need {
-        ($sym:literal) => {{
-            // SAFETY: dlsym-verified non-null pointer, transmuted to the field's fn-pointer type.
-            let ptr = unsafe { libc::dlsym(lib, concat!($sym, "\0").as_ptr() as *const c_char) };
-            if ptr.is_null() {
-                bail!(concat!("libAcbAPI.so missing symbol: ", $sym));
-            }
-            unsafe { std::mem::transmute_copy(&ptr) }
-        }};
-    }
-    Ok(AcbFns {
-        create: need!("AcbAPI_create"),
-        initialize: need!("AcbAPI_initialize"),
-        set_media_id: need!("AcbAPI_setMediaId"),
-        set_sink_type: need!("AcbAPI_setSinkType"),
-        set_state: need!("AcbAPI_setState"),
-        set_display_window: need!("AcbAPI_setDisplayWindow"),
-        set_media_video_data: need!("AcbAPI_setMediaVideoData"),
-        destroy: need!("AcbAPI_destroy"),
+    static FNS: OnceLock<std::result::Result<AcbFns, String>> = OnceLock::new();
+    dl::cached(&FNS, LIB_NAME, |lib| {
+        Ok(AcbFns {
+            create: lib.sym(c"AcbAPI_create")?,
+            initialize: lib.sym(c"AcbAPI_initialize")?,
+            set_media_id: lib.sym(c"AcbAPI_setMediaId")?,
+            set_sink_type: lib.sym(c"AcbAPI_setSinkType")?,
+            set_state: lib.sym(c"AcbAPI_setState")?,
+            set_display_window: lib.sym(c"AcbAPI_setDisplayWindow")?,
+            set_media_video_data: lib.sym(c"AcbAPI_setMediaVideoData")?,
+            destroy: lib.sym(c"AcbAPI_destroy")?,
+        })
     })
 }
 
-/// Logged only — ss4s does the same. The states this backend cares about are driven, not awaited.
+/// Logged only. The states this backend cares about are driven, not awaited.
 unsafe extern "C" fn on_acb_event(
     acb_id: c_long,
     task_id: c_long,
@@ -120,9 +98,11 @@ pub enum Sink {
 impl Sink {
     /// Build the sink this release actually composites through (see the module docs).
     pub fn create(app_id: &str) -> Result<Self> {
-        match device::ndl_generation() {
-            NdlGeneration::V1 => Self::create_acb(app_id),
-            NdlGeneration::V2 => Self::create_window(),
+        if device::is_webos_pre5() {
+            Self::create_acb(app_id)
+        } else {
+            // Unreachable in practice today: caps only offers SMP where the NDL baseline is narrow.
+            Self::create_window()
         }
     }
 
@@ -160,7 +140,7 @@ impl Sink {
         }
     }
 
-    /// Bind SMP's media id to the ACB, before the load (ss4s `StarfishPlayerLoadInner`).
+    /// Bind SMP's media id to the ACB, before the load.
     pub fn set_media_id(&self, media_id: &CStr) {
         let Self::Acb { id, .. } = self else {
             return;
@@ -184,13 +164,13 @@ impl Sink {
                 tracing::info!("ACB display window {width}x{height} fullscreen: ret={ret}");
             }
             Self::Window(id) => {
-                let src = ffi::SdlRect {
+                let src = SDL_Rect {
                     x: 0,
                     y: 0,
                     w: width,
                     h: height,
                 };
-                let dst = ffi::SdlRect {
+                let dst = SDL_Rect {
                     x: 0,
                     y: 0,
                     w: SURFACE_W,
@@ -208,8 +188,7 @@ impl Sink {
             return;
         };
         let fns = acb_fns().expect("ACB resolved at create");
-        // SAFETY: live handle; `task` out-param is optional and NULL is accepted (ss4s passes one
-        // only to log it).
+        // SAFETY: live handle; the `task` out-param is optional and NULL is accepted.
         unsafe {
             (fns.set_media_id)(*id, media_id.as_ptr());
             (fns.set_sink_type)(*id, SINK_TYPE_MAIN);
@@ -223,7 +202,7 @@ impl Sink {
     }
 
     /// SMP's `STARFISH_EVENT_STR_VIDEO_INFO` payload, forwarded to the ACB with `hdrType` added
-    /// when this session is HDR (ss4s `StarfishResourceSetMediaVideoData`).
+    /// when this session is HDR.
     pub fn set_media_video_data(&self, info: &str, hdr: bool) {
         let Self::Acb { id, .. } = self else {
             return;

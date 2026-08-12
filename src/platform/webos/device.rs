@@ -17,11 +17,11 @@
 //! cheaply, and for the log line that makes a bug report from an unknown model useful.
 //!
 //! **NDL generation.** The same runtime library ships v2 on webOS 5+ and a PTS-less,
-//! H.264-only v1 on 3.5-4.x. [`ndl_generation`] only encodes the version ranges ss4s declares
-//! for its `ndl-webos4`/`ndl-webos5` modules; whether the symbols are there is decided by the
-//! `dlsym` probe in `ndl` (the second, decisive gate).
-use std::ffi::CString;
+//! H.264-only v1 on 3.5-4.x. [`ndl_generation`] only encodes the known version ranges; whether
+//! the symbols are there is decided by the `dlsym` probe in `ndl` (the second, decisive gate).
 use std::sync::OnceLock;
+
+use anyhow::bail;
 
 use crate::core::caps::VideoCaps;
 
@@ -35,9 +35,8 @@ pub struct DeviceInfo {
     /// Marketing model string, e.g. `OLED65G58LW.DEUQLJP`. Diagnostics only — never
     /// branch on this, see the module docs.
     pub model: Option<String>,
-    /// webOS TV SDK version (major, minor) — see [`sdk_version`]. Every ss4s module
-    /// constraint (and this client's NDL generation choice) is written against this
-    /// field, not `webos_major`.
+    /// webOS TV SDK version (major, minor) — see [`sdk_version`]. The NDL generation
+    /// choice is written against this field, not `webos_major`.
     pub sdk_version: Option<(u32, u32)>,
     /// `otaId` from `getSystemInfo`, e.g. `HE_DTV_W19H_...`. Display-only.
     pub ota_id: Option<String>,
@@ -51,7 +50,7 @@ const OS_INFO: &str = "/var/run/nyx/os_info.json";
 const DEVICE_INFO: &str = "/var/run/nyx/device_info.json";
 const MACHINE_NAME_FILE: &str = "/etc/prefs/properties/machineName";
 /// Present only when the `k5lp`/`k3lp` jailer config is sane — see [`jail_config_broken`].
-const RTKMEM_DEVICE: &str = "/dev/rtkmem";
+const RTKMEM_DEVICE: &std::ffi::CStr = c"/dev/rtkmem";
 
 /// Extract JSON field without parser (avoids serde on filesystem source).
 fn json_str_field(text: &str, key: &str) -> Option<String> {
@@ -65,12 +64,18 @@ fn json_str_field(text: &str, key: &str) -> Option<String> {
 }
 
 /// Parses `"4.3.0"` / `"5.2.0"` into `(major, minor)`. Extra segments (patch) are ignored —
-/// every ss4s `os_version` constraint compares major, and minor only where it appears here.
+/// every version constraint compares major, and minor only where it appears here.
 fn parse_sdk_version(text: &str) -> Option<(u32, u32)> {
     let mut parts = text.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next().and_then(|m| m.parse().ok()).unwrap_or(0);
     Some((major, minor))
+}
+
+/// One cached `os_info.json` text — it can't change under a running app.
+fn os_info() -> &'static str {
+    static TEXT: OnceLock<String> = OnceLock::new();
+    TEXT.get_or_init(|| std::fs::read_to_string(OS_INFO).unwrap_or_default())
 }
 
 /// One cached `getSystemInfo` payload for every field read from it: the Luna round-trip is on
@@ -90,9 +95,12 @@ fn system_info() -> &'static str {
     })
 }
 
-/// The webOS TV SDK version (`sdkVersion`, not the Open webOS release) — the field every ss4s
-/// module constraint and [`ndl_generation`] is written against. Resolved once, in precedence
-/// order: launch-param override, Luna `getSystemInfo`, then `os_info.json`'s `webos_release`.
+/// The webOS TV SDK version (`sdkVersion`, not the Open webOS release) — the field
+/// [`ndl_generation`] is written against. Resolved once, in precedence
+/// order: launch-param override, `os_info.json`'s `webos_release`, then Luna `getSystemInfo`.
+///
+/// `os_info.json` first because Luna costs a subprocess spawn plus up to `CALL_TIMEOUT` on a TV
+/// that never answers, and consumers only read the major, which `webos_release` gives.
 pub fn sdk_version() -> Option<(u32, u32)> {
     static SDK_VERSION: OnceLock<Option<(u32, u32)>> = OnceLock::new();
     *SDK_VERSION.get_or_init(|| {
@@ -103,17 +111,20 @@ pub fn sdk_version() -> Option<(u32, u32)> {
             }
             tracing::warn!("webos_sdk launch param {over:?} unparseable — ignoring");
         }
-        if let Some(v) = json_str_field(system_info(), "sdkVersion").and_then(|s| parse_sdk_version(&s)) {
-            return Some(v);
+        // Not the same field: `webos_release` is the OS release. Majors agree in practice, which
+        // is all any consumer reads — but log it, since `sdk=` is then a guess.
+        if let Some((major, _)) = json_str_field(os_info(), "webos_release").and_then(|v| parse_sdk_version(&v)) {
+            tracing::info!("assuming SDK major {major} from os_info webos_release");
+            return Some((major, 0));
         }
-        // Not the same field: `webos_release` is the OS release. Majors agree in practice,
-        // which is all `ndl_generation` reads — but say so, since `sdk=` is then a guess.
-        let os = std::fs::read_to_string(OS_INFO).unwrap_or_default();
-        let major = json_str_field(&os, "webos_release")
-            .and_then(|v| v.split('.').next().and_then(|m| m.parse().ok()))?;
-        tracing::info!("no sdkVersion from Luna — assuming major {major} from webos_release");
-        Some((major, 0))
+        json_str_field(system_info(), "sdkVersion").and_then(|s| parse_sdk_version(&s))
     })
+}
+
+/// Whether this is a pre-webOS-5 TV (the releases with NDL v1 and a selectable SMP backend).
+/// Unknown counts as 5+, matching [`ndl_generation`]'s default.
+pub fn is_webos_pre5() -> bool {
+    matches!(sdk_version(), Some((major, _)) if major < 5)
 }
 
 /// `otaId` from Luna's `getSystemInfo`, e.g. `HE_DTV_W19H_...`. Display-only.
@@ -121,8 +132,8 @@ fn ota_id() -> Option<String> {
     json_str_field(system_info(), "otaId")
 }
 
-/// SoC/board codename (`/etc/prefs/properties/machineName`, e.g. `m16p`, `k5lp`), as ss4s uses
-/// for its per-board workarounds (see [`jail_config_broken`]). Never a lookup key for anything
+/// SoC/board codename (`/etc/prefs/properties/machineName`, e.g. `m16p`, `k5lp`), read only for
+/// per-board workarounds (see [`jail_config_broken`]). Never a lookup key for anything
 /// beyond that narrow set of on-device-verified quirks — see the module docs.
 pub fn machine_name() -> Option<String> {
     static MACHINE_NAME: OnceLock<Option<String>> = OnceLock::new();
@@ -136,25 +147,37 @@ pub fn machine_name() -> Option<String> {
         .clone()
 }
 
-/// Whether this machine's jailer config is known-broken for direct-media access — from ss4s
-/// `jail_check.c`: on `k5lp`/`k3lp`, a broken config leaves `/dev/rtkmem` unreadable and NDL v1
-/// cannot reach the decoder.
+/// Whether this machine's jailer config is known-broken for direct-media access: on `k5lp`/`k3lp`,
+/// a broken config leaves `/dev/rtkmem` unreadable and NDL v1 cannot reach the decoder.
 pub fn jail_config_broken() -> bool {
-    let Some(name) = machine_name() else {
-        return false;
-    };
-    if name != "k5lp" && name != "k3lp" {
-        return false;
-    }
-    let Ok(path) = CString::new(RTKMEM_DEVICE) else {
-        return false;
-    };
-    // SAFETY: `path` is a valid, NUL-terminated C string for the duration of the call.
-    unsafe { libc::access(path.as_ptr(), libc::R_OK) != 0 }
+    static BROKEN: OnceLock<bool> = OnceLock::new();
+    *BROKEN.get_or_init(|| {
+        let Some(name) = machine_name() else {
+            return false;
+        };
+        if name != "k5lp" && name != "k3lp" {
+            return false;
+        }
+        // SAFETY: a C string literal is valid and NUL-terminated for the duration of the call.
+        unsafe { libc::access(RTKMEM_DEVICE.as_ptr(), libc::R_OK) != 0 }
+    })
 }
 
-/// Which NDL `DirectMedia` generation to *try*, from the version ranges ss4s declares
-/// (`ndl-webos5` `>=5`, `ndl-webos4` `>=3.5,<5`). Unknown defaults to `V2` — today's behaviour,
+/// Refuse to open `backend` when the jailer config is known-broken — the failure is the same for
+/// every direct-media backend, and it's clearer here than as a black screen later.
+pub fn ensure_jail_ok(backend: &str) -> anyhow::Result<()> {
+    if jail_config_broken() {
+        bail!(
+            "this TV's jailer config leaves /dev/rtkmem unreadable (machine {}), so {backend} \
+             cannot reach the decoder",
+            machine_name().unwrap_or_else(|| "unknown".into()),
+        );
+    }
+    Ok(())
+}
+
+/// Which NDL `DirectMedia` generation to *try*, from the known version ranges (v2 at `>=5`,
+/// v1 at `>=3.5,<5`). Unknown defaults to `V2` — today's behaviour,
 /// kept for every working device, including ones where Luna is unavailable. No fallback between
 /// the two; `ndl`'s module docs say why.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,9 +209,9 @@ pub fn video_caps() -> VideoCaps {
 impl DeviceInfo {
     pub fn detect() -> Self {
         let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-        let os = std::fs::read_to_string(OS_INFO).unwrap_or_default();
-        let webos_major =
-            json_str_field(&os, "webos_release").and_then(|v| v.split('.').next().and_then(|m| m.parse().ok()));
+        let webos_major = json_str_field(os_info(), "webos_release")
+            .and_then(|v| parse_sdk_version(&v))
+            .map(|(major, _)| major);
         let model = std::fs::read_to_string(DEVICE_INFO)
             .ok()
             .and_then(|t| json_str_field(&t, "product_id"));

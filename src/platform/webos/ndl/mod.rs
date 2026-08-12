@@ -31,6 +31,7 @@ mod v2;
 
 use std::ffi::{c_char, c_int, c_longlong, CString};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
@@ -63,7 +64,7 @@ impl NdlCodec {
     }
 }
 
-/// NDL load-state values reported through the v2 media-load callback (ss4s logs these).
+/// NDL load-state values reported through the v2 media-load callback.
 const STATE_LOADCOMPLETED: c_int = 0x16;
 const STATE_UNLOADCOMPLETED: c_int = 0x17;
 const STATE_PLAYING: c_int = 0x1a;
@@ -190,6 +191,22 @@ pub fn mark_frame_fed() -> bool {
     FRAME_FED.bump_first()
 }
 
+/// [`mark_frame_fed`] plus the log line both generations emit; `since` is the handle's load instant.
+fn mark_frame_fed_logged(backend: &str, since: Instant) {
+    if mark_frame_fed() {
+        tracing::info!("{backend} first frame fed {:?} after load", since.elapsed());
+    }
+}
+
+/// Every NDL entry point is a process singleton and none is documented as thread-safe, so one lock
+/// serializes all of them. Poison-tolerant: a panic mid-FFI leaves no Rust state to corrupt, and
+/// refusing the lock afterwards would only turn it into a dead video plane.
+static FFI_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_ffi() -> MutexGuard<'static, ()> {
+    FFI_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Lets the rejected audio-enabled load's callbacks land before the video-only retry is armed:
 /// waits for its `UNLOADCOMPLETED`, then a fixed settle for anything still in flight behind it.
 fn settle_before_retry() {
@@ -270,7 +287,7 @@ pub fn ensure_not_poisoned() -> Result<()> {
 static INIT_DONE: AtomicBool = AtomicBool::new(false);
 
 /// Calls `NDL_DirectMediaInit` once (process-global, idempotent-guarded). Same symbol and same
-/// NULL resource-released callback on both generations (ss4s passes NULL too).
+/// NULL resource-released callback on both generations.
 fn ensure_init(app_id: &str) -> Result<()> {
     if INIT_DONE.swap(true, Ordering::SeqCst) {
         return Ok(());

@@ -140,21 +140,22 @@ Burst is 320 Mbps / 3s (not 3 Gbps / 5s) — 3-core Cortex-A9 runs UI thread; un
 
 ## Video backends: NDL (default) + SMP on webOS <5
 
-NDL DirectMedia is the only backend on webOS 5+. Header signatures from `mariotaku/ss4s`. No decode context handle; all NDL calls serialized behind `NdlVideo::ffi` mutex (not thread-safe per header). AV1 stays gone — it never produced a picture on any backend.
+NDL DirectMedia is the only backend on webOS 5+. No decode context handle; all NDL calls serialized behind `NdlVideo::ffi` mutex (not thread-safe per header). AV1 stays gone — it never produced a picture on any backend.
 
-SMP (`libplayerAPIs_C.so` wrapper, `dlopen`'d) is selectable on webOS 3.5-4.x only, where NDL is the v1 surface: it's the sole route to HEVC/HDR there. The pick widens `core::caps`; a failed load falls back to NDL v1. Ported from ss4s `modules/webos/smp` — three parts of it are not guessable:
+SMP (`libplayerAPIs_C.so` wrapper, `dlopen`'d) is selectable on webOS 3.5-4.x only, where NDL is the v1 surface: it's the sole route to HEVC/HDR there. The pick widens `core::caps`; a failed load falls back to NDL v1. Three parts of it are not guessable:
 
 - **The compositing sink is version-specific** (`smp/sink.rs`). webOS 5+: SDL exported window, id inside the load payload. webOS 3.5-4.x: **ACB** (`libAcbAPI.so`) instead, no window — `initialize(PLAYER_TYPE_MSE=10)`, `setMediaId(getMediaID())` pre-load, `setSinkType(MAIN)`+`setState(LOADED)` on LOADCOMPLETED, `setDisplayWindow` after, `setState(PLAYING)` on first accepted frame, `setMediaVideoData` forwarding SMP's `STR_VIDEO_INFO` (+`hdrType` when HDR). Wrong shape = loads, accepts every frame, composites nothing.
 - **Feed PTS is SMP-relative** (`now - openTime` ns, not host clock). With `pauseAtDecodeTime`, an unmapped host PTS is an arbitrary epoch away — `session::sink` maps it through the same `HostPtsAnchor` as NDL v2.
-- **Only ss4s's load payload shape loads.** A trimmed variant derived from the platform's NDL binaries never completed a load anywhere.
+- **Only one load payload shape loads.** A trimmed variant derived from the platform's NDL binaries never completed a load anywhere.
 
-Unverified on hardware (no 3.5-4.x device). webOS 3.5 may need ss4s's `playerAPIs_C_Legacy` wrapper; `c_shim.cpp` builds against the current SDK header only.
+Unverified on hardware (no 3.5-4.x device). webOS 3.5 may need the `playerAPIs_C_Legacy` wrapper; `c_shim.cpp` builds against the current SDK header only.
 
 ## NDL generations: v2 (webOS 5+) and v1 (3.5-4.x)
 
 - Same library, different symbol sets. v2: `NDL_DirectMediaLoad`, `NDL_DirectVideoPlay(buf,size,pts)`, `FlushRenderBuffer`, `GetRenderBufferLength`, `SetHDRInfo`. v1: `NDL_DirectVideoOpen / SetCallback / SetArea / PlayWithCallback / Close` — webOS 4 has **none** of the v2 entry points.
 - **NDL is dlopen'd, never linked — this is what makes webOS 4 boot.** Full BIND_NOW resolves every undefined symbol at exec time, so a `DT_NEEDED` on `libNDL_directmedia.so.1` makes the loader refuse to start the process on webOS 4: before `main()`, nothing logged. That was the shipped 0.15.0 `.ipk`. **Never re-add `#[link(name = "NDL_directmedia")]`** — no webOS 5 test catches it. `-Wl,-z,lazy` is not the fix (keeps the dependency, weakens RELRO binary-wide).
-- Generation from `device::ndl_generation()` (Luna `sdkVersion`, the field ss4s constraints use): v1 below 5, v2 at 5+ **and when unknown**. `task deploy WEBOS_SDK=4.3.0` forces v1 on a modern TV. Version picks what to *try*, `dlsym` decides; a miss is a named error, never a fallback — v2 symbols are absent on webOS 4 by construction.
-- v1 limits: H.264 only, SDR/BT.709, **no PTS input** (frames present as fed, pacing inert), no render-buffer query, no flush, no HDR call. Fixed 1920x1080 plane placed once via `SetArea`, letterboxed by ss4s `FitVideo`. Never reposition video from the app — UI composites over the underlay.
+- Generation from `device::ndl_generation()` (Luna `sdkVersion`): v1 below 5, v2 at 5+ **and when unknown**. `task deploy WEBOS_SDK=4.3.0` forces v1 on a modern TV. Version picks what to *try*, `dlsym` decides; a miss is a named error, never a fallback — v2 symbols are absent on webOS 4 by construction.
+- v1 limits: H.264 only, SDR/BT.709, **no PTS input** (frames present as fed, pacing inert), no render-buffer query, no flush, no HDR call. **Resolution is NOT among them** — real stream dimensions reach `NDL_DirectVideoOpen` unclamped, so 1440p/4K decode as configured; ceiling is the SoC's and v1 can't be asked what it is. The 1920x1080 in `ndl/v1.rs` is the **display rect** placed once via `SetArea`, letterboxed in webOS's panel-independent app coordinate space — unrelated to decode. Never reposition video from the app — UI composites over the underlay.
+- `NDL_DIRECTVIDEO_DATA_INFO_T` (v1) has **three** fields — `width`, `height`, `source` (`NDL_DIRECTVIDEO_SRC_TYPE`). Declaring only the first two made `NDL_DirectVideoOpen` read 4 bytes of stack garbage as `source`; we pass `NONE` (0). Fixed 2026-08-12.
 - `core::caps` publishes whatever the active backend can do; three readers must agree: `session::connect` (authoritative — codec/HDR/channels settle before any decoder opens), `ui::settings` (row/option visibility), `Settings::clamp_to_caps` (document written on a more capable TV).
-- Not ported: `m3_kadp_fix.c` — `mprotect`s a vendor code page RWX and NOPs two bytes out of an MStar codec whitelist. We only feed H.264 on v1.
+- Not adopted: the M3/KADP patch — `mprotect`s a vendor code page RWX and NOPs two bytes out of an MStar codec whitelist. We only feed H.264 on v1.

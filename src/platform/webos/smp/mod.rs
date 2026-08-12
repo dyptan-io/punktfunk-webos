@@ -3,17 +3,16 @@
 //! spelling survives in the symbol names and nowhere else.
 //!
 //! Offered as a **selectable** backend on webOS 3.5-4.x only (`core::caps::smp_selectable`):
-//! NDL there is the v1 surface — H.264, SDR, no PTS, fixed 1080p plane (see [`super::ndl::v1`]) —
+//! NDL there is the v1 surface — H.264, SDR, no PTS (see [`super::ndl::v1`]) —
 //! while SMP is the same silicon through a richer front-end, so HEVC, HDR metadata and
 //! `pauseAtDecodeTime` pacing are only reachable this way. webOS 5+ keeps NDL v2.
 //!
-//! Ported from ss4s `modules/webos/smp`, which is also where the load payload, the feed PTS
-//! domain and the [`sink`] split come from — deviating from it is how you get a pipeline that
-//! loads, accepts every frame, and shows nothing. A failed load is a plain `Err`;
-//! `session::connect` falls back to NDL.
+//! The load payload, the feed PTS domain and the [`sink`] split are all load-bearing — deviating
+//! from them is how you get a pipeline that loads, accepts every frame, and shows nothing. A failed
+//! load is a plain `Err`; `session::connect` falls back to NDL.
 //!
 //! Audio is never SMP's (`needAudio: false`) — this client decodes Opus itself
-//! (`platform::webos::audio`), so `smp_audio.c` has no counterpart here.
+//! (`platform::webos::audio`).
 mod ffi;
 mod sink;
 
@@ -48,7 +47,7 @@ struct Shared {
     api: *mut c_void,
     loaded: AtomicBool,
     /// Whether this session applies HDR — decides if `hdrType` is injected into the video-info
-    /// payload the ACB sink gets (ss4s `SetMediaVideoData`).
+    /// payload the ACB sink gets.
     hdr: AtomicBool,
     /// The sink, reached from both the callback (`LOADCOMPLETED`, video info) and the feed path
     /// (first-frame `PLAYING`), hence the mutex.
@@ -66,8 +65,7 @@ impl Shared {
     }
 }
 
-/// SMP's load callback. Only three events matter here; ss4s logs the rest, which the vendor
-/// library already does through its own logging.
+/// SMP's load callback. Only three events matter here; the vendor library already logs the rest.
 unsafe extern "C" fn on_event(event: c_int, _num: i64, str_value: *const c_char, data: *mut c_void) {
     if data.is_null() {
         return;
@@ -103,24 +101,24 @@ impl Shared {
 pub struct SmpVideo {
     fns: &'static ffi::Fns,
     shared: Box<Shared>,
-    /// SMP's PTS domain: nanoseconds since this load, not the host's clock (ss4s feeds
-    /// `now - openTime`). [`Self::elapsed_ns`] is what maps a host PTS onto it.
+    /// SMP's PTS domain: nanoseconds since this load (`now - openTime`), not the host's clock.
+    /// [`Self::elapsed_ns`] is what maps a host PTS onto it.
     opened: Instant,
     /// Set once a frame has been accepted — the ACB sink is told "playing" exactly once, on that
-    /// frame, because it won't show the plane before (ss4s `StarfishPlayerFeed`).
+    /// frame, because it won't show the plane before.
     playing: AtomicBool,
 }
 
 impl SmpVideo {
     /// Open SMP for a `width`x`height`@`fps` stream and wait for the load to complete.
     ///
-    /// The request is ss4s's `MakeLoadPayload` verbatim — the only shape this client has ever seen
-    /// complete a load. An earlier cut also tried a trimmed variant derived from the platform's
-    /// own NDL binaries; it never loaded anywhere and cost a timeout per session to find out.
-    /// Don't add a second shape without a device that loads with it.
+    /// The request shape is the only one this client has ever seen complete a load. An earlier cut
+    /// also tried a trimmed variant derived from the platform's own NDL binaries; it never loaded
+    /// anywhere and cost a timeout per session to find out. Don't add a second shape without a
+    /// device that loads with it.
     pub fn load(app_id: &str, width: i32, height: i32, fps: u32, codec: NdlCodec) -> Result<Self> {
-        // ss4s's SMP module refuses to load at all on these boards (`SS4S_JAIL_CHECK`), same as
-        // NDL v1 — a broken jailer config leaves the decoder unreachable.
+        // Refuse to load on these boards, same as NDL v1 — a broken jailer config leaves the
+        // decoder unreachable.
         if device::jail_config_broken() {
             bail!(
                 "this TV's jailer config leaves /dev/rtkmem unreadable (machine {}), so SMP cannot \
@@ -129,7 +127,7 @@ impl SmpVideo {
             );
         }
         let fns = ffi::fns()?;
-        // SAFETY: NULL uid is what ss4s passes; the handle is checked before use.
+        // SAFETY: a NULL uid is accepted; the handle is checked before use.
         let api = unsafe { (fns.create)(std::ptr::null()) };
         if api.is_null() {
             bail!("StarfishMediaAPIs_create returned null");
@@ -156,7 +154,7 @@ impl SmpVideo {
         };
         // From here on every exit path tears down through `Drop`.
 
-        // SAFETY: live handle; the media id is bound to the sink before the load, as ss4s does.
+        // SAFETY: live handle; the media id must be bound to the sink before the load.
         unsafe { (fns.notify_fg)(api) };
         let media_id = sf.shared.media_id(fns);
         sf.shared.lock_sink().set_media_id(&media_id);
@@ -241,22 +239,29 @@ impl SmpVideo {
 
     /// Feed one access unit. `pts_ns` must already be in SMP's domain ([`Self::elapsed_ns`]).
     pub fn play(&self, au: &[u8], pts_ns: u64) -> Result<()> {
-        let payload = CString::new(format!(
-            r#"{{"bufferAddr":"{:p}","bufferSize":{},"pts":{pts_ns},"esData":1}}"#,
-            au.as_ptr(),
-            au.len(),
-        ))?;
+        // Per-frame path: stack scratch so a feed costs no allocation; only overflow hits the heap.
+        let mut scratch = [0u8; 128];
+        let owned;
+        let payload: &CStr = match write_feed_payload(&mut scratch, au, pts_ns) {
+            Some(p) => p,
+            None => {
+                owned = CString::new(feed_payload_string(au, pts_ns))?;
+                &owned
+            }
+        };
         let mut buf = [0u8; 128];
         // SAFETY: every argument is valid for the call; the wrapper copies SMP's `std::string`
         // result into `buf` (NUL-terminated, truncated) before it destructs.
         unsafe {
             (self.fns.feed)(self.api(), payload.as_ptr(), buf.as_mut_ptr() as *mut c_char, buf.len());
         }
-        // Substring matching, as ss4s does: the result is usually `{"returnValue":"Ok"}` but the
+        // Substring matching: the result is usually `{"returnValue":"Ok"}` but the
         // vendor is not consistent about the wrapper, and a parse failure must not read as a
         // decode failure.
-        let result = String::from_utf8_lossy(&buf);
-        let result = result.trim_matches(['\0', ' ']);
+        let result = CStr::from_bytes_until_nul(&buf)
+            .map(CStr::to_string_lossy)
+            .unwrap_or_default();
+        let result = result.trim();
         if !result.contains("Ok") {
             bail!("StarfishMediaAPIs_feed: {result}");
         }
@@ -315,13 +320,48 @@ impl SmpVideo {
     }
 }
 
+/// The one feed-payload shape, written through either `fmt::Write` or `io::Write` — the two paths
+/// below must never drift apart.
+macro_rules! feed_payload {
+    ($dst:expr, $au:expr, $pts_ns:expr) => {
+        write!(
+            $dst,
+            r#"{{"bufferAddr":"{:p}","bufferSize":{},"pts":{},"esData":1}}"#,
+            $au.as_ptr(),
+            $au.len(),
+            $pts_ns,
+        )
+    };
+}
+
+fn feed_payload_string(au: &[u8], pts_ns: u64) -> String {
+    use std::fmt::Write;
+
+    let mut s = String::new();
+    let _ = feed_payload!(&mut s, au, pts_ns);
+    s
+}
+
+/// The feed payload written into caller-owned scratch, NUL included. `None` if it doesn't fit, so
+/// the caller allocates rather than feeding a truncated request.
+fn write_feed_payload<'a>(scratch: &'a mut [u8; 128], au: &[u8], pts_ns: u64) -> Option<&'a CStr> {
+    use std::io::Write;
+
+    // Last byte is reserved for the NUL a `CStr` needs.
+    let mut cursor: &mut [u8] = &mut scratch[..127];
+    feed_payload!(cursor, au, pts_ns).ok()?;
+    let len = 127 - cursor.len();
+    scratch[len] = 0;
+    CStr::from_bytes_with_nul(&scratch[..=len]).ok()
+}
+
 impl Drop for SmpVideo {
     fn drop(&mut self) {
         // Re-arm so the reveal gate stops reporting the session being torn down here.
         super::ndl::arm_frame_gate();
         // SAFETY: `api` is valid for the lifetime of `Self`; best-effort teardown, so results are
-        // ignored (`Drop` can't propagate). `pushEOS` only applies once frames have flowed, as in
-        // ss4s's unload path. The sink's own `Drop` reports UNLOADED and releases the plane after.
+        // ignored (`Drop` can't propagate). `pushEOS` only applies once frames have flowed. The
+        // sink's own `Drop` reports UNLOADED and releases the plane after.
         unsafe {
             if self.playing.load(Ordering::Relaxed) {
                 (self.fns.push_eos)(self.api());

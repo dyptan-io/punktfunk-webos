@@ -6,10 +6,6 @@
 //! as a shared library and `taskfiles/toolchain.yml` bundles it alongside
 //! `libSDL2-2.0.so.0` in the IPK's `lib/` directory, loaded via the binary's
 //! `$ORIGIN/../lib` rpath.
-//!
-//! Naming mirrors the convention used by `mariotaku/ss4s` (`modules/webos/smp`)
-//! and `GuiDev1994/aurora-tv`, which also ship this wrapper rather than linking
-//! against the C++ class directly.
 
 #include <starfish-media-pipeline/StarfishMediaAPIs.h>
 #include <cstring>

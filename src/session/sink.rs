@@ -175,7 +175,7 @@ impl VideoPlayer {
     /// anchor. Without `anchor` (pacing off) NDL falls back to raw player time.
     ///
     /// SMP is mapped the same way as V2 — its PTS domain is nanoseconds since *its own* load
-    /// (ss4s feeds `now - openTime`), not the host's clock, so an unmapped host PTS would sit an
+    /// (`now - openTime`), not the host's clock, so an unmapped host PTS would sit an
     /// arbitrary epoch away and `pauseAtDecodeTime` would hold every frame. V1 has nothing to pace
     /// against at all (no PTS input, no player clock), so the host PTS returns untouched there and
     /// the pacer's output is discarded at the feed.
@@ -209,16 +209,8 @@ impl VideoPlayer {
         }
     }
 
-    /// Whether the backend decodes audio itself. Only ever V2: V1's `NDL_DirectAudio*` has no
-    /// Opus source type, and SMP is loaded `needAudio: false`.
-    pub fn audio_offloaded(&self) -> bool {
-        match self {
-            Self::V2(ndl) => ndl.audio_offloaded(),
-            Self::V1(_) | Self::Smp(_) => false,
-        }
-    }
-
     /// Shared NDL handle when audio-offloaded; None on a video-only load or any other backend.
+    /// V2 only: V1's `NDL_DirectAudio*` has no Opus source type, and SMP loads `needAudio: false`.
     pub fn ndl_audio_handle(&self) -> Option<Arc<NdlVideo>> {
         match self {
             Self::V2(ndl) => ndl.audio_offloaded().then(|| ndl.clone()),
@@ -546,10 +538,7 @@ mod tests {
     /// collapses this onto the base case.
     #[test]
     fn the_render_queue_adds_its_own_drain_time() {
-        assert_eq!(
-            video_e2e_ns(SUBMIT, 0, PTS, 3, HZ60_NS),
-            Some(30_000_000 + 3 * HZ60_NS)
-        );
+        assert_eq!(video_e2e_ns(SUBMIT, 0, PTS, 3, HZ60_NS), Some(30_000_000 + 3 * HZ60_NS));
         // And a deeper queue is strictly later — the ratchet the sync loop exists to cancel.
         let shallow = video_e2e_ns(SUBMIT, 0, PTS, 1, HZ60_NS).unwrap();
         let deep = video_e2e_ns(SUBMIT, 0, PTS, 6, HZ60_NS).unwrap();
