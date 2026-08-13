@@ -62,12 +62,22 @@ const CHUNK_QUEUE: usize = 64;
 ///   * **The base target clears the device floor.** `effective_target` floors at `want + FRAME_MS`;
 ///     at [`DEVICE_BUFFER_FRAMES`] that is 10.67 + 5 = 15.7 ms, under the 25 ms base — so the ring
 ///     cannot oscillate prime → dropout → re-prime.
+///
+/// `deprime_ms` is a starvation window in MILLISECONDS of audio, not the count of consecutive short
+/// reads it used to be. The count was the bug: a callback is not a unit of time, so the same number
+/// meant a different fuse on every platform — 20 ms on iOS's 5 ms quantum against 44 ms on a Mac's
+/// 11 ms, and upstream measured 120 audible gaps per 10 minutes at the short end versus 1-3 at the
+/// long one. This device is not one of the badly bitten: at [`DEVICE_BUFFER_FRAMES`] the quantum is
+/// 10.67 ms, so the old `5` was already a ~53 ms fuse. 60 ms is therefore close to what this ring
+/// was doing, and is the value upstream picked for both Wi-Fi-transport presets — which is the
+/// right company for a TV. A `MIN_DEPRIME_CALLBACKS` floor inside core keeps real hysteresis on a
+/// large-quantum device, so this cannot de-prime on a single short read.
 const WEBOS_TUNING: JitterTuning = JitterTuning {
     base_target_ms: 25,
     max_target_ms: 90,
     headroom_ms: 40,
     hard_cap_ms: 120,
-    deprime_after: 5,
+    deprime_ms: 60,
 };
 
 /// The cells the A/V sync loop trades through, all owned by `NativeClient`: the video plane and

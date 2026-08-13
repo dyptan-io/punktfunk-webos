@@ -55,8 +55,12 @@ fn base_url(addr: &str, mgmt_port: u16) -> String {
 pub fn agent(identity: &(String, String), pin: Option<[u8; 32]>) -> Result<ureq::Agent, LibraryError> {
     use rustls::pki_types::pem::PemObject;
     let bad = |what: &str, e: &dyn std::fmt::Display| LibraryError::Unreachable(format!("{what}: {e}"));
-    // Ring provider (matches punktfunk-core's QUIC for consistent crypto).
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    // aws-lc-rs, matching punktfunk-core's QUIC for consistent crypto — the invariant this
+    // comment always claimed, now that core has moved off ring too. Naming a provider here
+    // (rather than letting rustls infer one) is also what keeps this path working if a second
+    // backend ever re-enters the tree: with both compiled, rustls declines to guess and the
+    // inferring constructors panic. `builder_with_provider` never has to guess.
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let builder = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|e| bad("tls config", &e))?
@@ -220,7 +224,7 @@ impl rustls::client::danger::ServerCertVerifier for PinVerify {
             message,
             cert,
             dss,
-            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+            &rustls::crypto::aws_lc_rs::default_provider().signature_verification_algorithms,
         )
     }
 
@@ -234,12 +238,12 @@ impl rustls::client::danger::ServerCertVerifier for PinVerify {
             message,
             cert,
             dss,
-            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+            &rustls::crypto::aws_lc_rs::default_provider().signature_verification_algorithms,
         )
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::ring::default_provider()
+        rustls::crypto::aws_lc_rs::default_provider()
             .signature_verification_algorithms
             .supported_schemes()
     }

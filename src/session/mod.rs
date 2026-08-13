@@ -885,7 +885,12 @@ fn video_pump(
                     );
                 }
 
-                let gap = client.note_frame_index(frame.frame_index);
+                // From core v0.28 this returns the gap WIDTH (0 = contiguous) where it used to
+                // return a bare "was there a gap" bool; `> 0` is the same predicate. Keep the
+                // width for the log line — how many frames the hole swallowed is the number
+                // worth having when reading a freeze report, not merely that one existed.
+                let gap_width = client.note_frame_index(frame.frame_index);
+                let gap = gap_width > 0;
                 let dropped_now = client.frames_dropped();
                 let dropped = dropped_now > last_dropped_seen;
                 if dropped {
@@ -894,7 +899,7 @@ fn video_pump(
                 if (gap || dropped) && !sink.holding() {
                     // Logged alongside the freeze the sink reports next: a sequence hole and a
                     // frame the transport itself gave up on point at different faults.
-                    tracing::warn!("loss: gap={gap} dropped={dropped} (frame {})", frame.frame_index);
+                    tracing::warn!("loss: gap={gap_width} dropped={dropped} (frame {})", frame.frame_index);
                 }
                 let flags = FrameFlags {
                     reanchor: frame.flags & u32::from(FLAG_SOF) != 0 || frame.flags & USER_FLAG_RECOVERY_ANCHOR != 0,

@@ -3,7 +3,10 @@ name = "punktfunk-webos"
 description = "Native LG webOS TV client for punktfunk — session pump direct on punktfunk-core, NDL DirectMedia hardware video decode, SDL2 window/gamepad/remote input."
 version = "0.0.1"
 edition = "2021"
-rust-version = "1.82"
+# 1.85 is punktfunk-core's floor from v0.28.0 on — that release moved the whole workspace to
+# edition 2024, and an edition-2024 dependency cannot be compiled by an older toolchain. This
+# crate itself stays on edition 2021; only the compiler floor rises.
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 authors = ["Volodymyr Dyptan <volodymyr@dyptan.dev>"]
 repository = "https://github.com/dyptan-io/punktfunk-webos"
@@ -43,16 +46,31 @@ tracing-appender = "0.2"
 # unchanged across the two, so this is a pin-only bump. See `docs/NOTES.md` § Audio.
 # v0.27.0 widens `RumbleCommand` to four motors — the handles plus the Xbox impulse triggers.
 # Additive (the handle pair is a literal prefix), so the bump is pin-only.
-punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", tag = "v0.27.0", features = ["quic"] }
+# v0.28.0 is the release this client ships alongside. Wire protocol stays 2, so pairings and the
+# stream itself are unaffected. It moves TLS to aws-lc-rs, which is what lets this crate drop ring
+# (see the `rustls` note below — ring has no ML-KEM, and that is the whole reason the backend
+# moved), and puts `#![deny(unsafe_code)]` over the crate that parses every byte off the network.
+# The one source-visible break is `note_frame_index`, which now returns a gap WIDTH — see
+# `session::video_pump`.
+punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", tag = "v0.28.0", features = ["quic"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # mDNS LAN discovery; direct dep (not via pf-client-core — see session.rs docs).
-mdns-sd = "0.20"
+mdns-sd = "0.21"
 # Pure-Rust crates used by the platform-independent layers (`ui`, `services`), so they build
 # on every host — only the SDL2/webOS-linked crates below stay Linux-gated.
 # mTLS game library fetch (services::library) + cover art decode (services::art).
-ureq = { version = "3", features = ["rustls"], default-features = false }
-rustls = { version = "0.23", features = ["ring"] }
+# ⚠ Spell the ureq TLS feature `rustls-no-provider`, NOT the convenience `rustls` feature: the
+# latter expands to `["rustls-no-provider", "_ring", "rustls-webpki-roots"]`, and that `_ring`
+# turns on `rustls/ring` where no dependent can switch it off. Naming the backend-free feature
+# plus the roots feature is what leaves the choice of provider to us, below.
+ureq = { version = "3", features = ["rustls-no-provider", "rustls-webpki-roots"], default-features = false }
+# aws-lc-rs, matching punktfunk-core from v0.28.0 on. Two reasons it is spelled out rather than
+# left to rustls's default: it is the one line that decides this client's crypto backend, and
+# naming it keeps a second backend from creeping back in — rustls refuses to guess when both
+# `ring` and `aws_lc_rs` are compiled, so `ClientConfig::builder()` panics rather than picking.
+# aws-lc-rs also carries ML-KEM, so the QUIC/mgmt handshakes get post-quantum key exchange.
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 # Pre-stream UI rendering (software rasterizer); png-format off (already-decoded buffers only).
 tiny-skia = { version = "0.12", default-features = false, features = ["std"] }

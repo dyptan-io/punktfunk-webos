@@ -46,6 +46,14 @@ mod runtime {
 const ABR_PROBE_KBPS: &str = "300000";
 
 fn main() -> anyhow::Result<()> {
+    // Load-bearing, not belt-and-braces: `ureq` is built without a backend feature
+    // (`rustls-no-provider` — see Cargo.toml for why), and its own provider resolution ends in a
+    // `panic!` when no process default has been installed. The two agents built by
+    // `Agent::new_with_defaults()` — external cover art and the log upload — go through exactly
+    // that path, so without this call the first HTTPS request on either aborts the app. The
+    // mTLS library agent is unaffected either way; it names its provider via
+    // `builder_with_provider`. Must land before any thread that might issue a request.
+    punktfunk_core::tls::install_default_provider();
     // Set before anything spawns a thread: `set_var` is not thread-safe, and core reads this
     // while building its data-plane pump during `connect`. An older core simply ignores it.
     // Deliberately no `PUNKTFUNK_ABR_MAX_MBPS` alongside it — the probe measures this link's
