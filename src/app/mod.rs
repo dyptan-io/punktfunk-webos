@@ -1034,28 +1034,12 @@ impl App {
         }
     }
 
-    pub(crate) fn address_card_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Rect {
-        let (_, subtitle) = self.address_copy();
-        view::addhost::card_rect(screen_w, screen_h, fonts, &subtitle, self.keyboard_shown)
-    }
-
     /// Handed to `SDL_SetTextInputRect` by the render loop.
     pub fn address_field_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Rect {
         let (_, subtitle) = self.address_copy();
         view::addhost::field_rect(screen_w, screen_h, fonts, &subtitle, self.keyboard_shown)
     }
 
-    fn render_address_form(&self, c: &mut ui::Canvas) -> Result<()> {
-        let (title, subtitle) = self.address_copy();
-        view::addhost::render(
-            c,
-            title,
-            &subtitle,
-            &self.add_host.display_text(),
-            self.keyboard_shown,
-            self.hover_close,
-        )
-    }
     /// Updates focus/hover to whatever the Magic Remote's pointer is over, returning
     /// whether that changed anything visible — Magic Remote pointer mode fires
     /// `MouseMotion` continuously while moving, so callers redraw only when this is
@@ -1163,10 +1147,10 @@ impl App {
                 changed
             }
             Screen::HostMenu => {
-                let subtitle = self.host_menu_subtitle();
                 let rows = self.host_menu_actions().len();
-                let card = view::hostmenu::card_rect(screen_w, screen_h, fonts, &subtitle, rows);
-                let content = ui::list_modal_content_rect(card, fonts, &subtitle, rows);
+                let Some((_, content)) = self.modal_list_geometry(screen_w, screen_h, fonts) else {
+                    return false;
+                };
                 let Some(i) = (0..rows).find(|&i| ui::focus_row_rect(content, i).contains_point((x, y))) else {
                     return false;
                 };
@@ -1312,14 +1296,8 @@ impl App {
                     .clamp(0, Self::max_scroll_px(total, stride, content.height()));
                 Some((content, px))
             }
-            Screen::Diagnostics => {
-                let card = view::diagnostics::card_rect(screen_w, screen_h, fonts);
-                // Diagnostics doesn't scroll, so 0.
-                Some((
-                    ui::list_modal_content_rect(card, fonts, view::diagnostics::SUBTITLE, menu::DIAGNOSTICS_ROW_COUNT),
-                    0,
-                ))
-            }
+            // Diagnostics doesn't scroll, so 0.
+            Screen::Diagnostics => Some((self.modal_list_geometry(screen_w, screen_h, fonts)?.1, 0)),
             _ => None,
         }
     }
@@ -1367,42 +1345,90 @@ impl App {
     }
 
     /// The current screen's modal card rect, or `None` for a screen that draws no
-    /// modal card (Home, or Wake before its payload is set). One place to compute the
-    /// per-screen geometry that hover, click, and the close-button hit-test all share,
-    /// so they can never drift apart.
+    /// modal card (Home, or Wake before its payload is set). Measured off the same
+    /// [`ui::ModalScreen`] value the renderer draws, so hover, click and the
+    /// close-button hit-test can never drift from what is on screen.
     fn modal_card_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Option<Rect> {
+        self.with_modal_screen(|s| s.card_rect(screen_w, screen_h, fonts))
+    }
+
+    /// The open modal's row-list viewport, or an empty rect on a screen without one —
+    /// for the tile builders, which only reach here on a screen that has one.
+    fn modal_list_content(&self, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Rect {
+        self.modal_list_geometry(screen_w, screen_h, fonts)
+            .map_or_else(|| Rect::new(0, 0, 0, 0), |(_, content)| content)
+    }
+
+    /// The open modal's card and row-list viewport, when it has one. The pair every hit
+    /// test and focused-row tile needs, derived once from the screen that draws them.
+    fn modal_list_geometry(&self, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Option<(Rect, Rect)> {
+        self.with_modal_screen(|s| {
+            let card = s.card_rect(screen_w, screen_h, fonts);
+            s.content_rect(card, fonts).map(|content| (card, content))
+        })?
+    }
+
+    /// Calls `f` with the open modal as a [`ui::ModalScreen`], built from the state it
+    /// shows. `None` on Home, and on a screen whose payload isn't set yet (Wake before its
+    /// host is known).
+    ///
+    /// By closure rather than by return value: the hit tests below run this on every Magic
+    /// Remote `MouseMotion`, and a returned `Box<dyn ModalScreen>` would put a heap
+    /// allocation on that path for what is a geometry query.
+    fn with_modal_screen<R>(&self, f: impl FnOnce(&dyn ui::ModalScreen) -> R) -> Option<R> {
         Some(match self.screen {
             Screen::Home => return None,
-            Screen::Settings => view::settings::layout(&self.settings, screen_w, screen_h).0,
-            Screen::Pairing => view::pairing::card_rect(screen_w, screen_h, fonts),
-            Screen::AddHost | Screen::EditHost => self.address_card_rect(screen_w, screen_h, fonts),
-            Screen::Wake => view::wake::card_rect(screen_w, screen_h, self.wake.as_ref()?, fonts),
-            Screen::ForgetHost => {
-                let name = self
-                    .host_menu_index
-                    .and_then(|i| self.entries.get(i))
-                    .map(HostEntry::name)
-                    .unwrap_or_default();
-                ui::confirm_dialog_card(screen_w, screen_h, fonts, &view::forget::subtitle(name))
+            Screen::Settings => f(&view::settings::Modal {
+                settings: &self.settings,
+            }),
+            Screen::Pairing => f(&view::pairing::Modal {
+                pin_digits: &self.pin_digits,
+                status: self.pairing_status.as_ref(),
+                busy: self.pairing_busy,
+            }),
+            Screen::AddHost | Screen::EditHost => {
+                let (title, subtitle) = self.address_copy();
+                f(&view::addhost::Modal {
+                    title,
+                    subtitle,
+                    typed: self.add_host.text(),
+                    keyboard_shown: self.keyboard_shown,
+                })
             }
-            Screen::HostMenu => {
-                let subtitle = self.host_menu_subtitle();
-                view::hostmenu::card_rect(screen_w, screen_h, fonts, &subtitle, self.host_menu_actions().len())
-            }
-            Screen::WakeSettings => view::wakesettings::card_rect(screen_w, screen_h, fonts),
-            Screen::About => view::about::card_rect(screen_w, screen_h),
-            Screen::SpeedTest => view::speedtest::card_rect(
-                screen_w,
-                screen_h,
-                fonts,
-                self.speed_test.as_ref(),
-                &self.speed_test_name,
-            ),
-            Screen::PinLimit => view::pinlimit::card_rect(screen_w, screen_h, fonts, Self::PIN_LIMIT_MESSAGE),
-            Screen::Diagnostics => view::diagnostics::card_rect(screen_w, screen_h, fonts),
-            Screen::Experimental => view::experimental::card_rect(screen_w, screen_h, fonts, Self::rooted()),
-            Screen::CursorSettings => view::cursorsettings::card_rect(screen_w, screen_h, fonts),
-            Screen::SendLogs => ui::confirm_dialog_card(screen_w, screen_h, fonts, view::sendlogs::SUBTITLE),
+            Screen::Wake => f(&view::wake::Modal {
+                wake: self.wake.as_ref()?,
+            }),
+            Screen::ForgetHost => f(&view::forget::Modal {
+                host_name: self.host_menu_host_name().unwrap_or_default(),
+            }),
+            Screen::HostMenu => f(&view::hostmenu::Modal {
+                title: self.host_menu_host_name().unwrap_or_default(),
+                subtitle: self.host_menu_subtitle(),
+                rows: self.host_menu_rows(),
+            }),
+            Screen::WakeSettings => f(&view::wakesettings::Modal {
+                host_name: self.host_menu_host_name().unwrap_or_default(),
+                auto_send: self.wake_settings_host().is_some_and(|h| h.wol_auto),
+            }),
+            Screen::About => f(&view::about::Modal),
+            Screen::SpeedTest => f(&view::speedtest::Modal {
+                state: self.speed_test.as_ref(),
+                host_name: &self.speed_test_name,
+            }),
+            Screen::PinLimit => f(&view::pinlimit::Modal {
+                message: Self::PIN_LIMIT_MESSAGE,
+            }),
+            Screen::Diagnostics => f(&view::diagnostics::Modal {
+                settings: &self.settings,
+            }),
+            Screen::Experimental => f(&view::experimental::Modal {
+                settings: &self.settings,
+                rooted: Self::rooted(),
+            }),
+            Screen::CursorSettings => f(&view::cursorsettings::Modal {
+                settings: &self.settings,
+            }),
+            Screen::SendLogs => f(&view::sendlogs::Modal),
         })
     }
 
@@ -1559,10 +1585,8 @@ impl App {
             // A click focuses the row it landed on first, then confirms it — same
             // click-moves-focus rule as Home/Settings above.
             Screen::HostMenu => {
-                let subtitle = self.host_menu_subtitle();
                 let rows = self.host_menu_actions().len();
-                let card = view::hostmenu::card_rect(screen_w, screen_h, fonts, &subtitle, rows);
-                let content = ui::list_modal_content_rect(card, fonts, &subtitle, rows);
+                let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
                 let i = (0..rows).find(|&i| ui::focus_row_rect(content, i).contains_point((x, y)))?;
                 self.menu_focused = i;
                 // A click that landed on the row's ⋯ opens that instead of the row's own
@@ -1574,9 +1598,7 @@ impl App {
                 None
             }
             Screen::WakeSettings => {
-                let card = view::wakesettings::card_rect(screen_w, screen_h, fonts);
-                let content =
-                    ui::list_modal_content_rect(card, fonts, view::wakesettings::SUBTITLE, menu::DIAGNOSTICS_ROW_COUNT);
+                let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
                 if ui::focus_row_rect(content, 0).contains_point((x, y)) {
                     self.handle_wake_settings_event(MenuEvent::Confirm);
                 }
@@ -2113,65 +2135,9 @@ impl App {
             // origin shift (see `Painter::set_origin`) maps that geometry into the
             // smaller buffer.
             let mut p = self.modal_painter(screen_w, screen_h, fonts);
-            let c = &mut ui::Canvas {
-                painter: &mut p,
-                text_cache,
-                fonts,
-                screen_w,
-                screen_h,
-            };
-            match self.screen {
-                Screen::Home => unreachable!("modal_open checked above"),
-                Screen::Pairing => view::pairing::render(
-                    c,
-                    &self.pin_digits,
-                    self.pairing_status.as_ref(),
-                    self.pairing_busy,
-                    self.hover_close,
-                )?,
-                Screen::Settings => {
-                    view::settings::render(c, &self.settings, self.hover_close)?;
-                }
-                Screen::AddHost | Screen::EditHost => self.render_address_form(c)?,
-                Screen::Wake => {
-                    if let Some(wake) = &self.wake {
-                        view::wake::render(c, wake, self.hover_close)?;
-                    }
-                }
-                Screen::ForgetHost => {
-                    if let Some(name) = self.host_menu_host_name() {
-                        view::forget::render(c, name, self.hover_close)?;
-                    }
-                }
-                Screen::HostMenu => view::hostmenu::render(
-                    c,
-                    &self.host_menu_title(),
-                    &self.host_menu_subtitle(),
-                    &self.host_menu_rows(),
-                    self.hover_close,
-                )?,
-                Screen::WakeSettings => view::wakesettings::render(
-                    c,
-                    &self.host_menu_title(),
-                    self.wake_settings_host().is_some_and(|h| h.wol_auto),
-                    self.hover_close,
-                )?,
-                Screen::About => {
-                    view::about::render(c, self.hover_close)?;
-                }
-                Screen::SpeedTest => {
-                    view::speedtest::render(c, self.speed_test.as_ref(), &self.speed_test_name, self.hover_close)?
-                }
-                Screen::PinLimit => view::pinlimit::render(c, Self::PIN_LIMIT_MESSAGE, self.hover_close)?,
-                Screen::Diagnostics => view::diagnostics::render(c, &self.settings, self.hover_close)?,
-                Screen::Experimental => {
-                    view::experimental::render(c, &self.settings, Self::rooted(), self.hover_close)?
-                }
-                Screen::CursorSettings => view::cursorsettings::render(c, &self.settings, self.hover_close)?,
-                Screen::SendLogs => {
-                    view::sendlogs::render(c, self.hover_close)?;
-                }
-            }
+            let c = &mut ui::Canvas::new(&mut p, text_cache, fonts, screen_w, screen_h);
+            let hover_close = self.hover_close;
+            self.with_modal_screen(|s| s.render(c, hover_close)).transpose()?;
             tiles.modal_tile = Some(p);
             updated.push(Tile::Modal);
         }
@@ -2318,14 +2284,12 @@ impl App {
                         )?
                     }
                     Screen::HostMenu => {
-                        let subtitle = self.host_menu_subtitle();
                         let mut rows = self.host_menu_rows();
                         // The only place a row's ⋯ is drawn lit — see `host_menu_actions`.
                         if let Some(row) = rows.get_mut(self.menu_focused) {
                             row.menu = row.menu.map(|_| self.host_menu_dots);
                         }
-                        let card = view::hostmenu::card_rect(screen_w, screen_h, fonts, &subtitle, rows.len());
-                        let content = ui::list_modal_content_rect(card, fonts, &subtitle, rows.len());
+                        let content = self.modal_list_content(screen_w, screen_h, fonts);
                         ui::render_focus_row_tile(
                             text_cache,
                             fonts,
@@ -2339,9 +2303,7 @@ impl App {
                     Screen::WakeSettings => {
                         let on = self.wake_settings_host().is_some_and(|h| h.wol_auto);
                         let rows = view::wakesettings::rows(on);
-                        let card = view::wakesettings::card_rect(screen_w, screen_h, fonts);
-                        let content =
-                            ui::list_modal_content_rect(card, fonts, view::wakesettings::SUBTITLE, rows.len());
+                        let content = self.modal_list_content(screen_w, screen_h, fonts);
                         ui::render_focus_row_tile(
                             text_cache,
                             fonts,
@@ -2377,8 +2339,7 @@ impl App {
                     }
                     Screen::Diagnostics => {
                         let rows = view::diagnostics::rows(&self.settings);
-                        let card = view::diagnostics::card_rect(screen_w, screen_h, fonts);
-                        let content = ui::list_modal_content_rect(card, fonts, view::diagnostics::SUBTITLE, rows.len());
+                        let content = self.modal_list_content(screen_w, screen_h, fonts);
                         let dropdown_open = self
                             .dropdown
                             .as_ref()
@@ -2396,9 +2357,7 @@ impl App {
                     }
                     Screen::Experimental => {
                         let rows = view::experimental::rows(&self.settings, Self::rooted());
-                        let card = view::experimental::card_rect(screen_w, screen_h, fonts, Self::rooted());
-                        let content =
-                            ui::list_modal_content_rect(card, fonts, view::experimental::SUBTITLE, rows.len());
+                        let content = self.modal_list_content(screen_w, screen_h, fonts);
                         let target_on = rows.get(self.experimental_focused).is_some_and(|r| r.value == "On");
                         ui::render_focus_row_tile(
                             text_cache,
@@ -2412,9 +2371,7 @@ impl App {
                     }
                     Screen::CursorSettings => {
                         let rows = view::cursorsettings::rows(&self.settings);
-                        let card = view::cursorsettings::card_rect(screen_w, screen_h, fonts);
-                        let content =
-                            ui::list_modal_content_rect(card, fonts, view::cursorsettings::SUBTITLE, rows.len());
+                        let content = self.modal_list_content(screen_w, screen_h, fonts);
                         let target_on = rows.get(self.cursor_settings_focused).is_some_and(|r| r.value == "On");
                         ui::render_focus_row_tile(
                             text_cache,
@@ -2469,13 +2426,7 @@ impl App {
         if let Some(dd) = &self.dropdown {
             let (options, content_w) = match self.screen {
                 Screen::Diagnostics => {
-                    let card = view::diagnostics::card_rect(screen_w, screen_h, fonts);
-                    let content = ui::list_modal_content_rect(
-                        card,
-                        fonts,
-                        view::diagnostics::SUBTITLE,
-                        menu::DIAGNOSTICS_ROW_COUNT,
-                    );
+                    let content = self.modal_list_content(screen_w, screen_h, fonts);
                     (menu::log_level_dropdown_options(), content.width())
                 }
                 _ => {
@@ -2494,15 +2445,7 @@ impl App {
                 let overlay_h = options.len() as u32 * ui::DROPDOWN_OPTION_H;
                 let mut p = Painter::new(content_w, overlay_h.max(1));
                 let rect = Rect::new(0, 0, content_w, overlay_h);
-                ui::draw_dropdown_overlay(
-                    &mut p,
-                    text_cache,
-                    fonts.raster,
-                    fonts.value,
-                    &options,
-                    usize::MAX,
-                    rect,
-                )?;
+                ui::Canvas::tile(&mut p, text_cache, fonts).dropdown_overlay(&options, usize::MAX, rect)?;
                 tiles.dropdown_overlay_tile = Some((overlay_key, p));
                 updated.push(Tile::DropdownOverlay);
             }
@@ -2631,13 +2574,7 @@ impl App {
     ) -> Result<()> {
         let mut scratch = Painter::new(screen_w, screen_h);
         view::settings::render(
-            &mut ui::Canvas {
-                painter: &mut scratch,
-                text_cache,
-                fonts,
-                screen_w,
-                screen_h,
-            },
+            &mut ui::Canvas::new(&mut scratch, text_cache, fonts, screen_w, screen_h),
             &self.settings,
             self.hover_close,
         )?;

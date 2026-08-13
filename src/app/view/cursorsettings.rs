@@ -2,7 +2,7 @@
 use crate::app::menu;
 use crate::services::store::Settings;
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, FocusRow, Fonts};
+use crate::ui::{self, Canvas, FocusRow, Fonts, ModalScreen};
 use anyhow::Result;
 
 pub const TITLE: &str = "Cursor";
@@ -27,7 +27,27 @@ pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
     ui::list_modal_card_rect(screen_w, screen_h, fonts, SUBTITLE, menu::CURSOR_ROW_COUNT)
 }
 
-pub fn render(c: &mut Canvas, settings: &Settings, hover_close: bool) -> Result<()> {
-    let card = card_rect(c.screen_w, c.screen_h, c.fonts);
-    ui::render_list_modal_screen(c, card, TITLE, SUBTITLE, &rows(settings), hover_close)
+/// The cursor settings list as a [`ModalScreen`].
+pub(crate) struct Modal<'a> {
+    pub settings: &'a Settings,
+}
+
+impl ModalScreen for Modal<'_> {
+    fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
+        card_rect(screen_w, screen_h, fonts)
+    }
+
+    fn content_rect(&self, card: Rect, fonts: &Fonts) -> Option<Rect> {
+        Some(ui::list_modal_content_rect(
+            card,
+            fonts,
+            SUBTITLE,
+            rows(self.settings).len(),
+        ))
+    }
+
+    fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
+        let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
+        c.list_modal_screen(card, TITLE, SUBTITLE, &rows(self.settings), hover_close)
+    }
 }

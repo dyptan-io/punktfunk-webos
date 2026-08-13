@@ -92,9 +92,7 @@ pub fn draw(
     let settings_row = entries.len() + 1;
     for (i, entry) in entries.iter().enumerate() {
         draw_host_row(
-            c.painter,
-            c.text_cache,
-            c.fonts,
+            c,
             row_rect(i),
             entry.name(),
             &HostRowState {
@@ -106,57 +104,21 @@ pub fn draw(
             },
         )?;
     }
-    draw_utility_row(
-        c.painter,
-        c.text_cache,
-        c.fonts,
-        row_rect(add_row),
-        "+ Add host",
-        focused_index == Some(add_row),
-    )?;
+    draw_utility_row(c, row_rect(add_row), "+ Add host", focused_index == Some(add_row))?;
 
     let settings_rect = settings_row_rect(screen_h);
     // The version lives on the About screen, not in nav chrome — see `app::view::about::VERSION`.
-    ui::draw_rule(
-        c.painter,
-        settings_rect.x(),
-        settings_rect.y() - 14,
-        settings_rect.width(),
-    );
-    draw_utility_row(
-        c.painter,
-        c.text_cache,
-        c.fonts,
-        settings_rect,
-        "Settings",
-        focused_index == Some(settings_row),
-    )?;
+    c.rule(settings_rect.x(), settings_rect.y() - 14, settings_rect.width());
+    draw_utility_row(c, settings_rect, "Settings", focused_index == Some(settings_row))?;
 
     Ok(())
 }
 
 /// Host row with ⋯ actions button (drawn on every row to advertise actions exist).
-pub fn draw_host_row(
-    painter: &mut ui::Painter,
-    text_cache: &mut ui::TextCache,
-    fonts: &ui::Fonts,
-    rect: Rect,
-    name: &str,
-    state: &HostRowState,
-) -> Result<()> {
+pub fn draw_host_row(c: &mut Canvas, rect: Rect, name: &str, state: &HostRowState) -> Result<()> {
     let &HostRowState { focused, online, .. } = state;
     let glyph = if state.paired { ui::ICON_TV } else { ui::ICON_LOCK };
-    ui::draw_sidebar_row(
-        painter,
-        text_cache,
-        fonts,
-        rect,
-        glyph,
-        name,
-        focused,
-        state.selected,
-        ui::SIDEBAR_MENU_BTN + 10,
-    )?;
+    c.sidebar_row(rect, glyph, name, focused, state.selected, ui::SIDEBAR_MENU_BTN + 10)?;
     // Badged onto the icon's corner rather than given its own column: it needs no layout
     // of its own, and a presence dot on the thing it describes is a well-worn idiom.
     if let Some(online) = online {
@@ -165,28 +127,21 @@ pub fn draw_host_row(
         let cy = icon.bottom() as f32 - 2.0;
         // A ring of panel background first, so the dot reads as separate from the glyph
         // it overlaps rather than merging into it.
-        painter.fill_circle(cx, cy, PRESENCE_DOT / 2.0 + 2.0, ui::SIDEBAR_BG);
+        c.painter.fill_circle(cx, cy, PRESENCE_DOT / 2.0 + 2.0, ui::SIDEBAR_BG);
         let color = if online { ui::ONLINE_GREEN } else { ui::MUTED };
-        painter.fill_circle(cx, cy, PRESENCE_DOT / 2.0, color);
+        c.painter.fill_circle(cx, cy, PRESENCE_DOT / 2.0, color);
     }
-    ui::draw_sidebar_menu_button(painter, text_cache, fonts, rect, focused, state.menu_focused)
+    c.sidebar_menu_button(rect, focused, state.menu_focused)
 }
 
-pub fn draw_utility_row(
-    painter: &mut ui::Painter,
-    text_cache: &mut ui::TextCache,
-    fonts: &ui::Fonts,
-    rect: Rect,
-    label: &str,
-    focused: bool,
-) -> Result<()> {
+pub fn draw_utility_row(c: &mut Canvas, rect: Rect, label: &str, focused: bool) -> Result<()> {
     let glyph = if label.starts_with('+') {
         ui::ICON_ADD
     } else {
         ui::ICON_SETTINGS
     };
     let label = label.trim_start_matches('+').trim();
-    ui::draw_sidebar_row(painter, text_cache, fonts, rect, glyph, label, focused, false, 0)
+    c.sidebar_row(rect, glyph, label, focused, false, 0)
 }
 
 /// Focused sidebar row as padded tile. `menu_focused` flags the actions button.
@@ -203,11 +158,10 @@ pub fn render_focused_row_tile(
     let base = row_rect(0);
     let rect = Rect::new(pad, pad, base.width(), base.height());
     let mut p = ui::Painter::new(base.width() + 2 * pad as u32, base.height() + 2 * pad as u32);
+    let c = &mut Canvas::tile(&mut p, text_cache, fonts);
     if let Some(entry) = entries.get(index) {
         draw_host_row(
-            &mut p,
-            text_cache,
-            fonts,
+            c,
             rect,
             entry.name(),
             &HostRowState {
@@ -219,9 +173,9 @@ pub fn render_focused_row_tile(
             },
         )?;
     } else if index == entries.len() {
-        draw_utility_row(&mut p, text_cache, fonts, rect, "+ Add host", true)?;
+        draw_utility_row(c, rect, "+ Add host", true)?;
     } else {
-        draw_utility_row(&mut p, text_cache, fonts, rect, "Settings", true)?;
+        draw_utility_row(c, rect, "Settings", true)?;
     }
     Ok(p)
 }

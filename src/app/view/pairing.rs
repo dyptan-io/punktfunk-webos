@@ -1,6 +1,6 @@
 //! Pairing modal rendering. Logic lives in `app::state::pairing`.
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, FontId, Fonts, Painter, TextCache, TextRaster};
+use crate::ui::{self, Canvas, FontId, Fonts, ModalScreen, TextRaster};
 use anyhow::Result;
 
 pub(crate) const TITLE: &str = "Pair with host";
@@ -76,106 +76,6 @@ pub(crate) fn pin_row_y(card: Rect, fonts: &Fonts) -> i32 {
     layout(card, fonts).pin_y
 }
 
-pub(crate) fn render(
-    c: &mut Canvas,
-    pin_digits: &[u8; 4],
-    status: Option<&String>,
-    busy: bool,
-    hover_close: bool,
-) -> Result<()> {
-    let card = card_rect(c.screen_w, c.screen_h, c.fonts);
-    let l = layout(card, c.fonts);
-    ui::draw_modal_shell(c.painter, c.text_cache, c.fonts, card, hover_close)?;
-
-    ui::draw_modal_header(
-        c.painter,
-        c.text_cache,
-        c.fonts.raster,
-        c.fonts.label,
-        c.fonts.value,
-        card,
-        TITLE,
-        ui::WHITE,
-        SUBTITLE,
-        ui::MUTED,
-    )?;
-
-    // Primary first, and visually primary: approving on the host is the path that
-    // always works, whereas the PIN needs the host's pairing page open and armed.
-    // The shell draws it unfocused-but-filled; the focused copy is a separate
-    // `Tile::ModalFocusElement` (see `prepare_tiles`).
-    ui::draw_primary_button(
-        c.painter,
-        c.text_cache,
-        c.fonts.raster,
-        c.fonts.label,
-        l.button,
-        REQUEST_LABEL,
-    )?;
-    draw_centred_caption(
-        c.painter,
-        c.text_cache,
-        c.fonts.raster,
-        c.fonts.value,
-        l.content,
-        l.button_caption_y,
-        PAIRING_BUTTON_CAPTION,
-    )?;
-
-    ui::draw_or_divider(
-        c.painter,
-        c.text_cache,
-        c.fonts.raster,
-        c.fonts.value,
-        l.content,
-        l.or_y,
-        "or",
-    )?;
-
-    draw_centred_caption(
-        c.painter,
-        c.text_cache,
-        c.fonts.raster,
-        c.fonts.value,
-        l.content,
-        l.pin_caption_y,
-        PAIRING_PIN_CAPTION,
-    )?;
-    for (i, digit) in pin_digits.iter().enumerate() {
-        let rect = digit_rect(card, l.pin_y, i);
-        let drawn = ui::draw_card(c.painter, rect, false);
-        let text = digit.to_string();
-        let tw = c.fonts.raster.measure(c.fonts.title, &text).0;
-        ui::draw_text(
-            c.painter,
-            c.text_cache,
-            c.fonts.raster,
-            c.fonts.title,
-            &text,
-            drawn.x() + (drawn.width() as i32 - tw as i32) / 2,
-            drawn.y() + (drawn.height() as i32 - c.fonts.raster.height(c.fonts.title)) / 2,
-            ui::WHITE,
-        )?;
-    }
-
-    if let Some(status) = status {
-        let color = if busy { ui::MUTED } else { ui::ERROR_RED };
-        ui::draw_text_wrapped(
-            c.painter,
-            c.text_cache,
-            c.fonts.raster,
-            c.fonts.value,
-            status,
-            l.content.x(),
-            l.status_y,
-            l.content.width(),
-            color,
-            6,
-        )?;
-    }
-    Ok(())
-}
-
 /// Height one caption occupies, wrapped to `content_w` — what the row below it is placed from.
 fn caption_h(fonts: &Fonts, content_w: u32, text: &str) -> i32 {
     let lines = ui::wrap_text(fonts.raster, fonts.value, text, content_w).len().max(1) as i32;
@@ -186,28 +86,11 @@ fn caption_h(fonts: &Fonts, content_w: u32, text: &str) -> i32 {
 /// inner column like every other modal's body text —
 /// unwrapped, the longest of them ran past the card edge on a narrower card. Each line is
 /// centred individually, so the block stays symmetric.
-fn draw_centred_caption(
-    painter: &mut Painter,
-    text_cache: &mut TextCache,
-    raster: &dyn TextRaster,
-    font: FontId,
-    content: Rect,
-    y: i32,
-    text: &str,
-) -> Result<()> {
+fn draw_centred_caption(c: &mut Canvas, content: Rect, y: i32, text: &str) -> Result<()> {
+    let (raster, font) = (c.fonts.raster, c.fonts.value);
     let mut cursor_y = y;
     for line in ui::wrap_text(raster, font, text, content.width()) {
-        let w = raster.measure(font, &line).0 as i32;
-        ui::draw_text(
-            painter,
-            text_cache,
-            raster,
-            font,
-            &line,
-            content.x() + (content.width() as i32 - w) / 2,
-            cursor_y,
-            ui::MUTED,
-        )?;
+        c.text_centered(font, &line, content, cursor_y, ui::MUTED)?;
         cursor_y += raster.height(font) + CAPTION_LINE_GAP;
     }
     Ok(())
@@ -221,7 +104,7 @@ pub const DIGIT_GAP: i32 = 14;
 
 /// PIN digit `index`'s rect within `card`, given the row's top `y` (from
 /// `modal_header_end_y` plus a fixed gap) — the one place this layout formula
-/// lives, shared by [`render`] and `app.rs`'s `draw_list`.
+/// lives, shared by [`Modal::render`] and `app.rs`'s `draw_list`.
 pub fn digit_rect(card: Rect, digit_y: i32, index: usize) -> Rect {
     let total_w = 4 * DIGIT_W as i32 + 3 * DIGIT_GAP;
     let start_x = card.x() + (card.width() as i32 - total_w) / 2;
@@ -268,4 +151,57 @@ pub fn render_button_tile(
         REQUEST_LABEL,
     )?;
     Ok(p)
+}
+
+/// The pairing modal as a [`ModalScreen`].
+pub(crate) struct Modal<'a> {
+    pub pin_digits: &'a [u8; 4],
+    pub status: Option<&'a String>,
+    pub busy: bool,
+}
+
+impl ModalScreen for Modal<'_> {
+    fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
+        card_rect(screen_w, screen_h, fonts)
+    }
+
+    fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
+        let (pin_digits, status, busy) = (self.pin_digits, self.status, self.busy);
+        let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
+        let l = layout(card, c.fonts);
+        c.modal_shell(card, hover_close)?;
+
+        c.modal_header(card, TITLE, ui::WHITE, SUBTITLE, ui::MUTED)?;
+
+        // Primary first, and visually primary: approving on the host is the path that
+        // always works, whereas the PIN needs the host's pairing page open and armed.
+        // The shell draws it unfocused-but-filled; the focused copy is a separate
+        // `Tile::ModalFocusElement` (see `prepare_tiles`).
+        c.primary_button(l.button, REQUEST_LABEL)?;
+        draw_centred_caption(c, l.content, l.button_caption_y, PAIRING_BUTTON_CAPTION)?;
+
+        c.or_divider(l.content, l.or_y, "or")?;
+
+        draw_centred_caption(c, l.content, l.pin_caption_y, PAIRING_PIN_CAPTION)?;
+        for (i, digit) in pin_digits.iter().enumerate() {
+            let rect = digit_rect(card, l.pin_y, i);
+            let drawn = c.card(rect, false);
+            let text_y = drawn.y() + (drawn.height() as i32 - c.fonts.raster.height(c.fonts.title)) / 2;
+            c.text_centered(c.fonts.title, &digit.to_string(), drawn, text_y, ui::WHITE)?;
+        }
+
+        if let Some(status) = status {
+            let color = if busy { ui::MUTED } else { ui::ERROR_RED };
+            c.text_wrapped(
+                c.fonts.value,
+                status,
+                l.content.x(),
+                l.status_y,
+                l.content.width(),
+                color,
+                6,
+            )?;
+        }
+        Ok(())
+    }
 }

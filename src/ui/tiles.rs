@@ -333,7 +333,7 @@ pub fn confirm_button_at(content: Rect, x: i32, y: i32) -> Option<usize> {
 }
 
 /// Confirm dialog shell (full-screen tile): the same card + close (X) + header + unfocused
-/// buttons that `App::draw_modal_shell`/`ui::draw_modal_header` paint for the forget-host and
+/// buttons that `Canvas::modal_shell`/`Canvas::modal_header` paint for the forget-host and
 /// send-logs modals — replicated here because the streaming/quit loops have no `App`. The
 /// focused button composites on top as its own small tile (shell/focus-tile split).
 pub fn render_confirm_dialog_shell(

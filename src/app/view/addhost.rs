@@ -1,7 +1,7 @@
 //! The host address form — presentation, shared by Add host and Edit address. Logic lives
 //! in `app::state::addhost` / `app::state::edithost`.
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, Fonts};
+use crate::ui::{self, Canvas, Fonts, ModalScreen};
 use anyhow::Result;
 
 pub(crate) const ADD_TITLE: &str = "Add host";
@@ -34,55 +34,50 @@ pub(crate) fn field_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, subtitle: 
     )
 }
 
-pub(crate) fn render(
-    c: &mut Canvas,
-    title: &str,
-    subtitle: &str,
-    typed: &str,
-    keyboard_shown: bool,
-    hover_close: bool,
-) -> Result<()> {
-    let card = card_rect(c.screen_w, c.screen_h, c.fonts, subtitle, keyboard_shown);
-    ui::draw_modal_shell(c.painter, c.text_cache, c.fonts, card, hover_close)?;
-    let after_subtitle_y = ui::draw_modal_header(
-        c.painter,
-        c.text_cache,
-        c.fonts.raster,
-        c.fonts.label,
-        c.fonts.value,
-        card,
-        title,
-        ui::WHITE,
-        subtitle,
-        ui::MUTED,
-    )?;
-    let field = Rect::new(
-        card.x() + 32,
-        after_subtitle_y + 20,
-        card.width().saturating_sub(64),
-        80,
-    );
-    let drawn = ui::draw_card(c.painter, field, true);
-    let text_x = drawn.x() + 24;
-    let text_w = c.fonts.raster.measure(c.fonts.title, typed).0;
-    ui::draw_text(
-        c.painter,
-        c.text_cache,
-        c.fonts.raster,
-        c.fonts.title,
-        typed,
-        text_x,
-        drawn.y() + (drawn.height() as i32 - c.fonts.raster.height(c.fonts.title)) / 2,
-        ui::WHITE,
-    )?;
-    // A blinkless text-cursor bar right after what's typed so far — there's no fixed-width
-    // mask anymore to show *where* editing happens, so this stands in for it.
-    let caret = Rect::new(
-        text_x + text_w as i32 + 6,
-        drawn.y() + 16,
-        3,
-        drawn.height().saturating_sub(32),
-    );
-    c.painter.fill_rect(caret, ui::ACCENT_BRIGHT);
-    Ok(())
+/// The add/edit-host address form as a [`ModalScreen`]. Both screens share it; the
+/// caller passes the copy that tells them apart.
+pub(crate) struct Modal<'a> {
+    pub title: &'static str,
+    pub subtitle: String,
+    pub typed: &'a str,
+    pub keyboard_shown: bool,
+}
+
+impl ModalScreen for Modal<'_> {
+    fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
+        card_rect(screen_w, screen_h, fonts, &self.subtitle, self.keyboard_shown)
+    }
+
+    fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
+        let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
+        let (title, subtitle, typed) = (self.title, self.subtitle.as_str(), self.typed);
+        c.modal_shell(card, hover_close)?;
+        let after_subtitle_y = c.modal_header(card, title, ui::WHITE, subtitle, ui::MUTED)?;
+        let field = Rect::new(
+            card.x() + 32,
+            after_subtitle_y + 20,
+            card.width().saturating_sub(64),
+            80,
+        );
+        let drawn = c.card(field, true);
+        let text_x = drawn.x() + 24;
+        let text_w = c.fonts.raster.measure(c.fonts.title, typed).0;
+        c.text(
+            c.fonts.title,
+            typed,
+            text_x,
+            drawn.y() + (drawn.height() as i32 - c.fonts.raster.height(c.fonts.title)) / 2,
+            ui::WHITE,
+        )?;
+        // A blinkless text-cursor bar right after what's typed so far — there's no fixed-width
+        // mask anymore to show *where* editing happens, so this stands in for it.
+        let caret = Rect::new(
+            text_x + text_w as i32 + 6,
+            drawn.y() + 16,
+            3,
+            drawn.height().saturating_sub(32),
+        );
+        c.painter.fill_rect(caret, ui::ACCENT_BRIGHT);
+        Ok(())
+    }
 }

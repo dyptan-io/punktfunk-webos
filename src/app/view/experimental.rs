@@ -5,7 +5,7 @@
 //! count and so the card's height.
 use crate::services::store::Settings;
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, FocusRow, Fonts};
+use crate::ui::{self, Canvas, FocusRow, Fonts, ModalScreen};
 use anyhow::Result;
 
 pub const TITLE: &str = "Experimental";
@@ -46,7 +46,28 @@ pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, rooted: bool) -> R
     ui::list_modal_card_rect(screen_w, screen_h, fonts, SUBTITLE, row_count(rooted))
 }
 
-pub fn render(c: &mut Canvas, settings: &Settings, rooted: bool, hover_close: bool) -> Result<()> {
-    let card = card_rect(c.screen_w, c.screen_h, c.fonts, rooted);
-    ui::render_list_modal_screen(c, card, TITLE, SUBTITLE, &rows(settings, rooted), hover_close)
+/// The experimental-features list as a [`ModalScreen`].
+pub(crate) struct Modal<'a> {
+    pub settings: &'a Settings,
+    pub rooted: bool,
+}
+
+impl ModalScreen for Modal<'_> {
+    fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
+        card_rect(screen_w, screen_h, fonts, self.rooted)
+    }
+
+    fn content_rect(&self, card: Rect, fonts: &Fonts) -> Option<Rect> {
+        Some(ui::list_modal_content_rect(
+            card,
+            fonts,
+            SUBTITLE,
+            rows(self.settings, self.rooted).len(),
+        ))
+    }
+
+    fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
+        let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
+        c.list_modal_screen(card, TITLE, SUBTITLE, &rows(self.settings, self.rooted), hover_close)
+    }
 }

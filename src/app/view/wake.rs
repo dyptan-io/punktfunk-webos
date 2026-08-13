@@ -1,7 +1,7 @@
 //! The "host unreachable — wake it?" modal — presentation. Logic lives in `app::state::wake`.
 use crate::app::WakeState;
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, ConfirmButton, Fonts};
+use crate::ui::{self, Canvas, ConfirmButton, Fonts, ModalScreen};
 use anyhow::Result;
 
 /// Card for the no-MAC modal: an informational "Host unreachable" message with no button
@@ -64,33 +64,34 @@ pub(crate) fn status_text(wake: &WakeState) -> String {
     }
 }
 
-pub(crate) fn render(c: &mut Canvas, wake: &WakeState, hover_close: bool) -> Result<()> {
-    let status = status_text(wake);
-    // With a MAC it's the shared confirmation dialog (card + Wake/Cancel row); without one
-    // it's a button-less informational card — `drain_discovery` reconnects automatically
-    // once the host reappears on mDNS, so there is nothing for the user to do.
-    let (card, button_row) = if wake.mac.is_empty() {
-        (message_card(c.screen_w, c.screen_h, c.fonts, &status), None)
-    } else {
-        let (card, content) = ui::confirm_dialog_layout(c.screen_w, c.screen_h, c.fonts, &status);
-        (card, Some(content))
-    };
-    ui::draw_modal_shell(c.painter, c.text_cache, c.fonts, card, hover_close)?;
-    ui::draw_modal_header(
-        c.painter,
-        c.text_cache,
-        c.fonts.raster,
-        c.fonts.label,
-        c.fonts.value,
-        card,
-        title(wake),
-        ui::WHITE,
-        &status,
-        ui::MUTED,
-    )?;
-    if let Some(content) = button_row {
-        // `usize::MAX` = nothing focused; the focused button is its own tile.
-        ui::draw_confirm_buttons(c.painter, c.text_cache, c.fonts, content, &buttons(), usize::MAX)?;
+/// The wake-on-LAN modal as a [`ModalScreen`].
+pub(crate) struct Modal<'a> {
+    pub wake: &'a WakeState,
+}
+
+impl ModalScreen for Modal<'_> {
+    fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
+        card_rect(screen_w, screen_h, self.wake, fonts)
     }
-    Ok(())
+
+    fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
+        let wake = self.wake;
+        let status = status_text(wake);
+        // With a MAC it's the shared confirmation dialog (card + Wake/Cancel row); without one
+        // it's a button-less informational card — `drain_discovery` reconnects automatically
+        // once the host reappears on mDNS, so there is nothing for the user to do.
+        let (card, button_row) = if wake.mac.is_empty() {
+            (message_card(c.screen_w, c.screen_h, c.fonts, &status), None)
+        } else {
+            let (card, content) = ui::confirm_dialog_layout(c.screen_w, c.screen_h, c.fonts, &status);
+            (card, Some(content))
+        };
+        c.modal_shell(card, hover_close)?;
+        c.modal_header(card, title(wake), ui::WHITE, &status, ui::MUTED)?;
+        if let Some(content) = button_row {
+            // `usize::MAX` = nothing focused; the focused button is its own tile.
+            c.confirm_buttons(content, &buttons(), usize::MAX)?;
+        }
+        Ok(())
+    }
 }

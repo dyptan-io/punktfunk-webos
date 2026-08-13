@@ -128,8 +128,8 @@ impl AddHostState {
     }
 
     /// What's actually been typed so far, exactly as typed.
-    pub fn display_text(&self) -> String {
-        self.text.clone()
+    pub fn text(&self) -> &str {
+        &self.text
     }
 
     /// Types one digit (0-9), inserting the separator the remote can't type

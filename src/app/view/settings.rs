@@ -4,7 +4,7 @@ use crate::app::menu;
 use crate::core::VERSION;
 use crate::services::store::{CodecPref, GamepadType, Settings, VideoBackend};
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, FocusRow};
+use crate::ui::{self, Canvas, FocusRow, ModalScreen};
 use anyhow::Result;
 
 pub(crate) const TITLE: &str = "Settings";
@@ -196,17 +196,23 @@ pub(crate) fn dropdown_overlay_rect_at_px(content: Rect, row: usize, scroll_px: 
 /// options re-rasterizes this.
 pub(crate) fn render(c: &mut Canvas, settings: &Settings, hover_close: bool) -> Result<()> {
     let (card, _content) = layout(settings, c.screen_w, c.screen_h);
-    ui::draw_modal_shell(c.painter, c.text_cache, c.fonts, card, hover_close)?;
-    ui::draw_text(
-        c.painter,
-        c.text_cache,
-        c.fonts.raster,
-        c.fonts.label,
-        TITLE,
-        card.x() + 40,
-        card.y() + 36,
-        ui::WHITE,
-    )?;
-    ui::draw_rule(c.painter, card.x() + 40, card.y() + 88, card.width().saturating_sub(80));
+    c.modal_shell(card, hover_close)?;
+    c.text(c.fonts.label, TITLE, card.x() + 40, card.y() + 36, ui::WHITE)?;
+    c.rule(card.x() + 40, card.y() + 88, card.width().saturating_sub(80));
     Ok(())
+}
+
+/// The settings modal as a [`ModalScreen`].
+pub(crate) struct Modal<'a> {
+    pub settings: &'a Settings,
+}
+
+impl ModalScreen for Modal<'_> {
+    fn card_rect(&self, screen_w: u32, screen_h: u32, _fonts: &ui::Fonts) -> Rect {
+        layout(self.settings, screen_w, screen_h).0
+    }
+
+    fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
+        render(c, self.settings, hover_close)
+    }
 }

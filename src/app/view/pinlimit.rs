@@ -1,6 +1,6 @@
 //! The "you can only pin N games" alert. Logic lives in `app::state::pinlimit`.
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, ConfirmButton, Fonts};
+use crate::ui::{self, Canvas, ConfirmButton, Fonts, ModalScreen};
 use anyhow::Result;
 
 pub const TITLE: &str = "Pin limit reached";
@@ -16,39 +16,36 @@ pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, message: &str) -> 
     })
 }
 
-pub fn render(c: &mut Canvas, message: &str, hover_close: bool) -> Result<()> {
-    let card = card_rect(c.screen_w, c.screen_h, c.fonts, message);
-    ui::draw_modal_shell(c.painter, c.text_cache, c.fonts, card, hover_close)?;
-    ui::draw_modal_header(
-        c.painter,
-        c.text_cache,
-        c.fonts.raster,
-        c.fonts.label,
-        c.fonts.value,
-        card,
-        TITLE,
-        ui::WHITE,
-        message,
-        ui::MUTED,
-    )?;
-    let after_subtitle_y = ui::modal_header_end_y(c.fonts.raster, c.fonts.label, c.fonts.value, card, message);
-    // Single centred button, always focused (no separate focus tile).
-    let button = Rect::new(
-        card.x() + (card.width() as i32 - BUTTON_W as i32) / 2,
-        after_subtitle_y + 32,
-        BUTTON_W,
-        BUTTON_H,
-    );
-    ui::draw_confirm_button(
-        c.painter,
-        c.text_cache,
-        c.fonts,
-        &ConfirmButton {
-            icon: None,
-            label: "OK",
-            color: ui::WHITE,
-        },
-        true,
-        button,
-    )
+/// The "too many PIN attempts" notice as a [`ModalScreen`].
+pub(crate) struct Modal<'a> {
+    pub message: &'a str,
+}
+
+impl ModalScreen for Modal<'_> {
+    fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
+        card_rect(screen_w, screen_h, fonts, self.message)
+    }
+
+    fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
+        let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
+        c.modal_shell(card, hover_close)?;
+        c.modal_header(card, TITLE, ui::WHITE, self.message, ui::MUTED)?;
+        let after_subtitle_y = ui::modal_header_end_y(c.fonts.raster, c.fonts.label, c.fonts.value, card, self.message);
+        // Single centred button, always focused (no separate focus tile).
+        let button = Rect::new(
+            card.x() + (card.width() as i32 - BUTTON_W as i32) / 2,
+            after_subtitle_y + 32,
+            BUTTON_W,
+            BUTTON_H,
+        );
+        c.confirm_button(
+            &ConfirmButton {
+                icon: None,
+                label: "OK",
+                color: ui::WHITE,
+            },
+            true,
+            button,
+        )
+    }
 }

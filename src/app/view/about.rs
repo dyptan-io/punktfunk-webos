@@ -12,7 +12,7 @@
 //! `ui::draw_text_uncached`). Scrolling within that slice is a pure `DrawCmd::TexCropped`.
 use crate::core::VERSION;
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, Fonts, Painter};
+use crate::ui::{self, Canvas, Fonts, ModalScreen, Painter};
 use crate::ui::{FontId, TextRaster};
 use anyhow::Result;
 
@@ -20,24 +20,6 @@ pub const TITLE: &str = "About & licenses";
 
 pub fn subtitle() -> String {
     format!("Version {VERSION}")
-}
-
-pub fn render(c: &mut Canvas, hover_close: bool) -> Result<()> {
-    let card = card_rect(c.screen_w, c.screen_h);
-    ui::draw_modal_shell(c.painter, c.text_cache, c.fonts, card, hover_close)?;
-    ui::draw_modal_header(
-        c.painter,
-        c.text_cache,
-        c.fonts.raster,
-        c.fonts.label,
-        c.fonts.value,
-        card,
-        TITLE,
-        ui::WHITE,
-        &subtitle(),
-        ui::MUTED,
-    )?;
-    Ok(())
 }
 
 /// punktfunk-webos' own licence, both halves of the `MIT OR Apache-2.0` dual grant.
@@ -160,4 +142,21 @@ pub fn draw_window(
         ui::draw_text_uncached(painter, raster, font, line, 0, i as i32 * step, ui::MUTED)?;
     }
     Ok(())
+}
+
+/// The About document as a [`ModalScreen`]. Its scrolling body is a separate content
+/// tile (see the module docs), so the shell is chrome plus header only.
+pub(crate) struct Modal;
+
+impl ModalScreen for Modal {
+    fn card_rect(&self, screen_w: u32, screen_h: u32, _fonts: &Fonts) -> Rect {
+        card_rect(screen_w, screen_h)
+    }
+
+    fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
+        let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
+        c.modal_shell(card, hover_close)?;
+        c.modal_header(card, TITLE, ui::WHITE, &subtitle(), ui::MUTED)?;
+        Ok(())
+    }
 }

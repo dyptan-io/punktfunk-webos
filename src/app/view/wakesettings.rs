@@ -1,6 +1,6 @@
 //! Per-host Wake-on-LAN settings. Logic lives in `app::state::wakesettings`.
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, FocusRow, Fonts};
+use crate::ui::{self, Canvas, FocusRow, Fonts, ModalScreen};
 use anyhow::Result;
 
 /// Spells out both halves of the behaviour, because the alternative to "On" is not
@@ -21,7 +21,24 @@ pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
     ui::list_modal_card_rect(screen_w, screen_h, fonts, SUBTITLE, ROW_COUNT)
 }
 
-pub fn render(c: &mut Canvas, host_name: &str, auto_send: bool, hover_close: bool) -> Result<()> {
-    let card = card_rect(c.screen_w, c.screen_h, c.fonts);
-    ui::render_list_modal_screen(c, card, &title(host_name), SUBTITLE, &rows(auto_send), hover_close)
+/// The per-host wake settings as a [`ModalScreen`].
+pub(crate) struct Modal<'a> {
+    pub host_name: &'a str,
+    pub auto_send: bool,
+}
+
+impl ModalScreen for Modal<'_> {
+    fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
+        card_rect(screen_w, screen_h, fonts)
+    }
+
+    fn content_rect(&self, card: Rect, fonts: &Fonts) -> Option<Rect> {
+        Some(ui::list_modal_content_rect(card, fonts, SUBTITLE, ROW_COUNT))
+    }
+
+    fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
+        let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
+        let title = title(self.host_name);
+        c.list_modal_screen(card, &title, SUBTITLE, &rows(self.auto_send), hover_close)
+    }
 }

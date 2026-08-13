@@ -38,20 +38,6 @@ pub fn list_modal_content_rect(card: Rect, fonts: &Fonts, subtitle: &str, row_co
     )
 }
 
-/// A whole list-modal screen: its card chrome plus the unfocused header and rows. Every
-/// list-modal screen's `render` is this one call — see `app::view::hostmenu`.
-pub fn render_list_modal_screen(
-    c: &mut Canvas,
-    card: Rect,
-    title: &str,
-    subtitle: &str,
-    rows: &[FocusRow],
-    hover_close: bool,
-) -> Result<()> {
-    draw_modal_shell(c.painter, c.text_cache, c.fonts, card, hover_close)?;
-    render_list_modal(c.painter, c.text_cache, c.fonts, card, title, subtitle, rows)
-}
-
 /// Render entire list modal unfocused (header + all rows).
 pub fn render_list_modal(
     painter: &mut Painter,

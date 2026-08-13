@@ -1,7 +1,7 @@
 //! The per-host network speed test — presentation. Logic lives in `app::state::speedtest`.
 use crate::app::state::speedtest::{recommended_kbps, SpeedTestState};
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, ConfirmButton, Fonts};
+use crate::ui::{self, Canvas, ConfirmButton, Fonts, ModalScreen};
 use anyhow::Result;
 
 pub(crate) const TITLE: &str = "Network speed test";
@@ -126,33 +126,38 @@ pub(crate) fn recommendation(state: Option<&SpeedTestState>) -> Option<u32> {
     }
 }
 
-pub(crate) fn render(c: &mut Canvas, state: Option<&SpeedTestState>, host_name: &str, hover_close: bool) -> Result<()> {
-    let card = card_rect(c.screen_w, c.screen_h, c.fonts, state, host_name);
-    ui::draw_modal_shell(c.painter, c.text_cache, c.fonts, card, hover_close)?;
-    let failed = matches!(state, Some(SpeedTestState::Failed(_)));
-    ui::draw_modal_header(
-        c.painter,
-        c.text_cache,
-        c.fonts.raster,
-        c.fonts.label,
-        c.fonts.value,
-        card,
-        TITLE,
-        ui::WHITE,
-        &status(state, host_name),
-        if failed { ui::ERROR_RED } else { ui::MUTED },
-    )?;
-    if finished(state) {
-        let apply_label = apply_label(recommendation(state));
-        // `usize::MAX` = nothing focused; the focused button is its own tile.
-        ui::draw_confirm_buttons(
-            c.painter,
-            c.text_cache,
-            c.fonts,
-            buttons_rect(card, c.fonts, state, host_name),
-            &buttons(&apply_label),
-            usize::MAX,
-        )?;
+/// The speed-test modal as a [`ModalScreen`].
+pub(crate) struct Modal<'a> {
+    pub state: Option<&'a SpeedTestState>,
+    pub host_name: &'a str,
+}
+
+impl ModalScreen for Modal<'_> {
+    fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
+        card_rect(screen_w, screen_h, fonts, self.state, self.host_name)
     }
-    Ok(())
+
+    fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
+        let (state, host_name) = (self.state, self.host_name);
+        let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
+        c.modal_shell(card, hover_close)?;
+        let failed = matches!(state, Some(SpeedTestState::Failed(_)));
+        c.modal_header(
+            card,
+            TITLE,
+            ui::WHITE,
+            &status(state, host_name),
+            if failed { ui::ERROR_RED } else { ui::MUTED },
+        )?;
+        if finished(state) {
+            let apply_label = apply_label(recommendation(state));
+            // `usize::MAX` = nothing focused; the focused button is its own tile.
+            c.confirm_buttons(
+                buttons_rect(card, c.fonts, state, host_name),
+                &buttons(&apply_label),
+                usize::MAX,
+            )?;
+        }
+        Ok(())
+    }
 }

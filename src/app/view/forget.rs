@@ -1,5 +1,6 @@
 //! "Forget this host?" confirmation. Logic lives in `app::state::forget`.
-use crate::ui::{self, Canvas, ConfirmButton};
+use crate::ui::render::Rect;
+use crate::ui::{self, Canvas, ConfirmButton, ModalScreen};
 use anyhow::Result;
 
 pub const TITLE: &str = "Forget this host?";
@@ -14,22 +15,22 @@ pub fn buttons() -> [ConfirmButton<'static>; 2] {
     ui::confirm_buttons(Some(ui::ICON_DELETE), "Forget", ui::ERROR_RED)
 }
 
-pub fn render(c: &mut Canvas, host_name: &str, hover_close: bool) -> Result<()> {
-    let subtitle = subtitle(host_name);
-    let (card, content) = ui::confirm_dialog_layout(c.screen_w, c.screen_h, c.fonts, &subtitle);
-    ui::draw_modal_shell(c.painter, c.text_cache, c.fonts, card, hover_close)?;
-    ui::draw_modal_header(
-        c.painter,
-        c.text_cache,
-        c.fonts.raster,
-        c.fonts.label,
-        c.fonts.value,
-        card,
-        TITLE,
-        ui::WHITE,
-        &subtitle,
-        ui::MUTED,
-    )?;
-    // `usize::MAX` = nothing focused here; the focused button is its own tile.
-    ui::draw_confirm_buttons(c.painter, c.text_cache, c.fonts, content, &buttons(), usize::MAX)
+/// The forget-host confirmation as a [`ModalScreen`].
+pub(crate) struct Modal<'a> {
+    pub host_name: &'a str,
+}
+
+impl ModalScreen for Modal<'_> {
+    fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Rect {
+        ui::confirm_dialog_card(screen_w, screen_h, fonts, &subtitle(self.host_name))
+    }
+
+    fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
+        let subtitle = subtitle(self.host_name);
+        let (card, content) = ui::confirm_dialog_layout(c.screen_w, c.screen_h, c.fonts, &subtitle);
+        c.modal_shell(card, hover_close)?;
+        c.modal_header(card, TITLE, ui::WHITE, &subtitle, ui::MUTED)?;
+        // `usize::MAX` = nothing focused here; the focused button is its own tile.
+        c.confirm_buttons(content, &buttons(), usize::MAX)
+    }
 }
