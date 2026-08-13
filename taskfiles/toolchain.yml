@@ -136,9 +136,8 @@ tasks:
           mv "dist/${APP_ID}_${APP_VERSION}_arm.ipk" "dist/${APP_ID}_${PKG_VERSION}_arm.ipk"
         fi
 
-  # Not `internal`, only undocumented: `deploy:preview` re-enters it from a shell command,
-  # which go-task refuses for internal tasks. Without a desc it stays out of `task --list`.
   docker-run:
+    internal: true
     requires:
       vars: [TARGET_TASK]
     vars:

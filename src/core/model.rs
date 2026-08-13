@@ -283,9 +283,14 @@ impl Settings {
     /// the UI has just hidden. `session::connect` clamps the wire regardless.
     pub fn clamp_to_caps(&mut self) {
         let caps = crate::core::caps::video_caps();
-        if !caps.h265 && self.codec == CodecPref::Hevc {
-            tracing::info!("settings: HEVC isn't decodable on this video backend — using Automatic");
-            self.codec = CodecPref::Auto;
+        let codecs = caps.codec_prefs();
+        if !codecs.contains(&self.codec) {
+            tracing::info!(
+                "settings: {:?} isn't offerable on this video backend — using {:?}",
+                self.codec,
+                codecs[0],
+            );
+            self.codec = codecs[0];
         }
         if !caps.hdr && self.hdr_enabled {
             tracing::info!("settings: HDR isn't presentable on this video backend — turning it off");

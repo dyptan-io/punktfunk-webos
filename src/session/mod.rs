@@ -225,9 +225,9 @@ pub(crate) fn cx_display_hdr() -> quic::HdrMeta {
     }
 }
 
-/// SMP is only selectable where NDL is the narrow v1 generation and the wrapper loaded
-/// (`core::caps`, `smp::available`), so trying it can't displace the v2 path. A load that still
-/// fails falls back to NDL, but only H.264 survives that — v1 decodes nothing else.
+/// SMP is only selectable where NDL is the narrow v1 generation (`core::caps::smp_selectable`), so
+/// trying it can't displace the v2 path. A load that fails falls back to NDL, but only H.264
+/// survives that — v1 decodes nothing else.
 fn open_player(
     backend: VideoBackend,
     app_id: &str,
@@ -285,9 +285,11 @@ pub fn connect(
     // must be clamped here and not merely hidden in the UI: HEVC negotiated onto an H.264-only
     // decoder is a frozen black stream with no second chance once `Welcome` has resolved.
     let caps = video_caps();
-    let codec_pref = match codec_pref {
-        CodecPref::Hevc if !caps.h265 => CodecPref::Auto,
-        pref => pref,
+    let codecs = caps.codec_prefs();
+    let codec_pref = if codecs.contains(&codec_pref) {
+        codec_pref
+    } else {
+        codecs[0]
     };
     let hdr_enabled = hdr_enabled && caps.hdr;
     let audio_channels = audio_channels.min(caps.max_channels);
@@ -306,15 +308,15 @@ pub fn connect(
         };
     let display_hdr = hdr_enabled.then(cx_display_hdr);
 
-    // Advertised decode set + soft preference. NDL decodes H.264/HEVC only, so those are
-    // the only codecs ever advertised — the host's precedence ladder can never auto-pick a
-    // path this client can't present.
-    // Never offered without HEVC, so the host's precedence ladder can't auto-pick it either.
-    let video_codecs = if caps.h265 {
-        quic::CODEC_HEVC | quic::CODEC_H264
-    } else {
-        quic::CODEC_H264
-    };
+    // Advertised decode set + soft preference, folded from the one codec list (`codec_prefs`) so
+    // the host's precedence ladder can never auto-pick a path this client can't present.
+    let video_codecs = codecs.iter().fold(0, |set, pref| {
+        set | match pref {
+            CodecPref::Auto => 0,
+            CodecPref::H264 => quic::CODEC_H264,
+            CodecPref::Hevc => quic::CODEC_HEVC,
+        }
+    });
     let preferred_codec = match codec_pref {
         CodecPref::Auto => 0,
         CodecPref::H264 => quic::CODEC_H264,

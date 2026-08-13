@@ -17,7 +17,13 @@ impl App {
             self.settings.gamepad_type
         };
         let dualsense_limited = effective.is_dualsense() && !crate::platform::webos::dualsense::hid_playstation_bound();
-        ui::settings_rows(&self.settings, dualsense_limited, self.detected_gamepad_type)
+        let webos_major = crate::platform::webos::device::sdk_version().map(|(major, _)| major);
+        ui::settings_rows(
+            &self.settings,
+            dualsense_limited,
+            self.detected_gamepad_type,
+            webos_major,
+        )
     }
 
     /// How many settings rows are *fully* visible. Capped at the live row count so a hidden

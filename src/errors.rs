@@ -14,14 +14,10 @@ pub fn reject_message(reason: RejectReason) -> String {
     match reason {
         RejectReason::Denied => "The host declined this device's request.".into(),
         RejectReason::ApprovalTimeout => {
-            "Nobody approved the request on the host in time — approve this device on the host, \
-             then try again."
-                .into()
+            "Nobody approved the request in time — approve this device, then try again.".into()
         }
         RejectReason::Superseded => {
-            "A newer request from this device replaced this one — approve the latest request on \
-             the host."
-                .into()
+            "A newer request from this device replaced this one — approve the latest request.".into()
         }
         RejectReason::IdentityRequired => {
             "The host requires pairing — pair this device (PIN or request access) first.".into()
@@ -40,8 +36,7 @@ pub fn reject_message(reason: RejectReason) -> String {
         }
         RejectReason::Busy => "The host is busy with another session.".into(),
         RejectReason::SetupFailed => {
-            "The host accepted the connection but couldn't start the stream — the host's own log \
-             has the cause."
+            "The host accepted the connection but couldn't start the stream — see host's logs."
                 .into()
         }
     }
@@ -53,8 +48,7 @@ pub fn connect_message(err: &PunktfunkError) -> String {
         PunktfunkError::Rejected(reason) => reject_message(*reason),
         PunktfunkError::Timeout => "The host didn't answer. Is it running and reachable?".into(),
         PunktfunkError::Io(e) => format!(
-            "Couldn't reach the host ({e}) — check that this TV and the host are on the same \
-             network."
+            "Couldn't reach the host ({e}) — TV and the host must be on the same network."
         ),
         PunktfunkError::Closed => "The host closed the connection.".into(),
         other => format!("Connection failed: {other}"),

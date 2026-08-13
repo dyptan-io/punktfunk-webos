@@ -28,14 +28,6 @@ use self::sink::Sink;
 use super::ndl::NdlCodec;
 use crate::platform::webos::device;
 
-/// Whether SMP could load on this TV at all: the wrapper `.so` resolves (it is packaged, and the
-/// vendor library behind it exists) and the jailer config isn't the known-broken one. Probed by
-/// `runtime` at startup and published through `core::caps` — see [`SmpVideo::load`] for why the
-/// answer has to be known *before* the handshake rather than at load time.
-pub fn available() -> bool {
-    ffi::fns().is_ok() && !device::jail_config_broken()
-}
-
 /// How long to wait for `LOADCOMPLETED`. The host is already streaming by then, so waiting longer
 /// only piles up frames — a load that completes does so in well under a second.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(2);

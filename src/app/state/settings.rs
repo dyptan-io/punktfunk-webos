@@ -16,7 +16,9 @@ impl App {
             // `dd.row` is the display position; setting lookups need the logical row.
             let row = dd.row;
             let logical = crate::ui::settings_logical_row(&self.settings, row);
-            let len = crate::ui::dropdown_options(&self.settings, logical, self.detected_gamepad_type).len().max(1);
+            let len = crate::ui::dropdown_options(&self.settings, logical, self.detected_gamepad_type)
+                .len()
+                .max(1);
             match ev {
                 MenuEvent::Up => dd.focused = if dd.focused == 0 { len - 1 } else { dd.focused - 1 },
                 MenuEvent::Down => dd.focused = (dd.focused + 1) % len,
@@ -133,10 +135,10 @@ impl App {
     /// HDR row's visibility), re-derive the display index of `logical` so focus stays on
     /// the same setting instead of sliding to whatever now occupies its old slot.
     fn refocus_logical(&mut self, logical: usize) {
-        let rows = crate::ui::settings_visible_logical_rows(&self.settings);
-        self.settings_focused = rows
-            .iter()
-            .position(|&r| r == logical)
-            .unwrap_or_else(|| self.settings_focused.min(rows.len().saturating_sub(1)));
+        let position = crate::ui::settings_visible_logical_rows(&self.settings).position(|r| r == logical);
+        self.settings_focused = position.unwrap_or_else(|| {
+            let count = crate::ui::settings_row_count(&self.settings);
+            self.settings_focused.min(count.saturating_sub(1))
+        });
     }
 }
