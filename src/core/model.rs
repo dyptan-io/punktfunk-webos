@@ -193,8 +193,8 @@ pub struct Settings {
     /// Refresh rate (30/60/120) — sent to the host as the exact wire `Mode.refresh_hz`.
     pub refresh_hz: u32,
     /// `0` (Automatic — `punktfunk_core`'s own client-side AIMD bitrate controller, see
-    /// `ui::BITRATE_AUTOMATIC`) or 10_000-150_000 (10-150 Mbps) fixed, adjusted via the settings
-    /// slider — see `ui::BITRATE_MIN_KBPS`/`BITRATE_MAX_KBPS`.
+    /// `menu::BITRATE_AUTOMATIC`) or 10_000-150_000 (10-150 Mbps) fixed, adjusted via the settings
+    /// slider — see `menu::BITRATE_MIN_KBPS`/`BITRATE_MAX_KBPS`.
     pub bitrate_kbps: u32,
     pub hdr_enabled: bool,
     /// Preferred session codec — see [`CodecPref`].
@@ -259,7 +259,7 @@ impl Default for Settings {
             // Automatic: a fixed number, however carefully picked (aurora-tv's own
             // moonlight-tv wiki calls ~35-40 Mbps the practical sweet spot for this decode
             // path), never adapts to a link that degrades mid-session the way punktfunk's
-            // own client-side AIMD controller does — see `ui::BITRATE_AUTOMATIC`.
+            // own client-side AIMD controller does — see `menu::BITRATE_AUTOMATIC`.
             bitrate_kbps: 0,
             hdr_enabled: true,
             stats_overlay: false,

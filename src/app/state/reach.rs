@@ -76,7 +76,7 @@ impl App {
     }
 
     /// Last known reachability (None until first probe).
-    pub(crate) fn entry_online(&self, entry: &crate::ui::HostEntry) -> Option<bool> {
+    pub(crate) fn entry_online(&self, entry: &crate::app::hosts::HostEntry) -> Option<bool> {
         self.reachable.get(&(entry.host().to_string(), entry.port())).copied()
     }
 

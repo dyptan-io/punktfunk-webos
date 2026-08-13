@@ -21,7 +21,7 @@ impl App {
 
     /// Left/Right/Confirm flip toggle; Back returns to host menu.
     pub(crate) fn handle_wake_settings_event(&mut self, ev: MenuEvent) {
-        let len = self.wake_settings_rows().len();
+        let len = crate::app::view::wakesettings::rows(self.wake_settings_host().is_some_and(|h| h.wol_auto)).len();
         if crate::ui::list_nav(&mut self.wake_settings_focused, len, ev) {
             self.modal_focus_anim = Some(Instant::now());
             return;

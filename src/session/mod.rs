@@ -532,7 +532,7 @@ pub fn request_access(host: &str, port: u16, identity: (String, String), timeout
 /// own result message.
 ///
 /// The target is chosen against what the answer can actually be *used* for: the bitrate
-/// slider caps at `ui::BITRATE_MAX_KBPS` (200 Mbps) and the recommendation is 70 % of
+/// slider caps at `menu::BITRATE_MAX_KBPS` (200 Mbps) and the recommendation is 70 % of
 /// measured, so anything above ~285 Mbps already produces an identical clamped
 /// recommendation. 320 Mbps stays above that — it can still detect any ceiling that
 /// would change the advice — while keeping the overshoot bounded. Measured on a G5

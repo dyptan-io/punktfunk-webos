@@ -76,8 +76,19 @@ pub fn ease(f: f32) -> f32 {
 
 /// Eased progress 0..=1 of animation; 1.0 when done/absent.
 pub fn anim_frac(anim: Option<Instant>, dur: Duration) -> f32 {
+    frac(anim, dur, ease)
+}
+
+/// [`anim_frac`] on a cubic ease-*in* — the exact time-mirror of [`ease`]. Fade-ins use
+/// this so they read like the fade-outs (`1 - ease(p)`) played backwards; on ease-out a
+/// fade-in is already near-opaque a sixth of the way through, so it lands as a pop.
+pub fn anim_frac_in(anim: Option<Instant>, dur: Duration) -> f32 {
+    frac(anim, dur, |f| f.powi(3))
+}
+
+fn frac(anim: Option<Instant>, dur: Duration, curve: impl Fn(f32) -> f32) -> f32 {
     match anim {
-        Some(t) => ease((t.elapsed().as_secs_f32() / dur.as_secs_f32()).min(1.0)),
+        Some(t) => curve((t.elapsed().as_secs_f32() / dur.as_secs_f32()).min(1.0)),
         None => 1.0,
     }
 }

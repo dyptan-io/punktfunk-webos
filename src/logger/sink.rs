@@ -1,4 +1,5 @@
 //! The write destination — a rotating log file, or a TCP stream to a dev machine.
+use crate::core::VERSION;
 use std::io::Write;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -6,12 +7,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use super::launch;
-
-/// `PKG_VERSION` from Docker/Taskfile; falls back to `CARGO_PKG_VERSION`.
-const VERSION: &str = match option_env!("PKG_VERSION") {
-    Some(v) => v,
-    None => env!("CARGO_PKG_VERSION"),
-};
 
 const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
 /// Rotations kept (`base.log.1`..`.3`), bounding disk use at

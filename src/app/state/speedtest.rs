@@ -9,9 +9,10 @@
 //! link speed. Bounds useful for bitrate picking on this TV.
 //!
 //! Rendering lives in `app::view::speedtest`.
+use crate::app::menu;
 use crate::app::App;
 use crate::core::screen::Screen;
-use crate::ui::{self, MenuEvent};
+use crate::ui::MenuEvent;
 use std::time::Instant;
 
 use punktfunk_core::client::ProbeOutcome;
@@ -134,19 +135,6 @@ impl App {
         changed
     }
 
-    /// The bitrate to recommend from a finished measurement, in kbps — `None` when too
-    /// little got through to say anything useful. Clamped to the settings slider's own
-    /// range, since that's the only thing "Use this" can actually write.
-    pub(crate) fn recommended_kbps(outcome: &ProbeOutcome) -> Option<u32> {
-        if outcome.throughput_kbps < MIN_USEFUL_KBPS {
-            return None;
-        }
-        let raw = outcome.throughput_kbps / RECOMMEND_DENOMINATOR * RECOMMEND_NUMERATOR;
-        // Whole Mbps, clamped to slider bounds (BITRATE_STEP_KBPS steps).
-        let whole_mbps = (raw / 1000).max(1) * 1000;
-        Some(whole_mbps.clamp(ui::BITRATE_MIN_KBPS, ui::BITRATE_MAX_KBPS))
-    }
-
     pub(crate) fn handle_speed_test_event(&mut self, ev: MenuEvent) {
         let done = matches!(
             self.speed_test,
@@ -166,7 +154,7 @@ impl App {
                     return;
                 }
                 let applied = match &self.speed_test {
-                    Some(SpeedTestState::Done { outcome, .. }) => Self::recommended_kbps(outcome),
+                    Some(SpeedTestState::Done { outcome, .. }) => recommended_kbps(outcome),
                     _ => None,
                 };
                 match applied {
@@ -199,4 +187,17 @@ impl App {
         self.speed_test_rx = None;
         self.back_to_host_menu();
     }
+}
+
+/// The bitrate to recommend from a finished measurement, in kbps — `None` when too little
+/// got through to say anything useful. Clamped to the settings slider's own range, since
+/// that's the only thing "Use this" can actually write.
+pub(crate) fn recommended_kbps(outcome: &ProbeOutcome) -> Option<u32> {
+    if outcome.throughput_kbps < MIN_USEFUL_KBPS {
+        return None;
+    }
+    let raw = outcome.throughput_kbps / RECOMMEND_DENOMINATOR * RECOMMEND_NUMERATOR;
+    // Whole Mbps, clamped to slider bounds (BITRATE_STEP_KBPS steps).
+    let whole_mbps = (raw / 1000).max(1) * 1000;
+    Some(whole_mbps.clamp(menu::BITRATE_MIN_KBPS, menu::BITRATE_MAX_KBPS))
 }

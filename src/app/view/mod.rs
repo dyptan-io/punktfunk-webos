@@ -1,19 +1,24 @@
-//! Per-screen draw-command building (geometry + render calls). Split out of the
-//! former fused `app/<screen>.rs` modules — see `docs/REFACTOR_PLAN.md` §5.
+//! Per-screen presentation: each modal's card geometry, its copy, and how it paints.
 //! Logic counterparts live in `app::state`.
-mod about;
-mod addhost;
-mod cursorsettings;
-mod diagnostics;
-mod edithost;
-mod experimental;
-mod forget;
-mod home;
-mod hostmenu;
-mod pairing;
-mod pinlimit;
-mod sendlogs;
-mod settings;
-mod speedtest;
-mod wake;
-mod wakesettings;
+//!
+//! These are this app's screens, so they live here rather than in `ui` — `ui` is the
+//! portable, app-agnostic half (cards, rows, list modals, text, fades) that these compose.
+//! The migrated modules are plain free functions over the values they need (a `Settings`,
+//! a host name, a focus index) rather than `impl App` blocks, so screen presentation
+//! carries no dependency on the app state machine.
+pub(crate) mod about;
+pub(crate) mod addhost;
+pub(crate) mod cursorsettings;
+pub(crate) mod diagnostics;
+pub(crate) mod experimental;
+pub(crate) mod forget;
+pub(crate) mod home;
+pub(crate) mod hostmenu;
+pub(crate) mod pairing;
+pub(crate) mod pinlimit;
+pub(crate) mod sendlogs;
+pub(crate) mod settings;
+pub(crate) mod sidebar;
+pub(crate) mod speedtest;
+pub(crate) mod wake;
+pub(crate) mod wakesettings;

@@ -239,7 +239,7 @@ pub fn run() -> Result<()> {
     // owns is only actionable if the log says what it was running on.
     crate::platform::webos::device::DeviceInfo::detect().log();
     // Before settings load or any UI exists: `store::load` clamps against this and
-    // `ui::settings` hides what it can't offer.
+    // `app::menu::row_shown` hides what it can't offer.
     crate::core::caps::install(crate::platform::webos::device::video_caps());
     // The backend pick widens the caps on a legacy TV, so it has to be applied before anything
     // clamps against them (`store::load`) — hence the raw read rather than the loaded document.

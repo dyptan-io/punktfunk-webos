@@ -4,7 +4,7 @@
 //! it (see `docs/NOTES.md` for why that drifted apart once: the disconnect dialog and
 //! stats overlay live in `main.rs`'s streaming loop, which has no `App`/`Screen` to hook).
 
-use super::anim_frac;
+use super::{anim_frac, anim_frac_in};
 use std::time::{Duration, Instant};
 
 /// Shared fade-in/out duration for transient in-stream overlays (toast notifications,
@@ -64,8 +64,9 @@ impl<T: Copy + PartialEq> ModalFade<T> {
     }
 
     /// Open-fade alpha: eases 0.0 -> 1.0, `1.0` once finished or if never opened.
+    /// Ease-*in*, so it is `closing_frame`'s curve played backwards.
     pub fn open_alpha(&self, dur: Duration) -> f32 {
-        anim_frac(self.open_since, dur)
+        anim_frac_in(self.open_since, dur)
     }
 
     /// Alpha for a simple show/hide overlay driven by `shown`: `Some` through the close

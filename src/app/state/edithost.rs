@@ -1,10 +1,12 @@
 //! Editing a saved host's address (reuses add-host widget) — logic. Fingerprint survives
 //! address changes unchanged since it identifies the certificate, not the network
 //! location. Rendering lives in `app::view::edithost`.
+use crate::app::hosts::HostEntry;
+use crate::app::state::addhost::AddHostState;
 use crate::app::App;
 use crate::core::screen::{HomeFocus, Screen};
 use crate::services::store;
-use crate::ui::{AddHostState, HostEntry, MenuEvent};
+use crate::ui::MenuEvent;
 
 impl App {
     /// Open `EditHost` for sidebar row; pre-filled with current address. No-op for unsaved entries.

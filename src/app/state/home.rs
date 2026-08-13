@@ -1,10 +1,13 @@
 //! Home screen logic: sidebar/grid navigation, host selection, game library fetch,
 //! launching. Grid pixel geometry (rect helpers) lives in `app::view::home`.
+use crate::app::hosts::HostEntry;
+use crate::app::state::addhost::AddHostState;
+use crate::app::view;
 use crate::app::App;
 use crate::app::{ConnectTarget, GridCard, GridLayout};
 use crate::core::screen::{HomeFocus, Screen};
 use crate::services::store::{self};
-use crate::ui::{self, AddHostState, HostEntry, MenuEvent};
+use crate::ui::{self, MenuEvent};
 use std::time::Instant;
 
 impl App {
@@ -96,7 +99,7 @@ impl App {
     pub fn handle_home_event(&mut self, ev: MenuEvent, screen_w: u32, screen_h: u32) -> Option<ConnectTarget> {
         let sidebar_len = self.sidebar_len();
         let available_w = screen_w.saturating_sub(ui::SIDEBAR_W);
-        let columns = ui::grid_columns(available_w);
+        let columns = view::home::grid_columns(available_w);
         let grid_len = self.grid_len(columns);
 
         match ev {
@@ -215,7 +218,7 @@ impl App {
     /// alert on overflow.
     pub(crate) fn toggle_focused_pin(&mut self, screen_w: u32, screen_h: u32) {
         let available_w = screen_w.saturating_sub(ui::SIDEBAR_W);
-        let columns = ui::grid_columns(available_w);
+        let columns = view::home::grid_columns(available_w);
         let HomeFocus::Grid(old_idx) = self.home_focus else {
             return;
         };
@@ -321,14 +324,14 @@ impl App {
     /// The largest useful `grid_scroll` for the current library/layout — 0 when
     /// everything already fits on screen.
     pub(crate) fn max_grid_scroll(&self, columns: usize, available_w: u32, screen_h: u32) -> i32 {
-        let viewport_h = screen_h as i32 - ui::GRID_PAD - ui::GRID_TOP_Y;
+        let viewport_h = screen_h as i32 - view::home::GRID_PAD - view::home::GRID_TOP_Y;
         let extra = if self.has_pinned_divider(columns) {
-            ui::PINNED_SECTION_GAP
+            view::home::PINNED_SECTION_GAP
         } else {
             0
         };
-        (ui::grid_layer_height(self.grid_len(columns), columns, available_w) as i32 + extra
-            - 2 * ui::GRID_LAYER_PAD
+        (view::home::grid_layer_height(self.grid_len(columns), columns, available_w) as i32 + extra
+            - 2 * view::home::GRID_LAYER_PAD
             - viewport_h)
             .max(0)
     }
@@ -345,8 +348,8 @@ impl App {
         self.focus_anim = Some(Instant::now());
         let available_w = screen_w.saturating_sub(ui::SIDEBAR_W);
         let r = self.unscrolled_card_rect(idx, columns, ui::SIDEBAR_W as i32, available_w);
-        let viewport_top = ui::GRID_TOP_Y;
-        let viewport_bottom = screen_h as i32 - ui::GRID_PAD;
+        let viewport_top = view::home::GRID_TOP_Y;
+        let viewport_bottom = screen_h as i32 - view::home::GRID_PAD;
         let max_scroll = self.max_grid_scroll(columns, available_w, screen_h);
         let card_top = r.y() - FOCUS_MARGIN;
         let card_bottom = r.bottom() + FOCUS_MARGIN;
@@ -368,7 +371,7 @@ impl App {
             return false;
         }
         let available_w = screen_w.saturating_sub(ui::SIDEBAR_W);
-        let columns = ui::grid_columns(available_w);
+        let columns = view::home::grid_columns(available_w);
         let max_scroll = self.max_grid_scroll(columns, available_w, screen_h);
         let next = (self.grid_scroll_target + dy_px).clamp(0, max_scroll);
         let changed = next != self.grid_scroll_target;

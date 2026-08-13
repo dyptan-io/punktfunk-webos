@@ -1,5 +1,6 @@
 //! The settings modal's logic: row navigation, dropdown, persistence. Rendering
 //! (row list layout, dropdown overlay geometry) lives in `app::view::settings`.
+use crate::app::menu;
 use crate::app::{App, DropdownState};
 use crate::core::screen::Screen;
 use crate::ui::MenuEvent;
@@ -15,10 +16,8 @@ impl App {
         if let Some(dd) = self.dropdown.as_mut() {
             // `dd.row` is the display position; setting lookups need the logical row.
             let row = dd.row;
-            let logical = crate::ui::settings_logical_row(&self.settings, row);
-            let len = crate::ui::dropdown_options(&self.settings, logical, self.detected_gamepad_type)
-                .len()
-                .max(1);
+            let logical = menu::settings_logical_row(&self.settings, row);
+            let len = menu::dropdown_option_count(logical).max(1);
             match ev {
                 MenuEvent::Up => dd.focused = if dd.focused == 0 { len - 1 } else { dd.focused - 1 },
                 MenuEvent::Down => dd.focused = (dd.focused + 1) % len,
@@ -27,7 +26,7 @@ impl App {
                     // Not persisted here — `MenuEvent::Back` below (leaving the
                     // whole Settings screen) saves once for every change made
                     // during this visit, not per-row.
-                    crate::ui::apply_dropdown_choice(&mut self.settings, logical, choice);
+                    menu::apply_dropdown_choice(&mut self.settings, logical, choice);
                     self.dropdown_fade.close((row, dd.focused));
                     self.dropdown = None;
                     // A codec change hides/shows the HDR row above; keep focus on the
@@ -42,7 +41,7 @@ impl App {
             }
             return;
         }
-        let total = crate::ui::settings_row_count(&self.settings);
+        let total = menu::settings_row_count(&self.settings);
         match ev {
             // No wraparound here (unlike most other row lists) — wrapping a scrolled
             // list would silently jump the scroll position across the whole card.
@@ -62,33 +61,33 @@ impl App {
             }
             MenuEvent::Left => self.apply_setting_adjust(self.settings_focused, false),
             MenuEvent::Right => self.apply_setting_adjust(self.settings_focused, true),
-            MenuEvent::Confirm => match crate::ui::settings_logical_row(&self.settings, self.settings_focused) {
-                // Not a setting — a link out to the About screen (see `ui::ROW_ABOUT`).
+            MenuEvent::Confirm => match menu::settings_logical_row(&self.settings, self.settings_focused) {
+                // Not a setting — a link out to the About screen (see `menu::ROW_ABOUT`).
                 // Settings are saved on the way out so the visit's changes aren't lost
                 // behind the navigation.
-                crate::ui::ROW_ABOUT => {
+                menu::ROW_ABOUT => {
                     self.persist();
                     self.open_about();
                 }
-                crate::ui::ROW_CURSOR => {
+                menu::ROW_CURSOR => {
                     self.persist();
                     self.open_cursor_settings();
                 }
-                crate::ui::ROW_EXPERIMENTAL => {
+                menu::ROW_EXPERIMENTAL => {
                     self.persist();
                     self.open_experimental();
                 }
-                crate::ui::ROW_DIAGNOSTICS => {
+                menu::ROW_DIAGNOSTICS => {
                     self.persist();
                     self.open_diagnostics();
                 }
-                logical @ (crate::ui::ROW_RESOLUTION
-                | crate::ui::ROW_FRAMERATE
-                | crate::ui::ROW_VIDEO_BACKEND
-                | crate::ui::ROW_CODEC
-                | crate::ui::ROW_AUDIO
-                | crate::ui::ROW_GAMEPAD) => {
-                    let focused = crate::ui::dropdown_current_index(&self.settings, logical);
+                logical @ (menu::ROW_RESOLUTION
+                | menu::ROW_FRAMERATE
+                | menu::ROW_VIDEO_BACKEND
+                | menu::ROW_CODEC
+                | menu::ROW_AUDIO
+                | menu::ROW_GAMEPAD) => {
+                    let focused = menu::dropdown_current_index(&self.settings, logical);
                     // `row` is the display position (what the overlay is drawn against);
                     // the logical row is recovered on lookup via `settings_logical_row`.
                     self.dropdown = Some(DropdownState {
@@ -116,12 +115,12 @@ impl App {
     /// Adjusts row in memory; persisted on `Back` (not per-keystroke). Starts `switch_anim` for toggle slides.
     /// `display_row` is the on-screen position; resolved to a logical `ROW_*` first.
     pub(crate) fn apply_setting_adjust(&mut self, display_row: usize, forward: bool) {
-        let row = crate::ui::settings_logical_row(&self.settings, display_row);
+        let row = menu::settings_logical_row(&self.settings, display_row);
         let toggled_from = match row {
-            crate::ui::ROW_HDR => Some(self.settings.hdr_enabled),
+            menu::ROW_HDR => Some(self.settings.hdr_enabled),
             _ => None,
         };
-        if crate::ui::adjust_setting(&mut self.settings, row, forward) {
+        if menu::adjust_setting(&mut self.settings, row, forward) {
             if let Some(from) = toggled_from {
                 // Scope the slide to the display row being rendered (see `toggle_frac`).
                 self.switch_anim = Some((Instant::now(), from, display_row));
@@ -135,9 +134,9 @@ impl App {
     /// HDR row's visibility), re-derive the display index of `logical` so focus stays on
     /// the same setting instead of sliding to whatever now occupies its old slot.
     fn refocus_logical(&mut self, logical: usize) {
-        let position = crate::ui::settings_visible_logical_rows(&self.settings).position(|r| r == logical);
+        let position = menu::settings_visible_logical_rows(&self.settings).position(|r| r == logical);
         self.settings_focused = position.unwrap_or_else(|| {
-            let count = crate::ui::settings_row_count(&self.settings);
+            let count = menu::settings_row_count(&self.settings);
             self.settings_focused.min(count.saturating_sub(1))
         });
     }

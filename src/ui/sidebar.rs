@@ -1,9 +1,8 @@
-//! The host-list sidebar: brand lockup, host rows, utility rows.
+//! Sidebar panel metrics and the generic nav-row widgets built on them: an icon + label
+//! row with optional selection tint, and the ⋯ actions button a row can carry.
 //!
-//! Split out of the former single-file `ui.rs`; see `super`'s module docs.
+//! This app's own host list is `app::view::sidebar`, which composes these.
 use super::*;
-use crate::services::discovery::DiscoveredHost;
-use crate::services::store::KnownHost;
 use crate::ui::render::Color;
 use crate::ui::render::Rect;
 use anyhow::Result;
@@ -11,22 +10,8 @@ use anyhow::Result;
 // Sized for a 10-foot TV viewing distance, not a desktop/phone screen.
 pub const SIDEBAR_W: u32 = 460;
 pub const SIDEBAR_PAD: i32 = 24;
-pub const SIDEBAR_TOP_Y: i32 = 216;
 pub const SIDEBAR_ROW_H: u32 = 76;
 pub const SIDEBAR_ROW_GAP: i32 = 10;
-
-pub fn sidebar_row_rect(index: usize) -> Rect {
-    let y = SIDEBAR_TOP_Y + index as i32 * (SIDEBAR_ROW_H as i32 + SIDEBAR_ROW_GAP);
-    Rect::new(SIDEBAR_PAD, y, SIDEBAR_W - 2 * SIDEBAR_PAD as u32, SIDEBAR_ROW_H)
-}
-
-/// The "Settings" row's rect — pinned to the bottom of the sidebar panel instead
-/// of following the host list/"+ Add host" row sequentially (`sidebar_row_rect`),
-/// so it stays in the same place regardless of how many hosts are known.
-pub fn settings_row_rect(screen_h: u32) -> Rect {
-    let y = screen_h as i32 - SIDEBAR_PAD - SIDEBAR_ROW_H as i32;
-    Rect::new(SIDEBAR_PAD, y, SIDEBAR_W - 2 * SIDEBAR_PAD as u32, SIDEBAR_ROW_H)
-}
 
 /// Size of the "more actions" (⋯) hit target at the right end of a host row. Square,
 /// and generous — this is a 10-foot UI driven by a wobbly pointer, so the touch target
@@ -34,11 +19,25 @@ pub fn settings_row_rect(screen_h: u32) -> Rect {
 pub const SIDEBAR_MENU_BTN: u32 = 52;
 /// The glyph itself, inset within that target.
 const SIDEBAR_MENU_GLYPH: u32 = 26;
-/// Diameter of the presence dot badged onto a host row's icon.
-const PRESENCE_DOT: f32 = 9.0;
 
 /// The ⋯ actions button's rect within a host row. Right-aligned inside the row, so it
 /// reads as belonging to that host rather than to the panel.
+/// Size and left inset of a nav row's leading icon — the presence dot a host row badges
+/// onto that icon is placed from the same rect (see `app::view::sidebar::draw_host_row`),
+/// so the two can't drift apart.
+pub const SIDEBAR_ICON_SIZE: u32 = 30;
+const SIDEBAR_ICON_PAD: i32 = 20;
+
+/// The leading icon's rect within an already-inflated row rect.
+pub fn sidebar_icon_rect(drawn: Rect) -> Rect {
+    Rect::new(
+        drawn.x() + SIDEBAR_ICON_PAD,
+        drawn.y() + (drawn.height() as i32 - SIDEBAR_ICON_SIZE as i32) / 2,
+        SIDEBAR_ICON_SIZE,
+        SIDEBAR_ICON_SIZE,
+    )
+}
+
 pub fn sidebar_menu_button_rect(row_rect: Rect) -> Rect {
     let inset = 10i32;
     Rect::new(
@@ -47,29 +46,6 @@ pub fn sidebar_menu_button_rect(row_rect: Rect) -> Rect {
         SIDEBAR_MENU_BTN,
         SIDEBAR_MENU_BTN,
     )
-}
-
-/// Whether `(x, y)` is on host row `index`'s ⋯ button. Checked *before*
-/// [`hit_test_sidebar_row`] by the click handler, since the button sits inside the row
-/// it belongs to and would otherwise just read as a click on the row.
-pub fn hit_test_sidebar_menu_button(x: i32, y: i32, host_count: usize) -> Option<usize> {
-    (0..host_count).find(|&i| sidebar_menu_button_rect(sidebar_row_rect(i)).contains_point((x, y)))
-}
-
-/// `None` when `(x, y)` falls outside the sidebar's horizontal band at all — lets
-/// mouse-motion handling distinguish "not hovering the sidebar" from "hovering the
-/// sidebar but between rows." The last nav position (`row_count - 1`, "Settings")
-/// is pinned to the bottom of the panel (see `settings_row_rect`) rather than
-/// following on from the sequential rows above it.
-pub fn hit_test_sidebar_row(x: i32, y: i32, row_count: usize, screen_h: u32) -> Option<usize> {
-    if x < 0 || x as u32 > SIDEBAR_W || row_count == 0 {
-        return None;
-    }
-    let settings_index = row_count - 1;
-    if settings_row_rect(screen_h).contains_point((x, y)) {
-        return Some(settings_index);
-    }
-    (0..settings_index).find(|&i| sidebar_row_rect(i).contains_point((x, y)))
 }
 
 /// Draw a selectable row with optional selection highlighting. When focused, shows
@@ -82,116 +58,6 @@ fn draw_selectable_with_selection(painter: &mut Painter, rect: Rect, focused: bo
         painter.fill_rounded_rect(r, CARD_RADIUS, selected_bg);
     }
     r
-}
-
-/// One entry in the sidebar's host list — either a fully known/paired host or a
-/// freshly discovered (not yet paired) one.
-#[derive(Clone)]
-pub enum HostEntry {
-    Known(KnownHost),
-    Discovered(DiscoveredHost),
-}
-
-impl HostEntry {
-    pub fn name(&self) -> &str {
-        match self {
-            Self::Known(h) => &h.name,
-            Self::Discovered(h) => &h.name,
-        }
-    }
-    pub fn host(&self) -> &str {
-        match self {
-            Self::Known(h) => &h.host,
-            Self::Discovered(h) => &h.addr,
-        }
-    }
-    pub fn port(&self) -> u16 {
-        match self {
-            Self::Known(h) => h.port,
-            Self::Discovered(h) => h.port,
-        }
-    }
-    pub fn is_paired(&self) -> bool {
-        matches!(self, Self::Known(h) if h.is_paired())
-    }
-    pub fn mgmt_port(&self) -> Option<u16> {
-        match self {
-            Self::Known(h) => h.mgmt_port,
-            Self::Discovered(h) => h.mgmt_port,
-        }
-    }
-    /// Wake-on-LAN MAC(s) known for this entry so far — empty until it's been seen
-    /// advertising its `mac` mDNS TXT at least once (see `discovery::DiscoveredHost::mac`).
-    pub fn mac(&self) -> &[String] {
-        match self {
-            Self::Known(h) => &h.mac,
-            Self::Discovered(h) => &h.mac,
-        }
-    }
-}
-
-/// Draws sidebar: flat panel + logo + host rows + "Add host" + Settings (bottom-pinned).
-/// `selected_index` highlights the active/connected host.
-#[allow(clippy::too_many_arguments)]
-pub fn draw_sidebar(
-    painter: &mut Painter,
-    text_cache: &mut TextCache,
-    fonts: &Fonts,
-    entries: &[HostEntry],
-    focused_index: Option<usize>,
-    selected_index: Option<usize>,
-    // `online` is index-aligned with `entries`; `None` = not probed yet (see `app::reach`).
-    online: &[Option<bool>],
-    screen_h: u32,
-) -> Result<()> {
-    painter.fill_rect(Rect::new(0, 0, SIDEBAR_W, screen_h), SIDEBAR_BG);
-    // Logo is 1:1 (no runtime scaling); bundled at exact display size.
-    if let Some(logo) = logo_pixmap() {
-        let logo_x = (SIDEBAR_W as i32 - logo.width() as i32) / 2;
-        painter.draw_pixmap(logo_x, 32, logo);
-    }
-
-    let add_row = entries.len();
-    let settings_row = entries.len() + 1;
-    for (i, entry) in entries.iter().enumerate() {
-        draw_host_row(
-            painter,
-            text_cache,
-            fonts,
-            sidebar_row_rect(i),
-            entry.name(),
-            entry.is_paired(),
-            focused_index == Some(i),
-            selected_index == Some(i),
-            false,
-            online.get(i).copied().flatten(),
-        )?;
-    }
-    draw_utility_row(
-        painter,
-        text_cache,
-        fonts,
-        sidebar_row_rect(add_row),
-        "+ Add host",
-        focused_index == Some(add_row),
-    )?;
-
-    let settings_rect = settings_row_rect(screen_h);
-    // Version moved to About screen (not sidebar nav chrome); see ui::about::VERSION.
-    painter.fill_rect(
-        Rect::new(settings_rect.x(), settings_rect.y() - 14, settings_rect.width(), 1),
-        Color::RGBA(0xff, 0xff, 0xff, 0x1a),
-    );
-    draw_utility_row(
-        painter,
-        text_cache,
-        fonts,
-        settings_rect,
-        "Settings",
-        focused_index == Some(settings_row),
-    )?;
-
-    Ok(())
 }
 
 /// Sidebar row layout: left-aligned icon + label, focus-colored.
@@ -209,18 +75,11 @@ pub fn draw_sidebar_row(
     reserve_right: u32,
 ) -> Result<()> {
     let drawn = draw_selectable_with_selection(painter, rect, focused, selected);
-    let icon_size = 30u32;
-    let icon_pad = 20;
-    let icon_rect = Rect::new(
-        drawn.x() + icon_pad,
-        drawn.y() + (drawn.height() as i32 - icon_size as i32) / 2,
-        icon_size,
-        icon_size,
-    );
+    let icon_rect = sidebar_icon_rect(drawn);
     let color = if focused { WHITE } else { MUTED };
     draw_icon(painter, text_cache, fonts.raster, fonts.icon, icon_rect, glyph, color)?;
     // Ellipsized to prevent overflow; reserve_right prevents running under ⋯ button.
-    let text_x = icon_pad + icon_size as i32 + 16;
+    let text_x = SIDEBAR_ICON_PAD + SIDEBAR_ICON_SIZE as i32 + 16;
     let max_w = drawn.width().saturating_sub(text_x as u32 + 20 + reserve_right);
     let label = ellipsize(fonts.raster, fonts.label, label, max_w);
     draw_text(
@@ -234,52 +93,6 @@ pub fn draw_sidebar_row(
         color,
     )?;
     Ok(())
-}
-
-/// Host row with ⋯ actions button (drawn on every row to advertise actions exist).
-/// `menu_focused` highlights the button; `selected` indicates active host.
-#[allow(clippy::too_many_arguments)]
-pub fn draw_host_row(
-    painter: &mut Painter,
-    text_cache: &mut TextCache,
-    fonts: &Fonts,
-    rect: Rect,
-    name: &str,
-    paired: bool,
-    focused: bool,
-    selected: bool,
-    menu_focused: bool,
-    online: Option<bool>,
-) -> Result<()> {
-    let glyph = if paired { ICON_TV } else { ICON_LOCK };
-    draw_sidebar_row(
-        painter,
-        text_cache,
-        fonts,
-        rect,
-        glyph,
-        name,
-        focused,
-        selected,
-        SIDEBAR_MENU_BTN + 10,
-    )?;
-    // Badged onto the icon's corner rather than given its own column: it needs no layout
-    // of its own, and a presence dot on the thing it describes is a well-worn idiom.
-    // `None` (never probed yet) draws nothing at all — an unknown state must not look
-    // like a confident "offline".
-    if let Some(online) = online {
-        let drawn = inflate(rect, focused);
-        let icon_size = 30i32;
-        let icon_pad = 20i32;
-        let cx = drawn.x() as f32 + icon_pad as f32 + icon_size as f32 - 1.0;
-        let cy = drawn.y() as f32 + (drawn.height() as f32 + icon_size as f32) / 2.0 - 2.0;
-        // A ring of panel background first, so the dot reads as separate from the glyph
-        // it overlaps rather than merging into it.
-        painter.fill_circle(cx, cy, PRESENCE_DOT / 2.0 + 2.0, SIDEBAR_BG);
-        let color = if online { ONLINE_GREEN } else { MUTED };
-        painter.fill_circle(cx, cy, PRESENCE_DOT / 2.0, color);
-    }
-    draw_sidebar_menu_button(painter, text_cache, fonts, rect, focused, menu_focused)
 }
 
 /// The ⋯ button itself: a rounded highlight plate once it has focus, then the glyph.
@@ -311,21 +124,4 @@ pub fn draw_sidebar_menu_button(
         ICON_MORE,
         color,
     )
-}
-
-pub fn draw_utility_row(
-    painter: &mut Painter,
-    text_cache: &mut TextCache,
-    fonts: &Fonts,
-    rect: Rect,
-    label: &str,
-    focused: bool,
-) -> Result<()> {
-    let glyph = if label.starts_with('+') {
-        ICON_ADD
-    } else {
-        ICON_SETTINGS
-    };
-    let label = label.trim_start_matches('+').trim();
-    draw_sidebar_row(painter, text_cache, fonts, rect, glyph, label, focused, false, 0)
 }

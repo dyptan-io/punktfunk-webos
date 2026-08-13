@@ -1,53 +1,113 @@
-//! Home screen grid pixel geometry. Navigation/selection logic lives in
-//! `app::state::home`.
-use crate::app::App;
+//! Home screen geometry: the game grid (columns, card rects, hit testing, scroll extent)
+//! and the pinned-section split. Navigation/selection logic lives in `app::state::home`;
+//! `App` supplies `pinned_rows`/`grid_scroll` from there.
 use crate::ui::render::Rect;
-use crate::ui::{self};
 
-impl App {
-    /// Extra vertical offset for grid index `idx`'s row — `ui::PINNED_SECTION_GAP`
-    /// once, for every row from the "rest" section on, `0` for a row still inside
-    /// the pinned front block (see `pinned_rows`).
-    fn extra_row_gap(&self, idx: usize, columns: usize) -> i32 {
-        let pinned_rows = self.pinned_rows(columns);
-        if pinned_rows > 0 && idx / columns.max(1) >= pinned_rows {
-            ui::PINNED_SECTION_GAP
-        } else {
-            0
-        }
+/// Extra vertical offset for grid index `idx`'s row — [`PINNED_SECTION_GAP`] once, for
+/// every row from the "rest" section on, `0` for a row still inside the pinned front block.
+fn extra_row_gap(idx: usize, columns: usize, pinned_rows: usize) -> i32 {
+    if pinned_rows > 0 && idx / columns.max(1) >= pinned_rows {
+        PINNED_SECTION_GAP
+    } else {
+        0
     }
+}
 
-    /// `grid_card_rect`, translated by `extra_row_gap` — everything except the
-    /// current scroll offset; `scrolled_card_rect` applies that on top.
-    pub(crate) fn unscrolled_card_rect(&self, idx: usize, columns: usize, grid_x: i32, available_w: u32) -> Rect {
-        let r = ui::grid_card_rect(idx, columns, grid_x, available_w);
-        let extra = self.extra_row_gap(idx, columns);
-        r.offset(0, extra)
-    }
+/// [`grid_card_rect`] translated by `extra_row_gap` — everything except the current
+/// scroll offset, which [`scrolled_card_rect`] applies on top.
+pub(crate) fn unscrolled_card_rect(
+    idx: usize,
+    columns: usize,
+    grid_x: i32,
+    available_w: u32,
+    pinned_rows: usize,
+) -> Rect {
+    grid_card_rect(idx, columns, grid_x, available_w).offset(0, extra_row_gap(idx, columns, pinned_rows))
+}
 
-    /// `unscrolled_card_rect`, translated by the current scroll offset — every
-    /// draw-list card position starts from this.
-    pub(crate) fn scrolled_card_rect(&self, idx: usize, columns: usize, grid_x: i32, available_w: u32) -> Rect {
-        let r = self.unscrolled_card_rect(idx, columns, grid_x, available_w);
-        Rect::new(r.x(), r.y() - self.grid_scroll, r.width(), r.height())
-    }
+/// [`unscrolled_card_rect`] translated by the current scroll offset — every draw-list card
+/// position starts from this.
+pub(crate) fn scrolled_card_rect(
+    idx: usize,
+    columns: usize,
+    grid_x: i32,
+    available_w: u32,
+    pinned_rows: usize,
+    grid_scroll: i32,
+) -> Rect {
+    let r = unscrolled_card_rect(idx, columns, grid_x, available_w, pinned_rows);
+    Rect::new(r.x(), r.y() - grid_scroll, r.width(), r.height())
+}
 
-    /// The divider between the pinned front block and the rest, centered in the
-    /// gap `extra_row_gap` adds there, scrolled like any other grid content.
-    pub(crate) fn pinned_separator_rect(&self, columns: usize, grid_x: i32, available_w: u32) -> Option<Rect> {
-        if !self.has_pinned_divider(columns) {
-            return None;
-        }
-        let rows = self.pinned_rows(columns);
-        let (_, card_h) = ui::grid_card_size(available_w, columns);
-        let y = ui::GRID_TOP_Y + rows as i32 * (card_h as i32 + ui::GRID_GAP) - ui::GRID_GAP / 2
-            + ui::PINNED_SECTION_GAP / 2
-            - self.grid_scroll;
-        Some(Rect::new(
-            grid_x + ui::GRID_PAD,
-            y,
-            available_w.saturating_sub(2 * ui::GRID_PAD as u32),
-            1,
-        ))
+/// The divider between the pinned front block and the rest, centred in the gap
+/// `extra_row_gap` adds there, scrolled like any other grid content.
+pub(crate) fn pinned_separator_rect(
+    columns: usize,
+    grid_x: i32,
+    available_w: u32,
+    pinned_rows: usize,
+    grid_scroll: i32,
+) -> Rect {
+    let (_, card_h) = grid_card_size(available_w, columns);
+    let y = GRID_TOP_Y + pinned_rows as i32 * (card_h as i32 + GRID_GAP) - GRID_GAP / 2 + PINNED_SECTION_GAP / 2
+        - grid_scroll;
+    Rect::new(grid_x + GRID_PAD, y, available_w.saturating_sub(2 * GRID_PAD as u32), 1)
+}
+
+pub const GRID_PAD: i32 = 32;
+pub const GRID_GAP: i32 = 24;
+pub const GRID_TOP_Y: i32 = 160;
+pub const CARD_MIN_W: u32 = 220;
+
+/// Extra gap between pinned and rest sections (makes pinned cards visually separate).
+pub const PINNED_SECTION_GAP: i32 = 32;
+
+/// `clamp(2, available_w / (min_card_w + gap), 5)` — moonlight-tv's own formula.
+pub fn grid_columns(available_w: u32) -> usize {
+    let cols = (available_w / (CARD_MIN_W + GRID_GAP as u32)).max(1);
+    cols.clamp(2, 5) as usize
+}
+
+/// Card size in 3:4 portrait aspect (moonlight-tv's box-art style).
+pub fn grid_card_size(available_w: u32, columns: usize) -> (u32, u32) {
+    let usable = available_w.saturating_sub(2 * GRID_PAD as u32);
+    let gaps = (columns as u32).saturating_sub(1) * GRID_GAP as u32;
+    let w = usable.saturating_sub(gaps) / columns.max(1) as u32;
+    let h = w * 4 / 3;
+    (w, h)
+}
+
+pub fn grid_card_rect(index: usize, columns: usize, grid_x: i32, available_w: u32) -> Rect {
+    let (card_w, card_h) = grid_card_size(available_w, columns);
+    let col = index % columns.max(1);
+    let row = index / columns.max(1);
+    let x = grid_x + GRID_PAD + col as i32 * (card_w as i32 + GRID_GAP);
+    let y = GRID_TOP_Y + row as i32 * (card_h as i32 + GRID_GAP);
+    Rect::new(x, y, card_w, card_h)
+}
+
+/// Hit test grid card (translate pointer Y to unscrolled layout space).
+pub fn hit_test_grid_card(
+    mouse_x: i32,
+    mouse_y: i32,
+    columns: usize,
+    count: usize,
+    grid_x: i32,
+    available_w: u32,
+    scroll: i32,
+) -> Option<usize> {
+    if mouse_x < grid_x {
+        return None;
     }
+    (0..count).find(|&i| grid_card_rect(i, columns, grid_x, available_w).contains_point((mouse_x, mouse_y + scroll)))
+}
+
+/// Headroom for card shadows in cached grid layer (prevents clipping).
+pub const GRID_LAYER_PAD: i32 = 24;
+
+/// Cached grid layer height (all rows + shadow headroom).
+pub fn grid_layer_height(count: usize, columns: usize, available_w: u32) -> u32 {
+    let rows = count.div_ceil(columns.max(1));
+    let (_, card_h) = grid_card_size(available_w, columns);
+    (rows.max(1) as u32 * (card_h + GRID_GAP as u32)) + 2 * GRID_LAYER_PAD as u32
 }

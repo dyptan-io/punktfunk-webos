@@ -166,41 +166,6 @@ pub fn render_pin_badge_tile(
 /// Padding for row tile shadow + sidebar inflate. Settings rows use GPU scale.
 pub const ROW_TILE_PAD: i32 = 28;
 
-/// Focused sidebar row as padded tile. `menu_focused` flags the actions button.
-/// Both button states reuse one tile; moving between them costs one re-rasterize.
-pub fn render_focused_row_tile(
-    text_cache: &mut TextCache,
-    fonts: &Fonts,
-    entries: &[HostEntry],
-    index: usize,
-    menu_focused: bool,
-    online: Option<bool>,
-) -> Result<Painter> {
-    let pad = ROW_TILE_PAD;
-    let base = sidebar_row_rect(0);
-    let rect = Rect::new(pad, pad, base.width(), base.height());
-    let mut p = Painter::new(base.width() + 2 * pad as u32, base.height() + 2 * pad as u32);
-    if let Some(entry) = entries.get(index) {
-        draw_host_row(
-            &mut p,
-            text_cache,
-            fonts,
-            rect,
-            entry.name(),
-            entry.is_paired(),
-            true,
-            false,
-            menu_focused,
-            online,
-        )?;
-    } else if index == entries.len() {
-        draw_utility_row(&mut p, text_cache, fonts, rect, "+ Add host", true)?;
-    } else {
-        draw_utility_row(&mut p, text_cache, fonts, rect, "Settings", true)?;
-    }
-    Ok(p)
-}
-
 /// A single line of text as its own tight transparent tile.
 pub fn render_text_tile(
     text_cache: &mut TextCache,
@@ -413,8 +378,8 @@ pub fn render_confirm_dialog_shell(
 // -------------------------- tile cache + its render keys ----------------------
 // Moved out of `app` (was `app::tiles` + two key enums in `app/mod.rs`) so the
 // render cache and its staleness keys are `ui`-owned — no `App` reference — which
-// is what lets a `ui`-only harness (D) render without `app`. See
-// `docs/REMAINING_IMPROVEMENTS.md` → A2.
+// is what lets a `ui`-only harness render without `app`. The keys still name this
+// app's screens, which is the next thing to make opaque.
 
 /// Focused widget in the open modal. Each variant carries its content,
 /// so value changes (not just focus moves) invalidate the tile.

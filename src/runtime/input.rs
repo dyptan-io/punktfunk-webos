@@ -421,7 +421,7 @@ fn pin_hold_gate(
         if input.pin_held.is_some() {
             return Some(EventAction::Next);
         }
-        let columns = crate::ui::grid_columns(w.saturating_sub(crate::ui::SIDEBAR_W));
+        let columns = crate::app::view::home::grid_columns(w.saturating_sub(crate::ui::SIDEBAR_W));
         if app.focused_pin_id(columns).is_some() {
             input.pin_held = Some(PinHold {
                 since: Instant::now(),
@@ -472,7 +472,8 @@ fn pin_hold_gate(
         if input.pin_held.is_some() {
             return Some(EventAction::Next);
         }
-        let columns = crate::ui::grid_columns((display_mode.w as u32).saturating_sub(crate::ui::SIDEBAR_W));
+        let columns =
+            crate::app::view::home::grid_columns((display_mode.w as u32).saturating_sub(crate::ui::SIDEBAR_W));
         if matches!(app.screen, Screen::Home) && app.focused_pin_id(columns).is_some() {
             input.pin_held = Some(PinHold {
                 since: Instant::now(),

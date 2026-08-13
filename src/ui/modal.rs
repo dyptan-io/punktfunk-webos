@@ -5,7 +5,6 @@ use crate::ui::text_raster::{FontId, TextRaster};
 use anyhow::Result;
 
 /// A centered glass card of `(width_frac * screen_w, height)`.
-/// Centered glass card.
 pub fn modal_card_rect(screen_w: u32, screen_h: u32, width_frac: f32, height: u32) -> Rect {
     let w = (screen_w as f32 * width_frac).round() as u32;
     let x = (screen_w as i32 - w as i32) / 2;
@@ -51,6 +50,38 @@ pub fn modal_card_rect_above_keyboard(
     Rect::new(x, y, w, height)
 }
 
+/// A one-pixel separator rule, at the weight every modal's chrome uses.
+pub const RULE: Color = Color::RGBA(0xff, 0xff, 0xff, 0x1e);
+
+/// Draws a [`RULE`]-weight hairline `width` px wide at `(x, y)`.
+pub fn draw_rule(painter: &mut Painter, x: i32, y: i32, width: u32) {
+    painter.fill_rect(Rect::new(x, y, width, 1), RULE);
+}
+
+/// Shared modal chrome — the rounded card and its close (X) button — that every
+/// screen's renderer draws before its own content inside `card`.
+///
+/// No backdrop: the scrim behind the modal is a GPU fill in the composed frame (it fades
+/// in with the modal), and this painter is the modal's own transparent tile.
+pub fn draw_modal_shell(
+    painter: &mut Painter,
+    text_cache: &mut TextCache,
+    fonts: &Fonts,
+    card: Rect,
+    hover_close: bool,
+) -> Result<()> {
+    draw_modal_card(painter, card);
+    draw_icon(
+        painter,
+        text_cache,
+        fonts.raster,
+        fonts.icon,
+        modal_close_rect(card),
+        ICON_CLOSE,
+        if hover_close { WHITE } else { MUTED },
+    )
+}
+
 /// Draw the modal card surface.
 pub fn draw_modal_card(painter: &mut Painter, rect: Rect) {
     draw_card_shadow(painter, rect, MODAL_RADIUS);
@@ -61,6 +92,19 @@ pub fn draw_modal_card(painter: &mut Painter, rect: Rect) {
 /// Width fraction shared by the confirm-style modals (forget host, send logs, stop
 /// streaming, quit app) — narrower than the scrollable `ListModal` screens.
 pub const SIMPLE_MODAL_WIDTH_FRAC: f32 = 0.40;
+
+/// [`simple_modal_card`], lifted clear of the on-screen keyboard when it is up — for the
+/// modals with a text field, which the panel would otherwise cover.
+pub fn simple_modal_card_above_keyboard(
+    screen_w: u32,
+    screen_h: u32,
+    keyboard_shown: bool,
+    content_height: impl FnOnce(Rect) -> u32,
+) -> Rect {
+    let w = (screen_w as f32 * SIMPLE_MODAL_WIDTH_FRAC).round() as u32;
+    let height = content_height(Rect::new(0, 0, w, 0));
+    modal_card_rect_above_keyboard(screen_w, screen_h, SIMPLE_MODAL_WIDTH_FRAC, height, keyboard_shown)
+}
 
 /// A centered [`SIMPLE_MODAL_WIDTH_FRAC`]-wide card whose *height* is derived from its
 /// own content: `content_height` receives a zero-y/height probe card at the final width
@@ -105,11 +149,10 @@ pub fn draw_or_divider(
     let word_w = raster.measure(font, word).0 as i32;
     let gap = 18i32;
     let line_y = y + raster.height(font) / 2;
-    let rule = Color::RGBA(0xff, 0xff, 0xff, 0x1e);
     let half = (content.width() as i32 - word_w - 2 * gap) / 2;
     if half > 0 {
-        painter.fill_rect(Rect::new(content.x(), line_y, half as u32, 1), rule);
-        painter.fill_rect(Rect::new(content.right() - half, line_y, half as u32, 1), rule);
+        draw_rule(painter, content.x(), line_y, half as u32);
+        draw_rule(painter, content.right() - half, line_y, half as u32);
     }
     draw_text(
         painter,

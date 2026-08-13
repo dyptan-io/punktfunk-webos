@@ -308,7 +308,7 @@ pub fn draw_modal_header(
 }
 
 /// The same `y` [`draw_modal_header`] would return, computed without drawing —
-/// for positioning content below it (e.g. Pairing's PIN row) from `app.rs`'s
+/// for positioning content below it (e.g. Pairing's PIN row) from `app::App`'s
 /// `prepare_tiles`/`draw_list`, which need that position but must not
 /// re-render the header just to get it.
 pub fn modal_header_end_y(

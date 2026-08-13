@@ -74,7 +74,7 @@ pub fn draw_selectable(painter: &mut Painter, rect: Rect, focused: bool) -> Rect
 }
 
 /// Same as [`draw_selectable`] but never inflates: settings rows are
-/// rasterized once at their literal size, and `app.rs`'s `draw_list` animates
+/// rasterized once at their literal size, and `app::App`'s draw-list building animates
 /// the zoom-in itself by GPU-scaling the whole focused-row tile around its
 /// center (same technique as the grid's card focus-pop) — a CPU-baked inflate
 /// here would fight that, since the rasterized content would then need
@@ -174,4 +174,33 @@ pub fn draw_poster_card(
         draw_focus_ring(painter, r, CARD_RADIUS);
     }
     Ok(())
+}
+
+/// A focused card tile with centered text — a padded transparent tile holding
+/// one `draw_card(.., false)` box (no CPU inflate; the zoom is a GPU animation
+/// in `app::App`'s draw-list building) with `text` centered in it. Backs the pairing screen's
+/// focused digit and button tiles.
+pub fn render_card_text_tile(
+    text_cache: &mut TextCache,
+    raster: &dyn TextRaster,
+    font: FontId,
+    text: &str,
+    w: u32,
+    h: u32,
+) -> Result<Painter> {
+    let pad = ROW_TILE_PAD;
+    let mut p = Painter::new(w + 2 * pad as u32, h + 2 * pad as u32);
+    let drawn = draw_card(&mut p, Rect::new(pad, pad, w, h), false);
+    let tw = raster.measure(font, text).0;
+    draw_text(
+        &mut p,
+        text_cache,
+        raster,
+        font,
+        text,
+        drawn.x() + (drawn.width() as i32 - tw as i32) / 2,
+        drawn.y() + (drawn.height() as i32 - raster.height(font)) / 2,
+        WHITE,
+    )?;
+    Ok(p)
 }

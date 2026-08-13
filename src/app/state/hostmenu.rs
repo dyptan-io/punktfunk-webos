@@ -4,9 +4,10 @@
 //! [`App::host_menu_actions`] and an arm in [`App::confirm_host_menu_row`]. Everything
 //! else — card geometry, the unfocused shell, the focused-row tile, the focus pop — is
 //! `ui::ListModal`'s, shared with any future list screen.
+use crate::app::hosts::HostEntry;
 use crate::app::App;
 use crate::core::screen::Screen;
-use crate::ui::{FocusRow, HostEntry, MenuEvent};
+use crate::ui::{FocusRow, MenuEvent};
 use std::time::Instant;
 
 /// Host action (enum instead of bare index so conditional rows don't silently shift indices).
@@ -21,6 +22,11 @@ pub(crate) enum HostAction {
 }
 
 impl App {
+    /// The action rows, stripped of the events they map to — what the view paints.
+    pub(crate) fn host_menu_rows(&self) -> Vec<crate::ui::FocusRow> {
+        self.host_menu_actions().into_iter().map(|(_, r)| r).collect()
+    }
+
     /// Opens host menu for sidebar row `idx` (⋯ button, pointer, or Right key).
     pub(crate) fn open_host_menu(&mut self, idx: usize) {
         self.host_menu_index = Some(idx);

@@ -1,16 +1,14 @@
 //! The generic focusable-row list: `FocusRow`/`RowKind` plus every control
 //! (dropdown pill, slider, switch, confirm button) a row can carry.
 //!
-//! Split out of the former single-file `ui.rs`; see `super`'s module docs.
 use super::*;
 use crate::ui::render::Color;
 use crate::ui::render::Rect;
 use crate::ui::text_raster::{FontId, TextRaster};
 use anyhow::Result;
 
-/// How a focus row's right-hand control behaves — shared by the settings
-/// modal's row list and the Wake modal's two rows (`draw_focus_rows`'s single
-/// implementation, see its docs).
+/// How a focus row's right-hand control behaves — every row list in the app shares
+/// `draw_focus_rows`' single implementation, see its docs.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RowKind {
     Dropdown,
@@ -24,9 +22,9 @@ pub enum RowKind {
     Action,
 }
 
-/// One focusable icon + label (+ dropdown pill / slider / switch) row, drawn
-/// by `draw_focus_rows`/`draw_focus_row` — shared by the settings modal's row
-/// list (`settings_rows`) and the Wake modal's toggle row (`wake_rows`).
+/// One focusable icon + label (+ dropdown pill / slider / switch) row, drawn by
+/// `draw_focus_rows`/`draw_focus_row`. The lists themselves are built per screen in
+/// `app::view`.
 pub struct FocusRow {
     pub icon: &'static str,
     pub label: String,
@@ -100,6 +98,33 @@ impl FocusRow {
         }
     }
 
+    /// A [`RowKind::Toggle`] row; `on` picks the On/Off value the switch animates from
+    /// (`draw_focus_row` reads it back out of `value`).
+    pub fn toggle(icon: &'static str, label: impl Into<String>, on: bool) -> Self {
+        Self {
+            kind: RowKind::Toggle,
+            value: if on { "On".into() } else { "Off".into() },
+            ..Self::action(icon, label)
+        }
+    }
+
+    /// A [`RowKind::Dropdown`] row showing `value` as its current pick.
+    pub fn dropdown(icon: &'static str, label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            kind: RowKind::Dropdown,
+            ..Self::action_with_value(icon, label, value)
+        }
+    }
+
+    /// A [`RowKind::Slider`] row; `fraction` (0.0-1.0) fills the track.
+    pub fn slider(icon: &'static str, label: impl Into<String>, value: impl Into<String>, fraction: f32) -> Self {
+        Self {
+            kind: RowKind::Slider,
+            fraction,
+            ..Self::action_with_value(icon, label, value)
+        }
+    }
+
     /// Marks this row destructive (see [`FocusRow::danger`]).
     pub fn danger(mut self) -> Self {
         self.danger = true;
@@ -109,6 +134,12 @@ impl FocusRow {
     /// Adds a muted caption line under the label.
     pub fn with_subtext(mut self, subtext: RowSubtext) -> Self {
         self.subtext = Some(subtext);
+        self
+    }
+
+    /// [`with_subtext`](Self::with_subtext) for a caption a condition may not produce.
+    pub fn with_subtext_opt(mut self, subtext: Option<RowSubtext>) -> Self {
+        self.subtext = subtext;
         self
     }
 
@@ -122,15 +153,19 @@ impl FocusRow {
 // Generous, TV-scale rows — each is its own focusable card (icon + label left,
 // control right), consistent with the sidebar/grid's card+focus-ring language
 // rather than the bare flat rows the upstream reference uses.
-pub const SETTINGS_ROW_H: u32 = 92;
-pub const SETTINGS_ROW_GAP: i32 = 8;
-pub const SETTINGS_ICON_SIZE: u32 = 30;
+pub const FOCUS_ROW_H: u32 = 92;
+pub const FOCUS_ROW_GAP: i32 = 8;
+pub const FOCUS_ROW_ICON_SIZE: u32 = 30;
+
+/// Pixels between the tops of consecutive focus rows.
+pub const fn focus_row_stride() -> u32 {
+    FOCUS_ROW_H + FOCUS_ROW_GAP as u32
+}
 
 /// Row `index`'s rect within a modal's content area — used by `draw_focus_rows`
-/// and `app.rs`'s `draw_list` to position the focused-row tile.
+/// and `app::App`'s draw-list building to position the focused-row tile.
 pub fn focus_row_rect(content_rect: Rect, index: usize) -> Rect {
-    let y = content_rect.y() + index as i32 * (SETTINGS_ROW_H as i32 + SETTINGS_ROW_GAP);
-    Rect::new(content_rect.x(), y, content_rect.width(), SETTINGS_ROW_H)
+    focus_row_rect_at_px(content_rect, index, 0)
 }
 
 /// Fixed reserved width for a slider row's value label (e.g. "150 Mbps",
@@ -143,7 +178,7 @@ const SLIDER_TRACK_GAP: i32 = 16;
 
 /// Draws a modal's focus-row list inside `content_rect` — icon + label left,
 /// control right. Only the focused row gets a background card; others bare.
-/// Rows render at normal size; focused zoom is a GPU animation in `app.rs`.
+/// Rows render at normal size; focused zoom is a GPU animation in `app::App`.
 pub fn draw_focus_rows(
     painter: &mut Painter,
     text_cache: &mut TextCache,
@@ -183,8 +218,8 @@ pub fn render_focus_row_tile(
     switch_frac: f32,
 ) -> Result<Painter> {
     let pad = ROW_TILE_PAD;
-    let rect = Rect::new(pad, pad, content_width, SETTINGS_ROW_H);
-    let mut p = Painter::new(content_width + 2 * pad as u32, SETTINGS_ROW_H + 2 * pad as u32);
+    let rect = Rect::new(pad, pad, content_width, FOCUS_ROW_H);
+    let mut p = Painter::new(content_width + 2 * pad as u32, FOCUS_ROW_H + 2 * pad as u32);
     if let Some(row) = rows.get(index) {
         draw_focus_row(&mut p, text_cache, fonts, row, true, dropdown_open, switch_frac, rect)?;
     }
@@ -200,7 +235,7 @@ pub fn render_focus_rows_tile(
     width: u32,
     open_dropdown_row: Option<usize>,
 ) -> Result<Painter> {
-    let height = rows.len() as u32 * (SETTINGS_ROW_H + SETTINGS_ROW_GAP as u32);
+    let height = rows.len() as u32 * (FOCUS_ROW_H + FOCUS_ROW_GAP as u32);
     let mut p = Painter::new(width, height.max(1));
     draw_focus_rows(
         &mut p,
@@ -233,9 +268,9 @@ pub fn draw_focus_row(
     let icon_pad = 24;
     let icon_rect = Rect::new(
         row_rect.x() + icon_pad,
-        row_rect.y() + (row_rect.height() as i32 - SETTINGS_ICON_SIZE as i32) / 2,
-        SETTINGS_ICON_SIZE,
-        SETTINGS_ICON_SIZE,
+        row_rect.y() + (row_rect.height() as i32 - FOCUS_ROW_ICON_SIZE as i32) / 2,
+        FOCUS_ROW_ICON_SIZE,
+        FOCUS_ROW_ICON_SIZE,
     );
     // WHY: destructive rows stay red even unfocused — to signal danger before confirm.
     let fg = if row.danger {
@@ -246,7 +281,7 @@ pub fn draw_focus_row(
         MUTED
     };
     draw_icon(painter, text_cache, fonts.raster, fonts.icon, icon_rect, row.icon, fg)?;
-    let label_x = icon_rect.x() + SETTINGS_ICON_SIZE as i32 + 20;
+    let label_x = icon_rect.x() + FOCUS_ROW_ICON_SIZE as i32 + 20;
     // A caption belongs to the focused row only: unfocused rows keep the label centred
     // (the common case), while a focused row with one centres label + caption as a block.
     let label_h = fonts.raster.height(fonts.label);
@@ -469,18 +504,18 @@ pub fn render_list_scrollbar_tile(tile_w: u32, tile_h: u32, total: usize, visibl
 /// of [`focus_row_rect`], which indexes rows within the viewport instead. Can land partly (or
 /// wholly) outside `content_rect` while the viewport is gliding; callers clip.
 pub fn focus_row_rect_at_px(content_rect: Rect, index: usize, scroll_px: i32) -> Rect {
-    let y = content_rect.y() + index as i32 * settings_row_stride() as i32 - scroll_px;
-    Rect::new(content_rect.x(), y, content_rect.width(), SETTINGS_ROW_H)
+    let y = content_rect.y() + index as i32 * focus_row_stride() as i32 - scroll_px;
+    Rect::new(content_rect.x(), y, content_rect.width(), FOCUS_ROW_H)
 }
 
 /// How tall an edge fade is: exactly one row.
 ///
-/// Deliberately taller than the peek strip it dissolves (`SETTINGS_PEEK`), so the band
+/// Deliberately taller than the peek strip it dissolves (`view::settings::PEEK`), so the band
 /// reaches past the partial row and into the full row beyond it. Sized to the peek instead,
 /// the ramp only reached ~35% alpha by the time it crossed the partial row's text — enough to
 /// render, not enough to read as a fade. Being taller also means the dense end lands on the
 /// partial row while the row above it takes only the ramp's first, near-clear pixels.
-pub const SCROLL_FADE_H: u32 = SETTINGS_ROW_H;
+pub const SCROLL_FADE_H: u32 = FOCUS_ROW_H;
 
 /// Tile width for the scroll fade. The ramp is uniform horizontally, so the GPU stretches
 /// this to whatever the list's width is — a fixed narrow tile means one static texture for
@@ -659,7 +694,7 @@ pub fn confirm_button_rect(content: Rect, index: usize) -> Rect {
 }
 
 /// Draws a row of confirm buttons. `focused_index` selects which button has focus.
-/// Buttons render at normal size; zoom is applied in `app.rs`'s compositing.
+/// Buttons render at normal size; zoom is applied in `app::App`'s compositing.
 pub fn draw_confirm_buttons(
     painter: &mut Painter,
     text_cache: &mut TextCache,
