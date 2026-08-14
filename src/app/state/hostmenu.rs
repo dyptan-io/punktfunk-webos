@@ -3,11 +3,12 @@
 //! Adding an action here is deliberately two edits and nothing else: a row in
 //! [`App::host_menu_actions`] and an arm in [`App::confirm_host_menu_row`]. Everything
 //! else — card geometry, the unfocused shell, the focused-row tile, the focus pop — is
-//! `ui::ListModal`'s, shared with any future list screen.
+//! `ui::widgets::ListModal`'s, shared with any future list screen.
 use crate::app::hosts::HostEntry;
 use crate::app::App;
+use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
-use crate::ui::{FocusRow, MenuEvent};
+use crate::ui::widgets::FocusRow;
 use std::time::Instant;
 
 /// Host action (enum instead of bare index so conditional rows don't silently shift indices).
@@ -23,7 +24,7 @@ pub(crate) enum HostAction {
 
 impl App {
     /// The action rows, stripped of the events they map to — what the view paints.
-    pub(crate) fn host_menu_rows(&self) -> Vec<crate::ui::FocusRow> {
+    pub(crate) fn host_menu_rows(&self) -> Vec<crate::ui::widgets::FocusRow> {
         self.host_menu_actions().into_iter().map(|(_, r)| r).collect()
     }
 
@@ -53,16 +54,16 @@ impl App {
             (
                 HostAction::Connect,
                 if paired {
-                    FocusRow::action(crate::ui::ICON_TV, "Connect")
+                    FocusRow::action(crate::app::view::icons::ICON_TV, "Connect")
                 } else {
                     // The hint goes in the value column like every other Action row's,
                     // rather than being parenthesised into the label.
-                    FocusRow::action_with_value(crate::ui::ICON_TV, "Connect", "pairs first")
+                    FocusRow::action_with_value(crate::app::view::icons::ICON_TV, "Connect", "pairs first")
                 },
             ),
             (
                 HostAction::Pair,
-                FocusRow::action(crate::ui::ICON_LOCK, "Pair with PIN…"),
+                FocusRow::action(crate::app::view::icons::ICON_LOCK, "Pair with PIN…"),
             ),
         ];
         // Both this and "Wake host" below need a paired host: the probe runs over the real
@@ -71,7 +72,7 @@ impl App {
         if paired {
             rows.push((
                 HostAction::SpeedTest,
-                FocusRow::action(crate::ui::ICON_SIGNAL, "Test network speed…"),
+                FocusRow::action(crate::app::view::icons::ICON_SIGNAL, "Test network speed…"),
             ));
         }
         if paired && !entry.mac().is_empty() {
@@ -83,17 +84,17 @@ impl App {
             // underneath can't bake in a highlight that outlives it.
             rows.push((
                 HostAction::Wake,
-                FocusRow::action(crate::ui::ICON_POWER, "Wake host").with_menu(false),
+                FocusRow::action(crate::app::view::icons::ICON_POWER, "Wake host").with_menu(false),
             ));
         }
         if saved {
             rows.push((
                 HostAction::Edit,
-                FocusRow::action(crate::ui::ICON_EDIT, "Edit address…"),
+                FocusRow::action(crate::app::view::icons::ICON_EDIT, "Edit address…"),
             ));
             rows.push((
                 HostAction::Forget,
-                FocusRow::action(crate::ui::ICON_DELETE, "Forget host").danger(),
+                FocusRow::action(crate::app::view::icons::ICON_DELETE, "Forget host").danger(),
             ));
         }
         rows
@@ -119,7 +120,7 @@ impl App {
     /// Handles host menu events.
     pub(crate) fn handle_host_menu_event(&mut self, ev: MenuEvent) {
         let len = self.host_menu_actions().len();
-        if crate::ui::list_nav(&mut self.menu_focused, len, ev) {
+        if crate::ui::widgets::list_nav(&mut self.menu_focused, len, crate::app::menu::nav_dir(ev)) {
             // Vertical movement always lands on the row body — a ⋯ belongs to the row
             // it's on, so leaving that row leaves the button too.
             self.host_menu_dots = false;

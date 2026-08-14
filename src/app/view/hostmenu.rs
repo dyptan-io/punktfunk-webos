@@ -1,11 +1,15 @@
 //! The per-host actions menu — presentation. Which actions exist, and their labels, is
 //! logic and lives in `app::state::hostmenu`; this only lays them out and paints them.
+use crate::ui;
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, FocusRow, Fonts, ModalScreen};
+use crate::ui::text::Fonts;
+use crate::ui::widgets::FocusRow;
+use crate::ui::Canvas;
+use crate::ui::ModalScreen;
 use anyhow::Result;
 
 pub(crate) fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, subtitle: &str, rows: usize) -> Rect {
-    ui::list_modal_card_rect(screen_w, screen_h, fonts, subtitle, rows)
+    ui::widgets::list_modal_card_rect(screen_w, screen_h, fonts, subtitle, rows)
 }
 
 /// The per-host actions menu as a [`ModalScreen`].
@@ -21,7 +25,7 @@ impl ModalScreen for Modal<'_> {
     }
 
     fn content_rect(&self, card: Rect, fonts: &Fonts) -> Option<Rect> {
-        Some(ui::list_modal_content_rect(
+        Some(ui::widgets::list_modal_content_rect(
             card,
             fonts,
             &self.subtitle,

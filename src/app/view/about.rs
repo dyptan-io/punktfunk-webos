@@ -7,13 +7,17 @@
 //! `THIRD-PARTY-NOTICES.txt` wraps to ~12,000 visual lines, far too tall to bake into one
 //! GPU texture, so About needs a *windowed* content tile where Settings' 9 rows fit in
 //! one. [`wrap_document`] wraps the document once, up front, into a flat list of visual
-//! lines with a uniform stride — the unit `ui::ScrollWindow`/`ui::ContentWindow` scroll
+//! lines with a uniform stride — the unit `ui::scroll::ScrollWindow`/`ui::scroll::ContentWindow` scroll
 //! over — and [`draw_window`] rasterizes only a bounded slice at a time (uncached; see
 //! `ui::draw_text_uncached`). Scrolling within that slice is a pure `DrawCmd::TexCropped`.
 use crate::core::VERSION;
+use crate::ui;
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, Fonts, ModalScreen, Painter};
-use crate::ui::{FontId, TextRaster};
+use crate::ui::text::FontId;
+use crate::ui::text::Fonts;
+use crate::ui::text::TextRaster;
+use crate::ui::Canvas;
+use crate::ui::ModalScreen;
 use anyhow::Result;
 
 pub const TITLE: &str = "About & licenses";
@@ -63,26 +67,34 @@ pub fn lines() -> Vec<&'static str> {
 pub const WIDTH_FRAC: f32 = 0.78;
 /// Fraction of the panel height the card occupies — tall, since this is a reading page.
 const HEIGHT_FRAC: f32 = 0.84;
-const SIDE_PAD: i32 = 40;
+const SIDE_PAD: u32 = 40;
+/// Gap between the header's last line and the first body line.
+const HEADER_GAP: u32 = 20;
+/// Space left below the last body line, inside the card.
+const BOTTOM_PAD: u32 = 28;
 /// Vertical gap between rendered lines, on top of the font's own height.
 const LINE_GAP: i32 = 4;
 
 pub fn card_rect(screen_w: u32, screen_h: u32) -> Rect {
     let height = (screen_h as f32 * HEIGHT_FRAC).round() as u32;
-    ui::modal_card_rect(screen_w, screen_h, WIDTH_FRAC, height)
+    ui::widgets::modal_card_rect(screen_w, screen_h, WIDTH_FRAC, height)
 }
 
-/// The scrolling viewport inside `card`, below the header.
+/// The scrolling viewport inside `card`: whatever the header and the bottom pad leave.
 pub fn body_rect(card: Rect, fonts: &Fonts) -> Rect {
-    let header_end = ui::modal_header_end_y(fonts.raster, fonts.label, fonts.value, card, SUBTITLE_PROBE);
-    let top = header_end + 20;
-    let bottom = card.bottom() - 28;
-    Rect::new(
-        card.x() + SIDE_PAD,
-        top,
-        card.width().saturating_sub(SIDE_PAD as u32 * 2),
-        (bottom - top).max(0) as u32,
-    )
+    let header_h = (ui::text::modal_header_end_y(fonts, card, SUBTITLE_PROBE) - card.y()).max(0) as u32;
+    let body = ui::layout::Layout::vertical([
+        ui::layout::Constraint::Length(header_h + HEADER_GAP),
+        ui::layout::Constraint::Fill(1),
+        ui::layout::Constraint::Length(BOTTOM_PAD),
+    ])
+    .split(card)[1];
+    ui::layout::Layout::horizontal([
+        ui::layout::Constraint::Length(SIDE_PAD),
+        ui::layout::Constraint::Fill(1),
+        ui::layout::Constraint::Length(SIDE_PAD),
+    ])
+    .split(body)[1]
 }
 
 /// A fixed-length stand-in for the real subtitle when measuring the header's height.
@@ -91,7 +103,7 @@ pub fn body_rect(card: Rect, fonts: &Fonts) -> Rect {
 const SUBTITLE_PROBE: &str = "Version 0.0.0+git.00000000";
 
 /// Stride (px) between two consecutive wrapped visual lines at `font`'s size —
-/// the uniform unit `ui::ScrollWindow`/`ui::ContentWindow` scroll over.
+/// the uniform unit `ui::scroll::ScrollWindow`/`ui::scroll::ContentWindow` scroll over.
 pub fn line_stride(raster: &dyn TextRaster, font: FontId) -> i32 {
     raster.height(font) + LINE_GAP
 }
@@ -116,7 +128,7 @@ pub fn wrap_document(raster: &dyn TextRaster, font: FontId, lines: &[&str], widt
         } else {
             // Wrapped, not clipped: this is licence text, and silently truncating it
             // would hide terms the screen exists to display.
-            out.extend(ui::wrap_text(raster, font, line, width));
+            out.extend(ui::text::wrap_text(raster, font, line, width));
         }
     }
     out
@@ -125,21 +137,14 @@ pub fn wrap_document(raster: &dyn TextRaster, font: FontId, lines: &[&str], widt
 /// Draws wrapped visual lines `[start, start+len)` of `lines`, top-aligned at
 /// this painter's own origin — the content tile's local space, which the GPU
 /// compositor then crops/positions from (see `Tile::ScrollContent`'s docs).
-/// Only called when `ui::ContentWindow` (re)bakes a window, not per frame.
-pub fn draw_window(
-    painter: &mut Painter,
-    raster: &dyn TextRaster,
-    font: FontId,
-    lines: &[String],
-    start: usize,
-    len: usize,
-) -> Result<()> {
-    let step = line_stride(raster, font);
+/// Only called when `ui::scroll::ContentWindow` (re)bakes a window, not per frame.
+pub fn draw_window(c: &mut Canvas, font: FontId, lines: &[String], start: usize, len: usize) -> Result<()> {
+    let step = line_stride(c.fonts.raster, font);
     for (i, line) in lines.iter().skip(start).take(len).enumerate() {
         if line.is_empty() {
             continue;
         }
-        ui::draw_text_uncached(painter, raster, font, line, 0, i as i32 * step, ui::MUTED)?;
+        c.text_uncached(font, line, 0, i as i32 * step, ui::style::theme().muted)?;
     }
     Ok(())
 }
@@ -156,7 +161,13 @@ impl ModalScreen for Modal {
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
         let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
         c.modal_shell(card, hover_close)?;
-        c.modal_header(card, TITLE, ui::WHITE, &subtitle(), ui::MUTED)?;
+        c.modal_header(
+            card,
+            TITLE,
+            ui::style::theme().text,
+            &subtitle(),
+            ui::style::theme().muted,
+        )?;
         Ok(())
     }
 }

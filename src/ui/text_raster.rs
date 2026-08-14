@@ -1,8 +1,8 @@
 //! Text-rasterization seam: `ui` depends only on this trait, never on
 //! `sdl2::ttf` directly. `platform::webos::text_sdl` provides the SDL2_ttf-backed
 //! implementation.
-use crate::ui::render::Color;
 
+use crate::ui::render::Color;
 /// Opaque handle for one of the app's five loaded fonts (replaces a borrowed
 /// `sdl2::ttf::Font` reference).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

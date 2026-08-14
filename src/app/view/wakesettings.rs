@@ -1,6 +1,10 @@
 //! Per-host Wake-on-LAN settings. Logic lives in `app::state::wakesettings`.
+use crate::ui;
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, FocusRow, Fonts, ModalScreen};
+use crate::ui::text::Fonts;
+use crate::ui::widgets::FocusRow;
+use crate::ui::Canvas;
+use crate::ui::ModalScreen;
 use anyhow::Result;
 
 /// Spells out both halves of the behaviour, because the alternative to "On" is not
@@ -14,11 +18,15 @@ pub fn title(host_name: &str) -> String {
 }
 
 pub fn rows(auto_send: bool) -> Vec<FocusRow> {
-    vec![FocusRow::toggle(ui::ICON_POWER, "Wake automatically", auto_send)]
+    vec![FocusRow::toggle(
+        crate::app::view::icons::ICON_POWER,
+        "Wake automatically",
+        auto_send,
+    )]
 }
 
 pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
-    ui::list_modal_card_rect(screen_w, screen_h, fonts, SUBTITLE, ROW_COUNT)
+    ui::widgets::list_modal_card_rect(screen_w, screen_h, fonts, SUBTITLE, ROW_COUNT)
 }
 
 /// The per-host wake settings as a [`ModalScreen`].
@@ -33,7 +41,7 @@ impl ModalScreen for Modal<'_> {
     }
 
     fn content_rect(&self, card: Rect, fonts: &Fonts) -> Option<Rect> {
-        Some(ui::list_modal_content_rect(card, fonts, SUBTITLE, ROW_COUNT))
+        Some(ui::widgets::list_modal_content_rect(card, fonts, SUBTITLE, ROW_COUNT))
     }
 
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {

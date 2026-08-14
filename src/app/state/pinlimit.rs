@@ -1,7 +1,7 @@
 //! The "you can only pin N games" alert — logic. Rendering lives in `app::view::pinlimit`.
 use crate::app::App;
+use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
-use crate::ui::MenuEvent;
 
 impl App {
     /// Shown when hold-to-pin would exceed `MAX_PINNED_GAMES` (5 items).

@@ -7,7 +7,7 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use tiny_skia::{FilterQuality, IntSize, Pixmap, PixmapPaint, Transform};
 
 use crate::services::library::GameEntry;
-use crate::ui::premultiply_rgba;
+use crate::ui::painter::premultiply_rgba;
 
 /// A decoded wide hero image, straight (not premultiplied) RGBA8 — it goes to the
 /// GPU as a raw texture (`Compositor::upload_raw`) rather than through a `Painter`,

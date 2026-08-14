@@ -4,10 +4,7 @@
 //! [`anim_frac`] easing so it matches the modals' curve. One slot — a new [`Notification::show`]
 //! replaces whatever is on screen.
 
-use super::{anim_frac, draw_text, Painter, TextCache, OVERLAY_FADE, WHITE};
-use crate::ui::render::Color;
-use crate::ui::render::Rect;
-use crate::ui::text_raster::{FontId, TextRaster};
+use crate::ui::prelude::*;
 use anyhow::Result;
 use std::time::{Duration, Instant};
 
@@ -50,11 +47,11 @@ impl Notification {
 }
 
 /// Single-line notification panel, styled like the stats overlay's glass background.
-pub fn render_notification_tile(raster: &dyn TextRaster, font: FontId, text: &str) -> Result<Painter> {
+pub fn render_notification_tile(fonts: &Fonts, font: FontId, text: &str) -> Result<Painter> {
     let pad = 18i32;
-    let (tw, _) = raster.measure(font, text);
+    let (tw, _) = fonts.raster.measure(font, text);
     let w = tw + 2 * pad as u32;
-    let h = (raster.height(font) + 2 * pad) as u32;
+    let h = (fonts.raster.height(font) + 2 * pad) as u32;
     let mut p = Painter::new(w.max(1), h.max(1));
     let mut tc = TextCache::new();
     let rect = Rect::new(0, 0, w, h);
@@ -63,6 +60,6 @@ pub fn render_notification_tile(raster: &dyn TextRaster, font: FontId, text: &st
     // that screen it's a same-color-on-same-color box — a light stroke keeps the panel
     // legible there, not just over the stream's video content.
     p.stroke_rounded_rect(rect, 14, Color::RGBA(0xff, 0xff, 0xff, 0x40), 1.5);
-    draw_text(&mut p, &mut tc, raster, font, text, pad, pad, WHITE)?;
+    Canvas::tile(&mut p, &mut tc, fonts).text(font, text, pad, pad, theme().text)?;
     Ok(p)
 }

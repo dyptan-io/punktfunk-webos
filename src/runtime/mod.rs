@@ -7,6 +7,7 @@ use punktfunk_core::config::Mode;
 use sdl2::controller::GameController;
 
 use crate::app::{App, HomeFocus, Screen, MODAL_FADE, MODAL_POP_SHRINK};
+use crate::core::event::MenuEvent;
 use crate::platform::webos::compositor::Compositor;
 use crate::platform::webos::cursor;
 use crate::platform::webos::gamepad;
@@ -15,7 +16,6 @@ use crate::platform::webos::mouse;
 use crate::services::store;
 use crate::session;
 use crate::ui::render::{DrawCmd, TileId as Tile};
-use crate::ui::MenuEvent;
 
 /// `ConnectOutcome`: connect thread (started early to overlap animation) + settings.
 type ConnectOutcome = (std::thread::JoinHandle<Result<session::Connected>>, store::Settings);
@@ -140,7 +140,7 @@ fn cycle_log_overlay() {
         }
         LogOverlayState::Live => {
             let mut snap = frozen_log_lines().lock().unwrap_or_else(PoisonError::into_inner);
-            *snap = crate::logger::recent_lines(crate::ui::LOG_OVERLAY_LINES);
+            *snap = crate::logger::recent_lines(crate::ui::tiles::LOG_OVERLAY_LINES);
             drop(snap);
             // Nothing reads the ring while frozen — stop capturing so logging threads
             // (the video pump above all) drop back to a single atomic load per event.
@@ -169,7 +169,7 @@ pub(crate) fn set_log_overlay_enabled(enabled: bool) {
 fn log_overlay_lines() -> Option<Vec<String>> {
     match log_overlay_state() {
         LogOverlayState::Off => None,
-        LogOverlayState::Live => Some(crate::logger::recent_lines(crate::ui::LOG_OVERLAY_LINES)),
+        LogOverlayState::Live => Some(crate::logger::recent_lines(crate::ui::tiles::LOG_OVERLAY_LINES)),
         LogOverlayState::Frozen => Some(
             frozen_log_lines()
                 .lock()
@@ -179,7 +179,7 @@ fn log_overlay_lines() -> Option<Vec<String>> {
     }
 }
 
-/// Renders a toast (`ui::Notification::frame()`'s output) and appends its `DrawCmd` — shared by
+/// Renders a toast (`ui::widgets::Notification::frame()`'s output) and appends its `DrawCmd` — shared by
 /// the streaming loop and the menu loop so the two toasts stay pixel-identical.
 ///
 /// `cache` holds the last rendered `(text, w, h)`. The tile is alpha-independent (the fade is
@@ -189,7 +189,7 @@ fn log_overlay_lines() -> Option<Vec<String>> {
 fn push_notification_cmd(
     compositor: &mut Compositor,
     texture_creator: &sdl2::render::TextureCreator<sdl2::video::WindowContext>,
-    fonts: &crate::ui::Fonts,
+    fonts: &crate::ui::text::Fonts,
     frame: &Option<(String, f32)>,
     display_w: i32,
     cache: &mut Option<(String, u32, u32)>,
@@ -200,7 +200,7 @@ fn push_notification_cmd(
     };
     let (tw, th) = match cache {
         Some((cached, w, h)) if cached == text => (*w, *h),
-        _ => match crate::ui::render_notification_tile(fonts.raster, fonts.value, text) {
+        _ => match crate::ui::widgets::render_notification_tile(fonts, fonts.value, text) {
             Ok(tile) => {
                 let (tw, th) = (tile.width(), tile.height());
                 compositor.upload(texture_creator, Tile::Notification, &tile)?;
@@ -241,6 +241,9 @@ pub fn run() -> Result<()> {
     // Before settings load or any UI exists: `store::load` clamps against this and
     // `app::menu::row_shown` hides what it can't offer.
     crate::core::caps::install(crate::platform::webos::device::video_caps());
+    // The palette every widget draws in, before anything can draw (`ui::style` falls back
+    // to a neutral default until this lands).
+    crate::app::view::icons::install_style();
     // The backend pick widens the caps on a legacy TV, so it has to be applied before anything
     // clamps against them (`store::load`) — hence the raw read rather than the loaded document.
     crate::core::caps::set_backend(store::persisted_video_backend());

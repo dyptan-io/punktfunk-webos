@@ -154,7 +154,8 @@ pub fn hid_playstation_bound() -> bool {
         let Some(device_dir) = sysfs.split("/input/input").next() else {
             return false;
         };
-        std::fs::read_link(format!("/sys{device_dir}/driver")).is_ok_and(|d| d.file_name().is_some_and(|f| f == "playstation"))
+        std::fs::read_link(format!("/sys{device_dir}/driver"))
+            .is_ok_and(|d| d.file_name().is_some_and(|f| f == "playstation"))
     })
 }
 

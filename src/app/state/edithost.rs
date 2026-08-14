@@ -4,9 +4,9 @@
 use crate::app::hosts::HostEntry;
 use crate::app::state::addhost::AddHostState;
 use crate::app::App;
+use crate::core::event::MenuEvent;
 use crate::core::screen::{HomeFocus, Screen};
 use crate::services::store;
-use crate::ui::MenuEvent;
 
 impl App {
     /// Open `EditHost` for sidebar row; pre-filled with current address. No-op for unsaved entries.

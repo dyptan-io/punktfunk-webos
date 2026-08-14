@@ -36,8 +36,7 @@ pub fn reject_message(reason: RejectReason) -> String {
         }
         RejectReason::Busy => "The host is busy with another session.".into(),
         RejectReason::SetupFailed => {
-            "The host accepted the connection but couldn't start the stream — see host's logs."
-                .into()
+            "The host accepted the connection but couldn't start the stream — see host's logs.".into()
         }
     }
 }
@@ -47,9 +46,9 @@ pub fn connect_message(err: &PunktfunkError) -> String {
     match err {
         PunktfunkError::Rejected(reason) => reject_message(*reason),
         PunktfunkError::Timeout => "The host didn't answer. Is it running and reachable?".into(),
-        PunktfunkError::Io(e) => format!(
-            "Couldn't reach the host ({e}) — TV and the host must be on the same network."
-        ),
+        PunktfunkError::Io(e) => {
+            format!("Couldn't reach the host ({e}) — TV and the host must be on the same network.")
+        }
         PunktfunkError::Closed => "The host closed the connection.".into(),
         other => format!("Connection failed: {other}"),
     }

@@ -14,6 +14,7 @@ pub(crate) mod experimental;
 pub(crate) mod forget;
 pub(crate) mod home;
 pub(crate) mod hostmenu;
+pub(crate) mod icons;
 pub(crate) mod pairing;
 pub(crate) mod pinlimit;
 pub(crate) mod sendlogs;

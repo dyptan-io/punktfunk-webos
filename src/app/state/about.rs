@@ -1,8 +1,9 @@
 //! About screen logic: scroll/paging state. Rendering lives in `app::view::about`.
 use crate::app::view;
 use crate::app::App;
+use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
-use crate::ui::{self, MenuEvent};
+use crate::ui;
 
 impl App {
     /// Lazy-initialize about lines on first open.
@@ -12,13 +13,13 @@ impl App {
         }
         // `scroll` is shared with Settings' row list — stash it (see `settings_scroll`).
         self.settings_scroll = self.scroll;
-        self.scroll = ui::ScrollWindow::new();
-        self.content_window = ui::ContentWindow::new();
+        self.scroll = ui::scroll::ScrollWindow::new();
+        self.content_window = ui::scroll::ContentWindow::new();
         self.screen = Screen::About;
     }
 
     /// Navigate: Up/Down scroll by line, Left/Right by page.
-    pub(crate) fn handle_about_event(&mut self, ev: MenuEvent, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) {
+    pub(crate) fn handle_about_event(&mut self, ev: MenuEvent, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) {
         let (total, visible) = self.about_scroll_geometry(screen_w, screen_h, fonts);
         // Page step with anchor: show last few lines of previous page
         let page_step = visible.saturating_sub(2).max(1);
@@ -45,7 +46,13 @@ impl App {
     }
 
     /// Scroll by pixels (Magic Remote wheel).
-    pub(crate) fn scroll_about_by(&mut self, dy_px: i32, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> bool {
+    pub(crate) fn scroll_about_by(
+        &mut self,
+        dy_px: i32,
+        screen_w: u32,
+        screen_h: u32,
+        fonts: &ui::text::Fonts,
+    ) -> bool {
         let (total, visible) = self.about_scroll_geometry(screen_w, screen_h, fonts);
         let step = view::about::line_stride(fonts.raster, fonts.value).max(1);
         let lines = dy_px / step;
@@ -56,7 +63,12 @@ impl App {
     }
 
     /// Total and visible line counts.
-    pub(crate) fn about_scroll_geometry(&mut self, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> (usize, usize) {
+    pub(crate) fn about_scroll_geometry(
+        &mut self,
+        screen_w: u32,
+        screen_h: u32,
+        fonts: &ui::text::Fonts,
+    ) -> (usize, usize) {
         let card = view::about::card_rect(screen_w, screen_h);
         let body = view::about::body_rect(card, fonts);
         self.ensure_about_wrapped(fonts, body.width());
@@ -66,7 +78,7 @@ impl App {
     }
 
     /// Defer text wrapping until width is known.
-    pub(crate) fn ensure_about_wrapped(&mut self, fonts: &ui::Fonts, width: u32) {
+    pub(crate) fn ensure_about_wrapped(&mut self, fonts: &ui::text::Fonts, width: u32) {
         let stale = !matches!(&self.about_wrapped, Some((w, _)) if *w == width);
         if stale {
             self.about_wrapped = Some((

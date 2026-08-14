@@ -9,8 +9,8 @@
 //!
 //! Rendering lives in `app::view::sendlogs`.
 use crate::app::App;
+use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
-use crate::ui::MenuEvent;
 use std::path::Path;
 use std::time::Instant;
 

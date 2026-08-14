@@ -1,6 +1,7 @@
 //! `ModalScreen` — what a modal screen is, from the library's side.
 use crate::ui::render::Rect;
-use crate::ui::{Canvas, Fonts};
+use crate::ui::text::Fonts;
+use crate::ui::Canvas;
 use anyhow::Result;
 
 /// One modal screen: where its card sits, and how it paints.

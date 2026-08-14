@@ -1,7 +1,10 @@
 //! The host address form — presentation, shared by Add host and Edit address. Logic lives
 //! in `app::state::addhost` / `app::state::edithost`.
+use crate::ui;
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, Fonts, ModalScreen};
+use crate::ui::text::Fonts;
+use crate::ui::Canvas;
+use crate::ui::ModalScreen;
 use anyhow::Result;
 
 pub(crate) const ADD_TITLE: &str = "Add host";
@@ -16,8 +19,8 @@ pub(crate) fn edit_subtitle(host_name: &str) -> String {
 
 /// Lifted clear of the on-screen keyboard when it's up.
 pub(crate) fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, subtitle: &str, keyboard_shown: bool) -> Rect {
-    ui::simple_modal_card_above_keyboard(screen_w, screen_h, keyboard_shown, |probe| {
-        let header_end = ui::modal_header_end_y(fonts.raster, fonts.label, fonts.value, probe, subtitle);
+    ui::widgets::simple_modal_card_above_keyboard(screen_w, screen_h, keyboard_shown, |probe| {
+        let header_end = ui::text::modal_header_end_y(fonts, probe, subtitle);
         (header_end + 20 + 80 + 32) as u32 // field + bottom margin
     })
 }
@@ -25,7 +28,7 @@ pub(crate) fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, subtitle: &
 /// The text field, also handed to `SDL_SetTextInputRect` (which the webOS OSK ignores).
 pub(crate) fn field_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, subtitle: &str, keyboard_shown: bool) -> Rect {
     let card = card_rect(screen_w, screen_h, fonts, subtitle, keyboard_shown);
-    let after_subtitle_y = ui::modal_header_end_y(fonts.raster, fonts.label, fonts.value, card, subtitle);
+    let after_subtitle_y = ui::text::modal_header_end_y(fonts, card, subtitle);
     Rect::new(
         card.x() + 32,
         after_subtitle_y + 20,
@@ -52,14 +55,15 @@ impl ModalScreen for Modal<'_> {
         let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
         let (title, subtitle, typed) = (self.title, self.subtitle.as_str(), self.typed);
         c.modal_shell(card, hover_close)?;
-        let after_subtitle_y = c.modal_header(card, title, ui::WHITE, subtitle, ui::MUTED)?;
+        let after_subtitle_y =
+            c.modal_header(card, title, ui::style::theme().text, subtitle, ui::style::theme().muted)?;
         let field = Rect::new(
             card.x() + 32,
             after_subtitle_y + 20,
             card.width().saturating_sub(64),
             80,
         );
-        let drawn = c.card(field, true);
+        let drawn = c.painter.card(field, true);
         let text_x = drawn.x() + 24;
         let text_w = c.fonts.raster.measure(c.fonts.title, typed).0;
         c.text(
@@ -67,7 +71,7 @@ impl ModalScreen for Modal<'_> {
             typed,
             text_x,
             drawn.y() + (drawn.height() as i32 - c.fonts.raster.height(c.fonts.title)) / 2,
-            ui::WHITE,
+            ui::style::theme().text,
         )?;
         // A blinkless text-cursor bar right after what's typed so far — there's no fixed-width
         // mask anymore to show *where* editing happens, so this stands in for it.
@@ -77,7 +81,7 @@ impl ModalScreen for Modal<'_> {
             3,
             drawn.height().saturating_sub(32),
         );
-        c.painter.fill_rect(caret, ui::ACCENT_BRIGHT);
+        c.painter.fill_rect(caret, ui::style::theme().accent_bright);
         Ok(())
     }
 }

@@ -1,8 +1,12 @@
 //! Diagnostics: debug aids, one list modal. Logic lives in `app::state::diagnostics`.
 use crate::app::menu;
 use crate::services::store::Settings;
+use crate::ui;
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, FocusRow, Fonts, ModalScreen};
+use crate::ui::text::Fonts;
+use crate::ui::widgets::FocusRow;
+use crate::ui::Canvas;
+use crate::ui::ModalScreen;
 use anyhow::Result;
 
 pub const TITLE: &str = "Diagnostics";
@@ -13,50 +17,50 @@ pub const SUBTITLE: &str = "Debug aids for on-device investigation.";
 pub fn rows(settings: &Settings) -> Vec<FocusRow> {
     vec![
         FocusRow {
-            icon: ui::ICON_BUG,
+            icon: crate::app::view::icons::ICON_BUG,
             label: "Log level".into(),
             value: menu::log_level_label(settings.log_level_override).into(),
-            kind: ui::RowKind::Dropdown,
+            kind: ui::widgets::RowKind::Dropdown,
             fraction: 0.0,
             danger: false,
             menu: None,
             subtext: None,
         },
         FocusRow {
-            icon: ui::ICON_CHART,
+            icon: crate::app::view::icons::ICON_CHART,
             label: "Stats overlay".into(),
             value: if settings.stats_overlay {
                 "On".into()
             } else {
                 "Off".into()
             },
-            kind: ui::RowKind::Toggle,
+            kind: ui::widgets::RowKind::Toggle,
             fraction: 0.0,
             danger: false,
             menu: None,
             subtext: settings
                 .stats_overlay
-                .then(|| ui::RowSubtext::hint("Or use the Green button")),
+                .then(|| ui::widgets::RowSubtext::hint("Or use the Green button")),
         },
         FocusRow {
-            icon: ui::ICON_VISIBILITY,
+            icon: crate::app::view::icons::ICON_VISIBILITY,
             label: "Show logs".into(),
             value: if settings.show_logs { "On".into() } else { "Off".into() },
-            kind: ui::RowKind::Toggle,
+            kind: ui::widgets::RowKind::Toggle,
             fraction: 0.0,
             danger: false,
             menu: None,
             subtext: settings
                 .show_logs
-                .then(|| ui::RowSubtext::hint("Or use the Yellow button")),
+                .then(|| ui::widgets::RowSubtext::hint("Or use the Yellow button")),
         },
-        FocusRow::action(ui::ICON_SEND, "Send logs to developer")
-            .with_subtext(ui::RowSubtext::hint("If a developer asked you to")),
+        FocusRow::action(crate::app::view::icons::ICON_SEND, "Send logs to developer")
+            .with_subtext(ui::widgets::RowSubtext::hint("If a developer asked you to")),
     ]
 }
 
 pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
-    ui::list_modal_card_rect(screen_w, screen_h, fonts, SUBTITLE, menu::DIAGNOSTICS_ROW_COUNT)
+    ui::widgets::list_modal_card_rect(screen_w, screen_h, fonts, SUBTITLE, menu::DIAGNOSTICS_ROW_COUNT)
 }
 
 /// The diagnostics list as a [`ModalScreen`].
@@ -70,7 +74,7 @@ impl ModalScreen for Modal<'_> {
     }
 
     fn content_rect(&self, card: Rect, fonts: &Fonts) -> Option<Rect> {
-        Some(ui::list_modal_content_rect(
+        Some(ui::widgets::list_modal_content_rect(
             card,
             fonts,
             SUBTITLE,

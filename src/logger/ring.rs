@@ -13,7 +13,7 @@ use tracing_subscriber::Layer;
 use super::level;
 
 /// Bounds overlay memory and per-event lock scope. Only the last
-/// `ui::LOG_OVERLAY_LINES` are ever rendered; the rest is snapshot headroom.
+/// `ui::tiles::LOG_OVERLAY_LINES` are ever rendered; the rest is snapshot headroom.
 const CAPACITY: usize = 32;
 const LINE_MAX_CHARS: usize = 200;
 /// Byte budget a line may reach while recording; chars are truncated exactly after.
@@ -62,8 +62,7 @@ struct CaptureFilter;
 
 impl<S> Filter<S> for CaptureFilter {
     fn enabled(&self, metadata: &tracing::Metadata<'_>, _cx: &Context<'_, S>) -> bool {
-        CAPTURE_ACTIVE.load(Ordering::Relaxed)
-            && level::ordinal(*metadata.level()) <= level::current_ordinal()
+        CAPTURE_ACTIVE.load(Ordering::Relaxed) && level::ordinal(*metadata.level()) <= level::current_ordinal()
     }
 
     /// Keep the hint bounded to the current level. An unbounded filter lowers

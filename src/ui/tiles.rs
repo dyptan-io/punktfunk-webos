@@ -1,12 +1,9 @@
 //! Rasterized-once tile sources for the GPU compositor.
 //!
 //! Split out of the former single-file `ui.rs`; see `super`'s module docs.
-use super::*;
 use crate::core::model::{GamepadType, LogLevelOverride, Settings};
 use crate::core::screen::Screen;
-use crate::ui::render::Color;
-use crate::ui::render::Rect;
-use crate::ui::text_raster::{FontId, TextRaster};
+use crate::ui::prelude::*;
 use anyhow::Result;
 use tiny_skia::Pixmap;
 
@@ -31,91 +28,9 @@ pub fn render_card_tile(
 ) -> Result<Painter> {
     let pad = CARD_TILE_PAD;
     let mut p = Painter::new(card_w + 2 * pad as u32, card_h + 2 * pad as u32);
-    draw_poster_card(
-        &mut p,
-        text_cache,
-        fonts,
-        Rect::new(pad, pad, card_w, card_h),
-        title,
-        art,
-        false,
-    )?;
+    let mut c = Canvas::tile(&mut p, text_cache, fonts);
+    c.poster_card(Rect::new(pad, pad, card_w, card_h), title, art, false)?;
     Ok(p)
-}
-
-/// The animated loading spinner (purple, from
-/// lottiefiles.com/free-animation/purple-spinner-peYjszu1K5, embedded as
-/// `assets/logo/punktfunk-spinner.gif`).
-static SPINNER_GIF_BYTES: &[u8] = include_bytes!("../../assets/logo/punktfunk-spinner.gif");
-
-/// One decoded spinner frame (straight RGBA8) and how long it stays on screen.
-pub struct SpinnerFrame {
-    pub width: u32,
-    pub height: u32,
-    pub delay: std::time::Duration,
-    pub pixels: Vec<u8>,
-}
-
-/// Decodes `SPINNER_GIF_BYTES` once into pre-decoded straight RGBA8 frames.
-pub fn spinner_frames() -> &'static [SpinnerFrame] {
-    static FRAMES: std::sync::OnceLock<Vec<SpinnerFrame>> = std::sync::OnceLock::new();
-    FRAMES.get_or_init(|| {
-        use image::{codecs::gif::GifDecoder, AnimationDecoder};
-        let Ok(decoder) = GifDecoder::new(std::io::Cursor::new(SPINNER_GIF_BYTES)) else {
-            return Vec::new();
-        };
-        let Ok(raw_frames) = decoder.into_frames().collect::<image::ImageResult<Vec<_>>>() else {
-            return Vec::new();
-        };
-        let mut frames = Vec::with_capacity(raw_frames.len());
-        for frame in raw_frames {
-            let (w, h) = frame.buffer().dimensions();
-            let (numer, denom) = frame.delay().numer_denom_ms();
-            let raw_delay = numer.checked_div(denom).unwrap_or(0);
-            // WHY: clamp to ~30 FPS min to avoid busy-looping the render thread.
-            let delay_ms = if raw_delay < 20 { 33 } else { raw_delay };
-            let delay = std::time::Duration::from_millis(u64::from(delay_ms));
-            let pixels = frame.into_buffer().into_raw();
-            frames.push(SpinnerFrame {
-                width: w,
-                height: h,
-                delay,
-                pixels,
-            });
-        }
-        frames
-    })
-}
-
-/// Returns `SpinnerFrame` at index `idx`, or `None` when the GIF decoded to zero frames.
-pub fn spinner_frame(idx: usize) -> Option<&'static SpinnerFrame> {
-    spinner_frames().get(idx)
-}
-
-/// Returns the frame index and reference for `phase` seconds after the spinner started.
-/// Falls back to a 1×1 transparent dummy if the GIF decoded to zero frames.
-pub fn spinner_frame_at(phase: f32) -> (usize, &'static SpinnerFrame) {
-    let frames = spinner_frames();
-    if let Some(first) = frames.first() {
-        let total: std::time::Duration = frames.iter().map(|f| f.delay).sum();
-        let mut elapsed = std::time::Duration::from_secs_f32(phase.max(0.0)).as_nanos() % total.as_nanos().max(1);
-        for (idx, f) in frames.iter().enumerate() {
-            if elapsed < f.delay.as_nanos() {
-                return (idx, f);
-            }
-            elapsed -= f.delay.as_nanos();
-        }
-        (0, first)
-    } else {
-        static DUMMY: std::sync::OnceLock<SpinnerFrame> = std::sync::OnceLock::new();
-        let dummy = DUMMY.get_or_init(|| SpinnerFrame {
-            width: 1,
-            height: 1,
-            delay: std::time::Duration::from_millis(100),
-            pixels: vec![0, 0, 0, 0],
-        });
-        (0, dummy)
-    }
 }
 
 /// Transparent padding around the focus-ring tile — must clear
@@ -126,7 +41,7 @@ pub const FOCUS_RING_PAD: i32 = 20;
 pub fn render_focus_ring_tile(w: u32, h: u32) -> Painter {
     let pad = FOCUS_RING_PAD;
     let mut p = Painter::new(w + 2 * pad as u32, h + 2 * pad as u32);
-    draw_focus_ring(&mut p, Rect::new(pad, pad, w, h), CARD_RADIUS);
+    p.focus_ring(Rect::new(pad, pad, w, h), CARD_RADIUS);
     p
 }
 
@@ -139,7 +54,7 @@ pub const CARD_OUTLINE_PAD: i32 = 4;
 pub fn render_card_outline_tile(w: u32, h: u32) -> Painter {
     let pad = CARD_OUTLINE_PAD;
     let mut p = Painter::new(w + 2 * pad as u32, h + 2 * pad as u32);
-    draw_card_outline(&mut p, Rect::new(pad, pad, w, h));
+    p.card_outline(Rect::new(pad, pad, w, h));
     p
 }
 
@@ -148,18 +63,14 @@ pub fn render_card_outline_tile(w: u32, h: u32) -> Painter {
 pub const PIN_BADGE_SIZE: u32 = 28;
 
 /// Pinned badge: dark disc with PIN icon. Single shared tile.
-pub fn render_pin_badge_tile(
-    text_cache: &mut TextCache,
-    raster: &dyn TextRaster,
-    icon_font: FontId,
-) -> Result<Painter> {
+pub fn render_pin_badge_tile(text_cache: &mut TextCache, fonts: &Fonts) -> Result<Painter> {
     let d = PIN_BADGE_SIZE;
     let mut p = Painter::new(d, d);
-    let c = d as f32 / 2.0;
-    p.fill_circle(c, c, c, Color::RGBA(0x00, 0x00, 0x00, 0x70));
+    let mid = d as f32 / 2.0;
+    p.fill_circle(mid, mid, mid, Color::RGBA(0x00, 0x00, 0x00, 0x70));
     let icon = (d as f32 * 0.6) as u32;
     let icon_rect = Rect::new(((d - icon) / 2) as i32, ((d - icon) / 2) as i32, icon, icon);
-    draw_icon(&mut p, text_cache, raster, icon_font, icon_rect, ICON_PIN, MUTED)?;
+    Canvas::tile(&mut p, text_cache, fonts).icon(icon_rect, icons().pin, theme().muted)?;
     Ok(p)
 }
 
@@ -169,14 +80,14 @@ pub const ROW_TILE_PAD: i32 = 28;
 /// A single line of text as its own tight transparent tile.
 pub fn render_text_tile(
     text_cache: &mut TextCache,
-    raster: &dyn TextRaster,
+    fonts: &Fonts,
     font: FontId,
     text: &str,
     color: Color,
 ) -> Result<Painter> {
-    let (w, h) = raster.measure(font, text);
+    let (w, h) = fonts.raster.measure(font, text);
     let mut p = Painter::new(w.max(1), h.max(1));
-    draw_text(&mut p, text_cache, raster, font, text, 0, 0, color)?;
+    Canvas::tile(&mut p, text_cache, fonts).text(font, text, 0, 0, color)?;
     Ok(p)
 }
 
@@ -185,17 +96,17 @@ pub fn render_text_tile(
 #[allow(clippy::too_many_arguments)]
 pub fn render_wrapped_text_tile(
     text_cache: &mut TextCache,
-    raster: &dyn TextRaster,
+    fonts: &Fonts,
     font: FontId,
     text: &str,
     max_w: u32,
     color: Color,
     line_gap: i32,
 ) -> Result<Painter> {
-    let line_h = raster.height(font) + line_gap;
-    let lines = wrap_text(raster, font, text, max_w).len().max(1) as u32;
+    let line_h = fonts.raster.height(font) + line_gap;
+    let lines = wrap_text(fonts.raster, font, text, max_w).len().max(1) as u32;
     let mut p = Painter::new(max_w.max(1), lines * line_h.max(1) as u32);
-    draw_text_wrapped(&mut p, text_cache, raster, font, text, 0, 0, max_w, color, line_gap)?;
+    Canvas::tile(&mut p, text_cache, fonts).text_wrapped(font, text, 0, 0, max_w, color, line_gap)?;
     Ok(p)
 }
 
@@ -204,13 +115,8 @@ pub const STATS_OVERLAY_REF_LINE: &str = "3840x2160@120 HEVC HDR";
 
 /// In-stream stats overlay with fixed width and centered hint.
 /// `lines[0]` is highlighted; remaining lines are muted.
-pub fn render_stats_overlay_tile(
-    raster: &dyn TextRaster,
-    font: FontId,
-    caption_font: FontId,
-    lines: &[String],
-    hint: &str,
-) -> Result<Painter> {
+pub fn render_stats_overlay_tile(fonts: &Fonts, lines: &[String], hint: &str) -> Result<Painter> {
+    let (raster, font, caption_font) = (fonts.raster, fonts.value, fonts.caption);
     let pad = 18i32;
     let content_safety = 16u32;
     let line_h = raster.height(font) + 6;
@@ -226,17 +132,18 @@ pub fn render_stats_overlay_tile(
     let mut p = Painter::new(w.max(1), h.max(1));
     let mut tc = TextCache::new();
     p.fill_rounded_rect(Rect::new(0, 0, w, h), 14, Color::RGBA(0x14, 0x10, 0x1f, 0x70));
+    let mut c = Canvas::tile(&mut p, &mut tc, fonts);
 
     for (i, line) in lines.iter().enumerate() {
-        let color = if i == 0 { WHITE } else { MUTED };
+        let color = if i == 0 { theme().text } else { theme().muted };
         let y = pad + i as i32 * line_h;
-        draw_text(&mut p, &mut tc, raster, font, line, pad, y, color)?;
+        c.text(font, line, pad, y, color)?;
     }
 
     let hint_y = pad + line_count * line_h + (hint_h - caption_h);
     let hint_w = raster.measure(caption_font, hint).0 as i32;
     let hint_x = pad + (content_w_i32 - hint_w) / 2;
-    draw_text(&mut p, &mut tc, raster, caption_font, hint, hint_x, hint_y, MUTED)?;
+    c.text(caption_font, hint, hint_x, hint_y, theme().muted)?;
     Ok(p)
 }
 
@@ -246,10 +153,10 @@ pub const LOG_OVERLAY_LINES: usize = 9;
 /// Color for log line by level prefix; errors/warnings highlighted to stand out.
 fn log_line_color(line: &str) -> Color {
     match line.split_whitespace().next() {
-        Some("ERROR") => ERROR_RED,
-        Some("WARN") => WARNING,
-        Some("INFO") => WHITE,
-        _ => MUTED,
+        Some("ERROR") => theme().error,
+        Some("WARN") => theme().warning,
+        Some("INFO") => theme().text,
+        _ => theme().muted,
     }
 }
 
@@ -259,12 +166,8 @@ const LOG_OVERLAY_WRAP_INDENT: i32 = 20;
 /// Full-width log-tail at screen bottom (all screens, unlike stats overlay) — a
 /// constant left-to-right size regardless of content. Long lines word-wrap
 /// instead of clipping, only once they'd actually reach the screen edge.
-pub fn render_log_overlay_tile(
-    raster: &dyn TextRaster,
-    font: FontId,
-    screen_w: u32,
-    lines: &[String],
-) -> Result<Painter> {
+pub fn render_log_overlay_tile(fonts: &Fonts, screen_w: u32, lines: &[String]) -> Result<Painter> {
+    let (raster, font) = (fonts.raster, fonts.caption);
     let pad = 14i32;
     let line_h = raster.height(font) + 4;
     let inner_w = screen_w.saturating_sub(2 * pad as u32);
@@ -283,6 +186,7 @@ pub fn render_log_overlay_tile(
         14,
         Color::RGBA(0x14, 0x10, 0x1f, 0xb8),
     );
+    let mut c = Canvas::tile(&mut p, &mut tc, fonts);
     let mut row = 0i32;
     for (wrapped_rows, color) in &wrapped {
         // Empty line wraps to zero rows — still reserve one so later lines don't creep up.
@@ -292,7 +196,7 @@ pub fn render_log_overlay_tile(
         }
         for (i, text) in wrapped_rows.iter().enumerate() {
             let x = if i == 0 { pad } else { pad + LOG_OVERLAY_WRAP_INDENT };
-            draw_text(&mut p, &mut tc, raster, font, text, x, pad + row * line_h, *color)?;
+            c.text(font, text, x, pad + row * line_h, *color)?;
             row += 1;
         }
     }
@@ -305,23 +209,41 @@ pub fn render_log_overlay_tile(
 /// shell) skip the second subtitle wrap the button-row rect would cost.
 pub fn confirm_dialog_card(screen_w: u32, screen_h: u32, fonts: &Fonts, subtitle: &str) -> Rect {
     simple_modal_card(screen_w, screen_h, |probe| {
-        let header_end = modal_header_end_y(fonts.raster, fonts.label, fonts.value, probe, subtitle);
-        (header_end + 32 + 72 + 32) as u32
+        confirm_dialog_stack(fonts, probe, subtitle).total_length()
     })
 }
+
+/// A confirm dialog's vertical stack: header, gap, button row, bottom pad. Read for the
+/// card's height and, once placed, for the button row's rect — the same split both times.
+fn confirm_dialog_stack(fonts: &Fonts, card: Rect, subtitle: &str) -> Layout {
+    let header_h = (modal_header_end_y(fonts, card, subtitle) - card.y()).max(0) as u32;
+    Layout::vertical([
+        Constraint::Length(header_h),
+        Constraint::Length(CONFIRM_DIALOG_GAP),
+        Constraint::Length(CONFIRM_BUTTON_ROW_H),
+        Constraint::Length(CONFIRM_DIALOG_GAP),
+    ])
+}
+
+/// Gap above and below a confirm dialog's button row.
+const CONFIRM_DIALOG_GAP: u32 = 32;
+/// Height of that row.
+const CONFIRM_BUTTON_ROW_H: u32 = 72;
+/// Left/right inset of the dialog's content column.
+const CONFIRM_DIALOG_SIDE_PAD: u32 = 32;
 
 /// Confirm dialog card + button-row rects, sized exactly like the `App`'s simple modals
 /// (forget host, send logs): [`SIMPLE_MODAL_WIDTH_FRAC`] wide, height driven by the wrapped
 /// subtitle. Shared with `main.rs`'s in-stream/quit dialog so all four modals match.
 pub fn confirm_dialog_layout(screen_w: u32, screen_h: u32, fonts: &Fonts, subtitle: &str) -> (Rect, Rect) {
     let card = confirm_dialog_card(screen_w, screen_h, fonts, subtitle);
-    let after_subtitle_y = modal_header_end_y(fonts.raster, fonts.label, fonts.value, card, subtitle);
-    let content = Rect::new(
-        card.x() + 32,
-        after_subtitle_y + 32,
-        card.width().saturating_sub(64),
-        72,
-    );
+    let buttons = confirm_dialog_stack(fonts, card, subtitle).split(card)[2];
+    let content = Layout::horizontal([
+        Constraint::Length(CONFIRM_DIALOG_SIDE_PAD),
+        Constraint::Fill(1),
+        Constraint::Length(CONFIRM_DIALOG_SIDE_PAD),
+    ])
+    .split(buttons)[1];
     (card, content)
 }
 
@@ -347,31 +269,13 @@ pub fn render_confirm_dialog_shell(
     let mut p = Painter::new(screen_w, screen_h);
     let mut tc = TextCache::new();
     let (card, content) = confirm_dialog_layout(screen_w, screen_h, fonts, subtitle);
-    draw_modal_card(&mut p, card);
+    p.modal_card(card);
+    let mut c = Canvas::tile(&mut p, &mut tc, fonts);
     // These dialogs are remote/controller-driven (no local pointer over the overlay), so the
     // X is a visual affordance only — always in the unhovered color.
-    draw_icon(
-        &mut p,
-        &mut tc,
-        fonts.raster,
-        fonts.icon,
-        modal_close_rect(card),
-        ICON_CLOSE,
-        MUTED,
-    )?;
-    draw_modal_header(
-        &mut p,
-        &mut tc,
-        fonts.raster,
-        fonts.label,
-        fonts.value,
-        card,
-        title,
-        WHITE,
-        subtitle,
-        MUTED,
-    )?;
-    draw_confirm_buttons(&mut p, &mut tc, fonts, content, buttons, usize::MAX)?;
+    c.icon(modal_close_rect(card), icons().close, theme().muted)?;
+    c.modal_header(card, title, theme().text, subtitle, theme().muted)?;
+    c.render(ConfirmButtons::new(buttons), content)?;
     Ok(p)
 }
 

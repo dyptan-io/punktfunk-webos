@@ -2,8 +2,8 @@
 //! timers, and its send-side plumbing. The per-host auto-send setting the prompt obeys
 //! lives in `app::state::wakesettings`. Rendering lives in `app::view::wake`.
 use crate::app::{App, Screen, WakeState};
+use crate::core::event::MenuEvent;
 use crate::services::store::KnownHost;
-use crate::ui::MenuEvent;
 use std::time::Instant;
 
 impl App {

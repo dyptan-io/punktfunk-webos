@@ -1,7 +1,7 @@
 //! The "Forget this host?" confirmation modal's logic. Rendering lives in `app::view::forget`.
 use crate::app::App;
+use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
-use crate::ui::MenuEvent;
 use std::time::Instant;
 
 impl App {

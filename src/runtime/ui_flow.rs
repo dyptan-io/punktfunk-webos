@@ -15,7 +15,7 @@ pub(super) fn run_ui_flow(
     controller: &mut Option<GameController>,
     identity: &(String, String),
     display_mode: sdl2::video::DisplayMode,
-    fonts: &crate::ui::Fonts,
+    fonts: &crate::ui::text::Fonts,
     initial_status: Option<String>,
     initial_toast: Option<String>,
 ) -> Result<Option<ConnectOutcome>> {
@@ -31,7 +31,7 @@ pub(super) fn run_ui_flow(
     let mut app = App::new(identity.clone());
     // The GPU tile cache is the render loop's, not App's — App holds only screen state
     // Recreated per menu entry, same as `app`.
-    let mut tiles = crate::ui::TileCache::new();
+    let mut tiles = crate::ui::tiles::TileCache::new();
     // Upload every spinner frame's GPU texture now, once, rather than letting each
     // frame's first appearance create it lazily inside the render loop. `upload_raw`
     // creates a *new* static texture (allocation, not just a pixel copy) the first
@@ -39,7 +39,7 @@ pub(super) fn run_ui_flow(
     // that meant the first spin cycle stalled once per unique frame, right when the
     // spinner is supposed to look smooth. `clear_all` (stream handoff) drops these
     // along with everything else, so this needs redoing on every re-entry here.
-    for (idx, frame) in crate::ui::spinner_frames().iter().enumerate() {
+    for (idx, frame) in crate::assets::spinner_frames().iter().enumerate() {
         compositor.upload_raw(
             texture_creator,
             Tile::SpinnerFrame(idx),
@@ -54,20 +54,20 @@ pub(super) fn run_ui_flow(
     if initial_status.is_some() {
         app.home_status = initial_status;
     }
-    // Same toast widget as the streaming loop's frame-pacer toggle (`ui::Notification`);
+    // Same toast widget as the streaming loop's frame-pacer toggle (`ui::widgets::Notification`);
     // shown once, right as the Home screen re-appears.
-    let mut notif = crate::ui::Notification::new();
+    let mut notif = crate::ui::widgets::Notification::new();
     // Last (text, w, h) uploaded for the toast tile — see `push_notification_cmd`.
     let mut notif_tile: Option<(String, u32, u32)> = None;
     if let Some(msg) = initial_toast {
         notif.show(msg);
     }
-    // Rasterized-text cache (see `ui::TextCache` docs) — created once here and
+    // Rasterized-text cache (see `ui::text::TextCache` docs) — created once here and
     // threaded down through every render call for the rest of this UI-flow's
     // lifetime so repeat draws of the same (font, text, color) reuse an
     // already-rasterized+premultiplied `Pixmap` instead of re-rasterizing
     // freetype glyphs on every ~60fps tick.
-    let mut text_cache = crate::ui::TextCache::new();
+    let mut text_cache = crate::ui::text::TextCache::new();
     let mut input = UiInput::default();
     // Owned handle (it just clones the video subsystem's refcount), so taking it
     // here doesn't hold a borrow on `canvas` for the rest of the loop.
@@ -102,7 +102,11 @@ pub(super) fn run_ui_flow(
     let mut quit_dialog = ConfirmDialog::new(
         "Quit app?",
         "Punktfunk will close and you'll return to the webOS home screen.",
-        crate::ui::confirm_buttons(Some(crate::ui::ICON_CLOSE), "Quit", crate::ui::ERROR_RED),
+        crate::ui::widgets::confirm_buttons(
+            Some(crate::app::view::icons::ICON_CLOSE),
+            "Quit",
+            crate::ui::style::theme().error,
+        ),
     );
     let mut exit_held = false;
     // Controller routes to the quit dialog the same way it routes to the disconnect
@@ -348,7 +352,7 @@ pub(super) fn run_ui_flow(
         for tile in updated {
             match &tile {
                 &Tile::SpinnerFrame(idx) => {
-                    if let Some(frame) = crate::ui::spinner_frame(idx) {
+                    if let Some(frame) = crate::assets::spinner_frame(idx) {
                         compositor.upload_raw(texture_creator, tile, frame.width, frame.height, &frame.pixels)?;
                     }
                 }
@@ -378,7 +382,7 @@ pub(super) fn run_ui_flow(
         if let Some(lines) = log_overlay_lines() {
             if log_overlay_due {
                 log_overlay_last = Some(Instant::now());
-                match crate::ui::render_log_overlay_tile(fonts.raster, fonts.caption, display_mode.w as u32, &lines) {
+                match crate::ui::tiles::render_log_overlay_tile(fonts, display_mode.w as u32, &lines) {
                     Ok(tile) => {
                         log_overlay_dims = Some((tile.width(), tile.height()));
                         compositor.upload(texture_creator, Tile::LogOverlay, &tile)?;
@@ -414,7 +418,7 @@ pub(super) fn run_ui_flow(
             &mut cmds,
         )?;
         canvas.set_blend_mode(sdl2::render::BlendMode::None);
-        let bg = crate::ui::BG;
+        let bg = crate::ui::style::theme().bg;
         canvas.set_draw_color(sdl2::pixels::Color::RGBA(bg.r, bg.g, bg.b, bg.a));
         canvas.clear();
         compositor.present(canvas, &cmds)?;

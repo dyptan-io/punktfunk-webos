@@ -1,39 +1,51 @@
-//! Pre-stream UI: sidebar (known hosts/Settings) + detail grid + modal cards (Pairing/Add host).
-//! Renders via Painter (`tiny_skia` software rasterizer) to SDL2 texture (one per frame).
-//! Text in Geist font; icons from bundled subsetted font.
+//! Portable widget library: the pre-stream UI's paint surface, widgets, layout and theme.
+//! Renders via [`Painter`] (`tiny_skia` software rasterizer) into tiles the platform layer
+//! uploads as textures. Text in Geist font; icons from a bundled subsetted font.
+//!
+//! Namespaced rather than flat (Ratatui's own division): [`layout`] splits rects,
+//! [`widgets`] draws into them, [`style`] says in what colour, [`text`] measures and
+//! rasterizes glyphs. [`Canvas`] is the surface all of them draw through, and
+//! [`Widget`]/[`StatefulWidget`] the contract they implement. Screens live in `app::view`.
+//!
+//! Inside this module the names stay flat — widgets compose each other constantly — via
+//! the crate-internal [`prelude`].
 
-mod animation;
-mod canvas;
-mod cards;
-mod fade;
-mod listmodal;
-mod modal;
-mod notification;
-mod painter;
+pub mod animation;
+pub mod fade;
+pub mod focus;
+pub mod layout;
+pub mod painter;
 pub mod render;
-mod rows;
-mod screen;
-mod scroll;
-mod sidebar;
-mod text;
-mod text_raster;
-mod theme;
-mod tiles;
+pub mod scroll;
+pub mod style;
+pub mod text;
+pub mod text_raster;
+pub mod tiles;
+pub mod widgets;
 
-pub use crate::core::event::MenuEvent;
-pub use animation::*;
-pub use canvas::*;
-pub use cards::*;
-pub use fade::*;
-pub use listmodal::*;
-pub use modal::*;
-pub use notification::*;
-pub use painter::*;
-pub use rows::*;
-pub use screen::*;
-pub use scroll::*;
-pub use sidebar::*;
-pub use text::*;
-pub use text_raster::{FontId, TextRaster};
-pub use theme::*;
-pub use tiles::*;
+mod canvas;
+mod screen;
+mod widget;
+
+pub use canvas::Canvas;
+pub use painter::Painter;
+pub use screen::ModalScreen;
+pub use widget::{StatefulWidget, Widget};
+
+/// Every `ui` name, flat — for `ui`'s own modules only. A widget reaches for the theme, the
+/// text cache, the layout solver and two neighbouring widgets in the same function; making
+/// each of those a qualified path buys nothing inside the library that draws them all.
+pub(crate) mod prelude {
+    pub(crate) use crate::ui::animation::*;
+    pub(crate) use crate::ui::fade::*;
+    pub(crate) use crate::ui::focus::Dir;
+    pub(crate) use crate::ui::layout::*;
+    pub(crate) use crate::ui::painter::*;
+    pub(crate) use crate::ui::render::{Color, Rect};
+    pub(crate) use crate::ui::style::*;
+    pub(crate) use crate::ui::text::*;
+    pub(crate) use crate::ui::text_raster::{FontId, TextRaster};
+    pub(crate) use crate::ui::tiles::*;
+    pub(crate) use crate::ui::widgets::*;
+    pub(crate) use crate::ui::{Canvas, StatefulWidget, Widget};
+}

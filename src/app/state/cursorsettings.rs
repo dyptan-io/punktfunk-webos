@@ -1,8 +1,9 @@
 //! Cursor screen logic. Rendering lives in `app::view::cursorsettings`.
 use crate::app::menu;
 use crate::app::App;
+use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
-use crate::ui::{self, MenuEvent};
+use crate::ui;
 use std::time::Instant;
 
 impl App {
@@ -17,7 +18,11 @@ impl App {
 
     /// All rows are plain Left/Right/Confirm toggles. Back saves and returns to Settings.
     pub(crate) fn handle_cursor_settings_event(&mut self, ev: MenuEvent) {
-        if ui::list_nav(&mut self.cursor_settings_focused, menu::CURSOR_ROW_COUNT, ev) {
+        if ui::widgets::list_nav(
+            &mut self.cursor_settings_focused,
+            menu::CURSOR_ROW_COUNT,
+            menu::nav_dir(ev),
+        ) {
             self.modal_focus_anim = Some(Instant::now());
             return;
         }

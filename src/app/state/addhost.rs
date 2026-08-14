@@ -1,8 +1,8 @@
 //! Add-host modal logic. Rendering lives in `app::view::addhost`.
 use crate::app::App;
+use crate::core::event::MenuEvent;
 use crate::core::screen::{HomeFocus, Screen};
 use crate::services::store::{self, KnownHost};
-use crate::ui::MenuEvent;
 
 impl App {
     /// Handles menu event on add-host modal. Left/Right stand in for backspace and

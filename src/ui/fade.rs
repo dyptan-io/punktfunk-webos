@@ -4,7 +4,7 @@
 //! it (see `docs/NOTES.md` for why that drifted apart once: the disconnect dialog and
 //! stats overlay live in `main.rs`'s streaming loop, which has no `App`/`Screen` to hook).
 
-use super::{anim_frac, anim_frac_in};
+use crate::ui::animation::{anim_frac, anim_frac_in};
 use std::time::{Duration, Instant};
 
 /// Shared fade-in/out duration for transient in-stream overlays (toast notifications,

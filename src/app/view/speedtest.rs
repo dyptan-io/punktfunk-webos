@@ -1,7 +1,11 @@
 //! The per-host network speed test — presentation. Logic lives in `app::state::speedtest`.
 use crate::app::state::speedtest::{recommended_kbps, SpeedTestState};
+use crate::ui;
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, ConfirmButton, Fonts, ModalScreen};
+use crate::ui::text::Fonts;
+use crate::ui::widgets::ConfirmButton;
+use crate::ui::Canvas;
+use crate::ui::ModalScreen;
 use anyhow::Result;
 
 pub(crate) const TITLE: &str = "Network speed test";
@@ -16,14 +20,14 @@ pub(crate) fn apply_label(recommended: Option<u32>) -> String {
 pub(crate) fn buttons(apply_label: &str) -> [ConfirmButton<'_>; 2] {
     [
         ConfirmButton {
-            icon: Some(ui::ICON_SIGNAL),
+            icon: Some(crate::app::view::icons::ICON_SIGNAL),
             label: apply_label,
-            color: ui::ACCENT_BRIGHT,
+            color: ui::style::theme().accent_bright,
         },
         ConfirmButton {
             icon: None,
             label: "Close",
-            color: ui::WHITE,
+            color: ui::style::theme().text,
         },
     ]
 }
@@ -102,8 +106,8 @@ pub(crate) fn card_rect(
 ) -> Rect {
     let status = status(state, host_name);
     let done = finished(state);
-    ui::simple_modal_card(screen_w, screen_h, |probe| {
-        let header_end = ui::modal_header_end_y(fonts.raster, fonts.label, fonts.value, probe, &status);
+    ui::widgets::simple_modal_card(screen_w, screen_h, |probe| {
+        let header_end = ui::text::modal_header_end_y(fonts, probe, &status);
         if done {
             (header_end + 32 + 72 + 32) as u32
         } else {
@@ -114,7 +118,7 @@ pub(crate) fn card_rect(
 
 /// The button row's rect, below the status text.
 pub(crate) fn buttons_rect(card: Rect, fonts: &Fonts, state: Option<&SpeedTestState>, host_name: &str) -> Rect {
-    let after = ui::modal_header_end_y(fonts.raster, fonts.label, fonts.value, card, &status(state, host_name));
+    let after = ui::text::modal_header_end_y(fonts, card, &status(state, host_name));
     Rect::new(card.x() + 32, after + 32, card.width().saturating_sub(64), 72)
 }
 
@@ -145,17 +149,20 @@ impl ModalScreen for Modal<'_> {
         c.modal_header(
             card,
             TITLE,
-            ui::WHITE,
+            ui::style::theme().text,
             &status(state, host_name),
-            if failed { ui::ERROR_RED } else { ui::MUTED },
+            if failed {
+                ui::style::theme().error
+            } else {
+                ui::style::theme().muted
+            },
         )?;
         if finished(state) {
             let apply_label = apply_label(recommendation(state));
             // `usize::MAX` = nothing focused; the focused button is its own tile.
-            c.confirm_buttons(
+            c.render(
+                ui::widgets::ConfirmButtons::new(&buttons(&apply_label)),
                 buttons_rect(card, c.fonts, state, host_name),
-                &buttons(&apply_label),
-                usize::MAX,
             )?;
         }
         Ok(())

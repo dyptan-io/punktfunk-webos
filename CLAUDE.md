@@ -24,10 +24,15 @@ Layered by module, deps point inward (acyclic). Leaves first:
 - **`core/`** — pure domain, no `sdl2`/`tiny_skia`/I/O. `model` (`Settings`, `KnownHost`,
   `GameEntry`, `ConnectTarget`), `screen` (`Screen` + focus enums), `event` (`MenuEvent`/
   `InputEvent`).
-- **`ui/`** — presentation, `tiny_skia` only, **no `sdl2`**. `render` (`Rect`/`Color`/
-  `TileId`/`DrawList` — platform-neutral draw types), `painter`, `text` +
-  `text_raster` (`TextRaster` trait/`FontId`; glyph rasterization is a platform seam),
-  shared primitives (`sidebar`/`rows`/`cards`/`modal`/`tiles`/…). Depends on `core` only.
+- **`ui/`** — presentation, `tiny_skia` only, **no `sdl2`**. Namespaced after Ratatui's
+  division: `render` (`Rect`/`Color`/`TileId`/`DrawList` — platform-neutral draw types),
+  `painter` (the surface + themed card shapes), `text` + `text_raster` (`TextRaster`
+  trait/`FontId`; glyph rasterization is a platform seam), `style` (colors/icons),
+  `layout` (`Layout`/`Constraint` — 1-D constraint splits, no cassowary), `widgets`
+  (`sidebar`/`rows`/`cards`/`modal`/`listmodal`/`notification`), `tiles`, `focus`,
+  `scroll`, `animation`/`fade`. Drawing goes through `Canvas` methods and the
+  `Widget`/`StatefulWidget` traits (`widget.rs`); inside `ui` the names stay flat via
+  `ui::prelude`. Depends on `core` only.
 - **`services/`** — portable I/O: `store` (JSON persistence), `discovery` (mDNS),
   `library` (mTLS REST), `art`, `wol`. Depends on `core`.
 - **`session/`** — streaming orchestration on `punktfunk-core`: `session::connect` spawns
@@ -44,7 +49,7 @@ Layered by module, deps point inward (acyclic). Leaves first:
   spawn, signal handlers, log-overlay state, shared input/dialog helpers), `ui_flow.rs`
   (`run_ui_flow`, the menu loop), `stream.rs` (`run_inner`, the streaming loop).
 
-Add a screen: build on `ui::ListModal` (see `app/state/hostmenu.rs` / `app/view/hostmenu.rs`);
+Add a screen: build on `ui::widgets::ListModal` (see `app/state/hostmenu.rs` / `app/view/hostmenu.rs`);
 the `Screen` enum has eight dispatch sites across `app/mod.rs` and `runtime/` (compiler finds
 all at once, mechanical but safe). Rendering: `tiny_skia` software framebuffer,
 redraw-on-change (`dirty` flag, no time-based animation).

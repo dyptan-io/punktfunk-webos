@@ -1,9 +1,9 @@
 //! Pairing modal logic — the PIN entry and request-access ceremonies. Rendering lives in
 //! `app::view::pairing`.
 use crate::app::{App, PairingOutcome};
+use crate::core::event::MenuEvent;
 use crate::core::screen::{PairingFocus, Screen};
 use crate::services::store::{self, KnownHost};
-use crate::ui::MenuEvent;
 use std::time::Instant;
 
 impl App {

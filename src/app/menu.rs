@@ -1,9 +1,24 @@
 //! This app's settings vocabulary: which rows exist, what each offers, and how a pick
 //! applies to `Settings`. Shared by `app::state::*` (which mutates) and `app::view::*`
-//! (which builds the `ui::FocusRow` lists). Deliberately not in `ui` — `ui` holds the row
+//! (which builds the `ui::widgets::FocusRow` lists). Deliberately not in `ui` — `ui` holds the row
 //! *widgets*, not this app's menus.
 use crate::core::caps::video_caps;
+use crate::core::event::MenuEvent;
 use crate::services::store::{CodecPref, GamepadType, LogLevelOverride, Settings, VideoBackend};
+use crate::ui::focus::Dir;
+
+/// This app's input vocabulary mapped onto `ui`'s spatial one. `ui` navigates by
+/// direction; deciding that "Up" means a d-pad press is the app's business, and this is
+/// where that translation happens once.
+pub fn nav_dir(ev: MenuEvent) -> Option<Dir> {
+    match ev {
+        MenuEvent::Up => Some(Dir::Up),
+        MenuEvent::Down => Some(Dir::Down),
+        MenuEvent::Left => Some(Dir::Left),
+        MenuEvent::Right => Some(Dir::Right),
+        _ => None,
+    }
+}
 
 /// User-requested presets: 1080p, 1440p, 4K.
 pub const RESOLUTIONS: [(u32, u32, &str); 3] = [

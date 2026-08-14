@@ -5,10 +5,18 @@ use crate::app::state::addhost::AddHostState;
 use crate::app::view;
 use crate::app::App;
 use crate::app::{ConnectTarget, GridCard, GridLayout};
+use crate::core::event::MenuEvent;
 use crate::core::screen::{HomeFocus, Screen};
 use crate::services::store::{self};
-use crate::ui::{self, MenuEvent};
+use crate::ui;
 use std::time::Instant;
+
+/// Home's two focus containers. Rows and their ⋯ buttons share one: they are laterally
+/// paired, so Left off a ⋯ must reach *its own* row rather than the group's remembered
+/// entry point. Column-stickiness when walking the ⋯ column upward falls out of the
+/// rects instead — the button above is cross-axis aligned, the row body above isn't.
+const GROUP_SIDEBAR: u8 = 0;
+const GROUP_GRID: u8 = 1;
 
 impl App {
     /// Total sidebar nav positions: host rows + "+ Add host" + "Settings".
@@ -84,94 +92,104 @@ impl App {
         let (h, p) = self.selected_host.as_ref()?;
         self.entries.iter().position(|e| e.host() == h && e.port() == *p)
     }
-    /// The sidebar focus for row `index`, staying on the ⋯ column when `prefer_menu`
-    /// and that row actually has one (only host rows do).
-    pub(crate) fn sidebar_focus_for(index: usize, host_count: usize, prefer_menu: bool) -> HomeFocus {
-        if prefer_menu && index < host_count {
-            HomeFocus::SidebarMenu(index)
+    /// Everything focusable on Home, as rects in screen space at the *target* scroll
+    /// (not the eased `grid_scroll` — navigation should chase where the grid is going,
+    /// not where it currently is). Rebuilt per d-pad press from the same geometry the
+    /// draw path uses, so a layout hole simply has no item and no direction can land
+    /// on it.
+    fn home_focus_map(&self, columns: usize, screen_w: u32, screen_h: u32) -> ui::focus::FocusMap<HomeFocus> {
+        let host_count = self.entries.len();
+        let sidebar_len = self.sidebar_len();
+        let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
+
+        let mut map = ui::focus::FocusMap::default();
+        map.group(
+            GROUP_SIDEBAR,
+            ui::focus::Wrap::Vertical,
+            HomeFocus::Sidebar(self.sidebar_index_for_selected()),
+            HomeFocus::Sidebar(0),
+        );
+        map.group(
+            GROUP_GRID,
+            ui::focus::Wrap::None,
+            HomeFocus::Grid(self.grid_focus_last),
+            HomeFocus::Grid(0),
+        );
+
+        // One split for the whole sidebar — the same `Vec<Rect>` the painter and both hit
+        // tests read, so focus can't disagree with what is on screen.
+        for (index, row) in view::sidebar::nav_rows(sidebar_len, screen_h).into_iter().enumerate() {
+            let has_menu = index < host_count;
+            if has_menu {
+                map.item(
+                    HomeFocus::SidebarMenu(index),
+                    ui::widgets::sidebar_menu_button_rect(row),
+                    GROUP_SIDEBAR,
+                );
+            }
+            map.item(
+                HomeFocus::Sidebar(index),
+                view::sidebar::row_body_rect(row, has_menu),
+                GROUP_SIDEBAR,
+            );
+        }
+
+        // One layout for the whole sweep: `is_grid_card`/`unscrolled_card_rect` would
+        // each rebuild it — and rescan the host's pin list — for every card.
+        let layout = self.grid_layout(columns);
+        let grid_len = if self.selected_host.is_some() {
+            layout.len(self.games.len())
         } else {
-            HomeFocus::Sidebar(index)
+            0
+        };
+        for idx in 0..grid_len {
+            if layout.card_at(&self.games, idx).is_none() {
+                continue;
+            }
+            let r = view::home::unscrolled_card_rect(
+                idx,
+                columns,
+                ui::widgets::SIDEBAR_W as i32,
+                available_w,
+                layout.pinned_rows,
+            );
+            // Screen space, at the scroll the grid is easing *toward* — so that a move
+            // crossing into the sidebar compares against its rows on equal terms.
+            map.item(HomeFocus::Grid(idx), r.offset(0, -self.grid_scroll_target), GROUP_GRID);
+        }
+        map
+    }
+
+    /// Moves Home's focus one step in `dir`: one spatial lookup, with the sidebar and
+    /// grid containers deciding where a move that crosses between them lands (see
+    /// `home_focus_map`). Layout holes, the pinned-row split and the row/⋯ split all
+    /// fall out of the rects themselves.
+    fn navigate_home(&mut self, dir: ui::focus::Dir, screen_w: u32, screen_h: u32) {
+        let columns = view::home::grid_columns(screen_w.saturating_sub(ui::widgets::SIDEBAR_W));
+        let Some(next) = self
+            .home_focus_map(columns, screen_w, screen_h)
+            .navigate(self.home_focus, dir)
+        else {
+            return;
+        };
+        self.home_focus = next;
+        if let HomeFocus::Grid(idx) = next {
+            self.grid_focus_last = idx;
+            self.ensure_grid_visible(idx, columns, screen_w, screen_h);
         }
     }
 
     /// Handles one menu event on the Home screen (sidebar + grid). Returns a
     /// `ConnectTarget` when a grid card is confirmed.
     pub fn handle_home_event(&mut self, ev: MenuEvent, screen_w: u32, screen_h: u32) -> Option<ConnectTarget> {
-        let sidebar_len = self.sidebar_len();
-        let available_w = screen_w.saturating_sub(ui::SIDEBAR_W);
+        let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
-        let grid_len = self.grid_len(columns);
 
+        if let Some(dir) = crate::app::menu::nav_dir(ev) {
+            self.navigate_home(dir, screen_w, screen_h);
+            return None;
+        }
         match ev {
-            MenuEvent::Up => match self.home_focus {
-                HomeFocus::Sidebar(i) => {
-                    self.home_focus = HomeFocus::Sidebar(if i == 0 { sidebar_len - 1 } else { i - 1 });
-                }
-                // Walking up the ⋯ column stays on it while the row above is still a
-                // host row; stepping off the top of the host list falls back to the row
-                // itself, since the utility rows have no actions button.
-                HomeFocus::SidebarMenu(i) => {
-                    let next = if i == 0 { sidebar_len - 1 } else { i - 1 };
-                    self.home_focus = Self::sidebar_focus_for(next, self.entries.len(), true);
-                }
-                HomeFocus::Grid(i) => {
-                    // The cell directly above can be empty padding after a partial
-                    // pinned row (see `is_grid_card`) — nothing to land on there.
-                    if i >= columns && self.is_grid_card(i - columns, columns) {
-                        let next = i - columns;
-                        self.home_focus = HomeFocus::Grid(next);
-                        self.ensure_grid_visible(next, columns, screen_w, screen_h);
-                    }
-                }
-            },
-            MenuEvent::Down => match self.home_focus {
-                HomeFocus::Sidebar(i) => self.home_focus = HomeFocus::Sidebar((i + 1) % sidebar_len),
-                HomeFocus::SidebarMenu(i) => {
-                    let next = (i + 1) % sidebar_len;
-                    self.home_focus = Self::sidebar_focus_for(next, self.entries.len(), true);
-                }
-                HomeFocus::Grid(i) => {
-                    let next = i + columns;
-                    if next < grid_len && self.is_grid_card(next, columns) {
-                        self.home_focus = HomeFocus::Grid(next);
-                        self.ensure_grid_visible(next, columns, screen_w, screen_h);
-                    }
-                }
-            },
-            MenuEvent::Left => {
-                if let HomeFocus::SidebarMenu(i) = self.home_focus {
-                    self.home_focus = HomeFocus::Sidebar(i);
-                } else if let HomeFocus::Grid(i) = self.home_focus {
-                    if i % columns == 0 {
-                        self.home_focus = HomeFocus::Sidebar(self.sidebar_index_for_selected());
-                    } else {
-                        self.home_focus = HomeFocus::Grid(i - 1);
-                        self.ensure_grid_visible(i - 1, columns, screen_w, screen_h);
-                    }
-                }
-            }
-            MenuEvent::Right => match self.home_focus {
-                // A host row's first Right lands on its ⋯ button rather than jumping
-                // straight to the grid — that button is the whole point of the
-                // affordance, and it must be reachable without a pointer.
-                HomeFocus::Sidebar(i) if i < self.entries.len() => {
-                    self.home_focus = HomeFocus::SidebarMenu(i);
-                }
-                HomeFocus::Sidebar(_) | HomeFocus::SidebarMenu(_) => {
-                    if grid_len > 0 {
-                        self.home_focus = HomeFocus::Grid(0);
-                        self.ensure_grid_visible(0, columns, screen_w, screen_h);
-                    }
-                }
-                HomeFocus::Grid(i) => {
-                    // The next cell can be empty padding after a partial pinned row
-                    // (see `is_grid_card`) — nothing to land on there.
-                    if (i + 1) % columns != 0 && i + 1 < grid_len && self.is_grid_card(i + 1, columns) {
-                        self.home_focus = HomeFocus::Grid(i + 1);
-                        self.ensure_grid_visible(i + 1, columns, screen_w, screen_h);
-                    }
-                }
-            },
             MenuEvent::Confirm => match self.home_focus {
                 HomeFocus::Sidebar(i) if i < self.entries.len() => {
                     self.confirm_sidebar_host(i);
@@ -184,8 +202,8 @@ impl App {
                     self.screen = Screen::Settings;
                     self.dropdown = None;
                     self.settings_focused = 0;
-                    self.scroll = ui::ScrollWindow::new();
-                    self.content_window = ui::ContentWindow::new();
+                    self.scroll = ui::scroll::ScrollWindow::new();
+                    self.content_window = ui::scroll::ContentWindow::new();
                 }
                 HomeFocus::SidebarMenu(i) => self.open_host_menu(i),
                 HomeFocus::Grid(i) => self.confirm_grid_card(i, columns),
@@ -201,7 +219,8 @@ impl App {
             }
             // Back on Home is owned by `App::back` (grid/⋯ → sidebar), reached via
             // `dispatch_menu_event` before this handler — never routed here.
-            MenuEvent::Back => {}
+            // The four directions returned above, through `menu::nav_dir`.
+            MenuEvent::Back | MenuEvent::Up | MenuEvent::Down | MenuEvent::Left | MenuEvent::Right => {}
         }
         None
     }
@@ -217,7 +236,7 @@ impl App {
     /// Toggles focused card pin state and reorders the grid; opens pin-limit
     /// alert on overflow.
     pub(crate) fn toggle_focused_pin(&mut self, screen_w: u32, screen_h: u32) {
-        let available_w = screen_w.saturating_sub(ui::SIDEBAR_W);
+        let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
         let HomeFocus::Grid(old_idx) = self.home_focus else {
             return;
@@ -244,6 +263,7 @@ impl App {
         self.reorder_games_by_pin();
         if let Some(new_idx) = self.grid_idx_for_pin_id(&id, columns) {
             self.home_focus = HomeFocus::Grid(new_idx);
+            self.grid_focus_last = new_idx;
             self.ensure_grid_visible(new_idx, columns, screen_w, screen_h);
         }
         self.replay_reorder_pop(&id, was_pinned, columns);
@@ -310,7 +330,7 @@ impl App {
     /// Eased 0..=1 progress of pin id `id`'s zoom-in (see `card_pop`)
     /// — 1.0, full size, for anything not animating.
     pub(crate) fn card_pop_frac(&self, id: &str) -> f32 {
-        ui::anim_frac(self.card_pop.get(id).copied(), crate::app::CARD_POP)
+        ui::animation::anim_frac(self.card_pop.get(id).copied(), crate::app::CARD_POP)
     }
 
     /// Whether the pinned front block is followed by anything — false when
@@ -346,20 +366,12 @@ impl App {
         /// breathing room.
         const FOCUS_MARGIN: i32 = 16;
         self.focus_anim = Some(Instant::now());
-        let available_w = screen_w.saturating_sub(ui::SIDEBAR_W);
-        let r = self.unscrolled_card_rect(idx, columns, ui::SIDEBAR_W as i32, available_w);
-        let viewport_top = view::home::GRID_TOP_Y;
-        let viewport_bottom = screen_h as i32 - view::home::GRID_PAD;
+        let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
+        let card = self.unscrolled_card_rect(idx, columns, ui::widgets::SIDEBAR_W as i32, available_w);
+        let viewport = (view::home::GRID_TOP_Y, screen_h as i32 - view::home::GRID_PAD);
         let max_scroll = self.max_grid_scroll(columns, available_w, screen_h);
-        let card_top = r.y() - FOCUS_MARGIN;
-        let card_bottom = r.bottom() + FOCUS_MARGIN;
-        let mut target = self.grid_scroll_target;
-        if card_top - target < viewport_top {
-            target = card_top - viewport_top;
-        } else if card_bottom - target > viewport_bottom {
-            target = card_bottom - viewport_bottom;
-        }
-        self.grid_scroll_target = target.clamp(0, max_scroll);
+        self.grid_scroll_target =
+            ui::scroll::scroll_to_reveal(card, viewport, self.grid_scroll_target, FOCUS_MARGIN).clamp(0, max_scroll);
     }
 
     /// Scrolls the grid by `dy_px` (positive = content moves up), clamped — the
@@ -370,7 +382,7 @@ impl App {
         if self.selected_host.is_none() {
             return false;
         }
-        let available_w = screen_w.saturating_sub(ui::SIDEBAR_W);
+        let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
         let max_scroll = self.max_grid_scroll(columns, available_w, screen_h);
         let next = (self.grid_scroll_target + dy_px).clamp(0, max_scroll);
@@ -405,6 +417,7 @@ impl App {
         self.games_rx = None;
         self.home_status = None;
         self.home_focus = HomeFocus::Sidebar(0);
+        self.grid_focus_last = 0;
         self.grid_dirty = true;
     }
 
@@ -426,6 +439,7 @@ impl App {
         // switch abandons in-flight fetches for the previous library.
         self.art_loader = None;
         self.home_focus = HomeFocus::Grid(0);
+        self.grid_focus_last = 0;
         self.sidebar_dirty = true;
         self.grid_dirty = true;
         self.grid_scroll = 0;

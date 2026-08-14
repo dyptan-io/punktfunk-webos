@@ -13,6 +13,7 @@ vars:
     -v punktfunk-webos-toolchains:/workspace/.toolchains
     -v punktfunk-webos-target:/workspace/target
     -v punktfunk-webos-cargo:/opt/punktfunk-webos-cargo
+    -v punktfunk-webos-rustup:/usr/local/rustup
     -v punktfunk-webos-apt-cache:/var/cache/apt/archives
     -v punktfunk-webos-apt-lists:/var/lib/apt/lists
     -v punktfunk-webos-tools:/opt/punktfunk-webos-tools

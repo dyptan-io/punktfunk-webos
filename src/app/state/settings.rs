@@ -2,8 +2,8 @@
 //! (row list layout, dropdown overlay geometry) lives in `app::view::settings`.
 use crate::app::menu;
 use crate::app::{App, DropdownState};
+use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
-use crate::ui::MenuEvent;
 use std::time::Instant;
 
 impl App {

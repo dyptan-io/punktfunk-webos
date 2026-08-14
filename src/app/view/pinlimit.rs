@@ -1,6 +1,10 @@
 //! The "you can only pin N games" alert. Logic lives in `app::state::pinlimit`.
+use crate::ui;
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, ConfirmButton, Fonts, ModalScreen};
+use crate::ui::text::Fonts;
+use crate::ui::widgets::ConfirmButton;
+use crate::ui::Canvas;
+use crate::ui::ModalScreen;
 use anyhow::Result;
 
 pub const TITLE: &str = "Pin limit reached";
@@ -10,8 +14,8 @@ const BUTTON_W: u32 = 200;
 const BUTTON_H: u32 = 72;
 
 pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, message: &str) -> Rect {
-    ui::simple_modal_card(screen_w, screen_h, |probe| {
-        let header_end = ui::modal_header_end_y(fonts.raster, fonts.label, fonts.value, probe, message);
+    ui::widgets::simple_modal_card(screen_w, screen_h, |probe| {
+        let header_end = ui::text::modal_header_end_y(fonts, probe, message);
         (header_end + 32 + BUTTON_H as i32 + 32) as u32
     })
 }
@@ -29,8 +33,14 @@ impl ModalScreen for Modal<'_> {
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
         let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
         c.modal_shell(card, hover_close)?;
-        c.modal_header(card, TITLE, ui::WHITE, self.message, ui::MUTED)?;
-        let after_subtitle_y = ui::modal_header_end_y(c.fonts.raster, c.fonts.label, c.fonts.value, card, self.message);
+        c.modal_header(
+            card,
+            TITLE,
+            ui::style::theme().text,
+            self.message,
+            ui::style::theme().muted,
+        )?;
+        let after_subtitle_y = ui::text::modal_header_end_y(c.fonts, card, self.message);
         // Single centred button, always focused (no separate focus tile).
         let button = Rect::new(
             card.x() + (card.width() as i32 - BUTTON_W as i32) / 2,
@@ -42,7 +52,7 @@ impl ModalScreen for Modal<'_> {
             &ConfirmButton {
                 icon: None,
                 label: "OK",
-                color: ui::WHITE,
+                color: ui::style::theme().text,
             },
             true,
             button,

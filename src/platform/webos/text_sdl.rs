@@ -4,18 +4,16 @@ use anyhow::{Context, Result};
 use sdl2::ttf::{Font, Sdl2TtfContext};
 use tiny_skia::{IntSize, Pixmap};
 
+use crate::assets::{geist, ICON_FONT_BYTES};
+use crate::ui::painter::premultiply_rgba;
 use crate::ui::render::Color;
-use crate::ui::{
-    premultiply_rgba, FontId, FontWeight, TextRaster, GEIST_MEDIUM, GEIST_REGULAR, GEIST_SEMIBOLD, ICON_FONT_BYTES,
-};
+use crate::ui::text::FontId;
+use crate::ui::text::FontWeight;
+use crate::ui::text::TextRaster;
 
 /// Load Geist weight at size proportional to display height (720px reference).
 fn load_font(ttf: &Sdl2TtfContext, height_px: u32, design_size: u16, weight: FontWeight) -> Result<Font<'_, 'static>> {
-    let bytes: &'static [u8] = match weight {
-        FontWeight::Regular => GEIST_REGULAR,
-        FontWeight::Medium => GEIST_MEDIUM,
-        FontWeight::SemiBold => GEIST_SEMIBOLD,
-    };
+    let bytes = geist(weight);
     let scaled = (u32::from(design_size) * height_px / 720).max(10) as u16;
     let rwops = sdl2::rwops::RWops::from_bytes(bytes).map_err(|e| anyhow::anyhow!("geist rwops: {e}"))?;
     ttf.load_font_from_rwops(rwops, scaled)
@@ -23,7 +21,7 @@ fn load_font(ttf: &Sdl2TtfContext, height_px: u32, design_size: u16, weight: Fon
 }
 
 /// Loads the bundled icon font at a fixed, generously large size — icon glyphs are
-/// always drawn through `draw_icon`, which composites (and, via `Painter`'s
+/// always drawn through `Canvas::icon`, which composites (and, via `Painter`'s
 /// bilinear `draw_pixmap_scaled`, downscales) the rasterized glyph to fit whatever
 /// rect the caller actually wants, so a single oversized rasterization (rather than
 /// one `load_icon_font` call per distinct icon size, the way the three text fonts

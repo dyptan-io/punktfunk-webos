@@ -1,14 +1,18 @@
 //! The "host unreachable — wake it?" modal — presentation. Logic lives in `app::state::wake`.
 use crate::app::WakeState;
+use crate::ui;
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, ConfirmButton, Fonts, ModalScreen};
+use crate::ui::text::Fonts;
+use crate::ui::widgets::ConfirmButton;
+use crate::ui::Canvas;
+use crate::ui::ModalScreen;
 use anyhow::Result;
 
 /// Card for the no-MAC modal: an informational "Host unreachable" message with no button
 /// row (nothing to send), so it's a plain message card, not a confirm dialog.
 pub(crate) fn message_card(screen_w: u32, screen_h: u32, fonts: &Fonts, status: &str) -> Rect {
-    ui::simple_modal_card(screen_w, screen_h, |probe| {
-        (ui::modal_header_end_y(fonts.raster, fonts.label, fonts.value, probe, status) + 32) as u32
+    ui::widgets::simple_modal_card(screen_w, screen_h, |probe| {
+        (ui::text::modal_header_end_y(fonts, probe, status) + 32) as u32
     })
 }
 
@@ -18,7 +22,7 @@ pub(crate) fn card_rect(screen_w: u32, screen_h: u32, wake: &WakeState, fonts: &
     if wake.mac.is_empty() {
         message_card(screen_w, screen_h, fonts, &status)
     } else {
-        ui::confirm_dialog_card(screen_w, screen_h, fonts, &status)
+        ui::tiles::confirm_dialog_card(screen_w, screen_h, fonts, &status)
     }
 }
 
@@ -26,14 +30,14 @@ pub(crate) fn card_rect(screen_w: u32, screen_h: u32, wake: &WakeState, fonts: &
 pub(crate) fn buttons() -> [ConfirmButton<'static>; 2] {
     [
         ConfirmButton {
-            icon: Some(ui::ICON_POWER),
+            icon: Some(crate::app::view::icons::ICON_POWER),
             label: "Wake host",
-            color: ui::ACCENT_BRIGHT,
+            color: ui::style::theme().accent_bright,
         },
         ConfirmButton {
             icon: None,
             label: "Cancel",
-            color: ui::WHITE,
+            color: ui::style::theme().text,
         },
     ]
 }
@@ -83,14 +87,20 @@ impl ModalScreen for Modal<'_> {
         let (card, button_row) = if wake.mac.is_empty() {
             (message_card(c.screen_w, c.screen_h, c.fonts, &status), None)
         } else {
-            let (card, content) = ui::confirm_dialog_layout(c.screen_w, c.screen_h, c.fonts, &status);
+            let (card, content) = ui::tiles::confirm_dialog_layout(c.screen_w, c.screen_h, c.fonts, &status);
             (card, Some(content))
         };
         c.modal_shell(card, hover_close)?;
-        c.modal_header(card, title(wake), ui::WHITE, &status, ui::MUTED)?;
+        c.modal_header(
+            card,
+            title(wake),
+            ui::style::theme().text,
+            &status,
+            ui::style::theme().muted,
+        )?;
         if let Some(content) = button_row {
             // `usize::MAX` = nothing focused; the focused button is its own tile.
-            c.confirm_buttons(content, &buttons(), usize::MAX)?;
+            c.render(ui::widgets::ConfirmButtons::new(&buttons()), content)?;
         }
         Ok(())
     }

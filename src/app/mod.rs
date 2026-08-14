@@ -19,12 +19,17 @@ use tiny_skia::Pixmap;
 
 use crate::app::hosts::HostEntry;
 use crate::app::state::addhost::AddHostState;
+use crate::core::event::MenuEvent;
 pub use crate::core::model::ConnectTarget;
 use crate::core::model::GameEntry;
 pub use crate::core::screen::{HomeFocus, PairingFocus, Screen};
 use crate::services::store::{self, KnownHost, Settings};
+use crate::ui;
 use crate::ui::render::{DrawCmd, TileId as Tile};
-use crate::ui::{self, MenuEvent, ModalFocusKey, Painter, ScrollContentKey, TileCache};
+use crate::ui::tiles::ModalFocusKey;
+use crate::ui::tiles::ScrollContentKey;
+use crate::ui::tiles::TileCache;
+use crate::ui::Painter;
 
 /// Rows beyond viewport kept rasterized (prevents scroll stalls).
 const CARD_PREFETCH_ROWS: i32 = 2;
@@ -47,7 +52,7 @@ pub(crate) const DROPDOWN_FADE: Duration = MODAL_FADE;
 /// Scale during open — subtle, since fade dominates for full-screen modal.
 pub(crate) const MODAL_POP_SHRINK: f32 = 0.05;
 /// Transparent margin the modal tile leaves around the card so its drop shadow
-/// (`draw_card_shadow`: blur `SHADOW_BLUR`=14, offset dy 5) fits inside the tile.
+/// (`Painter::card_shadow`: blur `SHADOW_BLUR`=14, offset dy 5) fits inside the tile.
 /// The tile is sized to the card's bounding box plus this pad rather than the whole
 /// screen, so every open rasterizes and uploads a fraction of the pixels it used to.
 pub(crate) const MODAL_TILE_PAD: i32 = 24;
@@ -249,6 +254,10 @@ pub struct App {
     pub(crate) discovery_daemon: Option<mdns_sd::ServiceDaemon>,
     pub entries: Vec<HostEntry>,
     pub home_focus: HomeFocus,
+    /// Where the grid is re-entered from the sidebar. Only ever consulted through the
+    /// focus map, which drops it when it no longer names a real card, so reorders and
+    /// library reloads need no invalidation of their own.
+    pub(crate) grid_focus_last: usize,
     pub selected_host: Option<(String, u16)>,
     pub games: Vec<GameEntry>,
     /// Leading pinned-game entries; kept in pin order.
@@ -275,17 +284,17 @@ pub struct App {
     pub(crate) detected_gamepad_type: Option<store::GamepadType>,
     pub settings_focused: usize,
     /// Scroll state for overflowing modal content.
-    pub(crate) scroll: ui::ScrollWindow,
+    pub(crate) scroll: ui::scroll::ScrollWindow,
     /// Settings' scroll position, stashed while About borrows `scroll` for its
     /// own document — restored on return so the focus highlight doesn't end up
     /// outside the visible rows.
-    pub(crate) settings_scroll: ui::ScrollWindow,
+    pub(crate) settings_scroll: ui::scroll::ScrollWindow,
     /// Window slice of baked About document.
-    pub(crate) content_window: ui::ContentWindow,
+    pub(crate) content_window: ui::scroll::ContentWindow,
     pub dropdown: Option<DropdownState>,
     /// Dropdown overlay's own open/close fade, payload `(row, focused)` so the
     /// close-fade can still draw it after `dropdown` goes `None`.
-    pub(crate) dropdown_fade: ui::ModalFade<(usize, usize)>,
+    pub(crate) dropdown_fade: ui::fade::ModalFade<(usize, usize)>,
     /// The sidebar row `Screen::ForgetHost` is confirming forgetting — set
     /// alongside `screen = Screen::ForgetHost` (see `App::open_forget_host`),
     /// `None` otherwise.
@@ -366,7 +375,7 @@ pub struct App {
     pub hover_close: bool,
     pub(crate) identity: (String, String),
     // -------------------------------------------------------- render clocks --
-    // The `Painter` tile cache (`ui::TileCache`) is owned by the render loop
+    // The `Painter` tile cache (`ui::tiles::TileCache`) is owned by the render loop
     // (`runtime::ui_flow`), not `App` — App keeps only screen state plus these
     // render-facing derived values that the event side also needs.
     /// Per-card zoom-in start clock, keyed by pin id — set when a card first
@@ -434,14 +443,14 @@ pub struct App {
     pub grid_scroll: i32,
     pub(crate) grid_scroll_target: i32,
     /// When the current grid-focus pop started (card scales in over
-    /// `ui::FOCUS_POP` — set on every d-pad focus move).
+    /// `ui::animation::FOCUS_POP` — set on every d-pad focus move).
     pub(crate) focus_anim: Option<Instant>,
-    /// Open/close fade for whichever modal is up — see `ui::ModalFade`'s docs. Payload
+    /// Open/close fade for whichever modal is up — see `ui::fade::ModalFade`'s docs. Payload
     /// is the `Screen` that was open, so a close-fade can keep rendering it after
     /// `self.screen` has already moved on.
-    pub(crate) modal_fade: ui::ModalFade<Screen>,
+    pub(crate) modal_fade: ui::fade::ModalFade<Screen>,
     /// When the open modal's focused widget last moved (zooms it in over
-    /// `ui::FOCUS_POP`, same GPU-scale technique as `focus_anim` — see
+    /// `ui::animation::FOCUS_POP`, same GPU-scale technique as `focus_anim` — see
     /// `draw_list`'s `Tile::ModalFocusElement` handling). Shared by every
     /// modal (Settings row, Wake row, Pairing digit/button, `ForgetHost`
     /// button) since only one is ever open, and focused, at a time.
@@ -449,7 +458,7 @@ pub struct App {
     /// In-flight `Toggle` row flip: `(when it started, the value it flipped
     /// from, the focused row it flipped)` — lets `modal_focus_tile`'s render
     /// slide the switch knob from its old state to its new one over
-    /// `ui::FOCUS_POP` instead of snapping. The row index scopes the slide to
+    /// `ui::animation::FOCUS_POP` instead of snapping. The row index scopes the slide to
     /// the row that actually changed: without it, navigating onto a different
     /// toggle whose state happens to differ from `from` mid-animation would
     /// make that unrelated switch spuriously slide (see `toggle_frac`).
@@ -516,6 +525,7 @@ impl App {
             discovery_daemon,
             entries,
             home_focus: HomeFocus::Sidebar(0),
+            grid_focus_last: 0,
             selected_host: None,
             games: Vec::new(),
             pinned_count: 0,
@@ -532,11 +542,11 @@ impl App {
             state_writer,
             detected_gamepad_type: None,
             settings_focused: 0,
-            scroll: ui::ScrollWindow::new(),
-            settings_scroll: ui::ScrollWindow::new(),
-            content_window: ui::ContentWindow::new(),
+            scroll: ui::scroll::ScrollWindow::new(),
+            settings_scroll: ui::scroll::ScrollWindow::new(),
+            content_window: ui::scroll::ContentWindow::new(),
             dropdown: None,
-            dropdown_fade: ui::ModalFade::new(),
+            dropdown_fade: ui::fade::ModalFade::new(),
             host_menu_index: None,
             host_menu_focused: 1,
             menu_focused: 0,
@@ -586,7 +596,7 @@ impl App {
             grid_scroll: 0,
             grid_scroll_target: 0,
             focus_anim: None,
-            modal_fade: ui::ModalFade::new(),
+            modal_fade: ui::fade::ModalFade::new(),
             modal_focus_anim: None,
             switch_anim: None,
             last_screen: Screen::Home,
@@ -614,7 +624,7 @@ impl App {
         if app.settings.show_logs {
             crate::runtime::set_log_overlay_enabled(true);
         }
-        std::thread::spawn(ui::spinner_frames);
+        std::thread::spawn(crate::assets::spinner_frames);
         app
     }
 
@@ -632,7 +642,7 @@ impl App {
     }
 
     /// The settings rows, with the platform/hardware facts the view can't reach folded in.
-    pub(crate) fn settings_rows(&self) -> Vec<ui::FocusRow> {
+    pub(crate) fn settings_rows(&self) -> Vec<ui::widgets::FocusRow> {
         let effective = if self.settings.gamepad_type == store::GamepadType::Auto {
             self.detected_gamepad_type.unwrap_or_default()
         } else {
@@ -974,7 +984,7 @@ impl App {
             animating = true;
         }
         if let Some(t) = self.focus_anim {
-            if t.elapsed() >= ui::FOCUS_POP {
+            if t.elapsed() >= ui::animation::FOCUS_POP {
                 self.focus_anim = None;
             }
             animating = true;
@@ -989,18 +999,18 @@ impl App {
         // which (unlike the fade) is however long the handshake takes.
         if self
             .launch_anim
-            .is_some_and(|t| t.elapsed() < ui::LAUNCH_FADE || self.hero.showing())
+            .is_some_and(|t| t.elapsed() < hero::LAUNCH_FADE || self.hero.showing())
         {
             animating = true;
         }
         if let Some(t) = self.modal_focus_anim {
-            if t.elapsed() >= ui::FOCUS_POP {
+            if t.elapsed() >= ui::animation::FOCUS_POP {
                 self.modal_focus_anim = None;
             }
             animating = true;
         }
         if let Some((t, _, _)) = self.switch_anim {
-            if t.elapsed() >= ui::FOCUS_POP {
+            if t.elapsed() >= ui::animation::FOCUS_POP {
                 self.switch_anim = None;
             }
             animating = true;
@@ -1035,7 +1045,7 @@ impl App {
     }
 
     /// Handed to `SDL_SetTextInputRect` by the render loop.
-    pub fn address_field_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Rect {
+    pub fn address_field_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Rect {
         let (_, subtitle) = self.address_copy();
         view::addhost::field_rect(screen_w, screen_h, fonts, &subtitle, self.keyboard_shown)
     }
@@ -1044,7 +1054,14 @@ impl App {
     /// whether that changed anything visible — Magic Remote pointer mode fires
     /// `MouseMotion` continuously while moving, so callers redraw only when this is
     /// `true` rather than on every event.
-    pub fn handle_mouse_motion(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> bool {
+    pub fn handle_mouse_motion(
+        &mut self,
+        x: i32,
+        y: i32,
+        screen_w: u32,
+        screen_h: u32,
+        fonts: &ui::text::Fonts,
+    ) -> bool {
         let focus_changed = self.hover_focus_at(x, y, screen_w, screen_h, fonts);
         // Parity with the D-pad: a hover that moves modal focus replays the focus-pop zoom
         // (and shows the new row's caption). Home drives its own `focus_anim` instead, so
@@ -1063,13 +1080,13 @@ impl App {
     fn confirm_button_at(
         screen_w: u32,
         screen_h: u32,
-        fonts: &ui::Fonts,
+        fonts: &ui::text::Fonts,
         subtitle: &str,
         x: i32,
         y: i32,
     ) -> Option<usize> {
-        let (_, content) = ui::confirm_dialog_layout(screen_w, screen_h, fonts, subtitle);
-        ui::confirm_button_at(content, x, y)
+        let (_, content) = ui::tiles::confirm_dialog_layout(screen_w, screen_h, fonts, subtitle);
+        ui::tiles::confirm_button_at(content, x, y)
     }
 
     /// Rect of confirm button `index` for a two-button modal with `subtitle` — the shared
@@ -1077,12 +1094,12 @@ impl App {
     fn confirm_focus_button_rect(
         screen_w: u32,
         screen_h: u32,
-        fonts: &ui::Fonts,
+        fonts: &ui::text::Fonts,
         subtitle: &str,
         index: usize,
     ) -> Rect {
-        let (_, content) = ui::confirm_dialog_layout(screen_w, screen_h, fonts, subtitle);
-        ui::confirm_button_rect(content, index)
+        let (_, content) = ui::tiles::confirm_dialog_layout(screen_w, screen_h, fonts, subtitle);
+        ui::widgets::confirm_button_rect(content, index)
     }
 
     /// Moves the positional focus/selection onto whatever interactive element sits
@@ -1091,7 +1108,7 @@ impl App {
     /// moved. Hovering empty space (gaps, row padding, the area between rows) leaves
     /// the current selection put rather than clearing it, so a resting pointer never
     /// fights the D-pad.
-    fn hover_focus_at(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> bool {
+    fn hover_focus_at(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> bool {
         // An open dropdown overlays the row list — hover moves its option cursor and
         // nothing behind it. Shared by whichever screen owns the dropdown (Settings or
         // Diagnostics), and uses the same overlay geometry the renderer draws against.
@@ -1113,20 +1130,22 @@ impl App {
             Screen::Home => {
                 // The ⋯ button sits inside its row, so it's tested first — same order
                 // as `handle_mouse_click`, so hover previews exactly what a click hits.
-                if let Some(idx) = view::sidebar::hit_test_menu_button(x, y, self.entries.len()) {
+                if let Some(idx) =
+                    view::sidebar::hit_test_menu_button(x, y, self.entries.len(), self.sidebar_len(), screen_h)
+                {
                     return self.set_home_focus(HomeFocus::SidebarMenu(idx));
                 }
                 if let Some(idx) = view::sidebar::hit_test_row(x, y, self.sidebar_len(), screen_h) {
                     return self.set_home_focus(HomeFocus::Sidebar(idx));
                 }
-                let available_w = screen_w.saturating_sub(ui::SIDEBAR_W);
+                let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
                 let columns = view::home::grid_columns(available_w);
                 if let Some(idx) = view::home::hit_test_grid_card(
                     x,
                     y,
                     columns,
                     self.grid_len(columns),
-                    ui::SIDEBAR_W as i32,
+                    ui::widgets::SIDEBAR_W as i32,
                     available_w,
                     self.grid_scroll,
                 ) {
@@ -1151,11 +1170,13 @@ impl App {
                 let Some((_, content)) = self.modal_list_geometry(screen_w, screen_h, fonts) else {
                     return false;
                 };
-                let Some(i) = (0..rows).find(|&i| ui::focus_row_rect(content, i).contains_point((x, y))) else {
+                let Some(i) = (0..rows).find(|&i| ui::widgets::focus_row_rect(content, i).contains_point((x, y)))
+                else {
                     return false;
                 };
-                let row = ui::focus_row_rect(content, i);
-                let dots = self.host_menu_row_has_dots() && ui::sidebar_menu_button_rect(row).contains_point((x, y));
+                let row = ui::widgets::focus_row_rect(content, i);
+                let dots =
+                    self.host_menu_row_has_dots() && ui::widgets::sidebar_menu_button_rect(row).contains_point((x, y));
                 let changed = self.menu_focused != i || self.host_menu_dots != dots;
                 self.menu_focused = i;
                 self.host_menu_dots = dots;
@@ -1248,7 +1269,7 @@ impl App {
                 );
                 let content =
                     view::speedtest::buttons_rect(card, fonts, self.speed_test.as_ref(), &self.speed_test_name);
-                match ui::confirm_button_at(content, x, y) {
+                match ui::tiles::confirm_button_at(content, x, y) {
                     Some(i) => {
                         let changed = self.speed_test_focused != i;
                         self.speed_test_focused = i;
@@ -1282,12 +1303,12 @@ impl App {
         screen: Screen,
         screen_w: u32,
         screen_h: u32,
-        fonts: &ui::Fonts,
+        fonts: &ui::text::Fonts,
     ) -> Option<(Rect, i32)> {
         match screen {
             Screen::Settings => {
                 let (_, content) = view::settings::layout(&self.settings, screen_w, screen_h);
-                let stride = ui::focus_row_stride() as i32;
+                let stride = ui::widgets::focus_row_stride() as i32;
                 let total = menu::settings_row_count(&self.settings);
                 // Anchor to the animated offset so an open dropdown stays attached to
                 // its row while the list is still settling.
@@ -1310,19 +1331,26 @@ impl App {
         if !content.contains_point((x, y)) {
             return None;
         }
-        let stride = ui::focus_row_stride() as i32;
+        let stride = ui::widgets::focus_row_stride() as i32;
         let total = menu::settings_row_count(&self.settings);
         let scroll_px = self
             .modal_scroll_px
             .clamp(0, Self::max_scroll_px(total, stride, content.height()));
-        (0..total).find(|&r| ui::focus_row_rect_at_px(content, r, scroll_px).contains_point((x, y)))
+        (0..total).find(|&r| ui::widgets::focus_row_rect_at_px(content, r, scroll_px).contains_point((x, y)))
     }
 
     /// The dropdown option index under the pointer, if a dropdown is open and the
     /// pointer is over one of its options. Shares `dropdown_geom` +
-    /// `ui::dropdown_option_rect` with the renderer so hover previews exactly what a
+    /// `ui::widgets::dropdown_option_rect` with the renderer so hover previews exactly what a
     /// click confirms.
-    fn dropdown_option_at(&self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Option<usize> {
+    fn dropdown_option_at(
+        &self,
+        x: i32,
+        y: i32,
+        screen_w: u32,
+        screen_h: u32,
+        fonts: &ui::text::Fonts,
+    ) -> Option<usize> {
         let dd = self.dropdown.as_ref()?;
         let (content, scroll_px) = self.dropdown_geom(self.screen, screen_w, screen_h, fonts)?;
         let overlay = view::settings::dropdown_overlay_rect_at_px(content, dd.row, scroll_px);
@@ -1330,13 +1358,13 @@ impl App {
             Screen::Diagnostics => menu::LOG_LEVEL_OPTIONS.len(),
             _ => menu::dropdown_option_count(menu::settings_logical_row(&self.settings, dd.row)),
         };
-        (0..options_len).find(|&i| ui::dropdown_option_rect(overlay, i).contains_point((x, y)))
+        (0..options_len).find(|&i| ui::widgets::dropdown_option_rect(overlay, i).contains_point((x, y)))
     }
 
     /// A click while a dropdown is open: an option under the pointer confirms it,
     /// anything else dismisses (tap-outside-to-close). The hovered option is already
     /// the cursor courtesy of `handle_mouse_motion`.
-    fn dropdown_click_event(&self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> MenuEvent {
+    fn dropdown_click_event(&self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> MenuEvent {
         if self.dropdown_option_at(x, y, screen_w, screen_h, fonts).is_some() {
             MenuEvent::Confirm
         } else {
@@ -1348,20 +1376,20 @@ impl App {
     /// modal card (Home, or Wake before its payload is set). Measured off the same
     /// [`ui::ModalScreen`] value the renderer draws, so hover, click and the
     /// close-button hit-test can never drift from what is on screen.
-    fn modal_card_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Option<Rect> {
+    fn modal_card_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<Rect> {
         self.with_modal_screen(|s| s.card_rect(screen_w, screen_h, fonts))
     }
 
     /// The open modal's row-list viewport, or an empty rect on a screen without one —
     /// for the tile builders, which only reach here on a screen that has one.
-    fn modal_list_content(&self, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Rect {
+    fn modal_list_content(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Rect {
         self.modal_list_geometry(screen_w, screen_h, fonts)
             .map_or_else(|| Rect::new(0, 0, 0, 0), |(_, content)| content)
     }
 
     /// The open modal's card and row-list viewport, when it has one. The pair every hit
     /// test and focused-row tile needs, derived once from the screen that draws them.
-    fn modal_list_geometry(&self, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Option<(Rect, Rect)> {
+    fn modal_list_geometry(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<(Rect, Rect)> {
         self.with_modal_screen(|s| {
             let card = s.card_rect(screen_w, screen_h, fonts);
             s.content_rect(card, fonts).map(|content| (card, content))
@@ -1437,7 +1465,7 @@ impl App {
     /// to the whole screen. Records the region in `modal_tile_region`, which is where
     /// `compose_modal` composites the tile. Falls back to full-screen on a screen with
     /// no card (shouldn't happen with one open).
-    fn modal_painter(&mut self, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Painter {
+    fn modal_painter(&mut self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Painter {
         let card = self.modal_card_rect(screen_w, screen_h, fonts);
         let pad = MODAL_TILE_PAD;
         let region = card.map_or_else(
@@ -1458,10 +1486,17 @@ impl App {
     }
 
     /// The list-modal row index under the pointer, for the plain list modals whose
-    /// rows are laid out by `ui::list_modal_content_rect` + `ui::focus_row_rect`
+    /// rows are laid out by `ui::widgets::list_modal_content_rect` + `ui::widgets::focus_row_rect`
     /// (HostMenu/Diagnostics/Experimental). `None` on any other screen or when the
     /// pointer misses every row. Shared so hover and click hit-test identically.
-    fn modal_list_row_at(&self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> Option<usize> {
+    fn modal_list_row_at(
+        &self,
+        x: i32,
+        y: i32,
+        screen_w: u32,
+        screen_h: u32,
+        fonts: &ui::text::Fonts,
+    ) -> Option<usize> {
         let card = self.modal_card_rect(screen_w, screen_h, fonts)?;
         let (subtitle, rows) = match self.screen {
             Screen::HostMenu => (self.host_menu_subtitle(), self.host_menu_actions().len()),
@@ -1473,11 +1508,11 @@ impl App {
             Screen::CursorSettings => (view::cursorsettings::SUBTITLE.to_string(), menu::CURSOR_ROW_COUNT),
             _ => return None,
         };
-        let content = ui::list_modal_content_rect(card, fonts, &subtitle, rows);
-        (0..rows).find(|&r| ui::focus_row_rect(content, r).contains_point((x, y)))
+        let content = ui::widgets::list_modal_content_rect(card, fonts, &subtitle, rows);
+        (0..rows).find(|&r| ui::widgets::focus_row_rect(content, r).contains_point((x, y)))
     }
 
-    fn hover_close_at(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::Fonts) -> bool {
+    fn hover_close_at(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> bool {
         let Some(card) = self.modal_card_rect(screen_w, screen_h, fonts) else {
             // Home draws no close button, but `hover_close` is only ever set true by a
             // modal branch — without clearing it on the way back to Home it stayed stuck
@@ -1487,7 +1522,7 @@ impl App {
             self.hover_close = false;
             return false;
         };
-        self.set_hover_close(ui::modal_close_rect(card).contains_point((x, y)))
+        self.set_hover_close(ui::widgets::modal_close_rect(card).contains_point((x, y)))
     }
 
     /// Updates `hover_close` and reports whether it actually changed — every modal
@@ -1507,7 +1542,7 @@ impl App {
         y: i32,
         screen_w: u32,
         screen_h: u32,
-        fonts: &ui::Fonts,
+        fonts: &ui::text::Fonts,
     ) -> Option<ConnectTarget> {
         // Re-sync the close-button hover to the click's own position first — a
         // MouseButtonDown can carry a slightly different (x, y) than the last
@@ -1524,7 +1559,9 @@ impl App {
             Screen::Home => {
                 // The ⋯ button sits inside its row, so it has to be tested first or the
                 // click just reads as a click on the host.
-                if let Some(idx) = view::sidebar::hit_test_menu_button(x, y, self.entries.len()) {
+                if let Some(idx) =
+                    view::sidebar::hit_test_menu_button(x, y, self.entries.len(), self.sidebar_len(), screen_h)
+                {
                     self.home_focus = HomeFocus::SidebarMenu(idx);
                     self.open_host_menu(idx);
                     return None;
@@ -1532,7 +1569,7 @@ impl App {
                 if let Some(idx) = view::sidebar::hit_test_row(x, y, self.sidebar_len(), screen_h) {
                     self.home_focus = HomeFocus::Sidebar(idx);
                 } else {
-                    let available_w = screen_w.saturating_sub(ui::SIDEBAR_W);
+                    let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
                     let columns = view::home::grid_columns(available_w);
                     // Clicked empty space — either between cards (`?`'s early
                     // `None`) or the padding after a partial pinned row.
@@ -1541,7 +1578,7 @@ impl App {
                         y,
                         columns,
                         self.grid_len(columns),
-                        ui::SIDEBAR_W as i32,
+                        ui::widgets::SIDEBAR_W as i32,
                         available_w,
                         self.grid_scroll,
                     )?;
@@ -1587,19 +1624,19 @@ impl App {
             Screen::HostMenu => {
                 let rows = self.host_menu_actions().len();
                 let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
-                let i = (0..rows).find(|&i| ui::focus_row_rect(content, i).contains_point((x, y)))?;
+                let i = (0..rows).find(|&i| ui::widgets::focus_row_rect(content, i).contains_point((x, y)))?;
                 self.menu_focused = i;
                 // A click that landed on the row's ⋯ opens that instead of the row's own
                 // action — same split as a sidebar host row's button.
-                let row = ui::focus_row_rect(content, i);
+                let row = ui::widgets::focus_row_rect(content, i);
                 self.host_menu_dots =
-                    self.host_menu_row_has_dots() && ui::sidebar_menu_button_rect(row).contains_point((x, y));
+                    self.host_menu_row_has_dots() && ui::widgets::sidebar_menu_button_rect(row).contains_point((x, y));
                 self.handle_host_menu_event(MenuEvent::Confirm);
                 None
             }
             Screen::WakeSettings => {
                 let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
-                if ui::focus_row_rect(content, 0).contains_point((x, y)) {
+                if ui::widgets::focus_row_rect(content, 0).contains_point((x, y)) {
                     self.handle_wake_settings_event(MenuEvent::Confirm);
                 }
                 None
@@ -1685,7 +1722,7 @@ impl App {
         }
     }
 
-    /// The current position (0.0..=1.0, see `ui::draw_switch`) of a `Toggle`
+    /// The current position (0.0..=1.0, see `Painter::switch`) of a `Toggle`
     /// row's switch given its settled state `target_on` — mid-slide while
     /// `switch_anim` is in flight *for that same row and transition*, otherwise
     /// settled at the endpoint. `row` is the focused row being rendered; the
@@ -1694,7 +1731,7 @@ impl App {
     pub(crate) fn toggle_frac(&self, target_on: bool, row: usize) -> f32 {
         match self.switch_anim {
             Some((t, from_on, anim_row)) if anim_row == row && from_on != target_on => {
-                let f = ui::anim_frac(Some(t), ui::FOCUS_POP);
+                let f = ui::animation::anim_frac(Some(t), ui::animation::FOCUS_POP);
                 if target_on {
                     f
                 } else {
@@ -1714,7 +1751,7 @@ impl App {
     /// modal-tile rebuild on entry, but this method has already consumed the transition by
     /// advancing `last_screen`, so it hands the flag back rather than leaving it to recompute.
     pub fn advance_frame(&mut self, screen_w: u32) -> bool {
-        let available_w = screen_w.saturating_sub(ui::SIDEBAR_W);
+        let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
         self.card_size = view::home::grid_card_size(available_w, columns);
 
@@ -1747,15 +1784,15 @@ impl App {
     fn prepare_sidebar(
         &mut self,
         tiles: &mut TileCache,
-        text_cache: &mut crate::ui::TextCache,
-        fonts: &ui::Fonts,
+        text_cache: &mut crate::ui::text::TextCache,
+        fonts: &ui::text::Fonts,
         screen_h: u32,
         updated: &mut Vec<Tile>,
     ) -> Result<()> {
         if self.sidebar_dirty || tiles.sidebar_layer.is_none() {
             let mut layer = match tiles.sidebar_layer.take() {
                 Some(l) => l,
-                None => Painter::new(ui::SIDEBAR_W, screen_h),
+                None => Painter::new(ui::widgets::SIDEBAR_W, screen_h),
             };
             let selected = self.sidebar_index_of_selected_host();
             view::sidebar::draw(
@@ -1764,7 +1801,7 @@ impl App {
                     text_cache,
                     fonts,
                     // The sidebar's own strip is the full panel height and a fixed width.
-                    screen_w: ui::SIDEBAR_W,
+                    screen_w: ui::widgets::SIDEBAR_W,
                     screen_h,
                 },
                 &self.entries,
@@ -1803,8 +1840,8 @@ impl App {
     fn prepare_grid(
         &mut self,
         tiles: &mut TileCache,
-        text_cache: &mut crate::ui::TextCache,
-        fonts: &ui::Fonts,
+        text_cache: &mut crate::ui::text::TextCache,
+        fonts: &ui::text::Fonts,
         columns: usize,
         card_w: u32,
         card_h: u32,
@@ -1922,7 +1959,7 @@ impl App {
                 }
                 let tile = {
                     let (title, art) = self.grid_card_content(idx, columns);
-                    ui::render_card_tile(text_cache, fonts, card_w, card_h, title, art)?
+                    ui::tiles::render_card_tile(text_cache, fonts, card_w, card_h, title, art)?
                 };
                 tiles.card_tiles.insert(id.clone(), tile);
                 if self.grid_reveal_ready {
@@ -1953,7 +1990,7 @@ impl App {
             // The pinned badge tile — built once, composited over the focused
             // card in `draw_list` rather than baked into individual card tiles.
             if tiles.pin_badge_tile.is_none() {
-                tiles.pin_badge_tile = Some(ui::render_pin_badge_tile(text_cache, fonts.raster, fonts.icon)?);
+                tiles.pin_badge_tile = Some(ui::tiles::render_pin_badge_tile(text_cache, fonts)?);
                 updated.push(Tile::PinBadge);
             }
 
@@ -1983,7 +2020,7 @@ impl App {
                         self.card_pop.entry(id.clone()).or_insert(now);
                     }
                 } else {
-                    let (frame_idx, _) = ui::spinner_frame_at(since.elapsed().as_secs_f32());
+                    let (frame_idx, _) = crate::assets::spinner_frame_at(since.elapsed().as_secs_f32());
                     if self.spinner_frame != Some(frame_idx) {
                         self.spinner_frame = Some(frame_idx);
                         updated.push(Tile::SpinnerFrame(frame_idx));
@@ -1991,26 +2028,26 @@ impl App {
                 }
             }
 
-            let ring_w = card_w + 2 * ui::FOCUS_RING_PAD as u32;
+            let ring_w = card_w + 2 * ui::tiles::FOCUS_RING_PAD as u32;
             if !matches!(&tiles.ring_tile, Some(p) if p.width() == ring_w) {
-                tiles.ring_tile = Some(ui::render_focus_ring_tile(card_w, card_h));
+                tiles.ring_tile = Some(ui::tiles::render_focus_ring_tile(card_w, card_h));
                 updated.push(Tile::Ring);
             }
-            let outline_w = card_w + 2 * ui::CARD_OUTLINE_PAD as u32;
+            let outline_w = card_w + 2 * ui::tiles::CARD_OUTLINE_PAD as u32;
             if !matches!(&tiles.outline_tile, Some(p) if p.width() == outline_w) {
-                tiles.outline_tile = Some(ui::render_card_outline_tile(card_w, card_h));
+                tiles.outline_tile = Some(ui::tiles::render_card_outline_tile(card_w, card_h));
                 updated.push(Tile::CardOutline);
             }
         } else {
             self.grid_reveal_ready = true;
             self.spinner_since = None;
             if tiles.nohost_tile.is_none() {
-                tiles.nohost_tile = Some(ui::render_text_tile(
+                tiles.nohost_tile = Some(ui::tiles::render_text_tile(
                     text_cache,
-                    fonts.raster,
+                    fonts,
                     fonts.label,
                     "No host selected — pick one from the list, or add one.",
-                    ui::MUTED,
+                    ui::style::theme().muted,
                 )?);
                 updated.push(Tile::NoHost);
             }
@@ -2040,8 +2077,8 @@ impl App {
     fn prepare_modal(
         &mut self,
         tiles: &mut TileCache,
-        text_cache: &mut crate::ui::TextCache,
-        fonts: &ui::Fonts,
+        text_cache: &mut crate::ui::text::TextCache,
+        fonts: &ui::text::Fonts,
         screen_w: u32,
         screen_h: u32,
         content_dirty: bool,
@@ -2210,7 +2247,7 @@ impl App {
                         let rows = self.settings_rows();
                         let dropdown_open = self.dropdown.as_ref().is_some_and(|dd| dd.row == self.settings_focused);
                         let target_on = rows.get(self.settings_focused).is_some_and(|r| r.value == "On");
-                        ui::render_focus_row_tile(
+                        ui::widgets::render_focus_row_tile(
                             text_cache,
                             fonts,
                             &rows,
@@ -2234,7 +2271,7 @@ impl App {
                             wake.focused,
                         );
                         let buttons = view::wake::buttons();
-                        ui::render_confirm_button_tile(
+                        ui::widgets::render_confirm_button_tile(
                             text_cache,
                             fonts,
                             &buttons[wake.focused],
@@ -2243,22 +2280,13 @@ impl App {
                         )?
                     }
                     Screen::Pairing => match self.pairing_focus {
-                        PairingFocus::Pin => view::pairing::render_digit_tile(
-                            text_cache,
-                            fonts.raster,
-                            fonts.title,
-                            self.pin_digits[self.pin_digit_index],
-                        )?,
+                        PairingFocus::Pin => {
+                            view::pairing::render_digit_tile(text_cache, fonts, self.pin_digits[self.pin_digit_index])?
+                        }
                         PairingFocus::RequestAccess => {
                             let card = view::pairing::card_rect(screen_w, screen_h, fonts);
                             let btn = view::pairing::request_button_rect(card, fonts);
-                            view::pairing::render_button_tile(
-                                text_cache,
-                                fonts.raster,
-                                fonts.label,
-                                btn.width(),
-                                btn.height(),
-                            )?
+                            view::pairing::render_button_tile(text_cache, fonts, btn.width(), btn.height())?
                         }
                     },
                     Screen::ForgetHost => {
@@ -2275,7 +2303,7 @@ impl App {
                             self.host_menu_focused,
                         );
                         let buttons = view::forget::buttons();
-                        ui::render_confirm_button_tile(
+                        ui::widgets::render_confirm_button_tile(
                             text_cache,
                             fonts,
                             &buttons[self.host_menu_focused],
@@ -2290,7 +2318,7 @@ impl App {
                             row.menu = row.menu.map(|_| self.host_menu_dots);
                         }
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
-                        ui::render_focus_row_tile(
+                        ui::widgets::render_focus_row_tile(
                             text_cache,
                             fonts,
                             &rows,
@@ -2304,7 +2332,7 @@ impl App {
                         let on = self.wake_settings_host().is_some_and(|h| h.wol_auto);
                         let rows = view::wakesettings::rows(on);
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
-                        ui::render_focus_row_tile(
+                        ui::widgets::render_focus_row_tile(
                             text_cache,
                             fonts,
                             &rows,
@@ -2322,14 +2350,14 @@ impl App {
                             self.speed_test.as_ref(),
                             &self.speed_test_name,
                         );
-                        let rect = ui::confirm_button_rect(
+                        let rect = ui::widgets::confirm_button_rect(
                             view::speedtest::buttons_rect(card, fonts, self.speed_test.as_ref(), &self.speed_test_name),
                             self.speed_test_focused,
                         );
                         let apply_label =
                             view::speedtest::apply_label(view::speedtest::recommendation(self.speed_test.as_ref()));
                         let buttons = view::speedtest::buttons(&apply_label);
-                        ui::render_confirm_button_tile(
+                        ui::widgets::render_confirm_button_tile(
                             text_cache,
                             fonts,
                             &buttons[self.speed_test_focused],
@@ -2345,7 +2373,7 @@ impl App {
                             .as_ref()
                             .is_some_and(|dd| dd.row == self.diagnostics_focused);
                         let target_on = rows.get(self.diagnostics_focused).is_some_and(|r| r.value == "On");
-                        ui::render_focus_row_tile(
+                        ui::widgets::render_focus_row_tile(
                             text_cache,
                             fonts,
                             &rows,
@@ -2359,7 +2387,7 @@ impl App {
                         let rows = view::experimental::rows(&self.settings, Self::rooted());
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
                         let target_on = rows.get(self.experimental_focused).is_some_and(|r| r.value == "On");
-                        ui::render_focus_row_tile(
+                        ui::widgets::render_focus_row_tile(
                             text_cache,
                             fonts,
                             &rows,
@@ -2373,7 +2401,7 @@ impl App {
                         let rows = view::cursorsettings::rows(&self.settings);
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
                         let target_on = rows.get(self.cursor_settings_focused).is_some_and(|r| r.value == "On");
-                        ui::render_focus_row_tile(
+                        ui::widgets::render_focus_row_tile(
                             text_cache,
                             fonts,
                             &rows,
@@ -2392,7 +2420,7 @@ impl App {
                             self.send_logs_focused,
                         );
                         let buttons = view::sendlogs::buttons();
-                        ui::render_confirm_button_tile(
+                        ui::widgets::render_confirm_button_tile(
                             text_cache,
                             fonts,
                             &buttons[self.send_logs_focused],
@@ -2417,8 +2445,8 @@ impl App {
     fn prepare_dropdown(
         &mut self,
         tiles: &mut TileCache,
-        text_cache: &mut crate::ui::TextCache,
-        fonts: &ui::Fonts,
+        text_cache: &mut crate::ui::text::TextCache,
+        fonts: &ui::text::Fonts,
         screen_w: u32,
         screen_h: u32,
         updated: &mut Vec<Tile>,
@@ -2442,10 +2470,11 @@ impl App {
             let overlay_key = (self.screen, dd.row);
             let overlay_stale = !matches!(&tiles.dropdown_overlay_tile, Some((k, _)) if *k == overlay_key);
             if overlay_stale {
-                let overlay_h = options.len() as u32 * ui::DROPDOWN_OPTION_H;
+                let overlay_h = options.len() as u32 * ui::widgets::DROPDOWN_OPTION_H;
                 let mut p = Painter::new(content_w, overlay_h.max(1));
                 let rect = Rect::new(0, 0, content_w, overlay_h);
-                ui::Canvas::tile(&mut p, text_cache, fonts).dropdown_overlay(&options, usize::MAX, rect)?;
+                ui::Canvas::tile(&mut p, text_cache, fonts)
+                    .render(ui::widgets::DropdownOverlay::new(&options), rect)?;
                 tiles.dropdown_overlay_tile = Some((overlay_key, p));
                 updated.push(Tile::DropdownOverlay);
             }
@@ -2454,7 +2483,7 @@ impl App {
             let stale = !matches!(&tiles.dropdown_focus_tile, Some((k, _)) if *k == key);
             if stale {
                 let option = options.get(dd.focused).map_or("", String::as_str);
-                let tile = ui::render_dropdown_option_tile(text_cache, fonts.raster, fonts.value, option, content_w)?;
+                let tile = ui::widgets::render_dropdown_option_tile(text_cache, fonts, option, content_w)?;
                 tiles.dropdown_focus_tile = Some((key, tile));
                 updated.push(Tile::DropdownFocusOption);
             }
@@ -2471,8 +2500,8 @@ impl App {
     fn prepare_scroll(
         &mut self,
         tiles: &mut TileCache,
-        text_cache: &mut crate::ui::TextCache,
-        fonts: &ui::Fonts,
+        text_cache: &mut crate::ui::text::TextCache,
+        fonts: &ui::text::Fonts,
         screen_w: u32,
         screen_h: u32,
         updated: &mut Vec<Tile>,
@@ -2493,19 +2522,24 @@ impl App {
             let ind_key = (total, visible, scroll);
             let ind_stale = !matches!(&tiles.scroll_indicator_tile, Some((k, _)) if *k == ind_key);
             if ind_stale {
-                let tile =
-                    ui::render_list_scrollbar_tile(SCROLL_INDICATOR_TILE_W, content.height(), total, visible, scroll);
+                let tile = ui::widgets::render_list_scrollbar_tile(
+                    SCROLL_INDICATOR_TILE_W,
+                    content.height(),
+                    total,
+                    visible,
+                    scroll,
+                );
                 tiles.scroll_indicator_tile = Some((ind_key, tile));
                 updated.push(Tile::ScrollIndicator(self.screen));
             }
             // Static ramp, so this is a once-per-run bake rather than a keyed rebuild —
             // scrolling and resizing both leave it valid (the GPU restretches it).
             if tiles.scroll_fade_tile.is_none() {
-                tiles.scroll_fade_tile = Some(ui::render_scroll_fade_tile(ui::FadeEdge::Bottom));
+                tiles.scroll_fade_tile = Some(ui::widgets::render_scroll_fade_tile(ui::widgets::FadeEdge::Bottom));
                 updated.push(Tile::ScrollFade);
             }
             if tiles.scroll_fade_top_tile.is_none() {
-                tiles.scroll_fade_top_tile = Some(ui::render_scroll_fade_tile(ui::FadeEdge::Top));
+                tiles.scroll_fade_top_tile = Some(ui::widgets::render_scroll_fade_tile(ui::widgets::FadeEdge::Top));
                 updated.push(Tile::ScrollFadeTop);
             }
             let stride = self.scroll_stride(fonts);
@@ -2521,10 +2555,16 @@ impl App {
                     let stale = !matches!(&tiles.scroll_content_tile, Some((k, _)) if *k == key);
                     if stale {
                         let rows = self.settings_rows();
-                        let tile = ui::render_focus_rows_tile(text_cache, fonts, &rows, content.width(), dropdown_row)?;
+                        let tile = ui::widgets::render_focus_rows_tile(
+                            text_cache,
+                            fonts,
+                            &rows,
+                            content.width(),
+                            dropdown_row,
+                        )?;
                         tiles.scroll_content_tile = Some((key, tile));
                         // Settings' whole row list always fits one tile — no windowing.
-                        self.content_window = ui::ContentWindow {
+                        self.content_window = ui::scroll::ContentWindow {
                             start: 0,
                             len: menu::settings_row_count(&self.settings),
                         };
@@ -2543,8 +2583,9 @@ impl App {
                         if let Some((_, wrapped)) = &self.about_wrapped {
                             let stride = self.scroll_stride(fonts) as u32;
                             let mut p = Painter::new(content.width().max(1), (len as u32 * stride).max(1));
-                            view::about::draw_window(&mut p, fonts.raster, fonts.value, wrapped, new_start, len)?;
-                            self.content_window = ui::ContentWindow { start: new_start, len };
+                            let mut c = ui::Canvas::tile(&mut p, text_cache, fonts);
+                            view::about::draw_window(&mut c, fonts.value, wrapped, new_start, len)?;
+                            self.content_window = ui::scroll::ContentWindow { start: new_start, len };
                             tiles.scroll_content_tile = Some(((Screen::About, ScrollContentKey::About(new_start)), p));
                             updated.push(Tile::ScrollContent(Screen::About));
                         }
@@ -2567,8 +2608,8 @@ impl App {
     /// just Settings — even where the exact strings differ (e.g. the host menu).
     pub fn prewarm_modal_caches(
         &self,
-        text_cache: &mut crate::ui::TextCache,
-        fonts: &ui::Fonts,
+        text_cache: &mut crate::ui::text::TextCache,
+        fonts: &ui::text::Fonts,
         screen_w: u32,
         screen_h: u32,
     ) -> Result<()> {
@@ -2580,8 +2621,8 @@ impl App {
         )?;
         let (_, content) = view::settings::layout(&self.settings, screen_w, screen_h);
         let rows = self.settings_rows();
-        let _ = ui::render_focus_rows_tile(text_cache, fonts, &rows, content.width(), None)?;
-        let _ = ui::render_focus_row_tile(text_cache, fonts, &rows, content.width(), 0, false, 0.0)?;
+        let _ = ui::widgets::render_focus_rows_tile(text_cache, fonts, &rows, content.width(), None)?;
+        let _ = ui::widgets::render_focus_row_tile(text_cache, fonts, &rows, content.width(), 0, false, 0.0)?;
         Ok(())
     }
 
@@ -2595,15 +2636,15 @@ impl App {
     pub fn prepare_tiles(
         &mut self,
         tiles: &mut TileCache,
-        text_cache: &mut crate::ui::TextCache,
-        fonts: &ui::Fonts,
+        text_cache: &mut crate::ui::text::TextCache,
+        fonts: &ui::text::Fonts,
         screen_w: u32,
         screen_h: u32,
         content_dirty: bool,
         screen_changed: bool,
     ) -> Result<Vec<Tile>> {
         let mut updated = Vec::new();
-        let available_w = screen_w.saturating_sub(ui::SIDEBAR_W);
+        let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
         // `self.card_size` is set by `advance_frame` (same formula) before this runs; the
         // local copy is what the tile-build loop below reads.
@@ -2630,10 +2671,17 @@ impl App {
             Some(s) => {
                 let stale = !matches!(&tiles.status_tile, Some((t, _)) if t == s);
                 if stale {
-                    let avail = screen_w.saturating_sub(ui::SIDEBAR_W);
+                    let avail = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
                     let max_w = avail.saturating_sub(2 * view::home::GRID_PAD as u32);
-                    let tile =
-                        ui::render_wrapped_text_tile(text_cache, fonts.raster, fonts.label, s, max_w, ui::MUTED, 6)?;
+                    let tile = ui::tiles::render_wrapped_text_tile(
+                        text_cache,
+                        fonts,
+                        fonts.label,
+                        s,
+                        max_w,
+                        ui::style::theme().muted,
+                        6,
+                    )?;
                     tiles.status_tile = Some((s.clone(), tile));
                     updated.push(Tile::Status);
                 }
@@ -2669,7 +2717,7 @@ impl App {
         &self,
         screen_w: u32,
         screen_h: u32,
-        fonts: &ui::Fonts,
+        fonts: &ui::text::Fonts,
     ) -> Option<(usize, usize, Rect, Rect)> {
         self.scroll_geometry_for(self.screen, screen_w, screen_h, fonts)
     }
@@ -2682,7 +2730,7 @@ impl App {
         screen: Screen,
         screen_w: u32,
         screen_h: u32,
-        fonts: &ui::Fonts,
+        fonts: &ui::text::Fonts,
     ) -> Option<(usize, usize, Rect, Rect)> {
         match screen {
             Screen::Settings => {
@@ -2766,14 +2814,14 @@ impl App {
     /// Pixel stride between two consecutive units of whichever modal is scrolling —
     /// Settings' fixed row height, or About's wrapped-line height. Only meaningful
     /// when `scroll_geometry` returns `Some`.
-    fn scroll_stride(&self, fonts: &ui::Fonts) -> i32 {
+    fn scroll_stride(&self, fonts: &ui::text::Fonts) -> i32 {
         self.scroll_stride_for(self.screen, fonts)
     }
 
     /// Same as `scroll_stride`, but for an explicit screen — see `scroll_geometry_for`.
-    fn scroll_stride_for(&self, screen: Screen, fonts: &ui::Fonts) -> i32 {
+    fn scroll_stride_for(&self, screen: Screen, fonts: &ui::text::Fonts) -> i32 {
         match screen {
-            Screen::Settings => ui::FOCUS_ROW_H as i32 + ui::FOCUS_ROW_GAP,
+            Screen::Settings => ui::widgets::FOCUS_ROW_H as i32 + ui::widgets::FOCUS_ROW_GAP,
             Screen::About => view::about::line_stride(fonts.raster, fonts.value),
             _ => 1,
         }
@@ -2814,7 +2862,7 @@ impl App {
 
     /// Builds this frame's draw list (paint order) from the current state and
     /// animation clocks — pure bookkeeping, no rasterization (the font
-    /// params are only for pure geometry — `ui::modal_header_end_y` and
+    /// params are only for pure geometry — `ui::text::modal_header_end_y` and
     /// friends — needed to position a modal's focused-widget tile without
     /// re-rendering its header). The GPU executes it (`Compositor::execute`).
     /// Assembles the read-only view of state the render path consumes (see
@@ -2837,12 +2885,12 @@ impl App {
         tiles: &TileCache,
         screen_w: u32,
         screen_h: u32,
-        fonts: &ui::Fonts,
+        fonts: &ui::text::Fonts,
         cmds: &mut Vec<DrawCmd>,
     ) {
         // While closing, `self.screen` has already moved on — render the fade's
         // captured screen instead, so the still-uploaded tiles keep drawing for one
-        // more `MODAL_FADE` with alpha running in reverse (see `ui::ModalFade`).
+        // more `MODAL_FADE` with alpha running in reverse (see `ui::fade::ModalFade`).
         let closing_frame = self.modal_fade.closing_frame(MODAL_FADE);
         let (screen, m) = match closing_frame {
             Some((alpha, s)) => (s, alpha),
@@ -2851,7 +2899,7 @@ impl App {
         if !matches!(screen, Screen::Home) {
             cmds.push(DrawCmd::Fill {
                 rect: Rect::new(0, 0, screen_w, screen_h),
-                color: crate::ui::render::Color::RGBA(0, 0, 0, (f32::from(ui::MODAL_SCRIM.a) * m) as u8),
+                color: crate::ui::render::Color::RGBA(0, 0, 0, (f32::from(ui::style::theme().scrim.a) * m) as u8),
             });
             let dy = ((1.0 - m) * 26.0) as i32;
             // The tile now covers only the card region (see `prepare_modal`), so it
@@ -2861,7 +2909,7 @@ impl App {
             let modal_dst = if closing_frame.is_some() {
                 modal_base
             } else {
-                ui::pop_in_rect(modal_base, m, MODAL_POP_SHRINK)
+                ui::animation::pop_in_rect(modal_base, m, MODAL_POP_SHRINK)
             };
             cmds.push(DrawCmd::Tex {
                 tile: Tile::Modal,
@@ -2900,7 +2948,7 @@ impl App {
                 // rather than show through it.
                 // Keyed off pixels, not rows: at either end of the list the offset is clamped
                 // mid-row, so a row-based test would keep claiming there is more beyond.
-                let fade_h = ui::SCROLL_FADE_H.min(content.height());
+                let fade_h = ui::widgets::SCROLL_FADE_H.min(content.height());
                 if scroll_px > 0 {
                     cmds.push(DrawCmd::Tex {
                         tile: Tile::ScrollFadeTop,
@@ -2935,7 +2983,7 @@ impl App {
                             overlay_rect.x(),
                             overlay_rect.y() + dy,
                             overlay_rect.width(),
-                            options_len as u32 * ui::DROPDOWN_OPTION_H,
+                            options_len as u32 * ui::widgets::DROPDOWN_OPTION_H,
                         ),
                         alpha: (255.0 * m * dd_alpha) as u8,
                     });
@@ -2960,11 +3008,11 @@ impl App {
                         // list is cropped at that offset, and the focus tile *is* the focused row
                         // re-rendered — so anchoring it to the quantized row would show that row's
                         // content twice, in two places, for the length of every scroll.
-                        let stride = ui::focus_row_stride() as i32;
+                        let stride = ui::widgets::focus_row_stride() as i32;
                         let px = self
                             .modal_scroll_px
                             .clamp(0, Self::max_scroll_px(total, stride, content.height()));
-                        Some(ui::focus_row_rect_at_px(content, self.settings_focused, px))
+                        Some(ui::widgets::focus_row_rect_at_px(content, self.settings_focused, px))
                     }
                     Screen::Wake => self.wake.as_ref().filter(|w| !w.mac.is_empty()).map(|w| {
                         Self::confirm_focus_button_rect(
@@ -3003,18 +3051,18 @@ impl App {
                         let subtitle = self.host_menu_subtitle();
                         let rows = self.host_menu_actions().len();
                         let card = view::hostmenu::card_rect(screen_w, screen_h, fonts, &subtitle, rows);
-                        let content = ui::list_modal_content_rect(card, fonts, &subtitle, rows);
-                        Some(ui::focus_row_rect(content, self.menu_focused))
+                        let content = ui::widgets::list_modal_content_rect(card, fonts, &subtitle, rows);
+                        Some(ui::widgets::focus_row_rect(content, self.menu_focused))
                     }
                     Screen::WakeSettings => {
                         let card = view::wakesettings::card_rect(screen_w, screen_h, fonts);
-                        let content = ui::list_modal_content_rect(
+                        let content = ui::widgets::list_modal_content_rect(
                             card,
                             fonts,
                             view::wakesettings::SUBTITLE,
                             menu::DIAGNOSTICS_ROW_COUNT,
                         );
-                        Some(ui::focus_row_rect(content, self.wake_settings_focused))
+                        Some(ui::widgets::focus_row_rect(content, self.wake_settings_focused))
                     }
                     Screen::SpeedTest => view::speedtest::finished(self.speed_test.as_ref()).then(|| {
                         let card = view::speedtest::card_rect(
@@ -3024,36 +3072,37 @@ impl App {
                             self.speed_test.as_ref(),
                             &self.speed_test_name,
                         );
-                        ui::confirm_button_rect(
+                        ui::widgets::confirm_button_rect(
                             view::speedtest::buttons_rect(card, fonts, self.speed_test.as_ref(), &self.speed_test_name),
                             self.speed_test_focused,
                         )
                     }),
                     Screen::Diagnostics => {
                         let card = view::diagnostics::card_rect(screen_w, screen_h, fonts);
-                        let content = ui::list_modal_content_rect(
+                        let content = ui::widgets::list_modal_content_rect(
                             card,
                             fonts,
                             view::diagnostics::SUBTITLE,
                             menu::DIAGNOSTICS_ROW_COUNT,
                         );
-                        Some(ui::focus_row_rect(content, self.diagnostics_focused))
+                        Some(ui::widgets::focus_row_rect(content, self.diagnostics_focused))
                     }
                     Screen::Experimental => {
                         let rows = view::experimental::row_count(Self::rooted());
                         let card = view::experimental::card_rect(screen_w, screen_h, fonts, Self::rooted());
-                        let content = ui::list_modal_content_rect(card, fonts, view::experimental::SUBTITLE, rows);
-                        Some(ui::focus_row_rect(content, self.experimental_focused))
+                        let content =
+                            ui::widgets::list_modal_content_rect(card, fonts, view::experimental::SUBTITLE, rows);
+                        Some(ui::widgets::focus_row_rect(content, self.experimental_focused))
                     }
                     Screen::CursorSettings => {
                         let card = view::cursorsettings::card_rect(screen_w, screen_h, fonts);
-                        let content = ui::list_modal_content_rect(
+                        let content = ui::widgets::list_modal_content_rect(
                             card,
                             fonts,
                             view::cursorsettings::SUBTITLE,
                             menu::CURSOR_ROW_COUNT,
                         );
-                        Some(ui::focus_row_rect(content, self.cursor_settings_focused))
+                        Some(ui::widgets::focus_row_rect(content, self.cursor_settings_focused))
                     }
                     Screen::SendLogs => Some(Self::confirm_focus_button_rect(
                         screen_w,
@@ -3066,7 +3115,7 @@ impl App {
                 }
             };
             if let Some(rect) = focus_rect {
-                let pad = ui::ROW_TILE_PAD;
+                let pad = ui::tiles::ROW_TILE_PAD;
                 let base = Rect::new(
                     rect.x() - pad,
                     rect.y() - pad + dy,
@@ -3078,8 +3127,8 @@ impl App {
                 // rasterized once at its literal size, never re-rendered for
                 // this (except while `switch_anim` animates its content, see
                 // `prepare_tiles`).
-                let f = ui::anim_frac(self.modal_focus_anim, ui::FOCUS_POP);
-                let dst = ui::zoom_rect(base, f, 0.02);
+                let f = ui::animation::anim_frac(self.modal_focus_anim, ui::animation::FOCUS_POP);
+                let dst = ui::animation::zoom_rect(base, f, 0.02);
                 let alpha = (255.0 * m) as u8;
                 // In a scrolling modal the focused row can hang past the viewport's bottom
                 // edge mid-glide (the crop lags the row offset by up to one stride), so it is
@@ -3117,7 +3166,7 @@ impl App {
             if let Some((row, focused, dd_alpha)) = self.dropdown_draw_state() {
                 if let Some((content, scroll_px)) = self.dropdown_geom(screen, screen_w, screen_h, fonts) {
                     let overlay_rect = view::settings::dropdown_overlay_rect_at_px(content, row, scroll_px);
-                    let option_rect = ui::dropdown_option_rect(overlay_rect, focused);
+                    let option_rect = ui::widgets::dropdown_option_rect(overlay_rect, focused);
                     cmds.push(DrawCmd::Tex {
                         tile: Tile::DropdownFocusOption,
                         dst: Rect::new(
@@ -3177,12 +3226,8 @@ impl App {
             HomeFocus::Grid(_) => None,
         };
         if let Some(i) = sidebar_focus_row {
-            let rect = if i == input.entries.len() + 1 {
-                view::sidebar::settings_row_rect(screen_h)
-            } else {
-                view::sidebar::row_rect(i)
-            };
-            let pad = ui::ROW_TILE_PAD;
+            let rect = view::sidebar::nav_row_rect(i, input.entries.len() + 2, screen_h);
+            let pad = ui::tiles::ROW_TILE_PAD;
             cmds.push(DrawCmd::Tex {
                 tile: Tile::FocusRow,
                 dst: Rect::new(
@@ -3206,7 +3251,7 @@ impl App {
             HomeFocus::Grid(i) if i < count => Some(i),
             HomeFocus::Grid(_) | HomeFocus::Sidebar(_) | HomeFocus::SidebarMenu(_) => None,
         };
-        let pad = ui::CARD_TILE_PAD;
+        let pad = ui::tiles::CARD_TILE_PAD;
         let layout = self.grid_layout(columns);
         for idx in 0..count {
             if Some(idx) == focused {
@@ -3230,7 +3275,7 @@ impl App {
             );
             cmds.push(DrawCmd::Tex {
                 tile: Tile::Card(pin_id.to_string()),
-                dst: ui::pop_in_rect(base, pop, CARD_POP_SHRINK),
+                dst: ui::animation::pop_in_rect(base, pop, CARD_POP_SHRINK),
                 alpha: (255.0 * pop) as u8,
             });
         }
@@ -3250,7 +3295,7 @@ impl App {
                 // The focus pop: the GPU scales the (unfocused) card tile up
                 // around its center as the pop progresses, with the shared glow
                 // tile fading in behind it at the same scale.
-                let f = ui::anim_frac(self.focus_anim, ui::FOCUS_POP);
+                let f = ui::animation::anim_frac(self.focus_anim, ui::animation::FOCUS_POP);
                 let r = self.scrolled_card_rect(idx, columns, grid_x, available_w);
                 let card_base = Rect::new(
                     r.x() - pad,
@@ -3259,10 +3304,10 @@ impl App {
                     r.height() + 2 * pad as u32,
                 );
                 let pop = self.card_pop_frac(pin_id);
-                let popped = |base: Rect| ui::pop_in_rect(base, pop, CARD_POP_SHRINK);
+                let popped = |base: Rect| ui::animation::pop_in_rect(base, pop, CARD_POP_SHRINK);
                 // Glow drawn first — it's a halo behind the card, not an outline
                 // on top of it.
-                let rp = ui::FOCUS_RING_PAD;
+                let rp = ui::tiles::FOCUS_RING_PAD;
                 let ring_base = Rect::new(
                     r.x() - rp,
                     r.y() - rp,
@@ -3271,7 +3316,7 @@ impl App {
                 );
                 cmds.push(DrawCmd::Tex {
                     tile: Tile::Ring,
-                    dst: popped(ui::zoom_rect(ring_base, f, CARD_GROWTH)),
+                    dst: popped(ui::animation::zoom_rect(ring_base, f, CARD_GROWTH)),
                     alpha: (255.0 * f * pop) as u8,
                 });
                 // The focused card zooms in on first appearance like any other,
@@ -3279,13 +3324,13 @@ impl App {
                 // center, so they can't fight over position.
                 cmds.push(DrawCmd::Tex {
                     tile: Tile::Card(pin_id.to_string()),
-                    dst: popped(ui::zoom_rect(card_base, f, CARD_GROWTH)),
+                    dst: popped(ui::animation::zoom_rect(card_base, f, CARD_GROWTH)),
                     alpha: (255.0 * pop) as u8,
                 });
                 // The crisp outline, on top of the card art — a clean edge
                 // between it and the glow behind, unlike the glow's own
                 // soft, blurred boundary.
-                let op = ui::CARD_OUTLINE_PAD;
+                let op = ui::tiles::CARD_OUTLINE_PAD;
                 let outline_base = Rect::new(
                     r.x() - op,
                     r.y() - op,
@@ -3294,11 +3339,11 @@ impl App {
                 );
                 cmds.push(DrawCmd::Tex {
                     tile: Tile::CardOutline,
-                    dst: popped(ui::zoom_rect(outline_base, f, CARD_GROWTH)),
+                    dst: popped(ui::animation::zoom_rect(outline_base, f, CARD_GROWTH)),
                     alpha: (255.0 * f * pop) as u8,
                 });
                 if self.selected_known_host().is_some_and(|h| h.is_pinned(pin_id)) {
-                    let badge = ui::PIN_BADGE_SIZE;
+                    let badge = ui::tiles::PIN_BADGE_SIZE;
                     let badge_base = Rect::new(
                         r.right() - badge as i32 - PIN_BADGE_MARGIN,
                         r.y() + PIN_BADGE_MARGIN,
@@ -3309,7 +3354,7 @@ impl App {
                     // own center would drift it off the shrunken card.
                     cmds.push(DrawCmd::Tex {
                         tile: Tile::PinBadge,
-                        dst: ui::zoom_rect(badge_base, f, CARD_GROWTH),
+                        dst: ui::animation::zoom_rect(badge_base, f, CARD_GROWTH),
                         alpha: (255.0 * pop) as u8,
                     });
                 }
@@ -3322,17 +3367,17 @@ impl App {
         tiles: &TileCache,
         screen_w: u32,
         screen_h: u32,
-        fonts: &ui::Fonts,
+        fonts: &ui::text::Fonts,
     ) -> ui::render::DrawList {
         let input = self.render_input();
         let mut cmds = Vec::new();
-        let grid_x = ui::SIDEBAR_W as i32;
-        let available_w = screen_w.saturating_sub(ui::SIDEBAR_W);
+        let grid_x = ui::widgets::SIDEBAR_W as i32;
+        let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
 
         cmds.push(DrawCmd::Tex {
             tile: Tile::Sidebar,
-            dst: Rect::new(0, 0, ui::SIDEBAR_W, screen_h),
+            dst: Rect::new(0, 0, ui::widgets::SIDEBAR_W, screen_h),
             alpha: 0xff,
         });
 
@@ -3351,7 +3396,7 @@ impl App {
             }
         } else if !input.grid_reveal_ready {
             let phase = self.spinner_since.map_or(0.0, |s| s.elapsed().as_secs_f32());
-            let (idx, frame) = ui::spinner_frame_at(phase);
+            let (idx, frame) = crate::assets::spinner_frame_at(phase);
             let x = grid_x + (available_w as i32 - frame.width as i32) / 2;
             // 40% down rather than dead-center, which reads as slightly low on a TV.
             let area_h = screen_h as i32 - view::home::GRID_TOP_Y;
@@ -3371,7 +3416,7 @@ impl App {
                 let box_y = screen_h as i32 - box_h as i32;
                 cmds.push(DrawCmd::Fill {
                     rect: Rect::new(grid_x, box_y, available_w, box_h),
-                    color: ui::MODAL_SCRIM,
+                    color: ui::style::theme().scrim,
                 });
                 let y = box_y + (box_h as i32 - p.height() as i32) / 2;
                 cmds.push(DrawCmd::Tex {
@@ -3390,12 +3435,12 @@ impl App {
         // ratio never changes) while a black scrim blends in over it, both driven
         // by the same clock — the card keeps zooming for the whole fade.
         if let (Some(t), Some(idx)) = (self.launch_anim, self.launch_anim_idx) {
-            let f = ui::anim_frac(Some(t), ui::LAUNCH_FADE);
+            let f = ui::animation::anim_frac(Some(t), hero::LAUNCH_FADE);
             let base = self.scrolled_card_rect(idx, columns, grid_x, available_w);
             if let Some(pin_id) = self.pin_id_at_grid_idx(idx, columns) {
                 cmds.push(DrawCmd::Tex {
                     tile: Tile::Card(pin_id.to_string()),
-                    dst: ui::zoom_rect(base, f, LAUNCH_GROWTH),
+                    dst: ui::animation::zoom_rect(base, f, LAUNCH_GROWTH),
                     alpha: 0xff,
                 });
             }
@@ -3421,12 +3466,12 @@ impl App {
         let f = self.hero.opacity();
         cmds.push(DrawCmd::TexF {
             tile: Tile::Hero(id.clone()),
-            dst: ui::hero_pan_dst(hero.width, hero.height, screen_w, screen_h, self.hero.panned_for()),
+            dst: hero::hero_pan_dst(hero.width, hero.height, screen_w, screen_h, self.hero.panned_for()),
             alpha: (255.0 * f) as u8,
         });
         cmds.push(DrawCmd::Fill {
             rect: Rect::new(0, 0, screen_w, screen_h),
-            color: crate::ui::render::Color::RGBA(0, 0, 0, (ui::HERO_SCRIM_ALPHA * f) as u8),
+            color: crate::ui::render::Color::RGBA(0, 0, 0, (hero::HERO_SCRIM_ALPHA * f) as u8),
         });
     }
 }

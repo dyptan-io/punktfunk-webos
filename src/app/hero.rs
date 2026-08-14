@@ -8,6 +8,74 @@ use std::time::{Duration, Instant};
 
 use crate::services::art::HeroImage;
 use crate::ui;
+use crate::ui::render::RectF;
+
+/// How long a launch's fade to black runs before the loading screen takes over.
+pub const LAUNCH_FADE: Duration = Duration::from_millis(600);
+
+/// How long the connecting screen's hero pan takes to cross the whole image. Set
+/// well past any plausible handshake so a real load only ever shows a slow drift.
+pub const HERO_PAN: Duration = Duration::from_secs(75);
+
+/// The hero's fade, in and back out to black again. Slower than `LAUNCH_FADE`: the card zoom is
+/// a reaction to a button press and has to feel immediate, while this is a scene settling in —
+/// and leaving it settles out on the same curve it arrived on.
+pub const HERO_FADE: Duration = Duration::from_millis(1_300);
+
+/// How long the hero stays up once it appears, [`HERO_FADE`] included. A floor, not a cap: a
+/// slower handshake keeps it up longer. Long enough to read as a loading screen with a visible
+/// pan rather than a flash. Only ever paid by a game that has wide art — with no hero to hold,
+/// the hand-off is unchanged.
+pub const HERO_MIN_SHOW: Duration = Duration::from_millis(2_700);
+
+/// Longest the loading screen waits for a hero still being fetched off the host before handing
+/// over without one (`app::hero`).
+pub const HERO_ART_GRACE: Duration = Duration::from_millis(1_500);
+
+/// Longest a launch waits for the first frame to reach the decoder — the one budget for it,
+/// shared by the loading screen (`app::hero`) and the reveal that follows it
+/// (`runtime::stream`). A host's first delivery can be seconds late (its startup capacity probe,
+/// or a new UDP flow the AP holds — see `session`'s `PROBE_WARMUP_CAP`), and until it lands the
+/// video plane is black, so the loading screen is what the user should be looking at.
+pub const FIRST_FRAME_WAIT: Duration = Duration::from_secs(6);
+
+/// Longest the loading screen runs before handing over regardless of the connect thread.
+/// Only a backstop — `session::connect` has its own timeouts.
+pub const HERO_LOADING_MAX: Duration = Duration::from_secs(30);
+
+/// How much the hero is darkened once fully faded in, so it reads as a backdrop
+/// rather than as content.
+pub const HERO_SCRIM_ALPHA: f32 = 70.0;
+
+/// Destination for the connecting screen's slow left-to-right pan: the hero scaled to
+/// full screen height (so it is wider than the screen, by design — see the art loader's
+/// `HERO_ASPECT`) and slid leftwards across that slack, off the edges of the target.
+///
+/// Subpixel on purpose. At this speed the image travels well under a pixel per frame, so
+/// a whole-pixel destination would hold still for ten-odd frames and then jump; the
+/// fractional offset plus bilinear filtering makes it a continuous drift instead.
+///
+/// Linear rather than eased — a constant drift reads as deliberate motion, while an
+/// ease would visibly stall on a loading screen of unpredictable length.
+pub fn hero_pan_dst(img_w: u32, img_h: u32, screen_w: u32, screen_h: u32, elapsed: Duration) -> RectF {
+    let full = RectF {
+        x: 0.0,
+        y: 0.0,
+        w: screen_w as f32,
+        h: screen_h as f32,
+    };
+    if img_h == 0 || img_w == 0 {
+        return full;
+    }
+    let scaled_w = img_w as f32 * (screen_h as f32 / img_h as f32);
+    let slack = (scaled_w - screen_w as f32).max(0.0);
+    let f = (elapsed.as_secs_f32() / HERO_PAN.as_secs_f32()).clamp(0.0, 1.0);
+    RectF {
+        x: -slack * f,
+        w: scaled_w,
+        ..full
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct Hero {
@@ -110,8 +178,10 @@ impl Hero {
 
     /// This frame's opacity factor, 0..=1: the fade-in, less the fade-out once that starts.
     pub(crate) fn opacity(&self) -> f32 {
-        let out = self.fade_out.map_or(0.0, |t| ui::anim_frac(Some(t), ui::HERO_FADE));
-        ui::anim_frac(self.since, ui::HERO_FADE) * (1.0 - out)
+        let out = self
+            .fade_out
+            .map_or(0.0, |t| ui::animation::anim_frac(Some(t), HERO_FADE));
+        ui::animation::anim_frac(self.since, HERO_FADE) * (1.0 - out)
     }
 
     /// Whether an uploaded hero is on screen as the connecting backdrop. `since` is only ever
@@ -126,14 +196,14 @@ impl Hero {
     /// `presenting` is a frame having reached the decoder — NOT NDL's `PLAYING`, which lands
     /// during the load with nothing decoded. With a hero to pan, the screen waits for it so the
     /// fade-out is the last thing before the plane is uncovered; with none, `runtime::stream` holds
-    /// the finished launch frame instead, on the same [`ui::FIRST_FRAME_WAIT`] budget.
+    /// the finished launch frame instead, on the same [`FIRST_FRAME_WAIT`] budget.
     pub(crate) fn handover_ready(&mut self, launch_elapsed: Duration, connected: bool, presenting: bool) -> bool {
-        if launch_elapsed < ui::LAUNCH_FADE {
+        if launch_elapsed < LAUNCH_FADE {
             return false;
         }
         // Capped whatever else is going on, so a connect that never returns can't strand
         // the app on a panning image.
-        if launch_elapsed >= ui::HERO_LOADING_MAX {
+        if launch_elapsed >= HERO_LOADING_MAX {
             return true;
         }
         if !self.showing() {
@@ -141,17 +211,17 @@ impl Hero {
             // keeps that finished frame up until the first frame arrives. A game that *has* wide
             // art gets a grace period first — on a cold cache the hero can still be a fetch away,
             // and would otherwise land just after the hand-off.
-            return !self.expected || launch_elapsed >= ui::LAUNCH_FADE + ui::HERO_ART_GRACE;
+            return !self.expected || launch_elapsed >= LAUNCH_FADE + HERO_ART_GRACE;
         }
         // Held until the stream is genuinely up: the handshake landed *and* a frame reached the
         // decoder, so the fade-out runs straight into live video rather than cutting to black. Its
         // own minimum too, so a hero that arrived late isn't cut mid-fade.
-        connected && presenting && self.since.is_some_and(|t| t.elapsed() >= ui::HERO_MIN_SHOW) && self.faded_out()
+        connected && presenting && self.since.is_some_and(|t| t.elapsed() >= HERO_MIN_SHOW) && self.faded_out()
     }
 
     /// Starts the fade-out (idempotent) and reports whether it has finished.
     fn faded_out(&mut self) -> bool {
         let since = *self.fade_out.get_or_insert_with(Instant::now);
-        since.elapsed() >= ui::HERO_FADE
+        since.elapsed() >= HERO_FADE
     }
 }

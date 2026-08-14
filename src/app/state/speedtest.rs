@@ -11,8 +11,8 @@
 //! Rendering lives in `app::view::speedtest`.
 use crate::app::menu;
 use crate::app::App;
+use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
-use crate::ui::MenuEvent;
 use std::time::Instant;
 
 use punktfunk_core::client::ProbeOutcome;

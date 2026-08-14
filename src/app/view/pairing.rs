@@ -1,6 +1,9 @@
 //! Pairing modal rendering. Logic lives in `app::state::pairing`.
+use crate::ui;
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, FontId, Fonts, ModalScreen, TextRaster};
+use crate::ui::text::Fonts;
+use crate::ui::Canvas;
+use crate::ui::ModalScreen;
 use anyhow::Result;
 
 pub(crate) const TITLE: &str = "Pair with host";
@@ -38,7 +41,7 @@ pub(crate) fn layout(card: Rect, fonts: &Fonts) -> PairingLayout {
         card.width().saturating_sub(PAIRING_MARGIN as u32 * 2),
         0,
     );
-    let header_end = ui::modal_header_end_y(fonts.raster, fonts.label, fonts.value, card, SUBTITLE);
+    let header_end = ui::text::modal_header_end_y(fonts, card, SUBTITLE);
     let button = Rect::new(content.x(), header_end + 26, content.width(), PAIRING_BUTTON_H);
     let button_caption_y = button.y() + button.height() as i32 + 12;
     let or_y = button_caption_y + caption_h(fonts, content.width(), PAIRING_BUTTON_CAPTION) + 20;
@@ -59,7 +62,7 @@ pub(crate) fn layout(card: Rect, fonts: &Fonts) -> PairingLayout {
 /// The pairing card, sized from the layout plus room for an up-to-two-line status. Every
 /// geometry caller goes through this, so the sizing is done in exactly one place.
 pub(crate) fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
-    ui::simple_modal_card(screen_w, screen_h, |probe| {
+    ui::widgets::simple_modal_card(screen_w, screen_h, |probe| {
         let status_room = 2 * (fonts.raster.height(fonts.value) + 6);
         let status_y = layout(probe, fonts).status_y;
         (status_y + status_room + 26) as u32
@@ -78,7 +81,9 @@ pub(crate) fn pin_row_y(card: Rect, fonts: &Fonts) -> i32 {
 
 /// Height one caption occupies, wrapped to `content_w` — what the row below it is placed from.
 fn caption_h(fonts: &Fonts, content_w: u32, text: &str) -> i32 {
-    let lines = ui::wrap_text(fonts.raster, fonts.value, text, content_w).len().max(1) as i32;
+    let lines = ui::text::wrap_text(fonts.raster, fonts.value, text, content_w)
+        .len()
+        .max(1) as i32;
     lines * fonts.raster.height(fonts.value) + (lines - 1) * CAPTION_LINE_GAP
 }
 
@@ -89,8 +94,8 @@ fn caption_h(fonts: &Fonts, content_w: u32, text: &str) -> i32 {
 fn draw_centred_caption(c: &mut Canvas, content: Rect, y: i32, text: &str) -> Result<()> {
     let (raster, font) = (c.fonts.raster, c.fonts.value);
     let mut cursor_y = y;
-    for line in ui::wrap_text(raster, font, text, content.width()) {
-        c.text_centered(font, &line, content, cursor_y, ui::MUTED)?;
+    for line in ui::text::wrap_text(raster, font, text, content.width()) {
+        c.text_centered(font, &line, content, cursor_y, ui::style::theme().muted)?;
         cursor_y += raster.height(font) + CAPTION_LINE_GAP;
     }
     Ok(())
@@ -121,35 +126,17 @@ pub const REQUEST_LABEL: &str = "Request access";
 /// One PIN digit, focused, as its own zoom-animated tile — composited by the
 /// GPU over the shell's unfocused digit boxes, same pattern as
 /// `render_focus_row_tile`.
-pub fn render_digit_tile(
-    text_cache: &mut ui::TextCache,
-    raster: &dyn TextRaster,
-    font_title: FontId,
-    digit: u8,
-) -> Result<ui::Painter> {
-    ui::render_card_text_tile(text_cache, raster, font_title, &digit.to_string(), DIGIT_W, DIGIT_H)
+pub fn render_digit_tile(text_cache: &mut ui::text::TextCache, fonts: &Fonts, digit: u8) -> Result<ui::Painter> {
+    ui::widgets::render_card_text_tile(text_cache, fonts, fonts.title, &digit.to_string(), DIGIT_W, DIGIT_H)
 }
 
 /// The "Request access" button, focused, as its own zoom-animated tile — accent-filled
-/// like the shell's copy (see `ui::draw_primary_button`), not the surface-card treatment
+/// like the shell's copy (see `ui::Canvas::primary_button`), not the surface-card treatment
 /// the digit tiles use, so the primary action keeps its emphasis while focused.
-pub fn render_button_tile(
-    text_cache: &mut ui::TextCache,
-    raster: &dyn TextRaster,
-    font_label: FontId,
-    w: u32,
-    h: u32,
-) -> Result<ui::Painter> {
-    let pad = ui::ROW_TILE_PAD;
+pub fn render_button_tile(text_cache: &mut ui::text::TextCache, fonts: &Fonts, w: u32, h: u32) -> Result<ui::Painter> {
+    let pad = ui::tiles::ROW_TILE_PAD;
     let mut p = ui::Painter::new(w + 2 * pad as u32, h + 2 * pad as u32);
-    ui::draw_primary_button(
-        &mut p,
-        text_cache,
-        raster,
-        font_label,
-        Rect::new(pad, pad, w, h),
-        REQUEST_LABEL,
-    )?;
+    ui::Canvas::tile(&mut p, text_cache, fonts).primary_button(Rect::new(pad, pad, w, h), REQUEST_LABEL)?;
     Ok(p)
 }
 
@@ -171,7 +158,7 @@ impl ModalScreen for Modal<'_> {
         let l = layout(card, c.fonts);
         c.modal_shell(card, hover_close)?;
 
-        c.modal_header(card, TITLE, ui::WHITE, SUBTITLE, ui::MUTED)?;
+        c.modal_header(card, TITLE, ui::style::theme().text, SUBTITLE, ui::style::theme().muted)?;
 
         // Primary first, and visually primary: approving on the host is the path that
         // always works, whereas the PIN needs the host's pairing page open and armed.
@@ -185,13 +172,23 @@ impl ModalScreen for Modal<'_> {
         draw_centred_caption(c, l.content, l.pin_caption_y, PAIRING_PIN_CAPTION)?;
         for (i, digit) in pin_digits.iter().enumerate() {
             let rect = digit_rect(card, l.pin_y, i);
-            let drawn = c.card(rect, false);
+            let drawn = c.painter.card(rect, false);
             let text_y = drawn.y() + (drawn.height() as i32 - c.fonts.raster.height(c.fonts.title)) / 2;
-            c.text_centered(c.fonts.title, &digit.to_string(), drawn, text_y, ui::WHITE)?;
+            c.text_centered(
+                c.fonts.title,
+                &digit.to_string(),
+                drawn,
+                text_y,
+                ui::style::theme().text,
+            )?;
         }
 
         if let Some(status) = status {
-            let color = if busy { ui::MUTED } else { ui::ERROR_RED };
+            let color = if busy {
+                ui::style::theme().muted
+            } else {
+                ui::style::theme().error
+            };
             c.text_wrapped(
                 c.fonts.value,
                 status,

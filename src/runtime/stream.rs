@@ -7,7 +7,7 @@ use crate::platform::webos::input::{
 /// How long the finished launch frame is held waiting for the first frame to reach the decoder
 /// before uncovering the video plane regardless. The hero loading screen waits on the same signal
 /// (`app::hero::handover_ready`), so when a hero held the screen this wait returns immediately.
-const NDL_REVEAL_TIMEOUT: Duration = crate::ui::FIRST_FRAME_WAIT;
+const NDL_REVEAL_TIMEOUT: Duration = crate::app::hero::FIRST_FRAME_WAIT;
 
 pub(super) fn run_inner() -> Result<()> {
     // Stops webOS's launcher intercepting Back/Windows-Meta/Guide as its own Home shortcut
@@ -68,13 +68,13 @@ pub(super) fn run_inner() -> Result<()> {
 
     // Sized for a 10-foot TV viewing distance.
     let text_raster = crate::platform::webos::text_sdl::SdlTextRaster::new(&ttf, display_mode.h as u32)?;
-    let fonts = crate::ui::Fonts {
+    let fonts = crate::ui::text::Fonts {
         raster: &text_raster,
-        label: crate::ui::FontId::Label,
-        value: crate::ui::FontId::Value,
-        title: crate::ui::FontId::Title,
-        icon: crate::ui::FontId::Icon,
-        caption: crate::ui::FontId::Caption,
+        label: crate::ui::text::FontId::Label,
+        value: crate::ui::text::FontId::Value,
+        title: crate::ui::text::FontId::Title,
+        icon: crate::ui::text::FontId::Icon,
+        caption: crate::ui::text::FontId::Caption,
     };
 
     // Owned above the loop, not re-declared per iteration: `ControllerDeviceAdded` fires only
@@ -156,7 +156,7 @@ pub(super) fn run_inner() -> Result<()> {
             None => None,
             Some(channels) => {
                 match crate::platform::webos::audio::AudioPlayer::new(&sdl_audio, channels, connected.sync_cells())
-                .and_then(|(player, feed)| Ok((player, connected.spawn_audio_feed(feed)?)))
+                    .and_then(|(player, feed)| Ok((player, connected.spawn_audio_feed(feed)?)))
                 {
                     Ok(pair) => Some(pair),
                     Err(e) => {
@@ -237,11 +237,11 @@ pub(super) fn run_inner() -> Result<()> {
         // crashed an earlier attempt, see docs/NOTES.md). Green button flips it live, session-only.
         let mut stats_enabled = settings.stats_overlay;
         // Fades in/out on the same curve as the toast below — see `ModalFade::visibility_alpha`.
-        let mut stats_fade = crate::ui::ModalFade::<()>::new();
+        let mut stats_fade = crate::ui::fade::ModalFade::<()>::new();
         if stats_enabled {
             stats_fade.open();
         }
-        let mut log_fade = crate::ui::ModalFade::<()>::new();
+        let mut log_fade = crate::ui::fade::ModalFade::<()>::new();
         // Seeded from live key state, not `false`: these are rising-edge polls, and the launch
         // itself is a keypress. A key still down when the stream loop starts (webOS's EXIT
         // gesture in particular — a synthetic press whose key-up may never arrive) would read as
@@ -254,7 +254,7 @@ pub(super) fn run_inner() -> Result<()> {
         let mut blue_held = key_down(WEBOS_BLUE_SCANCODE);
         // Transient toasts. `overlay_was_active` catches the fade-out edge so the canvas gets
         // wiped once; `stats_dst`/`log_dst` recomposite each frame at their own slower cadence.
-        let mut notif = crate::ui::Notification::new();
+        let mut notif = crate::ui::widgets::Notification::new();
         // Last (text, w, h) uploaded for the toast tile — see `push_notification_cmd`.
         let mut notif_tile: Option<(String, u32, u32)> = None;
         // Edge-detects `stats.holding` (freeze-until-reanchor — see `session::video_pump`) so a
@@ -274,7 +274,11 @@ pub(super) fn run_inner() -> Result<()> {
         let mut disconnect = ConfirmDialog::new(
             "Stop streaming?",
             "The stream will end and you'll return to the menu.",
-            crate::ui::confirm_buttons(Some(crate::ui::ICON_CLOSE), "Stop streaming", crate::ui::ERROR_RED),
+            crate::ui::widgets::confirm_buttons(
+                Some(crate::app::view::icons::ICON_CLOSE),
+                "Stop streaming",
+                crate::ui::style::theme().error,
+            ),
         );
         // Gamepad routes to the disconnect dialog — see `DisconnectChord`.
         let mut chord = DisconnectChord::default();
@@ -629,9 +633,9 @@ pub(super) fn run_inner() -> Result<()> {
             let notif_active = notif_frame.is_some();
             // Fade in/out on the toast's curve instead of cutting instantly; `visibility_alpha`
             // keeps returning `Some` through the close fade after the toggle itself flips off.
-            let stats_alpha = stats_fade.visibility_alpha(crate::ui::OVERLAY_FADE, stats_enabled);
+            let stats_alpha = stats_fade.visibility_alpha(crate::ui::fade::OVERLAY_FADE, stats_enabled);
             let log_overlay_on = log_overlay_state() != LogOverlayState::Off;
-            let log_alpha = log_fade.visibility_alpha(crate::ui::OVERLAY_FADE, log_overlay_on);
+            let log_alpha = log_fade.visibility_alpha(crate::ui::fade::OVERLAY_FADE, log_overlay_on);
             let overlay_active = stats_alpha.is_some() || log_alpha.is_some() || notif_active;
             if overlay_was_active && !overlay_active {
                 // Nothing else clears this canvas — the faded-out tile would stick otherwise.
@@ -644,8 +648,8 @@ pub(super) fn run_inner() -> Result<()> {
             overlay_was_active = overlay_active;
             // A fade in flight needs frequent frames; steady-state stats/log are fine at ~2Hz.
             let fading = notif_active
-                || stats_fade.is_animating(crate::ui::OVERLAY_FADE)
-                || log_fade.is_animating(crate::ui::OVERLAY_FADE);
+                || stats_fade.is_animating(crate::ui::fade::OVERLAY_FADE)
+                || log_fade.is_animating(crate::ui::fade::OVERLAY_FADE);
             let redraw_interval = if fading {
                 Duration::from_millis(33)
             } else {
@@ -737,10 +741,8 @@ pub(super) fn run_inner() -> Result<()> {
                         let delta_ms = connected.stats().pacing_delta_ns.load(Ordering::Relaxed) as f32 / 1_000_000.0;
                         lines.push(format!("Pace {delta_ms:+.1} ms"));
                     }
-                    match crate::ui::render_stats_overlay_tile(
-                        fonts.raster,
-                        fonts.value,
-                        fonts.caption,
+                    match crate::ui::tiles::render_stats_overlay_tile(
+                        &fonts,
                         &lines,
                         "Press green button to hide this overlay",
                     ) {
@@ -769,8 +771,7 @@ pub(super) fn run_inner() -> Result<()> {
                 // `None` during fade-out once the toggle flips Off — the fade keeps
                 // recompositing the last uploaded tile via `log_dst`.
                 if let Some(lines) = log_overlay_lines() {
-                    match crate::ui::render_log_overlay_tile(fonts.raster, fonts.caption, display_mode.w as u32, &lines)
-                    {
+                    match crate::ui::tiles::render_log_overlay_tile(&fonts, display_mode.w as u32, &lines) {
                         Ok(tile) => {
                             let (tw, th) = (tile.width(), tile.height());
                             compositor.upload(&texture_creator, Tile::LogOverlay, &tile)?;

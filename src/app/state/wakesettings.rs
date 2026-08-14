@@ -1,8 +1,8 @@
 //! Per-host Wake-on-LAN settings — logic. Rendering lives in `app::view::wakesettings`.
 use crate::app::App;
+use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
 use crate::services::store;
-use crate::ui::MenuEvent;
 use std::time::Instant;
 
 impl App {
@@ -22,7 +22,7 @@ impl App {
     /// Left/Right/Confirm flip toggle; Back returns to host menu.
     pub(crate) fn handle_wake_settings_event(&mut self, ev: MenuEvent) {
         let len = crate::app::view::wakesettings::rows(self.wake_settings_host().is_some_and(|h| h.wol_auto)).len();
-        if crate::ui::list_nav(&mut self.wake_settings_focused, len, ev) {
+        if crate::ui::widgets::list_nav(&mut self.wake_settings_focused, len, crate::app::menu::nav_dir(ev)) {
             self.modal_focus_anim = Some(Instant::now());
             return;
         }

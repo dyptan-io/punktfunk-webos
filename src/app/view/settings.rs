@@ -3,8 +3,11 @@
 use crate::app::menu;
 use crate::core::VERSION;
 use crate::services::store::{CodecPref, GamepadType, Settings, VideoBackend};
+use crate::ui;
 use crate::ui::render::Rect;
-use crate::ui::{self, Canvas, FocusRow, ModalScreen};
+use crate::ui::widgets::FocusRow;
+use crate::ui::Canvas;
+use crate::ui::ModalScreen;
 use anyhow::Result;
 
 pub(crate) const TITLE: &str = "Settings";
@@ -36,7 +39,7 @@ pub(crate) const EDGE_MARGIN: u32 = 120;
 /// why the rendered offset is biased by one peek (see `App::sync_modal_scroll`) instead of
 /// sitting on the row grid.
 ///
-/// Independent of `ui::SCROLL_FADE_H`, which is taller: this is how much of the next row is
+/// Independent of `ui::widgets::SCROLL_FADE_H`, which is taller: this is how much of the next row is
 /// *exposed*, while that is how far the fade reaches back over what is already visible. Deep
 /// enough to expose a row's icon and label, which sit in the middle third of its height — a
 /// shallower peek shows only the row's internal padding, i.e. nothing to dissolve.
@@ -66,13 +69,17 @@ pub(crate) fn rows(
     };
     let rows = vec![
         FocusRow::dropdown(
-            ui::ICON_MONITOR,
+            crate::app::view::icons::ICON_MONITOR,
             "Resolution",
             menu::resolution_label(settings.width, settings.height),
         ),
-        FocusRow::dropdown(ui::ICON_SCHEDULE, "Frame rate", format!("{} Hz", settings.refresh_hz)),
+        FocusRow::dropdown(
+            crate::app::view::icons::ICON_SCHEDULE,
+            "Frame rate",
+            format!("{} Hz", settings.refresh_hz),
+        ),
         FocusRow::slider(
-            ui::ICON_SIGNAL,
+            crate::app::view::icons::ICON_SIGNAL,
             "Bitrate",
             if settings.bitrate_kbps == menu::BITRATE_AUTOMATIC {
                 "Automatic".to_string()
@@ -83,10 +90,10 @@ pub(crate) fn rows(
         )
         .with_subtext_opt(
             (settings.bitrate_kbps > menu::BITRATE_WARN_KBPS)
-                .then(|| ui::RowSubtext::caution("May be unstable on Wi-Fi — try Ethernet")),
+                .then(|| ui::widgets::RowSubtext::caution("May be unstable on Wi-Fi — try Ethernet")),
         ),
         FocusRow::dropdown(
-            ui::ICON_MEMORY,
+            crate::app::view::icons::ICON_MEMORY,
             "Video backend",
             match settings.video_backend {
                 VideoBackend::Ndl => "NDL",
@@ -94,18 +101,28 @@ pub(crate) fn rows(
             },
         )
         .with_subtext_opt((settings.video_backend == VideoBackend::Ndl).then(|| {
-            ui::RowSubtext::caution(match webos_major {
+            ui::widgets::RowSubtext::caution(match webos_major {
                 Some(major) => format!("Limitted HDR support on webOS {major}"),
                 None => String::new(),
             })
         })),
-        FocusRow::dropdown(ui::ICON_MOVIE, "Codec", menu::codec_label(settings.codec)).with_subtext_opt(
-            (settings.codec == CodecPref::H264).then(|| ui::RowSubtext::hint("HDR is not supported with this codec")),
-        ),
-        FocusRow::toggle(ui::ICON_SUN, "HDR", settings.hdr_enabled),
-        FocusRow::dropdown(ui::ICON_SIGNAL, "Audio", menu::audio_label(settings.audio_channels)),
         FocusRow::dropdown(
-            ui::ICON_GAMEPAD,
+            crate::app::view::icons::ICON_MOVIE,
+            "Codec",
+            menu::codec_label(settings.codec),
+        )
+        .with_subtext_opt(
+            (settings.codec == CodecPref::H264)
+                .then(|| ui::widgets::RowSubtext::hint("HDR is not supported with this codec")),
+        ),
+        FocusRow::toggle(crate::app::view::icons::ICON_SUN, "HDR", settings.hdr_enabled),
+        FocusRow::dropdown(
+            crate::app::view::icons::ICON_SIGNAL,
+            "Audio",
+            menu::audio_label(settings.audio_channels),
+        ),
+        FocusRow::dropdown(
+            crate::app::view::icons::ICON_GAMEPAD,
             "Controller",
             if settings.gamepad_type == GamepadType::Auto {
                 menu::gamepad_auto_label(detected_gamepad_type)
@@ -113,13 +130,19 @@ pub(crate) fn rows(
                 menu::gamepad_label(settings.gamepad_type).to_string()
             },
         )
-        .with_subtext_opt(dualsense_limited.then(|| ui::RowSubtext::caution("Limited support by your WebOS version"))),
-        FocusRow::action(ui::ICON_MOUSE, "Cursor"),
-        FocusRow::action(ui::ICON_BUG, "Experimental"),
-        FocusRow::action(ui::ICON_WRENCH, "Diagnostics"),
+        .with_subtext_opt(
+            dualsense_limited.then(|| ui::widgets::RowSubtext::caution("Limited support by your WebOS version")),
+        ),
+        FocusRow::action(crate::app::view::icons::ICON_MOUSE, "Cursor"),
+        FocusRow::action(crate::app::view::icons::ICON_BUG, "Experimental"),
+        FocusRow::action(crate::app::view::icons::ICON_WRENCH, "Diagnostics"),
         // The build version rides along as this row's value, so it's visible without
         // opening the screen — matching where the other clients surface it.
-        FocusRow::action_with_value(ui::ICON_INFO, "About & licenses", format!("v{VERSION}")),
+        FocusRow::action_with_value(
+            crate::app::view::icons::ICON_INFO,
+            "About & licenses",
+            format!("v{VERSION}"),
+        ),
     ];
     debug_assert_eq!(
         rows.len(),
@@ -143,7 +166,7 @@ pub(crate) fn rows(
 /// because a list that fits entirely has nothing below to peek at and should not give up
 /// the space.
 pub(crate) fn visible_rows(settings: &Settings, screen_h: u32) -> usize {
-    let stride = ui::focus_row_stride();
+    let stride = ui::widgets::focus_row_stride();
     let total = menu::settings_row_count(settings);
     let budget = screen_h.saturating_sub(CHROME_TOP + CHROME_BOTTOM + EDGE_MARGIN);
     if (budget / stride) as usize >= total {
@@ -163,22 +186,34 @@ pub(crate) fn content_h(settings: &Settings, screen_h: u32) -> u32 {
     } else {
         0
     };
-    visible as u32 * ui::focus_row_stride() + peeks
+    visible as u32 * ui::widgets::focus_row_stride() + peeks
 }
 
-/// Card and content rects, shared by render and hit-test.
+/// Left/right inset of the card's own content column — the title, the rule and the row
+/// list all start here.
+pub(crate) const SIDE_PAD: u32 = 40;
+
+/// Card and content rects, shared by render and hit-test. One split, read twice: the card's
+/// height is what its own stack adds up to, and the viewport is the middle slot of it.
 pub(crate) fn layout(settings: &Settings, screen_w: u32, screen_h: u32) -> (Rect, Rect) {
-    let content_h = content_h(settings, screen_h);
-    let card_h = content_h + CHROME_TOP + CHROME_BOTTOM;
+    let stack = ui::layout::Layout::vertical([
+        ui::layout::Constraint::Length(CHROME_TOP),
+        ui::layout::Constraint::Length(content_h(settings, screen_h)),
+        ui::layout::Constraint::Length(CHROME_BOTTOM),
+    ]);
     // Widened from 0.56 to fit the scroll indicator on the right edge.
-    let card = ui::modal_card_rect(screen_w, screen_h, 0.62, card_h);
-    let content = Rect::new(
-        card.x() + 40,
-        card.y() + CHROME_TOP as i32,
-        card.width().saturating_sub(80),
-        content_h,
-    );
-    (card, content)
+    let card = ui::widgets::modal_card_rect(screen_w, screen_h, 0.62, stack.total_length());
+    (card, content_column(stack.split(card)[1]))
+}
+
+/// The horizontal inset every element of the card shares.
+fn content_column(row: Rect) -> Rect {
+    ui::layout::Layout::horizontal([
+        ui::layout::Constraint::Length(SIDE_PAD),
+        ui::layout::Constraint::Fill(1),
+        ui::layout::Constraint::Length(SIDE_PAD),
+    ])
+    .split(row)[1]
 }
 
 /// Where a dropdown opened from row `row` anchors its option overlay — one row below it.
@@ -187,7 +222,7 @@ pub(crate) fn layout(settings: &Settings, screen_w: u32, screen_h: u32) -> (Rect
 /// gliding list puts its rows at continuous offsets. `scroll_px` of 0 is the unscrolled
 /// case (Diagnostics).
 pub(crate) fn dropdown_overlay_rect_at_px(content: Rect, row: usize, scroll_px: i32) -> Rect {
-    let y = ui::focus_row_rect_at_px(content, row + 1, scroll_px).y();
+    let y = ui::widgets::focus_row_rect_at_px(content, row + 1, scroll_px).y();
     Rect::new(content.x(), y, content.width(), 0)
 }
 
@@ -196,9 +231,10 @@ pub(crate) fn dropdown_overlay_rect_at_px(content: Rect, row: usize, scroll_px: 
 /// options re-rasterizes this.
 pub(crate) fn render(c: &mut Canvas, settings: &Settings, hover_close: bool) -> Result<()> {
     let (card, _content) = layout(settings, c.screen_w, c.screen_h);
+    let column = content_column(card);
     c.modal_shell(card, hover_close)?;
-    c.text(c.fonts.label, TITLE, card.x() + 40, card.y() + 36, ui::WHITE)?;
-    c.rule(card.x() + 40, card.y() + 88, card.width().saturating_sub(80));
+    c.text(c.fonts.label, TITLE, column.x(), card.y() + 36, ui::style::theme().text)?;
+    c.painter.rule(column.x(), card.y() + 88, column.width());
     Ok(())
 }
 
@@ -208,7 +244,7 @@ pub(crate) struct Modal<'a> {
 }
 
 impl ModalScreen for Modal<'_> {
-    fn card_rect(&self, screen_w: u32, screen_h: u32, _fonts: &ui::Fonts) -> Rect {
+    fn card_rect(&self, screen_w: u32, screen_h: u32, _fonts: &ui::text::Fonts) -> Rect {
         layout(self.settings, screen_w, screen_h).0
     }
 

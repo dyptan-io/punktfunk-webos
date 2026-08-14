@@ -107,32 +107,32 @@ pub(super) enum ConfirmAction {
 pub(super) struct ConfirmDialog {
     title: &'static str,
     subtitle: &'static str,
-    buttons: [crate::ui::ConfirmButton<'static>; 2],
+    buttons: [crate::ui::widgets::ConfirmButton<'static>; 2],
     focus: Option<usize>,
-    pub(super) fade: crate::ui::ModalFade<usize>,
+    pub(super) fade: crate::ui::fade::ModalFade<usize>,
     /// Re-render only on open; focused button is its own tile.
     shell_dirty: bool,
     focus_dirty: bool,
     focus_anim: Option<Instant>,
-    tc: crate::ui::TextCache,
+    tc: crate::ui::text::TextCache,
 }
 
 impl ConfirmDialog {
     pub(super) fn new(
         title: &'static str,
         subtitle: &'static str,
-        buttons: [crate::ui::ConfirmButton<'static>; 2],
+        buttons: [crate::ui::widgets::ConfirmButton<'static>; 2],
     ) -> Self {
         Self {
             title,
             subtitle,
             buttons,
             focus: None,
-            fade: crate::ui::ModalFade::new(),
+            fade: crate::ui::fade::ModalFade::new(),
             shell_dirty: false,
             focus_dirty: false,
             focus_anim: None,
-            tc: crate::ui::TextCache::new(),
+            tc: crate::ui::text::TextCache::new(),
         }
     }
 
@@ -179,7 +179,7 @@ impl ConfirmDialog {
         event: &sdl2::event::Event,
         w: u32,
         h: u32,
-        fonts: &crate::ui::Fonts,
+        fonts: &crate::ui::text::Fonts,
     ) -> Option<ConfirmAction> {
         use sdl2::event::Event;
         let focus = self.focus?;
@@ -187,8 +187,8 @@ impl ConfirmDialog {
         // the same absolute button rects the dialog is drawn with, so it lines up
         // with what's on screen. `content` is a plain Rect (captured by copy), so
         // the closure holds no borrow of `self` that `set_focus` would collide with.
-        let (_, content) = crate::ui::confirm_dialog_layout(w, h, fonts, self.subtitle);
-        let button_at = |x: i32, y: i32| crate::ui::confirm_button_at(content, x, y);
+        let (_, content) = crate::ui::tiles::confirm_dialog_layout(w, h, fonts, self.subtitle);
+        let button_at = |x: i32, y: i32| crate::ui::tiles::confirm_button_at(content, x, y);
         match *event {
             Event::MouseMotion { x, y, .. } => {
                 return match button_at(x, y) {
@@ -247,7 +247,7 @@ impl ConfirmDialog {
         &mut self,
         compositor: &mut Compositor,
         texture_creator: &sdl2::render::TextureCreator<sdl2::video::WindowContext>,
-        fonts: &crate::ui::Fonts<'_>,
+        fonts: &crate::ui::text::Fonts<'_>,
         w: u32,
         h: u32,
         cmds: &mut Vec<DrawCmd>,
@@ -258,14 +258,15 @@ impl ConfirmDialog {
         let full = crate::ui::render::Rect::new(0, 0, w, h);
         if self.shell_dirty {
             self.shell_dirty = false;
-            let shell = crate::ui::render_confirm_dialog_shell(w, h, fonts, self.title, self.subtitle, &self.buttons)?;
+            let shell =
+                crate::ui::tiles::render_confirm_dialog_shell(w, h, fonts, self.title, self.subtitle, &self.buttons)?;
             compositor.upload(texture_creator, Tile::DisconnectDialog, &shell)?;
         }
-        let (_, content) = crate::ui::confirm_dialog_layout(w, h, fonts, self.subtitle);
-        let btn_rect = crate::ui::confirm_button_rect(content, focus);
+        let (_, content) = crate::ui::tiles::confirm_dialog_layout(w, h, fonts, self.subtitle);
+        let btn_rect = crate::ui::widgets::confirm_button_rect(content, focus);
         if self.focus_dirty {
             self.focus_dirty = false;
-            let tile = crate::ui::render_confirm_button_tile(
+            let tile = crate::ui::widgets::render_confirm_button_tile(
                 &mut self.tc,
                 fonts,
                 &self.buttons[focus],
@@ -277,23 +278,23 @@ impl ConfirmDialog {
         // Same open/close motion as the `App`'s `Screen` modals (see `draw_list`): slide
         // in from ~26px below while fading, and the shell scales up on open.
         let dy = ((1.0 - m) * 26.0) as i32;
-        let pad = crate::ui::ROW_TILE_PAD;
+        let pad = crate::ui::tiles::ROW_TILE_PAD;
         let base = crate::ui::render::Rect::new(
             btn_rect.x() - pad,
             btn_rect.y() - pad + dy,
             btn_rect.width() + 2 * pad as u32,
             btn_rect.height() + 2 * pad as u32,
         );
-        let f = crate::ui::anim_frac(self.focus_anim, crate::ui::FOCUS_POP);
+        let f = crate::ui::animation::anim_frac(self.focus_anim, crate::ui::animation::FOCUS_POP);
         let modal_base = crate::ui::render::Rect::new(0, dy, w, h);
         let shell_dst = if closing {
             modal_base
         } else {
-            crate::ui::pop_in_rect(modal_base, m, MODAL_POP_SHRINK)
+            crate::ui::animation::pop_in_rect(modal_base, m, MODAL_POP_SHRINK)
         };
         cmds.push(DrawCmd::Fill {
             rect: full,
-            color: crate::ui::render::Color::RGBA(0, 0, 0, (f32::from(crate::ui::MODAL_SCRIM.a) * m) as u8),
+            color: crate::ui::render::Color::RGBA(0, 0, 0, (f32::from(crate::ui::style::theme().scrim.a) * m) as u8),
         });
         cmds.push(DrawCmd::Tex {
             tile: Tile::DisconnectDialog,
@@ -302,7 +303,7 @@ impl ConfirmDialog {
         });
         cmds.push(DrawCmd::Tex {
             tile: Tile::DisconnectFocusButton,
-            dst: crate::ui::zoom_rect(base, f, 0.02),
+            dst: crate::ui::animation::zoom_rect(base, f, 0.02),
             alpha: (255.0 * m) as u8,
         });
         Ok(())
@@ -394,7 +395,7 @@ fn pin_hold_gate(
     event: &sdl2::event::Event,
     input: &mut UiInput,
     display_mode: sdl2::video::DisplayMode,
-    fonts: &crate::ui::Fonts,
+    fonts: &crate::ui::text::Fonts,
     dirty: &mut bool,
 ) -> Option<EventAction> {
     use sdl2::event::Event;
@@ -421,7 +422,7 @@ fn pin_hold_gate(
         if input.pin_held.is_some() {
             return Some(EventAction::Next);
         }
-        let columns = crate::app::view::home::grid_columns(w.saturating_sub(crate::ui::SIDEBAR_W));
+        let columns = crate::app::view::home::grid_columns(w.saturating_sub(crate::ui::widgets::SIDEBAR_W));
         if app.focused_pin_id(columns).is_some() {
             input.pin_held = Some(PinHold {
                 since: Instant::now(),
@@ -473,7 +474,7 @@ fn pin_hold_gate(
             return Some(EventAction::Next);
         }
         let columns =
-            crate::app::view::home::grid_columns((display_mode.w as u32).saturating_sub(crate::ui::SIDEBAR_W));
+            crate::app::view::home::grid_columns((display_mode.w as u32).saturating_sub(crate::ui::widgets::SIDEBAR_W));
         if matches!(app.screen, Screen::Home) && app.focused_pin_id(columns).is_some() {
             input.pin_held = Some(PinHold {
                 since: Instant::now(),
@@ -517,7 +518,7 @@ fn dispatch_menu_event(
     app: &mut App,
     menu_ev: MenuEvent,
     display_mode: sdl2::video::DisplayMode,
-    fonts: &crate::ui::Fonts,
+    fonts: &crate::ui::text::Fonts,
 ) -> EventAction {
     let (w, h) = (display_mode.w as u32, display_mode.h as u32);
     if menu_ev == MenuEvent::Back {
@@ -560,7 +561,7 @@ pub(super) fn handle_ui_event(
     event: sdl2::event::Event,
     input: &mut UiInput,
     display_mode: sdl2::video::DisplayMode,
-    fonts: &crate::ui::Fonts,
+    fonts: &crate::ui::text::Fonts,
     dirty: &mut bool,
 ) -> EventAction {
     use sdl2::event::Event;
@@ -618,7 +619,7 @@ pub(super) fn handle_ui_event(
         // The Magic Remote's pointer delivers OK as a plain mouse click.
         // Dispatch it on press: there is no hold gesture to disambiguate any
         // more (per-host actions have their own ⋯ button — see
-        // `ui::sidebar_menu_button_rect`), so nothing needs to wait for the
+        // `ui::widgets::sidebar_menu_button_rect`), so nothing needs to wait for the
         // release.
         Event::MouseButtonDown {
             mouse_btn: sdl2::mouse::MouseButton::Left,
