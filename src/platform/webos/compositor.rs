@@ -7,7 +7,7 @@
 //! which is what makes 60fps animation feasible on this hardware (the previous
 //! CPU compositor measured ~25-45ms/frame; see docs/NOTES.md).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use sdl2::pixels::PixelFormatEnum;
@@ -33,6 +33,25 @@ pub struct Compositor {
     /// The composed premultiplied blend mode, probed once — `None` until probed, `Some(None)`
     /// if the renderer refused it.
     premultiplied: Option<Option<sdl2::sys::SDL_BlendMode>>,
+    /// Tiles whose texture holds premultiplied pixels, so `present` knows to scale their colour
+    /// alongside their alpha (see [`set_tile_alpha`]).
+    premul_tiles: HashSet<TileId>,
+}
+
+/// Applies a draw list's per-tile fade `alpha` to a texture.
+///
+/// A premultiplied source needs its colour scaled by the same factor as its alpha, which
+/// `set_alpha_mod` alone does not do — SDL modulates the texel by the vertex colour, whose RGB
+/// stays 255 when only alpha mod is set, so the source arrives as `(rgb, a * alpha)`: full
+/// brightness under shrinking coverage, i.e. a modal that holds near-opaque through most of the
+/// fade and then cuts. Colour mod at `alpha` too gives `(rgb * alpha, a * alpha)`.
+///
+/// Straight-alpha and opaque tiles must keep colour mod at 255 — their colour is independent of
+/// coverage, so scaling it would darken them as they faded.
+fn set_tile_alpha(tex: &mut Texture, alpha: u8, premultiplied: bool) {
+    tex.set_alpha_mod(alpha);
+    let c = if premultiplied { alpha } else { 255 };
+    tex.set_color_mod(c, c, c);
 }
 
 /// Premultiplied-source blending: `dst = src + dst * (1 - src.a)`, i.e. the same result the
@@ -45,8 +64,8 @@ pub struct Compositor {
 /// blend equation instead moves the whole operation into the GPU's blender, where it is free,
 /// and removes the staging buffer's second full-size copy with it.
 ///
-/// `set_alpha_mod` still composes correctly: it scales source colour *and* alpha together,
-/// which is exactly what a premultiplied source wants.
+/// Per-tile fade alpha then has to scale source colour *and* alpha together, which alpha mod
+/// alone does not do — see [`set_tile_alpha`].
 fn premultiplied_blend() -> sdl2::sys::SDL_BlendMode {
     use sdl2::sys::{SDL_BlendFactor, SDL_BlendOperation};
     // SAFETY: a pure value computation in SDL — it packs the factors into a blend-mode enum
@@ -98,6 +117,7 @@ impl Compositor {
             textures: HashMap::new(),
             staging: Vec::new(),
             premultiplied: None,
+            premul_tiles: HashSet::new(),
         }
     }
 
@@ -215,6 +235,11 @@ impl Compositor {
                 .map_err(|e| anyhow::anyhow!("upload {tile:?}: {e}"))?;
             tex.set_blend_mode(BlendMode::Blend);
         }
+        if premultiplied.is_some() {
+            self.premul_tiles.insert(tile);
+        } else {
+            self.premul_tiles.remove(&tile);
+        }
         Ok(())
     }
 
@@ -227,6 +252,7 @@ impl Compositor {
         for (_, tex) in self.textures.drain() {
             unsafe { tex.destroy() };
         }
+        self.premul_tiles.clear();
     }
 
     /// Drops tile's GPU texture. Needed for windowed card tiles to free VRAM
@@ -236,6 +262,16 @@ impl Compositor {
             // SAFETY: see `clear_all`.
             unsafe { tex.destroy() };
         }
+        self.premul_tiles.remove(&tile);
+    }
+
+    /// The tile's texture with this frame's fade `alpha` applied, or `None` if it hasn't been
+    /// uploaded yet (e.g. art still loading) and the caller should skip the draw.
+    fn faded_tile(&mut self, tile: &TileId, alpha: u8) -> Option<&Texture> {
+        let premultiplied = self.premul_tiles.contains(tile);
+        let tex = self.textures.get_mut(tile)?;
+        set_tile_alpha(tex, alpha, premultiplied);
+        Some(tex)
     }
 
     /// Executes one frame's draw list. The caller has already cleared the canvas
@@ -244,28 +280,25 @@ impl Compositor {
         for cmd in cmds {
             match cmd {
                 DrawCmd::Tex { tile, dst, alpha } => {
-                    let Some(tex) = self.textures.get_mut(tile) else {
-                        continue; // not uploaded yet (e.g. art still loading) — skip
+                    let Some(tex) = self.faded_tile(tile, *alpha) else {
+                        continue;
                     };
-                    tex.set_alpha_mod(*alpha);
                     canvas
                         .copy(tex, None, Some(to_sdl_rect(*dst)))
                         .map_err(|e| anyhow::anyhow!("copy {tile:?}: {e}"))?;
                 }
                 DrawCmd::TexCropped { tile, src, dst, alpha } => {
-                    let Some(tex) = self.textures.get_mut(tile) else {
-                        continue; // not uploaded yet — skip
+                    let Some(tex) = self.faded_tile(tile, *alpha) else {
+                        continue;
                     };
-                    tex.set_alpha_mod(*alpha);
                     canvas
                         .copy(tex, Some(to_sdl_rect(*src)), Some(to_sdl_rect(*dst)))
                         .map_err(|e| anyhow::anyhow!("copy cropped {tile:?}: {e}"))?;
                 }
                 DrawCmd::TexF { tile, dst, alpha } => {
-                    let Some(tex) = self.textures.get_mut(tile) else {
-                        continue; // not uploaded yet — skip
+                    let Some(tex) = self.faded_tile(tile, *alpha) else {
+                        continue;
                     };
-                    tex.set_alpha_mod(*alpha);
                     canvas
                         .copy_f(tex, None, Some(sdl2::rect::FRect::new(dst.x, dst.y, dst.w, dst.h)))
                         .map_err(|e| anyhow::anyhow!("copy float {tile:?}: {e}"))?;
