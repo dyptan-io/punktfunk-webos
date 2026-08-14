@@ -6,5 +6,8 @@
 //! [`TileId`](crate::ui::render::TileId) and an opaque `u64` version, and everything that
 //! gives those meaning lives here.
 
+pub(crate) mod compose;
+pub(crate) mod geometry;
 pub(crate) mod key;
+pub(crate) mod prepare;
 pub(crate) mod tile;

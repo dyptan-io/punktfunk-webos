@@ -1,0 +1,275 @@
+//! Geometry both render halves read: what scrolls, how far, and how a tile is cropped to
+//! its viewport.
+//!
+//! Shared on purpose — `prepare`'s staleness checks and `compose`'s GPU-crop math have to
+//! agree about a scrollable modal's extent, and deriving it twice is how they stop
+//! agreeing.
+use crate::ui;
+use crate::ui::render::Rect;
+
+// A glob, deliberately: these are `impl App` blocks lifted out of `app/mod.rs`, and
+// they read the same private tuning constants the rest of that module does.
+use crate::app::*;
+
+impl App {
+    /// `(total units, visible units, card rect, content/viewport rect)` for whichever
+    /// scrollable modal is open — `None` if `self.screen` has no overflowing content.
+    /// The one place this per-modal geometry lives, shared by `prepare_tiles`'s
+    /// staleness checks and `draw_list`'s GPU-crop math so the two can't disagree.
+    /// `About`'s `total` depends on `about_wrapped` already being fresh for this
+    /// frame's body width — `prepare_tiles` ensures that before calling this;
+    /// `draw_list` runs after `prepare_tiles` in the same frame, so it's already set.
+    pub(crate) fn scroll_geometry(
+        &self,
+        screen_w: u32,
+        screen_h: u32,
+        fonts: &ui::text::Fonts,
+    ) -> Option<(usize, usize, Rect, Rect)> {
+        self.scroll_geometry_for(self.screen, screen_w, screen_h, fonts)
+    }
+
+    /// Same as `scroll_geometry`, but for an explicit screen rather than
+    /// `self.screen` — `draw_list`'s closing-fade needs the screen it captured at
+    /// `back()` time, not whatever `self.screen` (already `Home`) says now.
+    pub(crate) fn scroll_geometry_for(
+        &self,
+        screen: Screen,
+        screen_w: u32,
+        screen_h: u32,
+        fonts: &ui::text::Fonts,
+    ) -> Option<(usize, usize, Rect, Rect)> {
+        match screen {
+            Screen::Settings => {
+                let (card, content) = view::settings::layout(&self.settings, screen_w, screen_h);
+                let visible = view::settings::visible_rows(&self.settings, screen_h);
+                Some((menu::settings_row_count(&self.settings), visible, card, content))
+            }
+            Screen::About => {
+                let card = view::about::card_rect(screen_w, screen_h);
+                let body = view::about::body_rect(card, fonts);
+                let total = self.about_wrapped.as_ref().map_or(0, |(_, v)| v.len());
+                let visible = view::about::visible_lines(body, fonts.raster, fonts.value);
+                Some((total, visible, card, body))
+            }
+            _ => None,
+        }
+    }
+
+    /// Clips a tile's destination to `clip`, returning `(source crop, clipped destination)`.
+    ///
+    /// The tile's full extent is assumed to map onto `dst`, so the crop is proportional —
+    /// which keeps this correct even while `dst` is being zoom-animated. `None` when nothing
+    /// of it remains inside.
+    pub(crate) fn clip_tile(dst: Rect, clip: Rect, tile_w: u32, tile_h: u32) -> Option<(Rect, Rect)> {
+        let visible = dst.intersection(clip)?;
+        if visible == dst {
+            return Some((Rect::new(0, 0, tile_w, tile_h), dst));
+        }
+        if dst.width() == 0 || dst.height() == 0 {
+            return None;
+        }
+        let fx = |v: i32| (f64::from(v) / f64::from(dst.width())) * f64::from(tile_w);
+        let fy = |v: i32| (f64::from(v) / f64::from(dst.height())) * f64::from(tile_h);
+        let src = Rect::new(
+            fx(visible.x() - dst.x()).round() as i32,
+            fy(visible.y() - dst.y()).round() as i32,
+            (fx(visible.width() as i32).round() as u32).max(1),
+            (fy(visible.height() as i32).round() as u32).max(1),
+        );
+        Some((src, visible))
+    }
+
+    /// The furthest the viewport may be cropped down: the last unit sits flush with the
+    /// viewport's bottom edge rather than scrolling past it.
+    ///
+    /// This is why the rendered offset is pixels and not units — `offset * stride` overshoots
+    /// by exactly the peek strip at the end of the list, which would show a dead band below
+    /// the final row (and is what the row-quantized version did).
+    pub(crate) fn max_scroll_px(total: usize, stride: i32, viewport_h: u32) -> i32 {
+        (total as i32 * stride - viewport_h as i32).max(0)
+    }
+
+    /// Re-derives `modal_scroll_target_px` from the integral offset, snapping rather than
+    /// gliding when the scrolling modal changed. Called once per frame from `update_tiles`,
+    /// which is where the geometry (and the fonts About's stride needs) is already in hand.
+    ///
+    /// Kept in absolute content pixels, *not* relative to the baked window: About re-bakes its
+    /// window later in the same pass, and a window-relative target would jump by the whole
+    /// window offset on the frame that happens — a full-document glide instead of a scroll.
+    /// `draw_list` subtracts the window when it crops.
+    pub(crate) fn sync_modal_scroll(
+        &mut self,
+        screen: Screen,
+        total: usize,
+        visible: usize,
+        viewport_h: u32,
+        stride: i32,
+    ) {
+        let offset = self.scroll.clamped(total, visible);
+        // Biased back by one peek so the *top* edge also cuts mid-row: sitting on the row grid
+        // would put nothing but the gap between rows under the top fade, which is invisible
+        // (see `view::settings::PEEK`). The clamps then pin the first and last positions flush,
+        // where there is genuinely nothing beyond the edge to hint at.
+        let bias = match screen {
+            Screen::Settings => view::settings::PEEK as i32,
+            _ => 0,
+        };
+        let target = (offset as i32 * stride - bias)
+            .min(Self::max_scroll_px(total, stride, viewport_h))
+            .max(0);
+        self.modal_scroll_target_px = target;
+        if self.modal_scroll_screen != Some(screen) {
+            self.modal_scroll_screen = Some(screen);
+            self.modal_scroll_px = target;
+        }
+    }
+
+    /// Pixel stride between two consecutive units of whichever modal is scrolling —
+    /// Settings' fixed row height, or About's wrapped-line height. Only meaningful
+    /// when `scroll_geometry` returns `Some`.
+    pub(crate) fn scroll_stride(&self, fonts: &ui::text::Fonts) -> i32 {
+        self.scroll_stride_for(self.screen, fonts)
+    }
+
+    /// Same as `scroll_stride`, but for an explicit screen — see `scroll_geometry_for`.
+    pub(crate) fn scroll_stride_for(&self, screen: Screen, fonts: &ui::text::Fonts) -> i32 {
+        match screen {
+            Screen::Settings => ui::widgets::FOCUS_ROW_H as i32 + ui::widgets::FOCUS_ROW_GAP,
+            Screen::About => view::about::line_stride(fonts.raster, fonts.value),
+            _ => 1,
+        }
+    }
+
+    /// Title and subtitle of the address form, which serves both Add host and Edit
+    /// address — the only difference between the two screens.
+    pub(crate) fn address_copy(&self) -> (&'static str, String) {
+        match self.screen {
+            Screen::EditHost => {
+                let name = self
+                    .edit_host_index
+                    .and_then(|i| self.entries.get(i))
+                    .map_or_else(String::new, |e| e.name().to_string());
+                (view::addhost::EDIT_TITLE, view::addhost::edit_subtitle(&name))
+            }
+            _ => (view::addhost::ADD_TITLE, view::addhost::ADD_SUBTITLE.to_string()),
+        }
+    }
+
+    /// The current screen's modal card rect, or `None` for a screen that draws no
+    /// modal card (Home, or Wake before its payload is set). Measured off the same
+    /// [`ui::ModalScreen`] value the renderer draws, so hover, click and the
+    /// close-button hit-test can never drift from what is on screen.
+    pub(crate) fn modal_card_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<Rect> {
+        self.with_modal_screen(|s| s.card_rect(screen_w, screen_h, fonts))
+    }
+
+    /// The open modal's row-list viewport, or an empty rect on a screen without one —
+    /// for the tile builders, which only reach here on a screen that has one.
+    pub(crate) fn modal_list_content(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Rect {
+        self.modal_list_geometry(screen_w, screen_h, fonts)
+            .map_or_else(|| Rect::new(0, 0, 0, 0), |(_, content)| content)
+    }
+
+    /// The open modal's card and row-list viewport, when it has one. The pair every hit
+    /// test and focused-row tile needs, derived once from the screen that draws them.
+    pub(crate) fn modal_list_geometry(
+        &self,
+        screen_w: u32,
+        screen_h: u32,
+        fonts: &ui::text::Fonts,
+    ) -> Option<(Rect, Rect)> {
+        self.with_modal_screen(|s| {
+            let card = s.card_rect(screen_w, screen_h, fonts);
+            s.content_rect(card, fonts).map(|content| (card, content))
+        })?
+    }
+
+    /// Calls `f` with the open modal as a [`ui::ModalScreen`], built from the state it
+    /// shows. `None` on Home, and on a screen whose payload isn't set yet (Wake before its
+    /// host is known).
+    ///
+    /// By closure rather than by return value: the hit tests below run this on every Magic
+    /// Remote `MouseMotion`, and a returned `Box<dyn ModalScreen>` would put a heap
+    /// allocation on that path for what is a geometry query.
+    pub(crate) fn with_modal_screen<R>(&self, f: impl FnOnce(&dyn ui::ModalScreen) -> R) -> Option<R> {
+        Some(match self.screen {
+            Screen::Home => return None,
+            Screen::Settings => f(&view::settings::Modal {
+                settings: &self.settings,
+            }),
+            Screen::Pairing => f(&view::pairing::Modal {
+                pin_digits: &self.pin_digits,
+                status: self.pairing_status.as_ref(),
+                busy: self.pairing_busy,
+            }),
+            Screen::AddHost | Screen::EditHost => {
+                let (title, subtitle) = self.address_copy();
+                f(&view::addhost::Modal {
+                    title,
+                    subtitle,
+                    typed: self.add_host.text(),
+                    keyboard_shown: self.keyboard_shown,
+                })
+            }
+            Screen::Wake => f(&view::wake::Modal {
+                wake: self.wake.as_ref()?,
+            }),
+            Screen::ForgetHost => f(&view::forget::Modal {
+                host_name: self.host_menu_host_name().unwrap_or_default(),
+            }),
+            Screen::HostMenu => f(&view::hostmenu::Modal {
+                title: self.host_menu_host_name().unwrap_or_default(),
+                subtitle: self.host_menu_subtitle(),
+                rows: self.host_menu_rows(),
+            }),
+            Screen::WakeSettings => f(&view::wakesettings::Modal {
+                host_name: self.host_menu_host_name().unwrap_or_default(),
+                auto_send: self.wake_settings_host().is_some_and(|h| h.wol_auto),
+            }),
+            Screen::About => f(&view::about::Modal),
+            Screen::SpeedTest => f(&view::speedtest::Modal {
+                state: self.speed_test.as_ref(),
+                host_name: &self.speed_test_name,
+            }),
+            Screen::PinLimit => f(&view::pinlimit::Modal {
+                message: Self::PIN_LIMIT_MESSAGE,
+            }),
+            Screen::Diagnostics => f(&view::diagnostics::Modal {
+                settings: &self.settings,
+            }),
+            Screen::Experimental => f(&view::experimental::Modal {
+                settings: &self.settings,
+                rooted: Self::rooted(),
+            }),
+            Screen::CursorSettings => f(&view::cursorsettings::Modal {
+                settings: &self.settings,
+            }),
+            Screen::SendLogs => f(&view::sendlogs::Modal),
+        })
+    }
+
+    /// A painter for the current screen's modal, sized and positioned to its *tile*
+    /// region — the card rect grown by [`MODAL_TILE_PAD`] for the shadow — rather than
+    /// to the whole screen. Records the region in `modal_tile_region`, which is where
+    /// `compose_modal` composites the tile. Falls back to full-screen on a screen with
+    /// no card (shouldn't happen with one open).
+    pub(crate) fn modal_painter(&mut self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Painter {
+        let card = self.modal_card_rect(screen_w, screen_h, fonts);
+        let pad = MODAL_TILE_PAD;
+        let region = card.map_or_else(
+            || Rect::new(0, 0, screen_w, screen_h),
+            |c| {
+                Rect::new(
+                    c.x() - pad,
+                    c.y() - pad,
+                    c.width() + 2 * pad as u32,
+                    c.height() + 2 * pad as u32,
+                )
+            },
+        );
+        self.modal_tile_region = region;
+        let mut p = Painter::new(region.width(), region.height());
+        p.set_origin(region.x(), region.y());
+        p
+    }
+}
