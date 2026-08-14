@@ -34,7 +34,11 @@ run.
 Hybrid software/GPU: `tiny_skia` rasterizes tiles, SDL2 composites. Redraw-on-change (no every-tick render). Key facts:
 
 - **Never use `tiny_skia::Painter::draw_pixmap/fill_rect` for large areas** (~300ms full-screen). Use `pixmap.data_mut()` loop or `copy_from_slice`. Verify with on-device timing, never assume a call is cheap.
-- Tiles use premultiplied-alpha; `Compositor::upload` un-premultiplies (SDL `BlendMode::Blend` expects straight alpha).
+- Tiles use premultiplied-alpha, and stay that way: `Compositor::upload` sets a composed
+  premultiplied blend mode (`SDL_ComposeCustomBlendMode(ONE, ONE_MINUS_SRC_ALPHA, …)`, supported
+  by the fork's GLES2 backend) instead of dividing alpha back out per pixel. The un-premultiply
+  fallback is still there for a renderer that refuses the mode — it is the path to suspect if a
+  tile's alpha looks wrong; `premultiplied texture blending: <bool>` in the log says which ran.
 - `FilterQuality::Nearest` + `anti_alias=false` are cheaper scan-conversion paths.
 - Fonts: Geist (OTF, embedded). Icons: Material Icons subset (~1.7 KB) — **subset, so new `ICON_*` codepoint needs font regenerated** (`assets/icons/NOTICE.md` has `pyftsubset` line + codepoint list). Assume Latin only.
 - **Scroll fade needs viewport to cut mid-row, else invisible.** Unfocused rows draw no own background (`draw_selectable_fixed` fills only when focused), so a viewport ending on a row boundary has only card background in last pixels — fading `SIDEBAR_BG` into `SIDEBAR_BG` is a no-op; first attempt shipped rendering nothing. `ui::SETTINGS_PEEK` deliberately leaves partial row for `SCROLL_FADE_H` to dissolve.

@@ -1,5 +1,8 @@
 //! SDL2_ttf-backed `TextRaster` implementation — the only place in the crate
 //! that touches `sdl2::ttf`.
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use sdl2::ttf::{Font, Sdl2TtfContext};
 use tiny_skia::{IntSize, Pixmap};
@@ -63,7 +66,22 @@ pub struct SdlTextRaster<'ttf> {
     title: Font<'ttf, 'static>,
     icon: Font<'ttf, 'static>,
     caption: Font<'ttf, 'static>,
+    /// Memoized `measure` results, one map per font — see [`SdlTextRaster::measure`].
+    measured: RefCell<[MeasureCache; FontId::COUNT]>,
 }
+
+/// One font's memoized measurements, keyed by the exact string measured.
+type MeasureCache = HashMap<Box<str>, (u32, u32)>;
+
+/// Measurements held per font before the whole memo is dropped.
+///
+/// The cache exists for the text this UI measures over and over (every word of every wrapped
+/// string, every label a layout probes), which is a small set. The About screen's licence wall
+/// is the exception — `ui::wrap_document` measures every word of a ~10,000-line document, and
+/// on a TV with no eviction path an unbounded memo of that is a leak. Clearing wholesale at a
+/// ceiling keeps the common case allocation-free without a per-entry eviction policy: the
+/// working set of a menu screen refills in a few hundred lookups.
+const MEASURE_CACHE_MAX: usize = 4096;
 
 impl<'ttf> SdlTextRaster<'ttf> {
     pub fn new(ttf: &'ttf Sdl2TtfContext, height_px: u32) -> Result<Self> {
@@ -73,6 +91,7 @@ impl<'ttf> SdlTextRaster<'ttf> {
             title: load_font(ttf, height_px, 40, FontWeight::SemiBold)?,
             icon: load_icon_font(ttf)?,
             caption: load_font(ttf, height_px, 14, FontWeight::Regular)?,
+            measured: RefCell::new(std::array::from_fn(|_| HashMap::new())),
         })
     }
 
@@ -97,8 +116,23 @@ impl TextRaster for SdlTextRaster<'_> {
         pixmap_from_ttf_surface(&surface)
     }
 
+    /// Memoized, because `size_of` is a full freetype glyph-metrics walk and this UI asks for
+    /// the same measurement constantly: `wrap_text` measures every word of every string it
+    /// wraps (and words repeat), `ellipsize` binary-searches over prefixes of one title,
+    /// `Layout::total_length` probes a stack before placing it, and all of that happens again
+    /// on the next tile rebuild. None of it can change — a loaded font's metrics are fixed.
     fn measure(&self, font: FontId, text: &str) -> (u32, u32) {
-        self.font(font).size_of(text).unwrap_or((0, 0))
+        let mut memo = self.measured.borrow_mut();
+        let per_font = &mut memo[font.index()];
+        if let Some(&size) = per_font.get(text) {
+            return size;
+        }
+        let size = self.font(font).size_of(text).unwrap_or((0, 0));
+        if per_font.len() >= MEASURE_CACHE_MAX {
+            per_font.clear();
+        }
+        per_font.insert(text.into(), size);
+        size
     }
 
     fn height(&self, font: FontId) -> i32 {

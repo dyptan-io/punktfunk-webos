@@ -13,6 +13,19 @@ pub const WEBOS_BACK_KEYCODE: i32 = 2_097_155;
 /// [`WEBOS_BACK_KEYCODE`], which behaves identically.
 pub const WEBOS_RED_KEYCODE: i32 = 2_097_169;
 
+/// Sleeps until an SDL event arrives or `timeout` elapses, whichever comes first.
+///
+/// A null event pointer is what makes this usable from the menu loop: SDL then waits on the
+/// queue without dequeuing anything, so the event is still there for the poll at the top of
+/// the next iteration to handle normally. `EventPump::wait_event_timeout` would consume it.
+pub fn wait_for_event(timeout: std::time::Duration) {
+    // SAFETY: SDL documents a null event pointer as "wait, but leave the event queued"; the
+    // call touches nothing this side owns.
+    unsafe {
+        sdl2::sys::SDL_WaitEventTimeout(std::ptr::null_mut(), timeout.as_millis() as i32);
+    }
+}
+
 pub fn menu_event_for_key(keycode: sdl2::keyboard::Keycode) -> Option<MenuEvent> {
     use sdl2::keyboard::Keycode;
     Some(match keycode {

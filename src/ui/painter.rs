@@ -94,6 +94,14 @@ thread_local! {
     static GLOW_CACHE: RefCell<HashMap<GlowKey, Pixmap>> = RefCell::new(HashMap::new());
 }
 
+thread_local! {
+    /// `blur_rect`'s working buffers: the copied-out region and the one-channel scratch the
+    /// box blur passes over. Shared for the same reason the caches above are — a `Painter`
+    /// per tile means a field on `Painter` would be allocated fresh every time anyway, and a
+    /// full-screen frosted panel's region alone is ~8 MB to allocate and free per call.
+    static BLUR_SCRATCH: RefCell<(Vec<u8>, Vec<u8>)> = const { RefCell::new((Vec::new(), Vec::new())) };
+}
+
 impl Painter {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
@@ -157,9 +165,9 @@ impl Painter {
             let t = (y as f32 / last_row).clamp(0.0, 1.0);
             let eased = t * t * (3.0 - 2.0 * t);
             let alpha = (from + (to - from) * eased).round().clamp(0.0, 255.0) as u8;
-            // Premultiplied, because that is what a tile's buffer holds — `Compositor::upload`
-            // un-premultiplies on the way to the GPU (docs/NOTES.md). Writing straight alpha
-            // here would show up as a fade that washes toward white at its dense end.
+            // Premultiplied, because that is what a tile's buffer holds and what the GPU is
+            // told to expect (docs/NOTES.md). Writing straight alpha here would show up as a
+            // fade that washes toward white at its dense end.
             // Rounded, not truncated: flooring biases every channel down by a
             // fraction of a level, and over the card the fade must reconstruct
             // the panel colour exactly or it bands as a dark rectangle on OLED near-black.
@@ -319,21 +327,28 @@ impl Painter {
         let src_stride = pw as usize * 4;
         let data = self.pixmap.data_mut();
 
-        let mut region = vec![0u8; row_bytes * h];
-        for y in 0..h {
-            let src = (y0 as usize + y) * src_stride + x0 as usize * 4;
-            region[y * row_bytes..(y + 1) * row_bytes].copy_from_slice(&data[src..src + row_bytes]);
-        }
+        BLUR_SCRATCH.with_borrow_mut(|(region, scratch)| {
+            // `resize` alone, no `clear()` first: every byte of both buffers is written before
+            // it is read (the copy loop below fills `region`; the horizontal pass fills
+            // `scratch`), so zeroing what is already there would be a full-size memset for
+            // nothing — the cost this scratch exists to avoid.
+            region.resize(row_bytes * h, 0);
+            scratch.resize(w * h, 0);
 
-        let mut scratch = vec![0u8; w * h];
-        for channel in 0..4 {
-            box_blur_channel(&mut region, &mut scratch, w, h, channel, radius);
-        }
+            for y in 0..h {
+                let src = (y0 as usize + y) * src_stride + x0 as usize * 4;
+                region[y * row_bytes..(y + 1) * row_bytes].copy_from_slice(&data[src..src + row_bytes]);
+            }
 
-        for y in 0..h {
-            let dst = (y0 as usize + y) * src_stride + x0 as usize * 4;
-            data[dst..dst + row_bytes].copy_from_slice(&region[y * row_bytes..(y + 1) * row_bytes]);
-        }
+            for channel in 0..4 {
+                box_blur_channel(region, scratch, w, h, channel, radius);
+            }
+
+            for y in 0..h {
+                let dst = (y0 as usize + y) * src_stride + x0 as usize * 4;
+                data[dst..dst + row_bytes].copy_from_slice(&region[y * row_bytes..(y + 1) * row_bytes]);
+            }
+        });
     }
 
     /// Frosted-glass panel: blurs whatever's under `rect`, then tints it.

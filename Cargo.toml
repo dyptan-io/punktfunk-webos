@@ -95,6 +95,9 @@ serde_json = "1"
 # use lto="thin" for faster dev iteration.
 lto = "fat"
 codegen-units = 1
+# No `catch_unwind` anywhere in this app, and a panic on a TV is a crash either way: unwinding
+# only costs binary size and the landing pads that come with it.
+panic = "abort"
 
 # `task preview`: debug is too slow to watch (software rasterization), but `release`'s fat LTO
 # makes every rebuild a coffee break and its crypto inlining is irrelevant off-device.

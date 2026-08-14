@@ -326,9 +326,15 @@ pub(super) fn run_ui_flow(
                 prewarmed = true;
                 app.prewarm_modal_caches(&mut text_cache, fonts, display_mode.w as u32, display_mode.h as u32)?;
             }
+            // Blocked on the event queue rather than asleep for the rest of the budget:
+            // nothing on this branch is animating, so the next thing that can change a pixel
+            // is an SDL event, and waiting for it both wakes the SoC less often and drops the
+            // up-to-16ms delay a plain sleep put between a keypress and the poll that sees it.
+            // The timeout keeps the loop's own polling (discovery, art, reachability) on the
+            // same cadence it had.
             let elapsed = tick_start.elapsed();
             if elapsed < TICK_BUDGET {
-                std::thread::sleep(TICK_BUDGET - elapsed);
+                crate::platform::webos::input::wait_for_event(TICK_BUDGET - elapsed);
             }
             continue;
         }

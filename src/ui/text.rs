@@ -36,7 +36,7 @@ pub struct Fonts<'a> {
 /// one row per known host/game) — no eviction needed; see module docs if that
 /// assumption ever stops holding.
 pub struct TextCache {
-    entries: HashMap<(String, u32, FontId), Pixmap>,
+    entries: HashMap<u64, Pixmap>,
 }
 
 impl TextCache {
@@ -46,21 +46,28 @@ impl TextCache {
         }
     }
 
-    fn key(font: FontId, text: &str, color: Color) -> (String, u32, FontId) {
+    /// Hashes `(font, text, color)` into the key the cache stores under.
+    ///
+    /// Keying by the hash rather than by the tuple is what keeps the *hit* path free of both
+    /// an allocation and a second hash: the old key owned a `String`, so every lookup —
+    /// including the overwhelmingly common one that finds an already-rasterized glyph run —
+    /// copied the label before it could ask whether it was there. A collision would show a
+    /// mislabelled tile, which is worth stating plainly; over the few hundred distinct strings
+    /// a screen draws, in a 64-bit space, it is not a risk this app will meet.
+    fn key(font: FontId, text: &str, color: Color) -> u64 {
         let packed_color = u32::from_be_bytes([color.r, color.g, color.b, color.a]);
-        (text.to_string(), packed_color, font)
+        crate::ui::cache::version(&(text, packed_color, font))
     }
 
     /// Returns the cached `Pixmap` for `(font, text, color)`, rasterizing (and
     /// caching) it first if this is the first time this exact combination has
     /// been drawn.
     fn get_or_create(&mut self, raster: &dyn TextRaster, font: FontId, text: &str, color: Color) -> Result<&Pixmap> {
-        let key = Self::key(font, text, color);
-        if !self.entries.contains_key(&key) {
-            let pixmap = raster.rasterize(font, text, color)?;
-            self.entries.insert(key.clone(), pixmap);
+        use std::collections::hash_map::Entry;
+        match self.entries.entry(Self::key(font, text, color)) {
+            Entry::Occupied(slot) => Ok(slot.into_mut()),
+            Entry::Vacant(slot) => Ok(slot.insert(raster.rasterize(font, text, color)?)),
         }
-        Ok(self.entries.get(&key).expect("just inserted"))
     }
 }
 
@@ -190,19 +197,28 @@ impl Canvas<'_, '_> {
 /// Truncates `text` with a trailing "…" so it fits within `max_w` pixels in `font`
 /// (moonlight-tv scroll-marquees long titles on focus instead — see the module docs
 /// on why this client keeps it simple).
+/// Binary-searches the character count rather than popping one at a time: a measurement is a
+/// freetype metrics walk, and a long title that has to lose most of itself was paying one per
+/// dropped character. Width is monotonic in the prefix length, which is what makes the search
+/// valid — the same negligible-kerning assumption every width budget in this UI already makes.
 pub fn ellipsize(raster: &dyn TextRaster, font: FontId, text: &str, max_w: u32) -> String {
     if raster.measure(font, text).0 <= max_w {
         return text.to_string();
     }
-    let mut s: Vec<char> = text.chars().collect();
-    while !s.is_empty() {
-        s.pop();
-        let candidate: String = s.iter().collect::<String>() + "…";
-        if raster.measure(font, &candidate).0 <= max_w {
-            return candidate;
+    let chars: Vec<char> = text.chars().collect();
+    let candidate = |take: usize| chars[..take].iter().collect::<String>() + "…";
+    // Invariant: `lo` always fits, `hi` never does. `lo = 0` is "…" alone, which is the
+    // documented last resort when even that overflows.
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while hi - lo > 1 {
+        let mid = lo + (hi - lo) / 2;
+        if raster.measure(font, &candidate(mid)).0 <= max_w {
+            lo = mid;
+        } else {
+            hi = mid;
         }
     }
-    "…".to_string()
+    candidate(lo)
 }
 
 /// Greedily word-wraps `text` into lines no wider than `max_w` px in `font` — for modal

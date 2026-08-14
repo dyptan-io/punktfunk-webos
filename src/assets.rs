@@ -49,11 +49,14 @@ pub fn logo_pixmap() -> Option<&'static Pixmap> {
 /// `assets/logo/punktfunk-spinner.gif`).
 static SPINNER_GIF_BYTES: &[u8] = include_bytes!("../assets/logo/punktfunk-spinner.gif");
 
-/// One decoded spinner frame (straight RGBA8) and how long it stays on screen.
+/// One decoded spinner frame (straight RGBA8) and when it leaves the screen.
 pub struct SpinnerFrame {
     pub width: u32,
     pub height: u32,
-    pub delay: std::time::Duration,
+    /// Nanoseconds from the start of the loop to the end of this frame — the cumulative sum
+    /// of every delay up to and including this one, so [`spinner_frame_at`] can binary-search
+    /// it instead of re-adding the whole table on every call while the spinner is on screen.
+    pub end_ns: u128,
     pub pixels: Vec<u8>,
 }
 
@@ -69,18 +72,19 @@ pub fn spinner_frames() -> &'static [SpinnerFrame] {
             return Vec::new();
         };
         let mut frames = Vec::with_capacity(raw_frames.len());
+        let mut end_ns = 0u128;
         for frame in raw_frames {
             let (w, h) = frame.buffer().dimensions();
             let (numer, denom) = frame.delay().numer_denom_ms();
             let raw_delay = numer.checked_div(denom).unwrap_or(0);
             // WHY: clamp to ~30 FPS min to avoid busy-looping the render thread.
             let delay_ms = if raw_delay < 20 { 33 } else { raw_delay };
-            let delay = std::time::Duration::from_millis(u64::from(delay_ms));
+            end_ns += std::time::Duration::from_millis(u64::from(delay_ms)).as_nanos();
             let pixels = frame.into_buffer().into_raw();
             frames.push(SpinnerFrame {
                 width: w,
                 height: h,
-                delay,
+                end_ns,
                 pixels,
             });
         }
@@ -97,24 +101,19 @@ pub fn spinner_frame(idx: usize) -> Option<&'static SpinnerFrame> {
 /// Falls back to a 1×1 transparent dummy if the GIF decoded to zero frames.
 pub fn spinner_frame_at(phase: f32) -> (usize, &'static SpinnerFrame) {
     let frames = spinner_frames();
-    if let Some(first) = frames.first() {
-        let total: std::time::Duration = frames.iter().map(|f| f.delay).sum();
-        let mut elapsed = std::time::Duration::from_secs_f32(phase.max(0.0)).as_nanos() % total.as_nanos().max(1);
-        for (idx, f) in frames.iter().enumerate() {
-            if elapsed < f.delay.as_nanos() {
-                return (idx, f);
-            }
-            elapsed -= f.delay.as_nanos();
-        }
-        (0, first)
-    } else {
+    let Some(last) = frames.last() else {
         static DUMMY: std::sync::OnceLock<SpinnerFrame> = std::sync::OnceLock::new();
         let dummy = DUMMY.get_or_init(|| SpinnerFrame {
             width: 1,
             height: 1,
-            delay: std::time::Duration::from_millis(100),
+            end_ns: 100_000_000,
             pixels: vec![0, 0, 0, 0],
         });
-        (0, dummy)
-    }
+        return (0, dummy);
+    };
+    let elapsed = std::time::Duration::from_secs_f32(phase.max(0.0)).as_nanos() % last.end_ns.max(1);
+    // First frame whose end is past `elapsed` — the frames are sorted by `end_ns` by
+    // construction, which is what makes the search valid.
+    let idx = frames.partition_point(|f| f.end_ns <= elapsed).min(frames.len() - 1);
+    (idx, &frames[idx])
 }
