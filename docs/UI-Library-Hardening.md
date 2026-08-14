@@ -1,205 +1,70 @@
 # `ui/` hardening: purity, structure, compute
 
 Follow-on to `docs/UI-Framework-Adaptation.md` (phases 1, 2, 4 landed). That work fixed the
-*API shape*. This one fixes what the API is still made of: `ui/` names this app's screens,
-its settings types and its brand, and the render path still hangs off `App`. Separately, the
-hot paths carry costs that only show up on the target (armv7 / cortex-a73, softfp+NEON,
-1080p panel, GLES2).
+*API shape*. This one fixed what the API was made of.
 
-Three phases. **A** removes app knowledge from `ui/`. **B** restructures the render path and
-proves purity by compiling `ui/` alone. **C** is compute. A and C are independent — C can be
-done first if a frame-time problem is pressing.
-
-The success test for A+B: `ui/` builds as its own crate with zero `crate::core` / `crate::app`
-paths, and a `examples/gallery.rs` renders every widget with no `App` in the process.
+**Status: phases A and B are done** (three commits — see below). **Phase C, compute, is not
+started.**
 
 ---
 
-## Phase A — evict app knowledge from `ui/`
+## Phase A — evict app knowledge from `ui/` — **done**
 
-### A1. `TileId` is an app enum living in the library
+`ui/` no longer contains a single `crate::core`/`crate::app` path or a single
+`include_bytes!`.
 
-`ui/render.rs:100` — 24 variants named after this app's screens (`NoHost`, `PinBadge`,
-`Hero`, `DisconnectDialog`), two of them carrying `core::screen::Screen`, two carrying
-`String`. The library cannot be reused, and the `String` variants cost a heap clone plus a
-SipHash of the string on every draw command every frame (see C2).
-
-Replace with an opaque handle:
-
-```rust
-// ui/render.rs
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct TileId(pub u32);
-```
-
-The app owns the numbering. Give `app` a `TileKey` enum (exactly today's variants, moved
-verbatim) plus an interner that maps a key to a dense `u32`:
-
-```rust
-// app/render/keys.rs
-pub enum TileKey { Sidebar, Card(String), ScrollContent(Screen), … }
-
-pub struct TileKeys { map: FxHashMap<TileKey, TileId>, next: u32 }
-impl TileKeys { pub fn id(&mut self, k: TileKey) -> TileId }
-```
-
-`prepare_tiles` interns once when a tile is (re)built; `draw_list` emits the cached `u32`.
-The compositor's `HashMap<TileId, Texture>` becomes `Vec<Option<Texture>>` indexed by id
-(C2). Note the earlier doc's "reworking `TileId` into hashed keys — not worth it": that
-judgement was about *present pain* only; here it is the same edit that removes the leak and
-the per-frame hashing, so it pays twice.
-
-Interner eviction: card tiles are already evicted by id; give `TileKeys` a `retire(&TileKey)`
-so the slot is reused instead of growing per library refresh.
-
-### A2. `ui/tiles.rs` imports `core::model`
-
-`tiles.rs:4` pulls `Settings`, `GamepadType`, `LogLevelOverride`; `ModalFocusKey` and
-`ScrollContentKey` enumerate this app's screens; `TileCache`'s fields are named
-`nohost_tile`, `status_tile`, `pin_badge_tile`. The file's own comment already says the keys
-"still name this app's screens, which is the next thing to make opaque".
-
-Split the file three ways:
-
-| Goes to | What |
+| Was | Now |
 | --- | --- |
-| `ui/tiles.rs` (stays) | `Painter`-producing primitives with no app types: `render_focus_ring_tile`, `render_card_outline_tile`, `render_text_tile`, `render_wrapped_text_tile`, `CARD_TILE_PAD`/`FOCUS_RING_PAD`/`ROW_TILE_PAD` |
-| `ui/cache.rs` (new) | A generic cache: `TileStore<K> { map: FxHashMap<TileId, (K, Painter)> }` with `get_or_build(id, key, || Painter)` returning "was rebuilt". Replaces all 16 hand-written `Option<(Key, Painter)>` slots and their staleness `if`s |
-| `app/render/tiles.rs` | `ModalFocusKey`, `ScrollContentKey`, `render_stats_overlay_tile`, `render_log_overlay_tile`, `render_pin_badge_tile`, `confirm_dialog_*`, the spinner GIF |
+| `ui::render::TileId`, a 24-variant enum naming this app's screens, two variants carrying `core::screen::Screen`, two carrying a `String` | `TileId(u32)`, `Copy`. `app::render::tile` owns the numbering in three bands: singletons, one slot per spinner frame, and an interned band for grid cards (`CardIds`, keyed by pin id so a pin/unpin reorder still rebuilds nothing) |
+| `ui::tiles::TileCache` — 16 `Option<(Key, Painter)>` fields, each with its own hand-written `key != stored` check, keys typed on `Settings`/`GamepadType`/`Screen` | `ui::cache::TileStore` — one map, one rule: fresh while its `u64` version matches. `app::render::key` holds the `#[derive(Hash)]` keys (`ModalFocusKey`, `ScrollContentKey`, `ModalShellKey`, now together) |
+| Geist, the Material subset, the sidebar logo and the spinner GIF `include_bytes!`d into `ui::text`/`ui::tiles` | `crate::assets`; `text_sdl` loads them. `ui` keeps the `FontId`/`FontWeight` roles |
+| 13 bare palette consts + 26 `ICON_*` | `style::Theme`, installed once by `app::view::icons::install_style`, with a neutral `Theme::DEFAULT` so a `ui`-only harness draws without setup. `style::Icons` covers the four glyphs the library's own chrome needs; the other 26 are the app's vocabulary |
+| `list_nav(…, ev: MenuEvent)`, `MenuEvent` in the `ui` prelude | `list_nav(…, dir: Option<focus::Dir>)`; `menu::nav_dir` maps the app's events once, at the app's boundary |
+| `HERO_PAN`/`HERO_FADE`/`HERO_MIN_SHOW`/`HERO_ART_GRACE`/`HERO_LOADING_MAX`/`LAUNCH_FADE`/`FIRST_FRAME_WAIT` in `ui::animation` | `app::hero`. `ui::animation` keeps curves and rect math |
+| `Compositor::upload` matching `TileId::Sidebar` to decide opacity | an `opaque: bool` the caller declares |
 
-`TileStore<K>` is the real win: today every slot repeats
-`if cache.x.as_ref().map(|(k, _)| k) != Some(&key) { rebuild }` by hand, sixteen times, and
-each one is a place to forget a key field.
+Deviation worth knowing about: the theme is **installed once into a `OnceLock`**, not carried
+as a `Canvas` field as this document originally proposed. A `Canvas` field means a sixth
+argument on every tile builder — the exact parameter-passing the previous document's phase 1
+removed. A theme is process-wide; `OnceLock` says so.
 
-### A3. App assets embedded in `ui/`
+Two smaller wins fell out of the same edit: draw commands no longer clone a `String` or hash
+one (C1/C2 below are partly paid), and the sidebar strip rebuilds into its own pixmap
+(`TileStore::ensure_in_place`) instead of reallocating a full-height surface per host-list
+change.
 
-`ui/text.rs:10-37` `include_bytes!`s Geist, the Material subset and `logo-sidebar.png`;
-`ui/tiles.rs:38` embeds the spinner GIF. A library should not carry an app's brand.
+Not done, and deliberately: `ModalScreen`'s `Fonts` argument (A7) — worth revisiting only
+when a screen needs the theme to size itself, which none does.
 
-- `Fonts` already holds a `&dyn TextRaster`; add the font *bytes* to it as
-  `FontSource { regular: &'static [u8], medium: …, semibold: …, icons: … }` supplied by
-  `app`. `ui` keeps the `FontId`/`FontWeight` vocabulary and nothing else.
-- `logo_pixmap()` and the spinner move to `app` (`app/assets.rs`). `SidebarRow` grows a
-  `logo: Option<&Pixmap>` or the app draws it; the widget must not know the brand.
+## Phase B — structure — **done, differently**
 
-### A4. `ui/style.rs` is this app's theme, as bare consts
+`src/app/mod.rs` was 3422 lines holding the state machine, both halves of the render path and
+every hit test. It is 1062. The rest:
 
-26 `ICON_*` constants (`ICON_GAMEPAD`, `ICON_TOUCH`, `ICON_POWER`) and a purple brand
-palette. Turn it into a value the app supplies:
+- `app::render::prepare` (975) — rasterization, one `prepare_*` per family
+- `app::render::compose` (639) — the draw list, pure texture-copy bookkeeping
+- `app::render::geometry` (275) — what both halves measure against, so they cannot disagree
+- `app::pointer` (546) — hover and click, against the same `app::view` rects the painter uses
 
-```rust
-// ui/style.rs
-#[derive(Clone, Copy)]
-pub struct Theme {
-    pub bg: Color, pub surface: Color, pub accent: Color, pub accent_bright: Color,
-    pub text: Color, pub muted: Color, pub warning: Color, pub caution: Color,
-    pub error: Color, pub ok: Color, pub scrim: Color, pub rule: Color,
-}
-impl Theme { pub const DARK_PURPLE: Theme = …; }   // today's values, as the default
-```
+**B1 was not done as written.** It had these become free functions over a completed
+`RenderInput`. `RenderInput` is five fields after several families; finishing it means a
+~40-field mirror of `App`, and its stated payoff was a PNG-diff test harness this project
+does not use — it verifies on device. The file split is the part that was worth having, and
+`RenderInput` stays for the families already on it.
 
-`Canvas` gains `pub theme: &'a Theme`. Icons are already `&'static str` glyphs passed in by
-callers (`FocusRow::action(icon, …)`), so the `ICON_*` block moves wholesale to
-`app/view/icons.rs` — no widget signature changes. This is the "optionally `Style`" item the
-previous doc deferred; it stops being optional once the palette is the last app fact in the
-module. Skip `.patch()` merging — nothing here needs cascade.
+**B4's hit-test premise turned out to be wrong.** The claim was that `hover_focus_at`/
+`handle_mouse_click` re-derive geometry a third time. They do not — the previous document's
+phase 2 already pointed them at the same `view::*` rect helpers the painter reads. What was
+left was long `match screen` dispatch, which is now its own module rather than folded into
+`FocusMap`.
 
-### A5. Input types in a draw library
+**B3, the crate split, is still open** and is the only real proof of purity. The grep guard
+this document proposed as its cheap stand-in was written and then removed at the author's
+request; the check it performed (`crate::core`/`crate::app`/`include_bytes!` under `src/ui`)
+now passes, and `crates/pf-ui` is the way to keep it passing.
 
-`ui/mod.rs:39` re-exports `core::event::MenuEvent` into the `ui` prelude for exactly one
-function: `widgets/listmodal.rs:99 list_nav(focused, len, ev)`. Replace with the direction
-the library already owns:
-
-```rust
-pub fn list_nav(focused: &mut usize, len: usize, dir: Option<Dir>) -> bool  // ui::focus::Dir
-```
-
-The app maps `MenuEvent → Dir` at its own boundary (it already has that mapping for
-`FocusMap::navigate`). Drop `MenuEvent` from the prelude.
-
-### A6. Policy constants that are not the library's
-
-`ui/animation.rs` holds `HERO_PAN`, `HERO_FADE`, `HERO_MIN_SHOW`, `HERO_ART_GRACE`,
-`FIRST_FRAME_WAIT` (a *stream* timeout), `HERO_LOADING_MAX`, `HERO_SCRIM_ALPHA`, plus
-`hero_pan_dst`. The hero is a screen, and `FIRST_FRAME_WAIT` belongs to `session`. Keep
-`ease`, `anim_frac`, `anim_frac_in`, `zoom_rect`, `pop_in_rect`, `FOCUS_POP`, `ModalFade` in
-`ui`; move the rest to `app/view/hero.rs` and `session`.
-
-Same audit for `widgets/sidebar.rs` (`SIDEBAR_W = 460` is this app's layout, not a widget
-property → make it a field on `SidebarRow`'s caller, i.e. `app/view/sidebar.rs`) and the
-`Settings`/`HostMenu` references in `scroll.rs` docs.
-
-### A7. `ModalScreen` and `Fonts` in trait signatures
-
-`ui/screen.rs` is fine conceptually but `card_rect(&self, w, h, fonts)` threads `Fonts`
-through every implementor for measurement alone. Once `Canvas` carries the theme, make the
-measurement argument a `Measure<'_>` view (`&dyn TextRaster` + `&Fonts`) so the trait does
-not widen again the next time a screen needs the theme to size itself.
-
----
-
-## Phase B — structure: get the renderer off `App`
-
-`src/app/mod.rs` is ~3,500 lines / 165 KB. Inside it: `prepare_sidebar`, `prepare_grid`,
-`prepare_hero`, `prepare_modal` (370 lines), `prepare_dropdown`, `prepare_scroll`,
-`prepare_tiles`, `compose_modal` (340 lines), `compose_sidebar_focus`, `compose_grid`,
-`draw_list`, `compose_hero` — the entire render path, reading `self` directly. `RenderInput`
-(`app/render_input.rs`) is the half-finished fix; it currently carries five fields.
-
-### B1. Finish `RenderInput`, one family per commit
-
-Order, smallest blast radius first: sidebar → grid → hero → dropdown → scroll → modal. Each
-step moves the fields that family reads out of `self` and into `RenderInput`, and changes
-its `&self` methods to free functions taking `(&RenderInput, &mut TileStore, &mut Canvas)`.
-When a family's methods no longer mention `self`, they move to `app/render/<family>.rs`.
-
-The forcing function: once a `prepare_*` is a free function, it can be called from a test
-harness with a synthetic `RenderInput` and its output `Painter` dumped to PNG. That is the
-first thing in this tree that can regression-test rendering without a TV.
-
-### B2. `Frame`: one owner for painter + tiles + draw list
-
-Today `prepare_tiles` and `draw_list` are separate passes over the same state, each
-re-deriving geometry (`grid_columns`, `SIDEBAR_W`, focus rects) and `draw_list` allocating a
-fresh `Vec<DrawCmd>` per frame.
-
-```rust
-// ui/frame.rs
-pub struct Frame<'a> {
-    pub canvas: Canvas<'a, 'a>,
-    pub tiles: &'a mut TileStore,
-    cmds: DrawList,        // retained across frames, cleared not freed
-    updated: Vec<TileId>,  // ditto
-}
-impl Frame<'_> {
-    pub fn tex(&mut self, id: TileId, dst: Rect, alpha: u8);
-    pub fn tex_cropped(&mut self, id: TileId, src: Rect, dst: Rect, alpha: u8);
-    pub fn fill(&mut self, rect: Rect, color: Color);
-}
-```
-
-`runtime` owns one `Frame` for the process. Both allocations disappear (C1) and the two
-passes get a single place to share the geometry they both compute.
-
-### B3. Extract `ui/` to a workspace crate
-
-Once A is done: `crates/pf-ui/` with `Cargo.toml` depending only on `tiny_skia`, `anyhow`
-and `image` (or nothing, if A3 lands). The main crate depends on it. This is not cosmetic —
-it is the only mechanism that keeps `core::` from creeping back in, and it cuts rebuild time
-for UI-only edits (today every `ui/` edit relinks the whole app under fat LTO).
-
-If a workspace split is too disruptive, the cheap 80%: a `#![deny]`-style guard test that
-greps `src/ui/**` for `crate::core` / `crate::app` and fails CI. Do that first regardless —
-it locks in A as each piece lands.
-
-### B4. Split what remains of `app/mod.rs`
-
-After B1, what is left is the state machine plus hit-testing (`hover_focus_at`,
-`handle_mouse_click` — 200 lines each, both giant `match screen` blocks). Both are the same
-"which widget is at (x, y)" question the `FocusMap` already answers from layout rects. Fold
-them into `FocusMap::hit(x, y) -> Option<K>` per screen, built by the same `Layout::split`
-the painter reads. That is the payoff Phase 2 of the previous doc set up and only cashed for
-the sidebar.
+**B2, `ui::Frame`, is not done** — it is mostly a compute change (a retained `DrawList`
+buffer) and belongs with C1 below.
 
 ---
 
@@ -209,22 +74,24 @@ Ordered by expected win. Measure before and after with the existing telemetry pa
 (`task deploy … TELEMETRY=auto`); add a `render_ms` / `upload_ms` counter to the stats
 overlay first, otherwise this is all speculation.
 
-### C1. Per-frame heap traffic in `draw_list`
+### C1. Per-frame heap traffic in `draw_list` — half paid
 
-`app/mod.rs:3365` allocates a `Vec<DrawCmd>` every frame, and every `TileId::Card(String)` /
-`Hero(String)` command clones a `String` into it. At 60 Hz with a full grid that is dozens of
-allocations and string copies per frame, all of it dead on arrival.
+The `String` clone per card/hero draw command is gone with A1. What remains:
+`app::render::compose::draw_list` still allocates a fresh `Vec<DrawCmd>` every frame and
+drops it at the end of the same frame.
 
-Fix: A1 (`TileId` is `Copy`) + B2 (retained `DrawList`). Zero allocations per frame in the
-steady state. This is the single clearest win and it is the same edit as the purity fix.
+Fix: B2's `ui::Frame`, owning a `DrawList` that is `clear()`ed rather than freed, plus a
+`updated: Vec<TileId>` on the same footing. Two allocations per frame to zero.
 
-### C2. Texture lookup hashes a `String` per command
+### C2. Texture lookup still hashes, now cheaply — finish it
 
-`compositor.rs:28` — `HashMap<TileId, Texture>` with std's SipHash, keyed by an enum that
-contains `String`. Every draw command pays a string hash. After A1, replace with
-`Vec<Option<Texture>>` indexed by `TileId(u32)` — an array index instead of a hash. Use
-`rustc-hash`/`FxHashMap` for the remaining keyed maps (`TileKeys`, `TextCache`), never SipHash
-on this CPU.
+The string hash per draw command is gone with A1; `compositor.rs`'s
+`HashMap<TileId, Texture>` is now keyed by a `u32`, but still through std's SipHash.
+
+`app::render::tile`'s numbering is dense and small by construction, so replace it with
+`Vec<Option<Texture>>` indexed by `TileId(u32)` — an array index instead of a hash. Same for
+`ui::cache::TileStore`'s own map. `ui::text::TextCache` keeps a real hash map; give it
+`rustc-hash`/`FxHashMap`, never SipHash on this CPU.
 
 ### C3. The un-premultiply pass on every upload — the big one
 
@@ -251,7 +118,7 @@ the other.
 
 ### C4. `TextCache` allocates a `String` per lookup and hashes twice
 
-`ui/text.rs:76-88`: `key()` does `text.to_string()` on every call — including cache *hits* —
+`ui/text.rs`: `key()` does `text.to_string()` on every call — including cache *hits* —
 then `contains_key` + `insert(key.clone())` + `get`, i.e. up to three hashes and two
 allocations for one glyph run. `Canvas::text` is called for every label on every tile
 rebuild.
@@ -329,18 +196,17 @@ profile — measure first.
 
 ## Sequencing
 
-| Step | Depends on | Why now |
-| --- | --- | --- |
-| B3's CI grep guard | — | Locks in every A step as it lands |
-| A1 + C1 + C2 | guard | One edit; removes the biggest leak *and* the per-frame allocations |
-| C3 | — | Independent, largest single compute win, ~40 lines |
-| A2 (`TileStore<K>`) | A1 | Deletes 16 hand-written staleness checks |
-| A4, A5, A6, A3 | A2 | Mechanical, one commit each |
-| C4-C8 | — | Independent, measure first |
-| B1 | A2 | The long one; one family per commit |
-| B2, B4 | B1 | |
-| B3 crate split | A complete | The proof |
-| A7, C9 | everything | Only if still warranted |
+A and B are in. What is left, in order:
+
+| Step | Why now |
+| --- | --- |
+| A stats-overlay `render_ms` / `upload_ms` counter | Everything below is a guess without it |
+| C3 | Independent, largest single win, ~40 lines |
+| C1 + B2 (`ui::Frame`) | One edit; kills the last per-frame allocations |
+| C2 | Falls out of the dense id space A1 established |
+| C4-C8 | Independent of each other; measure first |
+| B3 (`crates/pf-ui`) | The proof that A stays true, and it cuts UI-only rebuild time under fat LTO |
+| C9, A7 | Only if still warranted |
 
 Each row compiles and ships on its own. Verify on device (`task deploy … TELEMETRY=auto`),
 not with `cargo test` — the frame-time claims above are only true on the panel.
