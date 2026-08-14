@@ -131,14 +131,19 @@ impl Layout {
         }
         let used: u32 = sizes.iter().sum();
 
-        if let Some(mut spare) = total.checked_sub(used).filter(|&s| s > 0) {
+        if let Some(spare) = total.checked_sub(used).filter(|&s| s > 0) {
             let weights: u32 = self.constraints.iter().map(|c| c.fill_weight()).sum();
             if let Some(weights) = std::num::NonZeroU32::new(weights) {
+                // Every share comes off the same `spare`, never a running remainder —
+                // otherwise the first flexible slot takes half and each later one half of
+                // what is left, which pushed centred cards right and down.
+                let mut left = spare;
                 for (size, c) in sizes.iter_mut().zip(&self.constraints) {
                     let share = spare * c.fill_weight() / weights.get();
                     *size += share;
-                    spare -= share;
+                    left -= share;
                 }
+                let spare = left;
                 // Integer division leaves a pixel or two over; the first flexible slot
                 // absorbs it so the stack always fills `area` exactly.
                 if let Some((size, _)) = sizes
