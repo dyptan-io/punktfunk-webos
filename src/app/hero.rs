@@ -156,19 +156,21 @@ impl Hero {
         stale
     }
 
-    /// `id`'s decoded pixels, for the upload itself.
+    /// `id`'s decoded pixels, if they are the ones in hand.
     pub(crate) fn image_for(&self, id: &str) -> Option<&HeroImage> {
         self.image.as_ref().filter(|(loaded, _)| loaded == id).map(|(_, im)| im)
     }
 
-    /// The uploaded tile's id and pixels, once there is one to draw.
-    pub(crate) fn visible(&self) -> Option<(&String, &HeroImage)> {
-        let id = self.uploaded.as_ref()?;
+    /// The decoded pixels behind the hero tile, for the upload itself.
+    pub(crate) fn uploaded_image(&self) -> Option<&HeroImage> {
+        let id = self.uploaded.as_deref()?;
+        self.image.as_ref().filter(|(loaded, _)| loaded == id).map(|(_, im)| im)
+    }
+
+    /// The uploaded tile's pixels, once there is one to draw.
+    pub(crate) fn visible(&self) -> Option<&HeroImage> {
         self.since?;
-        self.image
-            .as_ref()
-            .filter(|(loaded, _)| loaded == id)
-            .map(|(id, im)| (id, im))
+        self.uploaded_image()
     }
 
     /// How far into the pan the backdrop is.

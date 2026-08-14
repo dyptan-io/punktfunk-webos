@@ -64,7 +64,17 @@ impl Compositor {
 
     /// Creates/updates tile's texture from a rasterized painter. Opaque tiles
     /// upload directly; others un-premultiply and alpha-blend.
-    pub fn upload(&mut self, creator: &TextureCreator<WindowContext>, tile: TileId, pm: &Painter) -> Result<()> {
+    ///
+    /// `opaque` is the caller's to declare: which tiles cover every pixel they occupy is a
+    /// fact about the app's layout, and this module has no business matching on tile ids
+    /// to find out.
+    pub fn upload(
+        &mut self,
+        creator: &TextureCreator<WindowContext>,
+        tile: TileId,
+        pm: &Painter,
+        opaque: bool,
+    ) -> Result<()> {
         let (w, h) = (pm.width(), pm.height());
         let recreate = match self.textures.get(&tile) {
             Some(t) => {
@@ -77,11 +87,10 @@ impl Compositor {
             let tex = creator
                 .create_texture_static(PixelFormatEnum::RGBA32, w, h)
                 .map_err(|e| anyhow::anyhow!("create texture {tile:?} {w}x{h}: {e}"))?;
-            self.textures.insert(tile.clone(), tex);
+            self.textures.insert(tile, tex);
         }
         let tex = self.textures.get_mut(&tile).expect("just inserted");
         let pitch = w as usize * 4;
-        let opaque = matches!(tile, TileId::Sidebar);
         if opaque {
             tex.update(None, pm.data(), pitch)
                 .map_err(|e| anyhow::anyhow!("upload {tile:?}: {e}"))?;

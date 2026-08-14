@@ -11,6 +11,7 @@
 //! the crate-internal [`prelude`].
 
 pub mod animation;
+pub mod cache;
 pub mod fade;
 pub mod focus;
 pub mod layout;

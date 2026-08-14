@@ -102,7 +102,7 @@ pub(super) enum ConfirmAction {
 
 /// A two-button confirm dialog (stop-streaming mid-stream, quit-app in the menu) —
 /// same open/close fade as pre-stream modals. Rendered as a compositor overlay via
-/// `Tile::DisconnectDialog` + `Tile::DisconnectFocusButton`; the menu and stream
+/// `tile::DISCONNECT_DIALOG` + `tile::DISCONNECT_FOCUS_BUTTON`; the menu and stream
 /// never show one at the same time, so they share those two tile slots.
 pub(super) struct ConfirmDialog {
     title: &'static str,
@@ -260,7 +260,7 @@ impl ConfirmDialog {
             self.shell_dirty = false;
             let shell =
                 crate::ui::tiles::render_confirm_dialog_shell(w, h, fonts, self.title, self.subtitle, &self.buttons)?;
-            compositor.upload(texture_creator, Tile::DisconnectDialog, &shell)?;
+            compositor.upload(texture_creator, tile::DISCONNECT_DIALOG, &shell, false)?;
         }
         let (_, content) = crate::ui::tiles::confirm_dialog_layout(w, h, fonts, self.subtitle);
         let btn_rect = crate::ui::widgets::confirm_button_rect(content, focus);
@@ -273,7 +273,7 @@ impl ConfirmDialog {
                 btn_rect.width(),
                 btn_rect.height(),
             )?;
-            compositor.upload(texture_creator, Tile::DisconnectFocusButton, &tile)?;
+            compositor.upload(texture_creator, tile::DISCONNECT_FOCUS_BUTTON, &tile, false)?;
         }
         // Same open/close motion as the `App`'s `Screen` modals (see `draw_list`): slide
         // in from ~26px below while fading, and the shell scales up on open.
@@ -297,12 +297,12 @@ impl ConfirmDialog {
             color: crate::ui::render::Color::RGBA(0, 0, 0, (f32::from(crate::ui::style::theme().scrim.a) * m) as u8),
         });
         cmds.push(DrawCmd::Tex {
-            tile: Tile::DisconnectDialog,
+            tile: tile::DISCONNECT_DIALOG,
             dst: shell_dst,
             alpha: (255.0 * m) as u8,
         });
         cmds.push(DrawCmd::Tex {
-            tile: Tile::DisconnectFocusButton,
+            tile: tile::DISCONNECT_FOCUS_BUTTON,
             dst: crate::ui::animation::zoom_rect(base, f, 0.02),
             alpha: (255.0 * m) as u8,
         });

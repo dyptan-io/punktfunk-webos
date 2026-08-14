@@ -748,7 +748,7 @@ pub(super) fn run_inner() -> Result<()> {
                     ) {
                         Ok(tile) => {
                             let (tw, th) = (tile.width(), tile.height());
-                            compositor.upload(&texture_creator, Tile::StatsOverlay, &tile)?;
+                            compositor.upload(&texture_creator, tile::STATS_OVERLAY, &tile, false)?;
                             stats_dst = Some(crate::ui::render::Rect::new(
                                 display_mode.w - tw as i32 - 24,
                                 24,
@@ -762,7 +762,7 @@ pub(super) fn run_inner() -> Result<()> {
                 if let Some(alpha) = stats_alpha {
                     if let Some(dst) = stats_dst {
                         cmds.push(DrawCmd::Tex {
-                            tile: Tile::StatsOverlay,
+                            tile: tile::STATS_OVERLAY,
                             dst,
                             alpha: (alpha * 255.0) as u8,
                         });
@@ -774,7 +774,7 @@ pub(super) fn run_inner() -> Result<()> {
                     match crate::ui::tiles::render_log_overlay_tile(&fonts, display_mode.w as u32, &lines) {
                         Ok(tile) => {
                             let (tw, th) = (tile.width(), tile.height());
-                            compositor.upload(&texture_creator, Tile::LogOverlay, &tile)?;
+                            compositor.upload(&texture_creator, tile::LOG_OVERLAY, &tile, false)?;
                             log_dst = Some(crate::ui::render::Rect::new(0, display_mode.h - th as i32, tw, th));
                         }
                         Err(e) => tracing::warn!("log overlay render failed: {e:#}"),
@@ -783,7 +783,7 @@ pub(super) fn run_inner() -> Result<()> {
                 if let Some(alpha) = log_alpha {
                     if let Some(dst) = log_dst {
                         cmds.push(DrawCmd::Tex {
-                            tile: Tile::LogOverlay,
+                            tile: tile::LOG_OVERLAY,
                             dst,
                             alpha: (alpha * 255.0) as u8,
                         });

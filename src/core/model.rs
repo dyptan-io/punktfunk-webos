@@ -88,7 +88,7 @@ pub fn upsert_known_host(hosts: &mut Vec<KnownHost>, mut new: KnownHost) {
 
 /// Video decode backend, selectable in Settings on webOS 3.5-4.x only — see
 /// [`crate::core::caps`]. On webOS 5+ NDL v2 is the only path and the row is hidden.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VideoBackend {
     /// NDL `DirectMedia` — v2 on webOS 5+, v1 on 3.5-4.x (H.264/SDR there).
@@ -104,7 +104,7 @@ pub enum VideoBackend {
 /// ladder (HEVC > H.264), honouring the preference only when its encoder can
 /// actually produce it — so "H264" on a host that can't encode H.264 still gets HEVC
 /// rather than no session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CodecPref {
     /// No preference — the host's precedence ladder decides (HEVC in practice).
@@ -125,7 +125,7 @@ pub enum CodecPref {
 ///
 /// A deliberate subset of `punktfunk_core::config::GamepadPref`'s eleven variants: the Steam
 /// Controller/Deck backends exist for clients running *on* that hardware, which a TV is not.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GamepadType {
     /// Mirror whichever controller is attached, falling back to the host's own choice (an
@@ -170,7 +170,7 @@ impl GamepadType {
 
 /// Override for the on-device log verbosity, settable live from the Diagnostics
 /// screen — see `logger::set_level_override`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevelOverride {
     Debug,
@@ -185,7 +185,7 @@ pub enum LogLevelOverride {
 ///
 /// `serde(default)` on the container, so every field falls back to [`Settings::default`] when a
 /// settings.json written by an older build doesn't carry it — adding a field needs nothing else.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub width: u32,

@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use punktfunk_core::config::Mode;
 use sdl2::controller::GameController;
 
+use crate::app::render::tile;
 use crate::app::{App, HomeFocus, Screen, MODAL_FADE, MODAL_POP_SHRINK};
 use crate::core::event::MenuEvent;
 use crate::platform::webos::compositor::Compositor;
@@ -15,7 +16,7 @@ use crate::platform::webos::keyboard;
 use crate::platform::webos::mouse;
 use crate::services::store;
 use crate::session;
-use crate::ui::render::{DrawCmd, TileId as Tile};
+use crate::ui::render::DrawCmd;
 
 /// `ConnectOutcome`: connect thread (started early to overlap animation) + settings.
 type ConnectOutcome = (std::thread::JoinHandle<Result<session::Connected>>, store::Settings);
@@ -203,7 +204,7 @@ fn push_notification_cmd(
         _ => match crate::ui::widgets::render_notification_tile(fonts, fonts.value, text) {
             Ok(tile) => {
                 let (tw, th) = (tile.width(), tile.height());
-                compositor.upload(texture_creator, Tile::Notification, &tile)?;
+                compositor.upload(texture_creator, tile::NOTIFICATION, &tile, false)?;
                 *cache = Some((text.clone(), tw, th));
                 (tw, th)
             }
@@ -215,7 +216,7 @@ fn push_notification_cmd(
     };
     // Top-centre: never overlaps the top-right stats or bottom log overlay.
     cmds.push(DrawCmd::Tex {
-        tile: Tile::Notification,
+        tile: tile::NOTIFICATION,
         dst: crate::ui::render::Rect::new((display_w - tw as i32) / 2, 24, tw, th),
         alpha: (alpha * 255.0) as u8,
     });

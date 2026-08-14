@@ -1,0 +1,134 @@
+//! This app's tile numbering: which [`TileId`] means what.
+//!
+//! `ui` treats a tile id as an opaque number (see [`TileId`]'s docs) — the enum that used
+//! to name these lived in the library and made it unusable by anything else. The numbering
+//! is here, dense and `Copy`, so a draw command carries four bytes instead of a `String`.
+//!
+//! Ids are assigned in three bands: the fixed singletons below, one slot per spinner frame,
+//! and an interned band for grid cards (whose count is the library's, not a constant).
+use crate::ui::render::TileId;
+
+/// Focus-free sidebar strip: panel, brand mark, every row unfocused.
+pub const SIDEBAR: TileId = TileId(0);
+/// The focused sidebar row, composited over [`SIDEBAR`].
+pub const FOCUS_ROW: TileId = TileId(1);
+/// The shared focus-ring glow (one card size at a time), drawn behind a focused card.
+pub const RING: TileId = TileId(2);
+/// The shared crisp card edge, drawn over a focused card's art.
+pub const CARD_OUTLINE: TileId = TileId(3);
+/// The pinned badge, composited over a focused pinned card.
+pub const PIN_BADGE: TileId = TileId(4);
+/// The open modal's shell — chrome, header, every widget drawn unfocused.
+pub const MODAL: TileId = TileId(5);
+/// The open modal's single focused, zoom-animated widget, composited over [`MODAL`].
+pub const MODAL_FOCUS: TileId = TileId(6);
+/// An open dropdown's option panel.
+pub const DROPDOWN_OVERLAY: TileId = TileId(7);
+/// That dropdown's focused option, composited over [`DROPDOWN_OVERLAY`].
+pub const DROPDOWN_FOCUS: TileId = TileId(8);
+/// Home's status line block.
+pub const STATUS: TileId = TileId(9);
+/// The static "no host selected" hint.
+pub const NO_HOST: TileId = TileId(10);
+/// Whichever scrollable modal's scroll indicator — one slot, versioned per screen.
+pub const SCROLL_INDICATOR: TileId = TileId(11);
+/// Whichever scrollable modal's content, baked at full unscrolled height — one slot,
+/// versioned per screen, so scrolling inside the baked window invalidates nothing.
+pub const SCROLL_CONTENT: TileId = TileId(12);
+/// The bottom scroll-edge alpha ramp, stretched to each list's width.
+pub const SCROLL_FADE: TileId = TileId(13);
+/// Its mirror, for the top edge.
+pub const SCROLL_FADE_TOP: TileId = TileId(14);
+/// The connecting screen's wide backdrop. One slot: only one launch is ever in flight, and
+/// a new hero replaces the old texture rather than joining it.
+pub const HERO: TileId = TileId(15);
+/// In-stream stats overlay.
+pub const STATS_OVERLAY: TileId = TileId(16);
+/// Transient toast.
+pub const NOTIFICATION: TileId = TileId(17);
+/// The log-tail overlay, in both the menu and the stream.
+pub const LOG_OVERLAY: TileId = TileId(18);
+/// The in-stream disconnect confirm dialog, and its focused button.
+pub const DISCONNECT_DIALOG: TileId = TileId(19);
+pub const DISCONNECT_FOCUS_BUTTON: TileId = TileId(20);
+
+/// First id of the spinner band. One per decoded GIF frame, so the compositor keeps every
+/// frame's texture and the animation is a swap rather than an upload.
+const SPINNER_BASE: u32 = 64;
+/// First id of the grid-card band, interned by pin id (see [`CardIds`]).
+const CARD_BASE: u32 = 256;
+
+/// The tile for spinner frame `idx`.
+pub fn spinner(idx: usize) -> TileId {
+    TileId(SPINNER_BASE + idx as u32)
+}
+
+/// The spinner frame `id` stands for, if it is one — `runtime` uploads these from raw
+/// decoded pixels rather than from a rasterized painter, and needs to recognise them.
+pub fn spinner_index(id: TileId) -> Option<usize> {
+    (SPINNER_BASE..CARD_BASE)
+        .contains(&id.0)
+        .then(|| (id.0 - SPINNER_BASE) as usize)
+}
+
+/// Grid-card ids, interned by pin id.
+///
+/// Cards are keyed by identity rather than by grid position on purpose: pinning a game
+/// reorders the grid, and keying by index would rebuild every tile after the moved one.
+/// Slots are recycled, so a library refresh reuses the same small band rather than growing
+/// the id space for the life of the process.
+#[derive(Default)]
+pub struct CardIds {
+    slots: std::collections::HashMap<String, TileId>,
+    free: Vec<TileId>,
+    next: u32,
+}
+
+impl CardIds {
+    pub fn new() -> Self {
+        Self {
+            slots: std::collections::HashMap::new(),
+            free: Vec::new(),
+            next: CARD_BASE,
+        }
+    }
+
+    /// `pin_id`'s tile, assigning a slot if it has none.
+    pub fn id(&mut self, pin_id: &str) -> TileId {
+        if let Some(id) = self.slots.get(pin_id) {
+            return *id;
+        }
+        let id = self.free.pop().unwrap_or_else(|| {
+            let id = TileId(self.next);
+            self.next += 1;
+            id
+        });
+        self.slots.insert(pin_id.to_string(), id);
+        id
+    }
+
+    /// `pin_id`'s tile if it already has one. Read-only, for the paint path.
+    pub fn get(&self, pin_id: &str) -> Option<TileId> {
+        self.slots.get(pin_id).copied()
+    }
+
+    /// Releases `pin_id`'s slot for reuse, returning the tile to drop.
+    pub fn release(&mut self, pin_id: &str) -> Option<TileId> {
+        let id = self.slots.remove(pin_id)?;
+        self.free.push(id);
+        Some(id)
+    }
+
+    /// Releases every slot, returning the tiles to drop — a fresh library.
+    pub fn release_all(&mut self) -> Vec<TileId> {
+        let ids: Vec<TileId> = self.slots.values().copied().collect();
+        self.slots.clear();
+        self.free.extend(ids.iter().copied());
+        ids
+    }
+
+    /// Every pin id with a slot.
+    pub fn pin_ids(&self) -> impl Iterator<Item = &str> {
+        self.slots.keys().map(String::as_str)
+    }
+}

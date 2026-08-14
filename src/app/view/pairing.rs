@@ -163,7 +163,7 @@ impl ModalScreen for Modal<'_> {
         // Primary first, and visually primary: approving on the host is the path that
         // always works, whereas the PIN needs the host's pairing page open and armed.
         // The shell draws it unfocused-but-filled; the focused copy is a separate
-        // `Tile::ModalFocusElement` (see `prepare_tiles`).
+        // `tile::MODAL_FOCUS` (see `prepare_tiles`).
         c.primary_button(l.button, REQUEST_LABEL)?;
         draw_centred_caption(c, l.content, l.button_caption_y, PAIRING_BUTTON_CAPTION)?;
 

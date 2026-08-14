@@ -94,35 +94,15 @@ impl Color {
     }
 }
 
-/// Texture cache key. Same variants as the former `compositor::Tile`, now living in
-/// `ui` and keyed by the plain `core::screen::Screen` enum rather than a platform type.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub enum TileId {
-    Sidebar,
-    FocusRow,
-    Card(String),
-    Ring,
-    CardOutline,
-    PinBadge,
-    Modal,
-    ModalFocusElement,
-    DropdownOverlay,
-    DropdownFocusOption,
-    Status,
-    NoHost,
-    ScrollIndicator(crate::core::screen::Screen),
-    ScrollContent(crate::core::screen::Screen),
-    ScrollFade,
-    ScrollFadeTop,
-    SpinnerFrame(usize),
-    /// Wide hero art for the connecting screen, keyed by game id.
-    Hero(String),
-    StatsOverlay,
-    Notification,
-    LogOverlay,
-    DisconnectDialog,
-    DisconnectFocusButton,
-}
+/// One cached tile's identity: an opaque number the *app* assigns.
+///
+/// It used to be an enum naming this app's screens (`NoHost`, `PinBadge`, `Hero(String)`),
+/// which made `ui` unusable by anything else and put a `String` clone plus a hash of that
+/// string on every draw command of every frame. The library only ever needs to tell two
+/// tiles apart, so a `Copy` integer is the whole requirement; which number means what is
+/// `app::render::tile`'s business.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub struct TileId(pub u32);
 
 /// One step of a frame's composition, in paint order.
 pub enum DrawCmd {

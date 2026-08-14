@@ -31,18 +31,18 @@ pub(super) fn run_ui_flow(
     let mut app = App::new(identity.clone());
     // The GPU tile cache is the render loop's, not App's — App holds only screen state
     // Recreated per menu entry, same as `app`.
-    let mut tiles = crate::ui::tiles::TileCache::new();
+    let mut tiles = crate::ui::cache::TileStore::new();
     // Upload every spinner frame's GPU texture now, once, rather than letting each
     // frame's first appearance create it lazily inside the render loop. `upload_raw`
     // creates a *new* static texture (allocation, not just a pixel copy) the first
-    // time a `Tile::SpinnerFrame(idx)` is seen — done inline during the animation
+    // time a `tile::spinner(idx)` is seen — done inline during the animation
     // that meant the first spin cycle stalled once per unique frame, right when the
     // spinner is supposed to look smooth. `clear_all` (stream handoff) drops these
     // along with everything else, so this needs redoing on every re-entry here.
     for (idx, frame) in crate::assets::spinner_frames().iter().enumerate() {
         compositor.upload_raw(
             texture_creator,
-            Tile::SpinnerFrame(idx),
+            tile::spinner(idx),
             frame.width,
             frame.height,
             &frame.pixels,
@@ -349,29 +349,26 @@ pub(super) fn run_ui_flow(
         for tile in std::mem::take(&mut app.evicted_tiles) {
             compositor.drop_tile(tile);
         }
-        for tile in updated {
-            match &tile {
-                &Tile::SpinnerFrame(idx) => {
-                    if let Some(frame) = crate::assets::spinner_frame(idx) {
-                        compositor.upload_raw(texture_creator, tile, frame.width, frame.height, &frame.pixels)?;
-                    }
+        // Two families upload from raw decoded pixels rather than from a rasterized
+        // painter (the spinner's GIF frames, the hero's cover art); everything else is a
+        // tile the store just built.
+        for id in updated {
+            if let Some(idx) = tile::spinner_index(id) {
+                if let Some(frame) = crate::assets::spinner_frame(idx) {
+                    compositor.upload_raw(texture_creator, id, frame.width, frame.height, &frame.pixels)?;
                 }
-                Tile::Hero(id) => {
-                    if let Some(hero) = app.hero.image_for(id) {
-                        compositor.upload_raw(texture_creator, tile.clone(), hero.width, hero.height, &hero.pixels)?;
-                    }
+            } else if id == tile::HERO {
+                if let Some(hero) = app.hero.uploaded_image() {
+                    compositor.upload_raw(texture_creator, id, hero.width, hero.height, &hero.pixels)?;
                 }
-                _ => {
-                    if let Some(pm) = app.tile_pixmap(&tiles, &tile) {
-                        compositor.upload(texture_creator, tile, pm)?;
-                    }
-                }
+            } else if let Some(pm) = tiles.get(id) {
+                compositor.upload(texture_creator, id, pm, id == tile::SIDEBAR)?;
             }
         }
         let mut cmds = app.draw_list(&tiles, display_mode.w as u32, display_mode.h as u32, fonts);
         // Appended into the same single draw list/present as the rest of the
         // screen — this loop has no separate overlay pass (see the streaming
-        // loop's `Tile::LogOverlay` handling for why that one differs).
+        // loop's `tile::LOG_OVERLAY` handling for why that one differs).
         //
         // Text is only re-rendered/re-uploaded when `log_overlay_due` (~2Hz) —
         // otherwise every animation tick (scroll, focus pop, hover) while the
@@ -385,14 +382,14 @@ pub(super) fn run_ui_flow(
                 match crate::ui::tiles::render_log_overlay_tile(fonts, display_mode.w as u32, &lines) {
                     Ok(tile) => {
                         log_overlay_dims = Some((tile.width(), tile.height()));
-                        compositor.upload(texture_creator, Tile::LogOverlay, &tile)?;
+                        compositor.upload(texture_creator, tile::LOG_OVERLAY, &tile, false)?;
                     }
                     Err(e) => tracing::warn!("log overlay render failed: {e:#}"),
                 }
             }
             if let Some((tw, th)) = log_overlay_dims {
                 cmds.push(DrawCmd::Tex {
-                    tile: Tile::LogOverlay,
+                    tile: tile::LOG_OVERLAY,
                     dst: crate::ui::render::Rect::new(0, display_mode.h - th as i32, tw, th),
                     alpha: 0xff,
                 });

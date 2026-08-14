@@ -136,7 +136,7 @@ pub fn wrap_document(raster: &dyn TextRaster, font: FontId, lines: &[&str], widt
 
 /// Draws wrapped visual lines `[start, start+len)` of `lines`, top-aligned at
 /// this painter's own origin — the content tile's local space, which the GPU
-/// compositor then crops/positions from (see `Tile::ScrollContent`'s docs).
+/// compositor then crops/positions from (see `tile::SCROLL_CONTENT`'s docs).
 /// Only called when `ui::scroll::ContentWindow` (re)bakes a window, not per frame.
 pub fn draw_window(c: &mut Canvas, font: FontId, lines: &[String], start: usize, len: usize) -> Result<()> {
     let step = line_stride(c.fonts.raster, font);
