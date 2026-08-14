@@ -8,7 +8,7 @@ pub const CARD_RADIUS: i32 = 10;
 pub const MODAL_RADIUS: i32 = 20;
 
 /// Approximate moonlight-tv's 2% focus zoom by inflating rect from center.
-pub fn inflate(rect: Rect, focused: bool) -> Rect {
+pub fn focus_zoom(rect: Rect, focused: bool) -> Rect {
     if !focused {
         return rect;
     }
@@ -66,7 +66,7 @@ impl Painter {
 
     /// Draw text-entry card (PIN/IP boxes); always visible, zoom when focused.
     pub fn card(&mut self, rect: Rect, focused: bool) -> Rect {
-        let r = inflate(rect, focused);
+        let r = focus_zoom(rect, focused);
         self.card_shadow(r, CARD_RADIUS);
         self.fill_rounded_rect(r, CARD_RADIUS, theme().surface);
         r
@@ -74,7 +74,7 @@ impl Painter {
 
     /// Card painted only when focused (no background for unfocused). Used by rows/buttons.
     pub fn selectable(&mut self, rect: Rect, focused: bool) -> Rect {
-        let r = inflate(rect, focused);
+        let r = focus_zoom(rect, focused);
         if focused {
             self.card_shadow(r, CARD_RADIUS);
             self.fill_rounded_rect(r, CARD_RADIUS, theme().surface);
@@ -122,7 +122,7 @@ impl Canvas<'_, '_> {
     /// Either way a bottom title strip overlays the art/tint, matching the reference's
     /// always-present (ellipsized) title label.
     pub fn poster_card(&mut self, rect: Rect, title: &str, art: Option<&Pixmap>, focused: bool) -> Result<()> {
-        let r = inflate(rect, focused);
+        let r = focus_zoom(rect, focused);
         self.painter.card_shadow(r, CARD_RADIUS);
 
         let (value_font, title_font) = (self.fonts.value, self.fonts.title);

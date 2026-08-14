@@ -184,6 +184,84 @@ impl App {
         })?
     }
 
+    /// The subtitle of the open two-button confirm modal — the string its card height and
+    /// button-row rect are both measured from, so one value drives the whole dialog.
+    ///
+    /// `None` on any other screen, and on the two confirm screens whose buttons aren't up
+    /// yet: a Wake with no MAC on record is a button-less message, and a speed test still
+    /// running has nothing to apply.
+    pub(crate) fn confirm_subtitle(&self) -> Option<String> {
+        Some(match self.screen {
+            Screen::ForgetHost => view::forget::subtitle(self.host_menu_host_name().unwrap_or_default()),
+            Screen::SendLogs => view::sendlogs::SUBTITLE.to_string(),
+            Screen::Wake => view::wake::status_text(self.wake.as_ref().filter(|w| !w.mac.is_empty())?),
+            Screen::SpeedTest => {
+                let state = self.speed_test.as_ref();
+                view::speedtest::finished(state).then(|| view::speedtest::status(state, &self.speed_test_name))?
+            }
+            _ => return None,
+        })
+    }
+
+    /// Which of the open confirm dialog's two buttons has focus. A field per screen so
+    /// each remembers its own answer; `None` on a screen that isn't one.
+    pub(crate) fn confirm_focused(&self) -> Option<usize> {
+        Some(match self.screen {
+            Screen::ForgetHost => self.host_menu_focused,
+            Screen::SendLogs => self.send_logs_focused,
+            Screen::Wake => self.wake.as_ref()?.focused,
+            Screen::SpeedTest => self.speed_test_focused,
+            _ => return None,
+        })
+    }
+
+    /// Moves the open confirm dialog's focus onto button `index`, reporting whether it
+    /// actually moved — the hover/click contract every focus setter here follows.
+    pub(crate) fn set_confirm_focused(&mut self, index: usize) -> bool {
+        let Some(focused) = (match self.screen {
+            Screen::ForgetHost => Some(&mut self.host_menu_focused),
+            Screen::SendLogs => Some(&mut self.send_logs_focused),
+            Screen::Wake => self.wake.as_mut().map(|w| &mut w.focused),
+            Screen::SpeedTest => Some(&mut self.speed_test_focused),
+            _ => None,
+        }) else {
+            return false;
+        };
+        let changed = *focused != index;
+        *focused = index;
+        changed
+    }
+
+    /// The open list modal's focused row index — the cursor `focus_row_rect` indexes with.
+    /// One field per screen so a nested menu keeps its place on the way back; `None` on a
+    /// screen that has no plain row list (Settings scrolls, and owns its own geometry).
+    pub(crate) fn list_modal_focused(&self) -> Option<usize> {
+        Some(match self.screen {
+            Screen::HostMenu => self.menu_focused,
+            Screen::WakeSettings => self.wake_settings_focused,
+            Screen::Diagnostics => self.diagnostics_focused,
+            Screen::Experimental => self.experimental_focused,
+            Screen::CursorSettings => self.cursor_settings_focused,
+            _ => return None,
+        })
+    }
+
+    /// The open list modal's focused-row rect, positioned on screen. `None` unless the
+    /// current screen is one of the plain list modals.
+    pub(crate) fn list_modal_focus_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<Rect> {
+        let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
+        Some(ui::widgets::focus_row_rect(content, self.list_modal_focused()?))
+    }
+
+    /// How many options the open dropdown lists. Read by both the overlay's drawn height
+    /// and its hit test, so the two can't disagree about where the last option ends.
+    pub(crate) fn dropdown_options_len(&self, screen: Screen, row: usize) -> usize {
+        match screen {
+            Screen::Diagnostics => menu::LOG_LEVEL_OPTIONS.len(),
+            _ => menu::dropdown_option_count(menu::settings_logical_row(&self.settings, row)),
+        }
+    }
+
     /// Calls `f` with the open modal as a [`ui::ModalScreen`], built from the state it
     /// shows. `None` on Home, and on a screen whose payload isn't set yet (Wake before its
     /// host is known).
@@ -256,17 +334,7 @@ impl App {
     pub(crate) fn modal_painter(&mut self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Painter {
         let card = self.modal_card_rect(screen_w, screen_h, fonts);
         let pad = MODAL_TILE_PAD;
-        let region = card.map_or_else(
-            || Rect::new(0, 0, screen_w, screen_h),
-            |c| {
-                Rect::new(
-                    c.x() - pad,
-                    c.y() - pad,
-                    c.width() + 2 * pad as u32,
-                    c.height() + 2 * pad as u32,
-                )
-            },
-        );
+        let region = card.map_or_else(|| Rect::new(0, 0, screen_w, screen_h), |c| c.inflate(pad));
         self.modal_tile_region = region;
         let mut p = Painter::new(region.width(), region.height());
         p.set_origin(region.x(), region.y());

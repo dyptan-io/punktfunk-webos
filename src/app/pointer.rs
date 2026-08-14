@@ -135,17 +135,9 @@ impl App {
                 changed
             }
             Screen::HostMenu => {
-                let rows = self.host_menu_actions().len();
-                let Some((_, content)) = self.modal_list_geometry(screen_w, screen_h, fonts) else {
+                let Some((i, dots)) = self.host_menu_row_at(x, y, screen_w, screen_h, fonts) else {
                     return false;
                 };
-                let Some(i) = (0..rows).find(|&i| ui::widgets::focus_row_rect(content, i).contains_point((x, y)))
-                else {
-                    return false;
-                };
-                let row = ui::widgets::focus_row_rect(content, i);
-                let dots =
-                    self.host_menu_row_has_dots() && ui::widgets::sidebar_menu_button_rect(row).contains_point((x, y));
                 let changed = self.menu_focused != i || self.host_menu_dots != dots;
                 self.menu_focused = i;
                 self.host_menu_dots = dots;
@@ -175,81 +167,22 @@ impl App {
                     false
                 }
             }
-            // Two-button confirm modals (Forget/SendLogs/Wake — the same modal type as the
-            // in-stream Disconnect dialog): hovering a button focuses it, so the pointer can
-            // pick action-vs-Cancel, not just confirm whatever the D-pad last focused. All
-            // three share `confirm_button_at`; only the focus field they set differs.
-            Screen::ForgetHost => {
-                let name = self
-                    .host_menu_index
-                    .and_then(|i| self.entries.get(i))
-                    .map(HostEntry::name)
-                    .unwrap_or_default();
-                match Self::confirm_button_at(screen_w, screen_h, fonts, &view::forget::subtitle(name), x, y) {
-                    Some(i) => {
-                        let changed = self.host_menu_focused != i;
-                        self.host_menu_focused = i;
-                        changed
-                    }
-                    None => false,
-                }
-            }
-            Screen::SendLogs => {
-                match Self::confirm_button_at(screen_w, screen_h, fonts, view::sendlogs::SUBTITLE, x, y) {
-                    Some(i) => {
-                        let changed = self.send_logs_focused != i;
-                        self.send_logs_focused = i;
-                        changed
-                    }
-                    None => false,
-                }
-            }
-            // Only with a MAC — the no-MAC wake variant is a button-less message.
-            Screen::Wake => {
-                let Some(wake) = self.wake.as_ref().filter(|w| !w.mac.is_empty()) else {
+            // Two-button confirm modals (Forget/SendLogs/Wake/finished SpeedTest — the same
+            // modal type as the in-stream Disconnect dialog): hovering a button focuses it,
+            // so the pointer can pick action-vs-Cancel, not just confirm whatever the D-pad
+            // last focused. `confirm_subtitle` is `None` for the variants with no buttons up
+            // (a Wake with no MAC, a test still running), which reads as nothing to hover.
+            Screen::ForgetHost | Screen::SendLogs | Screen::Wake | Screen::SpeedTest => {
+                let Some(subtitle) = self.confirm_subtitle() else {
                     return false;
                 };
-                let Some(i) = Self::confirm_button_at(screen_w, screen_h, fonts, &view::wake::status_text(wake), x, y)
-                else {
+                let Some(i) = Self::confirm_button_at(screen_w, screen_h, fonts, &subtitle, x, y) else {
                     return false;
                 };
-                let wake = self.wake.as_mut().expect("filtered to Some above");
-                let changed = wake.focused != i;
-                wake.focused = i;
-                changed
-            }
-            // The finished/failed speed test shows the same two-button confirm row as
-            // ForgetHost et al., so hover picks apply-vs-Close there too. While the test
-            // is still running there are no buttons — `speed_test_buttons_rect` is only
-            // meaningful once `render_speed_test` draws them (Done/Failed).
-            Screen::SpeedTest
-                if matches!(
-                    self.speed_test,
-                    Some(crate::app::state::speedtest::SpeedTestState::Done { .. })
-                        | Some(crate::app::state::speedtest::SpeedTestState::Failed(_))
-                ) =>
-            {
-                let card = view::speedtest::card_rect(
-                    screen_w,
-                    screen_h,
-                    fonts,
-                    self.speed_test.as_ref(),
-                    &self.speed_test_name,
-                );
-                let content =
-                    view::speedtest::buttons_rect(card, fonts, self.speed_test.as_ref(), &self.speed_test_name);
-                match ui::tiles::confirm_button_at(content, x, y) {
-                    Some(i) => {
-                        let changed = self.speed_test_focused != i;
-                        self.speed_test_focused = i;
-                        changed
-                    }
-                    None => false,
-                }
+                self.set_confirm_focused(i)
             }
             // No positional focus to move: single-card info/entry modals (AddHost,
-            // EditHost, About, WakeSettings, PinLimit, running SpeedTest) and Settings
-            // with a dropdown open.
+            // EditHost, About, WakeSettings, PinLimit) and Settings with a dropdown open.
             _ => false,
         }
     }
@@ -323,10 +256,7 @@ impl App {
         let dd = self.dropdown.as_ref()?;
         let (content, scroll_px) = self.dropdown_geom(self.screen, screen_w, screen_h, fonts)?;
         let overlay = view::settings::dropdown_overlay_rect_at_px(content, dd.row, scroll_px);
-        let options_len = match self.screen {
-            Screen::Diagnostics => menu::LOG_LEVEL_OPTIONS.len(),
-            _ => menu::dropdown_option_count(menu::settings_logical_row(&self.settings, dd.row)),
-        };
+        let options_len = self.dropdown_options_len(self.screen, dd.row);
         (0..options_len).find(|&i| ui::widgets::dropdown_option_rect(overlay, i).contains_point((x, y)))
     }
 
@@ -341,10 +271,28 @@ impl App {
         }
     }
 
-    /// The list-modal row index under the pointer, for the plain list modals whose
-    /// rows are laid out by `ui::widgets::list_modal_content_rect` + `ui::widgets::focus_row_rect`
-    /// (HostMenu/Diagnostics/Experimental). `None` on any other screen or when the
-    /// pointer misses every row. Shared so hover and click hit-test identically.
+    /// `(row index, on its ⋯ button)` under the pointer on the host menu. Hover and click
+    /// both go through this, so hovering previews exactly what clicking will do — a click
+    /// on a row's ⋯ opens that instead of the row's own action, the same split as a sidebar
+    /// host row's button.
+    fn host_menu_row_at(
+        &self,
+        x: i32,
+        y: i32,
+        screen_w: u32,
+        screen_h: u32,
+        fonts: &ui::text::Fonts,
+    ) -> Option<(usize, bool)> {
+        let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
+        let row = Self::list_row_at(content, x, y)?;
+        let dots = self.host_menu_row_has_dots()
+            && ui::widgets::sidebar_menu_button_rect(ui::widgets::focus_row_rect(content, row)).contains_point((x, y));
+        Some((row, dots))
+    }
+
+    /// The list-modal row index under the pointer. `None` on a screen with no row list, or
+    /// when the pointer misses every row. Measured off `modal_list_geometry` — the viewport
+    /// the painter draws into — so hover and click land on the rows that are on screen.
     pub(crate) fn modal_list_row_at(
         &self,
         x: i32,
@@ -353,18 +301,15 @@ impl App {
         screen_h: u32,
         fonts: &ui::text::Fonts,
     ) -> Option<usize> {
-        let card = self.modal_card_rect(screen_w, screen_h, fonts)?;
-        let (subtitle, rows) = match self.screen {
-            Screen::HostMenu => (self.host_menu_subtitle(), self.host_menu_actions().len()),
-            Screen::Diagnostics => (view::diagnostics::SUBTITLE.to_string(), menu::DIAGNOSTICS_ROW_COUNT),
-            Screen::Experimental => (
-                view::experimental::SUBTITLE.to_string(),
-                view::experimental::row_count(Self::rooted()),
-            ),
-            Screen::CursorSettings => (view::cursorsettings::SUBTITLE.to_string(), menu::CURSOR_ROW_COUNT),
-            _ => return None,
-        };
-        let content = ui::widgets::list_modal_content_rect(card, fonts, &subtitle, rows);
+        let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
+        Self::list_row_at(content, x, y)
+    }
+
+    /// Which row of a list modal's `content` viewport `(x, y)` is on, if any. The row count
+    /// comes from the viewport's own height rather than a per-screen table: the content rect
+    /// *is* `row_count` strides tall, and a second table is a second thing to keep in step.
+    fn list_row_at(content: Rect, x: i32, y: i32) -> Option<usize> {
+        let rows = (content.height() / ui::widgets::focus_row_stride()) as usize;
         (0..rows).find(|&r| ui::widgets::focus_row_rect(content, r).contains_point((x, y)))
     }
 
@@ -478,15 +423,9 @@ impl App {
             // A click focuses the row it landed on first, then confirms it — same
             // click-moves-focus rule as Home/Settings above.
             Screen::HostMenu => {
-                let rows = self.host_menu_actions().len();
-                let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
-                let i = (0..rows).find(|&i| ui::widgets::focus_row_rect(content, i).contains_point((x, y)))?;
+                let (i, dots) = self.host_menu_row_at(x, y, screen_w, screen_h, fonts)?;
                 self.menu_focused = i;
-                // A click that landed on the row's ⋯ opens that instead of the row's own
-                // action — same split as a sidebar host row's button.
-                let row = ui::widgets::focus_row_rect(content, i);
-                self.host_menu_dots =
-                    self.host_menu_row_has_dots() && ui::widgets::sidebar_menu_button_rect(row).contains_point((x, y));
+                self.host_menu_dots = dots;
                 self.handle_host_menu_event(MenuEvent::Confirm);
                 None
             }

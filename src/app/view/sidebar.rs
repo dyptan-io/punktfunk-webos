@@ -162,7 +162,7 @@ pub fn draw_host_row(c: &mut Canvas, rect: Rect, name: &str, state: &HostRowStat
     // Badged onto the icon's corner rather than given its own column: it needs no layout
     // of its own, and a presence dot on the thing it describes is a well-worn idiom.
     if let Some(online) = online {
-        let icon = ui::widgets::sidebar_icon_rect(ui::widgets::inflate(rect, focused));
+        let icon = ui::widgets::sidebar_icon_rect(ui::widgets::focus_zoom(rect, focused));
         let cx = icon.right() as f32 - 1.0;
         let cy = icon.bottom() as f32 - 2.0;
         // A ring of panel background first, so the dot reads as separate from the glyph

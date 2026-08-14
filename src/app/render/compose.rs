@@ -121,10 +121,7 @@ impl App {
             if let Some((row, _, dd_alpha)) = self.dropdown_draw_state() {
                 if let Some((content, scroll_px)) = self.dropdown_geom(screen, screen_w, screen_h, fonts) {
                     let overlay_rect = view::settings::dropdown_overlay_rect_at_px(content, row, scroll_px);
-                    let options_len = match screen {
-                        Screen::Diagnostics => menu::LOG_LEVEL_OPTIONS.len(),
-                        _ => menu::dropdown_option_count(menu::settings_logical_row(&self.settings, row)),
-                    };
+                    let options_len = self.dropdown_options_len(screen, row);
                     cmds.push(DrawCmd::Tex {
                         tile: tile::DROPDOWN_OVERLAY,
                         dst: Rect::new(
@@ -162,15 +159,12 @@ impl App {
                             .clamp(0, Self::max_scroll_px(total, stride, content.height()));
                         Some(ui::widgets::focus_row_rect_at_px(content, self.settings_focused, px))
                     }
-                    Screen::Wake => self.wake.as_ref().filter(|w| !w.mac.is_empty()).map(|w| {
-                        Self::confirm_focus_button_rect(
-                            screen_w,
-                            screen_h,
-                            fonts,
-                            &view::wake::status_text(w),
-                            w.focused,
-                        )
-                    }),
+                    // Every two-button confirm dialog: one subtitle drives the card, so one
+                    // button-row geometry serves all four.
+                    Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest => self
+                        .confirm_subtitle()
+                        .zip(self.confirm_focused())
+                        .map(|(subtitle, i)| Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &subtitle, i)),
                     Screen::Pairing => {
                         let card = view::pairing::card_rect(screen_w, screen_h, fonts);
                         Some(match self.pairing_focus {
@@ -181,95 +175,19 @@ impl App {
                             PairingFocus::RequestAccess => view::pairing::request_button_rect(card, fonts),
                         })
                     }
-                    Screen::ForgetHost => {
-                        let name = self
-                            .host_menu_index
-                            .and_then(|i| self.entries.get(i))
-                            .map(HostEntry::name)
-                            .unwrap_or_default();
-                        Some(Self::confirm_focus_button_rect(
-                            screen_w,
-                            screen_h,
-                            fonts,
-                            &view::forget::subtitle(name),
-                            self.host_menu_focused,
-                        ))
-                    }
-                    Screen::HostMenu => {
-                        let subtitle = self.host_menu_subtitle();
-                        let rows = self.host_menu_actions().len();
-                        let card = view::hostmenu::card_rect(screen_w, screen_h, fonts, &subtitle, rows);
-                        let content = ui::widgets::list_modal_content_rect(card, fonts, &subtitle, rows);
-                        Some(ui::widgets::focus_row_rect(content, self.menu_focused))
-                    }
-                    Screen::WakeSettings => {
-                        let card = view::wakesettings::card_rect(screen_w, screen_h, fonts);
-                        let content = ui::widgets::list_modal_content_rect(
-                            card,
-                            fonts,
-                            view::wakesettings::SUBTITLE,
-                            menu::DIAGNOSTICS_ROW_COUNT,
-                        );
-                        Some(ui::widgets::focus_row_rect(content, self.wake_settings_focused))
-                    }
-                    Screen::SpeedTest => view::speedtest::finished(self.speed_test.as_ref()).then(|| {
-                        let card = view::speedtest::card_rect(
-                            screen_w,
-                            screen_h,
-                            fonts,
-                            self.speed_test.as_ref(),
-                            &self.speed_test_name,
-                        );
-                        ui::widgets::confirm_button_rect(
-                            view::speedtest::buttons_rect(card, fonts, self.speed_test.as_ref(), &self.speed_test_name),
-                            self.speed_test_focused,
-                        )
-                    }),
-                    Screen::Diagnostics => {
-                        let card = view::diagnostics::card_rect(screen_w, screen_h, fonts);
-                        let content = ui::widgets::list_modal_content_rect(
-                            card,
-                            fonts,
-                            view::diagnostics::SUBTITLE,
-                            menu::DIAGNOSTICS_ROW_COUNT,
-                        );
-                        Some(ui::widgets::focus_row_rect(content, self.diagnostics_focused))
-                    }
-                    Screen::Experimental => {
-                        let rows = view::experimental::row_count(Self::rooted());
-                        let card = view::experimental::card_rect(screen_w, screen_h, fonts, Self::rooted());
-                        let content =
-                            ui::widgets::list_modal_content_rect(card, fonts, view::experimental::SUBTITLE, rows);
-                        Some(ui::widgets::focus_row_rect(content, self.experimental_focused))
-                    }
-                    Screen::CursorSettings => {
-                        let card = view::cursorsettings::card_rect(screen_w, screen_h, fonts);
-                        let content = ui::widgets::list_modal_content_rect(
-                            card,
-                            fonts,
-                            view::cursorsettings::SUBTITLE,
-                            menu::CURSOR_ROW_COUNT,
-                        );
-                        Some(ui::widgets::focus_row_rect(content, self.cursor_settings_focused))
-                    }
-                    Screen::SendLogs => Some(Self::confirm_focus_button_rect(
-                        screen_w,
-                        screen_h,
-                        fonts,
-                        view::sendlogs::SUBTITLE,
-                        self.send_logs_focused,
-                    )),
+                    // Every plain list modal: one geometry, measured off the `ModalScreen`
+                    // the painter draws, indexed by that screen's own focus cursor.
+                    Screen::HostMenu
+                    | Screen::WakeSettings
+                    | Screen::Diagnostics
+                    | Screen::Experimental
+                    | Screen::CursorSettings => self.list_modal_focus_rect(screen_w, screen_h, fonts),
                     Screen::Home | Screen::AddHost | Screen::EditHost | Screen::About | Screen::PinLimit => None,
                 }
             };
             if let Some(rect) = focus_rect {
                 let pad = ui::tiles::ROW_TILE_PAD;
-                let base = Rect::new(
-                    rect.x() - pad,
-                    rect.y() - pad + dy,
-                    rect.width() + 2 * pad as u32,
-                    rect.height() + 2 * pad as u32,
-                );
+                let base = rect.inflate(pad).offset(0, dy);
                 // The zoom-in: same GPU-scale-around-center technique as the
                 // grid's card focus pop (see above) — `modal_focus_tile` is
                 // rasterized once at its literal size, never re-rendered for
@@ -285,12 +203,7 @@ impl App {
                 let tile_size = tiles.get(tile::MODAL_FOCUS).map(|p| (p.width(), p.height()));
                 match (scroll_geom, tile_size) {
                     (Some((_, _, _, content)), Some((tw, th))) => {
-                        let viewport = Rect::new(
-                            content.x() - pad,
-                            content.y() - pad + dy,
-                            content.width() + 2 * pad as u32,
-                            content.height() + 2 * pad as u32,
-                        );
+                        let viewport = content.inflate(pad).offset(0, dy);
                         if let Some((src, visible)) = Self::clip_tile(dst, viewport, tw, th) {
                             cmds.push(DrawCmd::TexCropped {
                                 tile: tile::MODAL_FOCUS,
@@ -378,12 +291,7 @@ impl App {
             let pad = ui::tiles::ROW_TILE_PAD;
             cmds.push(DrawCmd::Tex {
                 tile: tile::FOCUS_ROW,
-                dst: Rect::new(
-                    rect.x() - pad,
-                    rect.y() - pad,
-                    rect.width() + 2 * pad as u32,
-                    rect.height() + 2 * pad as u32,
-                ),
+                dst: rect.inflate(pad),
                 alpha: 0xff,
             });
         }
@@ -418,12 +326,7 @@ impl App {
             };
             // A card that just landed is still zooming up to full size.
             let pop = self.card_pop_frac(pin_id);
-            let base = Rect::new(
-                r.x() - pad,
-                r.y() - pad,
-                r.width() + 2 * pad as u32,
-                r.height() + 2 * pad as u32,
-            );
+            let base = r.inflate(pad);
             cmds.push(DrawCmd::Tex {
                 tile: card,
                 dst: ui::animation::pop_in_rect(base, pop, CARD_POP_SHRINK),
@@ -448,12 +351,7 @@ impl App {
                 // tile fading in behind it at the same scale.
                 let f = ui::animation::anim_frac(self.focus_anim, ui::animation::FOCUS_POP);
                 let r = self.scrolled_card_rect(idx, columns, grid_x, available_w);
-                let card_base = Rect::new(
-                    r.x() - pad,
-                    r.y() - pad,
-                    r.width() + 2 * pad as u32,
-                    r.height() + 2 * pad as u32,
-                );
+                let card_base = r.inflate(pad);
                 let Some(card) = self.card_ids.get(pin_id) else {
                     return; // not rasterized yet
                 };

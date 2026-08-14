@@ -235,13 +235,7 @@ const CONFIRM_DIALOG_SIDE_PAD: u32 = 32;
 /// subtitle. Shared with `main.rs`'s in-stream/quit dialog so all four modals match.
 pub fn confirm_dialog_layout(screen_w: u32, screen_h: u32, fonts: &Fonts, subtitle: &str) -> (Rect, Rect) {
     let card = confirm_dialog_card(screen_w, screen_h, fonts, subtitle);
-    let buttons = confirm_dialog_stack(fonts, card, subtitle).split(card)[2];
-    let content = Layout::horizontal([
-        Constraint::Length(CONFIRM_DIALOG_SIDE_PAD),
-        Constraint::Fill(1),
-        Constraint::Length(CONFIRM_DIALOG_SIDE_PAD),
-    ])
-    .split(buttons)[1];
+    let content = confirm_dialog_stack(fonts, card, subtitle).split(card)[2].inset_x(CONFIRM_DIALOG_SIDE_PAD);
     (card, content)
 }
 

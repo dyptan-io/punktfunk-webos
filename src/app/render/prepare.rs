@@ -521,24 +521,37 @@ impl App {
                             self.toggle_frac(target_on, self.settings_focused),
                         )?
                     }
-                    Screen::Wake => {
-                        let wake = self
-                            .wake
-                            .as_ref()
-                            .expect("focus_key only Some for a Wake with a focusable widget");
-                        // focus_key is only Some for a Wake with a MAC, so this is the confirm dialog.
-                        let rect = Self::confirm_focus_button_rect(
-                            screen_w,
-                            screen_h,
-                            fonts,
-                            &view::wake::status_text(wake),
-                            wake.focused,
-                        );
-                        let buttons = view::wake::buttons();
+                    // Every two-button confirm dialog shares the button geometry (one subtitle
+                    // sizes the card, so one button row falls out of it); the button *labels*
+                    // stay with the screen that owns them. `focus_key` is only `Some` here for
+                    // a variant that has its buttons up, so both lookups resolve.
+                    Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest => {
+                        let subtitle = self
+                            .confirm_subtitle()
+                            .expect("focus_key is Some only for a confirm dialog showing buttons");
+                        let i = self
+                            .confirm_focused()
+                            .expect("focus_key is Some only for a confirm dialog showing buttons");
+                        let rect = Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &subtitle, i);
+                        // SpeedTest is the only one whose primary button has a dynamic label
+                        // (the bitrate it would apply); bound out here so the borrow below
+                        // outlives the array.
+                        let speed_test_label = match self.screen {
+                            Screen::SpeedTest => {
+                                view::speedtest::apply_label(view::speedtest::recommendation(self.speed_test.as_ref()))
+                            }
+                            _ => String::new(),
+                        };
+                        let buttons = match self.screen {
+                            Screen::Wake => view::wake::buttons(),
+                            Screen::ForgetHost => view::forget::buttons(),
+                            Screen::SendLogs => view::sendlogs::buttons(),
+                            _ => view::speedtest::buttons(&speed_test_label),
+                        };
                         ui::widgets::render_confirm_button_tile(
                             text_cache,
                             fonts,
-                            &buttons[wake.focused],
+                            &buttons[i],
                             rect.width(),
                             rect.height(),
                         )?
@@ -553,28 +566,6 @@ impl App {
                             view::pairing::render_button_tile(text_cache, fonts, btn.width(), btn.height())?
                         }
                     },
-                    Screen::ForgetHost => {
-                        let name = self
-                            .host_menu_index
-                            .and_then(|i| self.entries.get(i))
-                            .map(HostEntry::name)
-                            .unwrap_or_default();
-                        let rect = Self::confirm_focus_button_rect(
-                            screen_w,
-                            screen_h,
-                            fonts,
-                            &view::forget::subtitle(name),
-                            self.host_menu_focused,
-                        );
-                        let buttons = view::forget::buttons();
-                        ui::widgets::render_confirm_button_tile(
-                            text_cache,
-                            fonts,
-                            &buttons[self.host_menu_focused],
-                            rect.width(),
-                            rect.height(),
-                        )?
-                    }
                     Screen::HostMenu => {
                         let mut rows = self.host_menu_rows();
                         // The only place a row's ⋯ is drawn lit — see `host_menu_actions`.
@@ -592,104 +583,31 @@ impl App {
                             0.0,
                         )?
                     }
-                    Screen::WakeSettings => {
-                        let on = self.wake_settings_host().is_some_and(|h| h.wol_auto);
-                        let rows = view::wakesettings::rows(on);
+                    // The plain list modals: same tile, same geometry, built from whichever
+                    // rows this screen shows. Only Diagnostics can have a dropdown open.
+                    Screen::WakeSettings | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings => {
+                        let rows = match self.screen {
+                            Screen::WakeSettings => {
+                                view::wakesettings::rows(self.wake_settings_host().is_some_and(|h| h.wol_auto))
+                            }
+                            Screen::Diagnostics => view::diagnostics::rows(&self.settings),
+                            Screen::Experimental => view::experimental::rows(&self.settings, Self::rooted()),
+                            _ => view::cursorsettings::rows(&self.settings),
+                        };
+                        let focused = self
+                            .list_modal_focused()
+                            .expect("focus_key is Some only for a screen with a focused row");
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
+                        let dropdown_open = self.dropdown.as_ref().is_some_and(|dd| dd.row == focused);
+                        let target_on = rows.get(focused).is_some_and(|r| r.value == "On");
                         ui::widgets::render_focus_row_tile(
                             text_cache,
                             fonts,
                             &rows,
                             content.width(),
-                            self.wake_settings_focused,
-                            false,
-                            self.toggle_frac(on, self.wake_settings_focused),
-                        )?
-                    }
-                    Screen::SpeedTest => {
-                        let card = view::speedtest::card_rect(
-                            screen_w,
-                            screen_h,
-                            fonts,
-                            self.speed_test.as_ref(),
-                            &self.speed_test_name,
-                        );
-                        let rect = ui::widgets::confirm_button_rect(
-                            view::speedtest::buttons_rect(card, fonts, self.speed_test.as_ref(), &self.speed_test_name),
-                            self.speed_test_focused,
-                        );
-                        let apply_label =
-                            view::speedtest::apply_label(view::speedtest::recommendation(self.speed_test.as_ref()));
-                        let buttons = view::speedtest::buttons(&apply_label);
-                        ui::widgets::render_confirm_button_tile(
-                            text_cache,
-                            fonts,
-                            &buttons[self.speed_test_focused],
-                            rect.width(),
-                            rect.height(),
-                        )?
-                    }
-                    Screen::Diagnostics => {
-                        let rows = view::diagnostics::rows(&self.settings);
-                        let content = self.modal_list_content(screen_w, screen_h, fonts);
-                        let dropdown_open = self
-                            .dropdown
-                            .as_ref()
-                            .is_some_and(|dd| dd.row == self.diagnostics_focused);
-                        let target_on = rows.get(self.diagnostics_focused).is_some_and(|r| r.value == "On");
-                        ui::widgets::render_focus_row_tile(
-                            text_cache,
-                            fonts,
-                            &rows,
-                            content.width(),
-                            self.diagnostics_focused,
+                            focused,
                             dropdown_open,
-                            self.toggle_frac(target_on, self.diagnostics_focused),
-                        )?
-                    }
-                    Screen::Experimental => {
-                        let rows = view::experimental::rows(&self.settings, Self::rooted());
-                        let content = self.modal_list_content(screen_w, screen_h, fonts);
-                        let target_on = rows.get(self.experimental_focused).is_some_and(|r| r.value == "On");
-                        ui::widgets::render_focus_row_tile(
-                            text_cache,
-                            fonts,
-                            &rows,
-                            content.width(),
-                            self.experimental_focused,
-                            false,
-                            self.toggle_frac(target_on, self.experimental_focused),
-                        )?
-                    }
-                    Screen::CursorSettings => {
-                        let rows = view::cursorsettings::rows(&self.settings);
-                        let content = self.modal_list_content(screen_w, screen_h, fonts);
-                        let target_on = rows.get(self.cursor_settings_focused).is_some_and(|r| r.value == "On");
-                        ui::widgets::render_focus_row_tile(
-                            text_cache,
-                            fonts,
-                            &rows,
-                            content.width(),
-                            self.cursor_settings_focused,
-                            false,
-                            self.toggle_frac(target_on, self.cursor_settings_focused),
-                        )?
-                    }
-                    Screen::SendLogs => {
-                        let rect = Self::confirm_focus_button_rect(
-                            screen_w,
-                            screen_h,
-                            fonts,
-                            view::sendlogs::SUBTITLE,
-                            self.send_logs_focused,
-                        );
-                        let buttons = view::sendlogs::buttons();
-                        ui::widgets::render_confirm_button_tile(
-                            text_cache,
-                            fonts,
-                            &buttons[self.send_logs_focused],
-                            rect.width(),
-                            rect.height(),
+                            self.toggle_frac(target_on, focused),
                         )?
                     }
                     Screen::Home | Screen::AddHost | Screen::EditHost | Screen::About | Screen::PinLimit => {

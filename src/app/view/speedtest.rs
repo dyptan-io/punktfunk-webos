@@ -105,21 +105,27 @@ pub(crate) fn card_rect(
     host_name: &str,
 ) -> Rect {
     let status = status(state, host_name);
-    let done = finished(state);
-    ui::widgets::simple_modal_card(screen_w, screen_h, |probe| {
-        let header_end = ui::text::modal_header_end_y(fonts, probe, &status);
-        if done {
-            (header_end + 32 + 72 + 32) as u32
-        } else {
-            (header_end + 32) as u32
-        }
-    })
+    // Finished, it is the same two-button confirm dialog as Forget/SendLogs/Wake; while the
+    // test is still running there is nothing to press, so it is a plain message card.
+    if finished(state) {
+        ui::tiles::confirm_dialog_card(screen_w, screen_h, fonts, &status)
+    } else {
+        ui::widgets::simple_modal_card(screen_w, screen_h, |probe| {
+            (ui::text::modal_header_end_y(fonts, probe, &status) + 32) as u32
+        })
+    }
 }
 
-/// The button row's rect, below the status text.
-pub(crate) fn buttons_rect(card: Rect, fonts: &Fonts, state: Option<&SpeedTestState>, host_name: &str) -> Rect {
-    let after = ui::text::modal_header_end_y(fonts, card, &status(state, host_name));
-    Rect::new(card.x() + 32, after + 32, card.width().saturating_sub(64), 72)
+/// The button row's rect, below the status text. Only meaningful once the test has
+/// finished — see [`card_rect`].
+pub(crate) fn buttons_rect(
+    screen_w: u32,
+    screen_h: u32,
+    fonts: &Fonts,
+    state: Option<&SpeedTestState>,
+    host_name: &str,
+) -> Rect {
+    ui::tiles::confirm_dialog_layout(screen_w, screen_h, fonts, &status(state, host_name)).1
 }
 
 /// The recommendation this result's primary button would apply, if any.
@@ -162,7 +168,7 @@ impl ModalScreen for Modal<'_> {
             // `usize::MAX` = nothing focused; the focused button is its own tile.
             c.render(
                 ui::widgets::ConfirmButtons::new(&buttons(&apply_label)),
-                buttons_rect(card, c.fonts, state, host_name),
+                buttons_rect(c.screen_w, c.screen_h, c.fonts, state, host_name),
             )?;
         }
         Ok(())

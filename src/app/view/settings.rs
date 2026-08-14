@@ -208,12 +208,7 @@ pub(crate) fn layout(settings: &Settings, screen_w: u32, screen_h: u32) -> (Rect
 
 /// The horizontal inset every element of the card shares.
 fn content_column(row: Rect) -> Rect {
-    ui::layout::Layout::horizontal([
-        ui::layout::Constraint::Length(SIDE_PAD),
-        ui::layout::Constraint::Fill(1),
-        ui::layout::Constraint::Length(SIDE_PAD),
-    ])
-    .split(row)[1]
+    row.inset_x(SIDE_PAD)
 }
 
 /// Where a dropdown opened from row `row` anchors its option overlay — one row below it.

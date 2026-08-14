@@ -44,6 +44,27 @@ impl Rect {
         Self::new(self.x + dx, self.y + dy, self.w, self.h)
     }
 
+    /// Grown by `pad` on every side. The padded region a tile is rasterized into (its
+    /// shadow and focus ring live in that margin), and the same rect the compositor has to
+    /// draw it back to.
+    pub fn inflate(self, pad: i32) -> Self {
+        Self::new(
+            self.x - pad,
+            self.y - pad,
+            (self.w as i32 + 2 * pad).max(0) as u32,
+            (self.h as i32 + 2 * pad).max(0) as u32,
+        )
+    }
+
+    /// Inset by `pad` on the left and right, full height. The content column inside a
+    /// card: one pad governs both edges, so there is nothing here for a [`Layout`] split
+    /// to keep in agreement.
+    ///
+    /// [`Layout`]: crate::ui::layout::Layout
+    pub fn inset_x(self, pad: u32) -> Self {
+        Self::new(self.x + pad as i32, self.y, self.w.saturating_sub(2 * pad), self.h)
+    }
+
     pub fn contains_point(&self, p: (i32, i32)) -> bool {
         let (px, py) = p;
         px >= self.x && px < self.right() && py >= self.y && py < self.bottom()

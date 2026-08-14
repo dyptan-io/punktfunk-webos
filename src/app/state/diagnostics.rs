@@ -26,8 +26,9 @@ impl App {
         if let Some(dd) = self.dropdown.as_mut() {
             let len = menu::LOG_LEVEL_OPTIONS.len();
             match ev {
-                MenuEvent::Up => dd.focused = if dd.focused == 0 { len - 1 } else { dd.focused - 1 },
-                MenuEvent::Down => dd.focused = (dd.focused + 1) % len,
+                MenuEvent::Up | MenuEvent::Down => {
+                    crate::ui::widgets::list_nav(&mut dd.focused, len, menu::nav_dir(ev));
+                }
                 MenuEvent::Confirm => {
                     let choice = dd.focused;
                     self.dropdown_fade.close((menu::DIAG_ROW_LOG_LEVEL, choice));

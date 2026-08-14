@@ -28,18 +28,11 @@ pub(crate) fn card_rect(screen_w: u32, screen_h: u32, wake: &WakeState, fonts: &
 
 /// Wake/Cancel pair — shared by the shell and the focused-button tile.
 pub(crate) fn buttons() -> [ConfirmButton<'static>; 2] {
-    [
-        ConfirmButton {
-            icon: Some(crate::app::view::icons::ICON_POWER),
-            label: "Wake host",
-            color: ui::style::theme().accent_bright,
-        },
-        ConfirmButton {
-            icon: None,
-            label: "Cancel",
-            color: ui::style::theme().text,
-        },
-    ]
+    ui::widgets::confirm_buttons(
+        Some(crate::app::view::icons::ICON_POWER),
+        "Wake host",
+        ui::style::theme().accent_bright,
+    )
 }
 
 /// Title varies: with a MAC it's an action ("Wake this host?"), without it it's state.

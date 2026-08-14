@@ -39,13 +39,7 @@ pub fn list_modal_card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, subtitl
 /// Where the row list starts inside `card` — the rect `focus_row_rect` indexes into,
 /// so `draw_list` can position the focused-row tile without re-rendering the header.
 pub fn list_modal_content_rect(card: Rect, fonts: &Fonts, subtitle: &str, row_count: usize) -> Rect {
-    let rows = card_layout(fonts, card, subtitle, row_count).split(card)[2];
-    Layout::horizontal([
-        Constraint::Length(SIDE_PAD as u32),
-        Constraint::Fill(1),
-        Constraint::Length(SIDE_PAD as u32),
-    ])
-    .split(rows)[1]
+    card_layout(fonts, card, subtitle, row_count).split(card)[2].inset_x(SIDE_PAD as u32)
 }
 
 /// A whole list-modal screen: header plus its [`FocusRows`], inside the card `area`.

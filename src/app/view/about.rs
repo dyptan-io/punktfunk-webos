@@ -89,12 +89,7 @@ pub fn body_rect(card: Rect, fonts: &Fonts) -> Rect {
         ui::layout::Constraint::Length(BOTTOM_PAD),
     ])
     .split(card)[1];
-    ui::layout::Layout::horizontal([
-        ui::layout::Constraint::Length(SIDE_PAD),
-        ui::layout::Constraint::Fill(1),
-        ui::layout::Constraint::Length(SIDE_PAD),
-    ])
-    .split(body)[1]
+    body.inset_x(SIDE_PAD)
 }
 
 /// A fixed-length stand-in for the real subtitle when measuring the header's height.
