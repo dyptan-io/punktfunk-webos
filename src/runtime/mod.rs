@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use punktfunk_core::config::Mode;
 use sdl2::controller::GameController;
 
+use crate::app::hero::Connect;
 use crate::app::render::tile;
 use crate::app::{App, HomeFocus, Screen, MODAL_FADE, MODAL_POP_SHRINK};
 use crate::core::event::MenuEvent;
@@ -18,8 +19,18 @@ use crate::services::store;
 use crate::session;
 use crate::ui::render::DrawCmd;
 
-/// `ConnectOutcome`: connect thread (started early to overlap animation) + settings.
-type ConnectOutcome = (std::thread::JoinHandle<Result<session::Connected>>, store::Settings);
+/// A launch handed from the menu to the streaming loop: the connect thread (started early to
+/// overlap the animation), the settings it was started with, and how much of the first-frame
+/// budget the loading screen has already spent.
+struct ConnectOutcome {
+    handle: std::thread::JoinHandle<Result<session::Connected>>,
+    settings: store::Settings,
+    /// When the wait for a decoded frame runs out — one deadline for the whole launch, set by
+    /// the loading screen (`app::hero`) and honoured again by the reveal in `stream`, so a host
+    /// that connects and then decodes nothing costs [`crate::app::hero::FIRST_FRAME_WAIT`] once
+    /// rather than once per screen. `None` when the loading screen never got that far.
+    first_frame_deadline: Option<Instant>,
+}
 
 /// Resolves a `GamepadType::Auto` preference against the attached controller, for this
 /// session only.
@@ -43,6 +54,12 @@ fn resolve_gamepad_type(
     settings
 }
 
+/// Set when a connect attempt returns an error, cleared as the next one is spawned. The
+/// loading screen otherwise has only `is_finished`, which success and failure reach alike —
+/// and a failure never presents a frame, so it sat out the whole
+/// [`crate::app::hero::HERO_LOADING_MAX`] backstop before the error could be shown.
+static CONNECT_FAILED: AtomicBool = AtomicBool::new(false);
+
 /// Start the connect on its own thread. Caller joins after animation (or immediately).
 fn spawn_connect(
     identity: (String, String),
@@ -50,6 +67,7 @@ fn spawn_connect(
     settings: store::Settings,
 ) -> Result<std::thread::JoinHandle<Result<session::Connected>>> {
     let (host, port, fp, launch) = (target.host, target.port, target.fingerprint, target.launch);
+    CONNECT_FAILED.store(false, Ordering::Relaxed);
     std::thread::Builder::new()
         .name("punktfunk-webos-connect".into())
         .spawn(move || {
@@ -84,6 +102,9 @@ fn spawn_connect(
                 settings.gamepad_type,
                 settings.cursor_capture,
             )
+            // Flagged before the handle is joined, so the loading screen can stop waiting
+            // for a stream that is not coming — the error itself still travels by `Result`.
+            .inspect_err(|_| CONNECT_FAILED.store(true, Ordering::Relaxed))
         })
         .context("spawn connect thread")
 }

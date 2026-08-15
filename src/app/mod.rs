@@ -200,6 +200,11 @@ pub struct App {
     pub(crate) games_loaded: bool,
     pub(crate) games_rx: Option<std::sync::mpsc::Receiver<crate::services::library::GamesLoaded>>,
     pub home_status: Option<String>,
+    /// Whether `home_status` is the reason the last launch bounced back to the menu, and so must
+    /// survive the library reload a fresh menu entry starts — that reload clears the status on
+    /// success, which wiped the error a second after the user landed back on the grid. Anything
+    /// the user's own actions produce replaces it as usual.
+    pub(crate) home_status_sticky: bool,
     /// Cover art pixmaps by game id.
     pub art: std::collections::HashMap<String, Pixmap>,
     pub(crate) art_loader: Option<crate::services::art::ArtLoader>,
@@ -477,6 +482,7 @@ impl App {
             games_loaded: false,
             games_rx: None,
             home_status: None,
+            home_status_sticky: false,
             art: std::collections::HashMap::new(),
             art_loader: None,
             hero: hero::Hero::default(),

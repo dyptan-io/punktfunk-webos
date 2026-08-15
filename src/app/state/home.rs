@@ -416,6 +416,7 @@ impl App {
         self.art_loader = None;
         self.games_rx = None;
         self.home_status = None;
+        self.home_status_sticky = false;
         self.home_focus = HomeFocus::Sidebar(0);
         self.grid_focus_last = 0;
         self.grid_dirty = true;
@@ -431,6 +432,10 @@ impl App {
             .find(|h| h.host == host && h.port == port)
             .map_or_else(|| host.clone(), |h| h.name.clone());
         self.home_status = Some(format!("Loading library from {name}…"));
+        // Picking a host is the user's own action, so its progress replaces whatever the last
+        // launch left on screen. The reload `App::new` starts is not this — it runs before
+        // `home_status_sticky` is ever set.
+        self.home_status_sticky = false;
         self.games = Vec::new();
         self.pinned_count = 0;
         self.games_loaded = false;
@@ -494,7 +499,9 @@ impl App {
                 ));
                 self.games = games;
                 self.games_loaded = true;
-                self.home_status = None;
+                if !self.home_status_sticky {
+                    self.home_status = None;
+                }
                 self.reorder_games_by_pin();
             }
             Err(e) => {
@@ -513,6 +520,8 @@ impl App {
     /// Wake-on-LAN wouldn't help — those stay a plain status line.
     pub(crate) fn handle_library_error(&mut self, host: String, port: u16, e: crate::services::library::LibraryError) {
         let reason = e.to_string();
+        // A live problem with the host beats the previous launch's reason for bouncing.
+        self.home_status_sticky = false;
         if matches!(e, crate::services::library::LibraryError::Unreachable(_)) {
             let mac = self
                 .known_hosts
@@ -547,9 +556,9 @@ impl App {
         let Some(fingerprint) = known.fingerprint else {
             return;
         };
-        let (launch, title) = match self.grid_card_at(idx, columns) {
-            Some(GridCard::Desktop) => (None, "Desktop".to_string()),
-            Some(GridCard::Game(game)) => (Some(game.id.clone()), game.title.clone()),
+        let launch = match self.grid_card_at(idx, columns) {
+            Some(GridCard::Desktop) => None,
+            Some(GridCard::Game(game)) => Some(game.id.clone()),
             None => return,
         };
         // The loading screen's backdrop. Desktop has no art, so it keeps the plain fade to
@@ -574,8 +583,11 @@ impl App {
             }
         }
         tracing::debug!("launch: connecting to {host}:{port} now, zoom runs in parallel");
-        // Stays up through the zoom and the connect; `run_inner` owns the screen from there.
-        self.home_status = Some(format!("Starting {title}…"));
+        // The zoom and the fade to black say the launch started; a status line under them
+        // only competes with that. Cleared so the last launch's failure doesn't sit under
+        // this one either.
+        self.home_status = None;
+        self.home_status_sticky = false;
         self.launch_anim_idx = Some(idx);
         self.launch_ready = Some(ConnectTarget {
             host,

@@ -5,9 +5,13 @@ use crate::platform::webos::input::{
 };
 
 /// How long the finished launch frame is held waiting for the first frame to reach the decoder
-/// before uncovering the video plane regardless. The hero loading screen waits on the same signal
-/// (`app::hero::handover_ready`), so when a hero held the screen this wait returns immediately.
-const NDL_REVEAL_TIMEOUT: Duration = crate::app::hero::FIRST_FRAME_WAIT;
+/// before uncovering the video plane regardless. `None` only when the loading screen never
+/// started this budget — it waits on the same signal (`app::hero::handover_ready`) and hands
+/// over the deadline it was already running, so the two screens share one budget rather than
+/// spending it twice in a row.
+fn reveal_deadline(started: Option<Instant>) -> Instant {
+    started.unwrap_or_else(|| Instant::now() + crate::app::hero::FIRST_FRAME_WAIT)
+}
 
 pub(super) fn run_inner() -> Result<()> {
     // Stops webOS's launcher intercepting Back/Windows-Meta/Guide as its own Home shortcut
@@ -90,7 +94,11 @@ pub(super) fn run_inner() -> Result<()> {
     let mut menu_toast: Option<String> = None;
 
     loop {
-        let Some((connect_thread, settings)) = run_ui_flow(
+        let Some(ConnectOutcome {
+            handle: connect_thread,
+            settings,
+            first_frame_deadline,
+        }) = run_ui_flow(
             &mut canvas,
             &mut compositor,
             &texture_creator,
@@ -127,7 +135,8 @@ pub(super) fn run_inner() -> Result<()> {
         // `PLAYING` is NOT that signal — it lands during `load()`, before anything is fed.
         // Bounded — a host that never sends must not leave a stale menu frame up.
         let reveal_wait = Instant::now();
-        while !crate::platform::webos::ndl::presenting() && reveal_wait.elapsed() < NDL_REVEAL_TIMEOUT {
+        let deadline = reveal_deadline(first_frame_deadline);
+        while !crate::platform::webos::ndl::presenting() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(4));
         }
         tracing::info!(

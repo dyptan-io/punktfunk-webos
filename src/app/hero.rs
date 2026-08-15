@@ -77,6 +77,17 @@ pub fn hero_pan_dst(img_w: u32, img_h: u32, screen_w: u32, screen_h: u32, elapse
     }
 }
 
+/// How far the launch's connect has got, as the loading screen can see it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Connect {
+    /// Still running.
+    Pending,
+    /// Finished with a session; whether it is decoding yet is `presenting`.
+    Done,
+    /// Finished with an error, which the menu behind the hero is about to show.
+    Failed,
+}
+
 #[derive(Default)]
 pub(crate) struct Hero {
     /// The decoded image and the game id it belongs to. Several MB, and only one can ever
@@ -98,6 +109,10 @@ pub(crate) struct Hero {
     since: Option<Instant>,
     /// When it started fading back out, i.e. when the stream became ready.
     fade_out: Option<Instant>,
+    /// When the wait for a decoded frame runs out, set the moment the connect finishes so the
+    /// budget is bounded from there rather than from the launch. Handed to `runtime::stream`,
+    /// whose reveal waits on the same signal and must not start the clock over.
+    first_frame_deadline: Option<Instant>,
 }
 
 impl Hero {
@@ -199,7 +214,7 @@ impl Hero {
     /// during the load with nothing decoded. With a hero to pan, the screen waits for it so the
     /// fade-out is the last thing before the plane is uncovered; with none, `runtime::stream` holds
     /// the finished launch frame instead, on the same [`FIRST_FRAME_WAIT`] budget.
-    pub(crate) fn handover_ready(&mut self, launch_elapsed: Duration, connected: bool, presenting: bool) -> bool {
+    pub(crate) fn handover_ready(&mut self, launch_elapsed: Duration, connect: Connect, presenting: bool) -> bool {
         if launch_elapsed < LAUNCH_FADE {
             return false;
         }
@@ -208,17 +223,40 @@ impl Hero {
         if launch_elapsed >= HERO_LOADING_MAX {
             return true;
         }
+        // What the screen was waiting for has resolved, either way. A failure counts — it never
+        // presents a frame, so waiting on `presenting` held every launch that *had* hero art to
+        // the backstop before the error could be shown, while a game with none reported it at
+        // the end of the fade. So does a handshake that lands and then decodes nothing.
+        let settled = match connect {
+            Connect::Failed => true,
+            Connect::Done => presenting || self.first_frame_expired(),
+            Connect::Pending => false,
+        };
         if !self.showing() {
             // No hero to hold the wait: hand over at the end of the fade, and `runtime::stream`
             // keeps that finished frame up until the first frame arrives. A game that *has* wide
             // art gets a grace period first — on a cold cache the hero can still be a fetch away,
             // and would otherwise land just after the hand-off.
-            return !self.expected || launch_elapsed >= LAUNCH_FADE + HERO_ART_GRACE;
+            return settled || !self.expected || launch_elapsed >= LAUNCH_FADE + HERO_ART_GRACE;
         }
-        // Held until the stream is genuinely up: the handshake landed *and* a frame reached the
-        // decoder, so the fade-out runs straight into live video rather than cutting to black. Its
-        // own minimum too, so a hero that arrived late isn't cut mid-fade.
-        connected && presenting && self.since.is_some_and(|t| t.elapsed() >= HERO_MIN_SHOW) && self.faded_out()
+        // Held until the launch resolves, then for the hero's own minimum and fade-out, so the
+        // backdrop leaves the same way whether it runs into live video or into the error on the
+        // menu behind it — never a hero cut mid-fade.
+        settled && self.since.is_some_and(|t| t.elapsed() >= HERO_MIN_SHOW) && self.faded_out()
+    }
+
+    /// Starts the first-frame budget on the first call and reports whether it has run out.
+    fn first_frame_expired(&mut self) -> bool {
+        let deadline = *self
+            .first_frame_deadline
+            .get_or_insert_with(|| Instant::now() + FIRST_FRAME_WAIT);
+        Instant::now() >= deadline
+    }
+
+    /// The deadline for `runtime::stream`'s reveal to carry on from — the same budget, not a
+    /// second one.
+    pub(crate) fn first_frame_deadline(&self) -> Option<Instant> {
+        self.first_frame_deadline
     }
 
     /// Starts the fade-out (idempotent) and reports whether it has finished.
