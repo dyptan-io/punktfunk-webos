@@ -315,7 +315,7 @@ impl App {
             HomeFocus::Grid(i) if i < count => Some(i),
             HomeFocus::Grid(_) | HomeFocus::Sidebar(_) | HomeFocus::SidebarMenu(_) => None,
         };
-        let pad = ui::tiles::CARD_TILE_PAD;
+        let pad = ui::tiles::CARD_SHADOW_PAD;
         let layout = self.grid_layout(columns);
         for idx in 0..count {
             if Some(idx) == focused {
@@ -334,11 +334,16 @@ impl App {
             };
             // A card that just landed is still zooming up to full size.
             let pop = self.card_pop_frac(pin_id);
-            let base = r.inflate(pad);
+            let alpha = (255.0 * pop) as u8;
+            cmds.push(DrawCmd::Tex {
+                tile: tile::CARD_SHADOW,
+                dst: ui::animation::pop_in_rect(r.inflate(pad), pop, CARD_POP_SHRINK),
+                alpha,
+            });
             cmds.push(DrawCmd::Tex {
                 tile: card,
-                dst: ui::animation::pop_in_rect(base, pop, CARD_POP_SHRINK),
-                alpha: (255.0 * pop) as u8,
+                dst: ui::animation::pop_in_rect(r, pop, CARD_POP_SHRINK),
+                alpha,
             });
         }
         // The divider between pinned games and the rest — scrolled with
@@ -359,7 +364,6 @@ impl App {
                 // tile fading in behind it at the same scale.
                 let f = ui::animation::anim_frac_smooth(self.focus_anim, ui::animation::CARD_FOCUS_POP);
                 let r = self.scrolled_card_rect(idx, columns, grid_x, available_w);
-                let card_base = r.inflate(pad);
                 let Some(card) = self.card_ids.get(pin_id) else {
                     return; // not rasterized yet
                 };
@@ -380,12 +384,19 @@ impl App {
                     dst: popped(ui::animation::zoom_rect(ring_base, f, CARD_GROWTH)),
                     alpha: (255.0 * f * pop) as u8,
                 });
+                // Then the shadow, over the glow rather than under it — it is the card's
+                // own contact shadow, so the halo must not wash it out.
+                cmds.push(DrawCmd::Tex {
+                    tile: tile::CARD_SHADOW,
+                    dst: popped(ui::animation::zoom_rect(r.inflate(pad), f, CARD_GROWTH)),
+                    alpha: (255.0 * pop) as u8,
+                });
                 // The focused card zooms in on first appearance like any other,
                 // composed with its focus pop — both scale around the card's own
                 // center, so they can't fight over position.
                 cmds.push(DrawCmd::Tex {
                     tile: card,
-                    dst: popped(ui::animation::zoom_rect(card_base, f, CARD_GROWTH)),
+                    dst: popped(ui::animation::zoom_rect(r, f, CARD_GROWTH)),
                     alpha: (255.0 * pop) as u8,
                 });
                 // The title strip wipes up the card's bottom edge — a wipe, not a slide:

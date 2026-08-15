@@ -19,6 +19,18 @@ pub fn solid_paint(color: Color) -> Paint<'static> {
     paint
 }
 
+/// [`rounded_rect_path`] over a `Rect` — `None` for an empty one, so callers need no
+/// size guard of their own. The rect must already be painter-local (see `Painter::off`).
+fn rect_path(rect: Rect, radius: i32) -> Option<tiny_skia::Path> {
+    rounded_rect_path(
+        rect.x() as f32,
+        rect.y() as f32,
+        rect.width() as f32,
+        rect.height() as f32,
+        radius as f32,
+    )
+}
+
 /// Rounded-rect as Bezier path (`tiny_skia` has no built-in); falls back to plain rect if radius ~0.
 pub fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Option<tiny_skia::Path> {
     const K: f32 = 0.552_284_7;
@@ -181,24 +193,14 @@ impl Painter {
     }
 
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: i32, color: Color) {
-        let rect = self.off(rect);
-        let (w, h) = (rect.width() as f32, rect.height() as f32);
-        if w <= 0.0 || h <= 0.0 {
-            return;
-        }
-        let Some(path) = rounded_rect_path(rect.x() as f32, rect.y() as f32, w, h, radius as f32) else {
+        let Some(path) = rect_path(self.off(rect), radius) else {
             return;
         };
         self.fill(&path, color);
     }
 
     pub fn stroke_rounded_rect(&mut self, rect: Rect, radius: i32, color: Color, width: f32) {
-        let rect = self.off(rect);
-        let (w, h) = (rect.width() as f32, rect.height() as f32);
-        if w <= 0.0 || h <= 0.0 {
-            return;
-        }
-        let Some(path) = rounded_rect_path(rect.x() as f32, rect.y() as f32, w, h, radius as f32) else {
+        let Some(path) = rect_path(self.off(rect), radius) else {
             return;
         };
         let paint = solid_paint(color);
@@ -393,14 +395,7 @@ impl Painter {
     /// The title strip needs it: the frost blur smears opaque art back into the
     /// transparent corners the art was rounded out of.
     pub fn clip_to_rounded_rect(&mut self, rect: Rect, radius: i32) {
-        let rect = self.off(rect);
-        let Some(path) = rounded_rect_path(
-            rect.x() as f32,
-            rect.y() as f32,
-            rect.width() as f32,
-            rect.height() as f32,
-            radius as f32,
-        ) else {
+        let Some(path) = rect_path(self.off(rect), radius) else {
             return;
         };
         let Some(mut mask) = Mask::new(self.pixmap.width(), self.pixmap.height()) else {
@@ -418,10 +413,10 @@ impl Painter {
         let dst = self.off(dst);
         let (dw, dh) = (dst.width() as f32, dst.height() as f32);
         let (sw, sh) = (src.width() as f32, src.height() as f32);
-        if dw <= 0.0 || dh <= 0.0 || sw <= 0.0 || sh <= 0.0 {
+        if sw <= 0.0 || sh <= 0.0 {
             return;
         }
-        let Some(path) = rounded_rect_path(dst.x() as f32, dst.y() as f32, dw, dh, radius as f32) else {
+        let Some(path) = rect_path(dst, radius) else {
             return;
         };
         let transform = Transform::from_scale(dw / sw, dh / sh).post_translate(dst.x() as f32, dst.y() as f32);

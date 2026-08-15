@@ -309,6 +309,11 @@ impl App {
             })? {
                 updated.push(tile::RING);
             }
+            if tiles.ensure(tile::CARD_SHADOW, size, || {
+                Ok(ui::tiles::render_card_shadow_tile(card_w, card_h))
+            })? {
+                updated.push(tile::CARD_SHADOW);
+            }
             if tiles.ensure(tile::CARD_OUTLINE, size, || {
                 Ok(ui::tiles::render_card_outline_tile(card_w, card_h))
             })? {

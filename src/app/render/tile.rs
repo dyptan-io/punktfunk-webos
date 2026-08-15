@@ -54,6 +54,9 @@ pub const DISCONNECT_FOCUS_BUTTON: TileId = TileId(20);
 /// The focused card's title strip, wiped up over its bottom edge. One slot: only one
 /// card is focused at a time, and it is versioned by that card's identity.
 pub const CARD_TITLE: TileId = TileId(21);
+/// The card drop shadow, drawn behind every card — identical on all of them, so it is one
+/// shared tile rather than a margin baked into each.
+pub const CARD_SHADOW: TileId = TileId(22);
 
 /// First id of the spinner band. One per decoded GIF frame, so the compositor keeps every
 /// frame's texture and the animation is a swap rather than an upload.

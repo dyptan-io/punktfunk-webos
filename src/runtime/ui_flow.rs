@@ -1,5 +1,25 @@
 use super::*;
 
+/// Uploads one decoded GIF frame as `tile::spinner(idx)`'s texture. Both the pre-upload
+/// below and the per-tick `updated` pass go through here, so they can't drift on format.
+fn upload_spinner(
+    compositor: &mut Compositor,
+    texture_creator: &sdl2::render::TextureCreator<sdl2::video::WindowContext>,
+    idx: usize,
+) -> Result<()> {
+    if let Some(frame) = crate::assets::spinner_frame(idx) {
+        compositor.upload_raw(
+            texture_creator,
+            tile::spinner(idx),
+            frame.width,
+            frame.height,
+            sdl2::pixels::PixelFormatEnum::RGBA32,
+            &frame.pixels,
+        )?;
+    }
+    Ok(())
+}
+
 /// Runs the UI (host list -> pairing -> settings) until the user confirms a
 /// connect target or the system asks the app to close (`None`). A plain
 /// function, not a closure — a closure capturing `canvas`/`events` by
@@ -39,15 +59,8 @@ pub(super) fn run_ui_flow(
     // that meant the first spin cycle stalled once per unique frame, right when the
     // spinner is supposed to look smooth. `clear_all` (stream handoff) drops these
     // along with everything else, so this needs redoing on every re-entry here.
-    for (idx, frame) in crate::assets::spinner_frames().iter().enumerate() {
-        compositor.upload_raw(
-            texture_creator,
-            tile::spinner(idx),
-            frame.width,
-            frame.height,
-            sdl2::pixels::PixelFormatEnum::RGBA32,
-            &frame.pixels,
-        )?;
+    for idx in 0..crate::assets::spinner_frames().len() {
+        upload_spinner(compositor, texture_creator, idx)?;
     }
     // E.g. "the last connect attempt failed, and here's why" — shown on the
     // Home screen the user just got dropped back onto (see `run_inner`'s
@@ -366,16 +379,7 @@ pub(super) fn run_ui_flow(
         // tile the store just built.
         for id in updated {
             if let Some(idx) = tile::spinner_index(id) {
-                if let Some(frame) = crate::assets::spinner_frame(idx) {
-                    compositor.upload_raw(
-                        texture_creator,
-                        id,
-                        frame.width,
-                        frame.height,
-                        sdl2::pixels::PixelFormatEnum::RGBA32,
-                        &frame.pixels,
-                    )?;
-                }
+                upload_spinner(compositor, texture_creator, idx)?;
             } else if id == tile::HERO {
                 if let Some(hero) = app.hero.uploaded_image() {
                     compositor.drop_tile(id);
