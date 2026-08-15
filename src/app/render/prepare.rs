@@ -215,7 +215,7 @@ impl App {
                 }
                 let tile = {
                     let (title, art) = self.grid_card_content(idx, columns);
-                    ui::tiles::render_card_tile(text_cache, fonts, card_w, card_h, title, art)?
+                    ui::tiles::render_card_tile(text_cache, fonts, card_w, card_h, title, art)
                 };
                 let tile_id = self.card_ids.id(&id);
                 tiles.put(tile_id, cache::STATIC, tile);
@@ -240,6 +240,23 @@ impl App {
                             loader.request_hero(game);
                         }
                         self.hero.want(&game.id);
+                    }
+                }
+            }
+
+            // The focused card's title strip: its own tile, so the wipe in `draw_list` is
+            // a moving source/destination rect — one small blur per focus move instead of
+            // re-rasterizing the card every animation frame.
+            if let HomeFocus::Grid(idx) = self.home_focus {
+                if let Some(pin_id) = layout.pin_id_at(&self.games, idx) {
+                    let (title, art) = self.grid_card_content(idx, columns);
+                    // Keyed by card identity like the card tiles themselves (`CardIds`),
+                    // not by title — two games can share one.
+                    let version = cache::version(&(pin_id, card_w, card_h, art.is_some()));
+                    if tiles.ensure(tile::CARD_TITLE, version, || {
+                        ui::tiles::render_card_title_tile(text_cache, fonts, card_w, card_h, title, art)
+                    })? {
+                        updated.push(tile::CARD_TITLE);
                     }
                 }
             }
@@ -284,8 +301,8 @@ impl App {
                 }
             }
 
-            // Both are one shared tile at the current card size, so the card size *is*
-            // the version — a resolution change rebuilds them, nothing else does.
+            // One shared tile at the current card size, so the card size *is* the
+            // version — a resolution change rebuilds it, nothing else does.
             let size = cache::version(&(card_w, card_h));
             if tiles.ensure(tile::RING, size, || {
                 Ok(ui::tiles::render_focus_ring_tile(card_w, card_h))

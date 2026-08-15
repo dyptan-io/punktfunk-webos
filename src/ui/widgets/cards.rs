@@ -22,9 +22,11 @@ pub fn focus_zoom(rect: Rect, focused: bool) -> Rect {
     )
 }
 
-/// How far the focused-card glow's blur extends past the card edge — the
-/// pad `render_focus_ring_tile`'s canvas must leave for it not to clip.
-pub const FOCUS_GLOW_BLUR: f32 = 16.0;
+/// How far the focused-card glow's blur extends past the card edge — the pad
+/// `render_focus_ring_tile`'s canvas must leave for it not to clip. The halo reads
+/// tighter than this: `render_glow_shape` reshapes the blur's ramp into a collar on the
+/// edge with a short tail, rather than the even spread a raw blur gives.
+pub const FOCUS_GLOW_BLUR: f32 = 18.0;
 
 /// The themed card shapes, as `Painter` methods rather than free functions taking one:
 /// they need nothing but the surface, so a tile builder with only a `Painter` (and no
@@ -39,29 +41,23 @@ impl Painter {
     /// Soft glow behind a focused card — a blurred halo in the accent color,
     /// replacing the old hard double-outline ring for a more pleasant look. Same
     /// cached-shape technique as a drop shadow (`Painter::fill_glow`), so it costs
-    /// one shared texture, reused by every card, not a per-frame re-blur. Rounded
-    /// noticeably less than the card itself (`radius`) — a smaller pre-blur radius
-    /// leaves more straight edge for the blur to soften, which reads as hugging
-    /// the card's actual corners rather than blooming into a big round blob.
-    pub fn focus_ring(&mut self, rect: Rect, radius: i32) {
-        self.fill_glow(rect, radius / 2, theme().accent_bright, FOCUS_GLOW_BLUR);
+    /// one shared texture, reused by every card, not a per-frame re-blur.
+    ///
+    /// The card's own rect and radius: `render_glow_shape` keeps the silhouette sharp and
+    /// lets the blur supply only the tail beyond it, so the lit body is the card's shape
+    /// rather than the rounder, larger figure a blurred-then-saturated shape becomes.
+    pub fn focus_ring(&mut self, rect: Rect) {
+        self.fill_glow(rect, CARD_RADIUS, theme().accent_bright, FOCUS_GLOW_BLUR);
     }
 
-    /// A crisp thin outline right at the card's own edge — composited on top of
-    /// the card art (unlike the soft glow behind it), so the transition from
-    /// glow to art reads as a clean rectangle rather than a smudge. Square, not
-    /// `CARD_RADIUS`-rounded: the art itself is a plain blit with square corners
-    /// (see [`Canvas::poster_card`](crate::ui::Canvas::poster_card)), so a rounded
-    /// outline would float visibly outside the actual art edge whenever a cover is
-    /// loaded.
+    /// A crisp lit edge right on the focused card's own outline, composited on top of the
+    /// art (unlike the glow behind it). It gives the halo something to end against, so the
+    /// glow reads as light coming off the card rather than fading into the art. Rounded to
+    /// `CARD_RADIUS`, the same shape as the art, the placeholder poster and the glow.
     pub fn card_outline(&mut self, rect: Rect) {
-        let color = Color::RGBA(
-            theme().accent_bright.r,
-            theme().accent_bright.g,
-            theme().accent_bright.b,
-            0xd0,
-        );
-        self.stroke_rounded_rect(rect, 0, color, 1.5);
+        let accent = theme().accent_bright;
+        let color = Color::RGBA(accent.r, accent.g, accent.b, 0xd0);
+        self.stroke_rounded_rect(rect, CARD_RADIUS, color, 1.5);
     }
 
     /// Draw text-entry card (PIN/IP boxes); always visible, zoom when focused.
@@ -114,54 +110,103 @@ pub fn tint_for(title: &str) -> Color {
     POSTER_TINTS[hash as usize % POSTER_TINTS.len()]
 }
 
+/// Height of a card's title strip: one line of the value font plus breathing room,
+/// never more than a third of the card. Shared by the strip's tile builder and by the
+/// draw-list geometry that slides it, which must agree to the pixel.
+pub fn title_strip_h(raster: &dyn TextRaster, font: FontId, card_h: u32) -> u32 {
+    (raster.height(font) + TITLE_STRIP_PAD).min(card_h as i32 / 3).max(1) as u32
+}
+
+/// Vertical breathing room around the title strip's single line.
+const TITLE_STRIP_PAD: i32 = 16;
+/// Left/right inset of the strip's label, doubled when measuring the space it has.
+const TITLE_STRIP_INSET: i32 = 8;
+/// Blur radius of the frost under the strip.
+const TITLE_STRIP_BLUR: usize = 6;
+/// Inset of the generated placeholder poster's title block.
+const PLACEHOLDER_PAD: i32 = 18;
+/// Gap between wrapped lines of that title.
+const PLACEHOLDER_LINE_GAP: i32 = 4;
+
 impl Canvas<'_, '_> {
-    /// Draws one game/Desktop tile. `art`, when `Some` (a decoded cover, already
+    /// Draws one game/Desktop card's art. `art`, when `Some` (a decoded cover, already
     /// downscaled and premultiplied by `art.rs`), fills the whole card, same as
-    /// moonlight-tv's cover-image tiles; `None` falls back to a tinted placeholder +
-    /// initial letter (no real art fetched yet, or the host has none for this title).
-    /// Either way a bottom title strip overlays the art/tint, matching the reference's
-    /// always-present (ellipsized) title label.
-    pub fn poster_card(&mut self, rect: Rect, title: &str, art: Option<&Pixmap>, focused: bool) -> Result<()> {
-        let r = focus_zoom(rect, focused);
-        self.painter.card_shadow(r, CARD_RADIUS);
-
-        let (value_font, title_font) = (self.fonts.value, self.fonts.title);
-        let strip_h = (self.fonts.raster.height(value_font) + 16).min(r.height() as i32 / 3);
+    /// moonlight-tv's cover-image tiles; `None` draws a generated poster instead (no
+    /// real art fetched yet, or the host has none for this title).
+    ///
+    /// The art layer alone: the shadow belongs to the card tile (`render_card_tile`), and
+    /// the strip, the glow and the zoom are composited over that tile by
+    /// `app::render::compose`, so an animating card is never rasterized twice.
+    /// `render_card_title_tile` re-draws this layer translated, to have something real to
+    /// frost over.
+    pub fn poster_art(&mut self, r: Rect, title: &str, art: Option<&Pixmap>) {
         match art {
-            // Already stretched to this card size by `art::ArtLoader` (see
-            // `art::resize_pixmap`) — a plain blit, not `draw_pixmap_scaled`. Falls back
-            // to scaling if a pixmap ever arrives at some other size.
-            Some(pixmap) if pixmap.width() == r.width() && pixmap.height() == r.height() => {
-                self.painter.draw_pixmap(r.x(), r.y(), pixmap);
-            }
-            Some(pixmap) => {
-                self.painter.draw_pixmap_scaled(r, pixmap);
-            }
-            None => {
-                self.painter.fill_rounded_rect(r, CARD_RADIUS, tint_for(title));
-                let initial = title
-                    .chars()
-                    .find(|c| c.is_alphanumeric())
-                    .unwrap_or('?')
-                    .to_uppercase()
-                    .to_string();
-                let ih = self.fonts.raster.measure(title_font, &initial).1;
-                let art_h = r.height() as i32 - strip_h;
-                let text_y = r.y() + (art_h - ih as i32) / 2;
-                self.text_centered(title_font, &initial, r, text_y, Color::RGBA(0xff, 0xff, 0xff, 0xa0))?;
-            }
+            // Rounded to `CARD_RADIUS`, same as the placeholder poster and the glow
+            // behind it — a square-cornered cover was the one thing in the card stack
+            // that didn't follow the card's shape. `art::ArtLoader` (`art::resize_pixmap`)
+            // has already stretched it to card size; the draw rescales only if a pixmap
+            // ever arrives at some other size.
+            Some(pixmap) => self.painter.draw_pixmap_rounded(r, pixmap, CARD_RADIUS),
+            None => self.placeholder_poster(r, title),
+        }
+    }
+
+    /// The stand-in cover for a game the host has no art for: the tinted card with the
+    /// title set into it like a poster, wrapped and centered. Its own artwork rather
+    /// than a bare initial, so an art-less library still reads as a wall of covers —
+    /// and so a card carries its title even before focus slides the strip up.
+    ///
+    /// Cards only; hero art keeps its own (art-or-nothing) treatment.
+    fn placeholder_poster(&mut self, r: Rect, title: &str) {
+        self.painter.fill_rounded_rect(r, CARD_RADIUS, tint_for(title));
+        let font = self.fonts.title;
+        let (raster, gap) = (self.fonts.raster, PLACEHOLDER_LINE_GAP);
+        let line_h = raster.height(font) + gap;
+        let max_w = r.width().saturating_sub(2 * PLACEHOLDER_PAD as u32);
+        let mut lines = wrap_text(raster, font, title, max_w);
+        // Keep the block inside the card even for a long title; the strip has the full
+        // text (ellipsized) anyway, so truncating here loses nothing.
+        let max_lines = ((r.height() as i32 - 2 * PLACEHOLDER_PAD) / line_h.max(1)).max(1) as usize;
+        lines.truncate(max_lines);
+        if let Some(last) = lines.last_mut() {
+            *last = ellipsize(raster, font, last, max_w);
         }
 
-        let strip = Rect::new(r.x(), r.bottom() - strip_h, r.width(), strip_h.max(0) as u32);
+        let block_h = lines.len() as i32 * line_h - gap;
+        let mut y = r.y() + (r.height() as i32 - block_h) / 2;
+        for line in &lines {
+            // Infallible in practice (glyphs come from the bundled font); a placeholder
+            // that can't measure its own title just draws the tint.
+            let _ = self.text_centered(font, line, r, y, Color::RGBA(0xff, 0xff, 0xff, 0xd8));
+            y += line_h;
+        }
+    }
+
+    /// The frosted title strip overlaying a focused card's bottom edge, drawn over a copy
+    /// of the art beneath it so the blur is real frost rather than a flat scrim.
+    pub fn poster_title_strip(&mut self, strip: Rect, title: &str) -> Result<()> {
+        self.painter.blur_rect(strip, TITLE_STRIP_BLUR);
+        // Rounded at the bottom only, to sit inside the card's own rounded corners rather
+        // than jutting out square past the art. One rounded rect grown upward by its
+        // radius does it: the top pair of corners then falls above the strip (off the
+        // tile canvas entirely, where tiny-skia clips it), leaving only the bottom pair.
+        let shaped = Rect::new(
+            strip.x(),
+            strip.y() - CARD_RADIUS,
+            strip.width(),
+            strip.height() + CARD_RADIUS as u32,
+        );
         self.painter
-            .fill_frosted_rect(strip, 0, Color::RGBA(0x00, 0x00, 0x00, 0x68), 6);
-        let label = ellipsize(self.fonts.raster, value_font, title, strip.width().saturating_sub(16));
-        let label_y = strip.y() + (strip.height() as i32 - self.fonts.raster.height(value_font)) / 2;
-        self.text(value_font, &label, strip.x() + 8, label_y, theme().text)?;
-
-        if focused {
-            self.painter.focus_ring(r, CARD_RADIUS);
-        }
+            .fill_rounded_rect(shaped, CARD_RADIUS, Color::RGBA(0x00, 0x00, 0x00, 0x68));
+        // The art under the tint was rounded to the same shape, but the blur above smeared
+        // it back out into those corners — trim everything to the shape once, so art and
+        // frost end on the same rounded edge.
+        self.painter.clip_to_rounded_rect(shaped, CARD_RADIUS);
+        let font = self.fonts.value;
+        let avail = strip.width().saturating_sub(2 * TITLE_STRIP_INSET as u32);
+        let label = ellipsize(self.fonts.raster, font, title, avail);
+        let y = strip.y() + (strip.height() as i32 - self.fonts.raster.height(font)) / 2;
+        self.text(font, &label, strip.x() + TITLE_STRIP_INSET, y, theme().text)?;
         Ok(())
     }
 }

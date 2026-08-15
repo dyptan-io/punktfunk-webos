@@ -23,32 +23,57 @@ pub fn render_card_tile(
     card_h: u32,
     title: &str,
     art: Option<&Pixmap>,
-) -> Result<Painter> {
+) -> Painter {
     let pad = CARD_TILE_PAD;
     let mut p = Painter::new(card_w + 2 * pad as u32, card_h + 2 * pad as u32);
+    let rect = Rect::new(pad, pad, card_w, card_h);
+    p.card_shadow(rect, CARD_RADIUS);
+    Canvas::tile(&mut p, text_cache, fonts).poster_art(rect, title, art);
+    p
+}
+
+/// The focused card's title strip as its own tile, exactly card-wide.
+///
+/// Frost needs something to blur, so the card's own art is re-drawn here translated up by
+/// everything above the strip: the strip's slice of the cover lands at y 0 and the rest
+/// falls off the canvas, where tiny-skia clips it. One small blur per focus move — a
+/// fraction of the card build happening at that same rate — and nothing per frame, since
+/// the wipe is a crop of this tile (see `app::render::compose`).
+pub fn render_card_title_tile(
+    text_cache: &mut TextCache,
+    fonts: &Fonts,
+    card_w: u32,
+    card_h: u32,
+    title: &str,
+    art: Option<&Pixmap>,
+) -> Result<Painter> {
+    let strip_h = title_strip_h(fonts.raster, fonts.value, card_h);
+    let mut p = Painter::new(card_w.max(1), strip_h);
     let mut c = Canvas::tile(&mut p, text_cache, fonts);
-    c.poster_card(Rect::new(pad, pad, card_w, card_h), title, art, false)?;
+    let strip = Rect::new(0, 0, card_w, strip_h);
+    c.poster_art(Rect::new(0, -((card_h - strip_h) as i32), card_w, card_h), title, art);
+    c.poster_title_strip(strip, title)?;
     Ok(p)
 }
 
 /// Transparent padding around the focus-ring tile — must clear
 /// `FOCUS_GLOW_BLUR`'s blur radius or the glow clips against the canvas edge.
-pub const FOCUS_RING_PAD: i32 = 20;
+pub const FOCUS_RING_PAD: i32 = 24;
 
 /// Focus-ring glow as shared tile (all cards same size). GPU scales + fades.
 pub fn render_focus_ring_tile(w: u32, h: u32) -> Painter {
     let pad = FOCUS_RING_PAD;
     let mut p = Painter::new(w + 2 * pad as u32, h + 2 * pad as u32);
-    p.focus_ring(Rect::new(pad, pad, w, h), CARD_RADIUS);
+    p.focus_ring(Rect::new(pad, pad, w, h));
     p
 }
 
-/// Transparent padding around the card-outline tile — just enough for the
-/// stroke's own width/AA, not a blur radius like `FOCUS_RING_PAD`.
+/// Transparent padding around the card-outline tile — just enough for the stroke's own
+/// width/AA, not a blur radius like [`FOCUS_RING_PAD`].
 pub const CARD_OUTLINE_PAD: i32 = 4;
 
-/// The focused card's crisp edge outline as a shared tile (all cards same
-/// size), composited on top of the card art — see `draw_card_outline`.
+/// The focused card's crisp lit edge as a shared tile (all cards are one size),
+/// composited on top of the card art — see [`Painter::card_outline`].
 pub fn render_card_outline_tile(w: u32, h: u32) -> Painter {
     let pad = CARD_OUTLINE_PAD;
     let mut p = Painter::new(w + 2 * pad as u32, h + 2 * pad as u32);

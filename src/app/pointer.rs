@@ -192,6 +192,13 @@ impl App {
     fn set_home_focus(&mut self, focus: HomeFocus) -> bool {
         let changed = self.home_focus != focus;
         self.home_focus = focus;
+        // The card's zoom, glow and title wipe all run off `focus_anim`, which the D-pad
+        // arms in `ensure_grid_visible`; armed here for every pointer path at once, or
+        // landing on a card with the Magic Remote renders it already finished. Only on a
+        // change: the pointer streams motion events and each would restart the clock.
+        if changed && matches!(focus, HomeFocus::Grid(_)) {
+            self.focus_anim = Some(Instant::now());
+        }
         changed
     }
 

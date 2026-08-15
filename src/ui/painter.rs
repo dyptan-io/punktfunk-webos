@@ -3,7 +3,8 @@ use crate::ui::render::{Color, Rect};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use tiny_skia::{
-    Color as SkColor, FillRule, FilterQuality, IntSize, Paint, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform,
+    Color as SkColor, FillRule, FilterQuality, IntSize, Mask, Paint, PathBuilder, Pattern, Pixmap, PixmapPaint,
+    SpreadMode, Stroke, Transform,
 };
 
 pub fn sk_color(c: Color) -> SkColor {
@@ -163,7 +164,7 @@ impl Painter {
         let (from, to) = (f32::from(top_alpha), f32::from(bottom_alpha));
         for (y, row) in self.pixmap.data_mut().chunks_exact_mut(row_bytes).enumerate() {
             let t = (y as f32 / last_row).clamp(0.0, 1.0);
-            let eased = t * t * (3.0 - 2.0 * t);
+            let eased = crate::ui::animation::smoothstep(t);
             let alpha = (from + (to - from) * eased).round().clamp(0.0, 255.0) as u8;
             // Premultiplied, because that is what a tile's buffer holds and what the GPU is
             // told to expect (docs/NOTES.md). Writing straight alpha here would show up as a
@@ -351,12 +352,6 @@ impl Painter {
         });
     }
 
-    /// Frosted-glass panel: blurs whatever's under `rect`, then tints it.
-    pub fn fill_frosted_rect(&mut self, rect: Rect, radius: i32, tint: Color, blur_radius: usize) {
-        self.blur_rect(rect, blur_radius);
-        self.fill_rounded_rect(rect, radius, tint);
-    }
-
     pub fn draw_pixmap(&mut self, x: i32, y: i32, src: &Pixmap) {
         self.pixmap.draw_pixmap(
             x - self.origin.0,
@@ -368,10 +363,10 @@ impl Painter {
         );
     }
 
-    /// Composites `src` scaled to exactly fill `dst` — the one caller is game-art
-    /// rendering (`ui::draw_poster_card`), and only at tile-build time (see
-    /// `App::prepare_tiles`), not per frame: the result is cached into the card's tile
-    /// and only re-scaled when the art or card size actually changes. `Bilinear`
+    /// Composites `src` scaled to exactly fill `dst` — only ever at tile-build time
+    /// (glyph scaling in `ui::text`, and cover art via
+    /// [`draw_pixmap_rounded`](Self::draw_pixmap_rounded)), not per frame: the result is
+    /// cached into the tile and only re-scaled when the source or size changes. `Bilinear`
     /// (rather than `Nearest`) is worth its modest per-call cost here since it's paid
     /// once per card build, not every frame — plain `Nearest` scaling left visible
     /// jaggies on art whose source resolution didn't cleanly divide into the card size.
@@ -389,11 +384,67 @@ impl Painter {
         };
         self.pixmap.draw_pixmap(0, 0, src.as_ref(), &paint, transform, None);
     }
+
+    /// Clears everything already drawn outside a rounded rect. `tiny_skia` has no clip
+    /// stack, so this is an alpha mask of the shape applied to the whole buffer after the
+    /// fact — not a path fill, which only ever touches pixels *inside* the path and so
+    /// leaves the corners it is supposed to be cutting away untouched.
+    ///
+    /// The title strip needs it: the frost blur smears opaque art back into the
+    /// transparent corners the art was rounded out of.
+    pub fn clip_to_rounded_rect(&mut self, rect: Rect, radius: i32) {
+        let rect = self.off(rect);
+        let Some(path) = rounded_rect_path(
+            rect.x() as f32,
+            rect.y() as f32,
+            rect.width() as f32,
+            rect.height() as f32,
+            radius as f32,
+        ) else {
+            return;
+        };
+        let Some(mut mask) = Mask::new(self.pixmap.width(), self.pixmap.height()) else {
+            return;
+        };
+        mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+        self.pixmap.apply_mask(&mask);
+    }
+
+    /// [`draw_pixmap_scaled`](Self::draw_pixmap_scaled) clipped to a rounded rect, so a
+    /// cover fills its card with the card's own corners instead of square ones. Goes
+    /// through a pattern-shaded path rather than a blit — more expensive, but paid once
+    /// per card build, and there is no other way to round a bitmap's corners here.
+    pub fn draw_pixmap_rounded(&mut self, dst: Rect, src: &Pixmap, radius: i32) {
+        let dst = self.off(dst);
+        let (dw, dh) = (dst.width() as f32, dst.height() as f32);
+        let (sw, sh) = (src.width() as f32, src.height() as f32);
+        if dw <= 0.0 || dh <= 0.0 || sw <= 0.0 || sh <= 0.0 {
+            return;
+        }
+        let Some(path) = rounded_rect_path(dst.x() as f32, dst.y() as f32, dw, dh, radius as f32) else {
+            return;
+        };
+        let transform = Transform::from_scale(dw / sw, dh / sh).post_translate(dst.x() as f32, dst.y() as f32);
+        let paint = Paint {
+            shader: Pattern::new(src.as_ref(), SpreadMode::Pad, FilterQuality::Bilinear, 1.0, transform),
+            anti_alias: true,
+            ..Paint::default()
+        };
+        self.pixmap
+            .fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+    }
 }
 
 /// How far a shadow's blur extends past the shape casting it, in px — a fixed
 /// constant (not derived from anything) picked to read as a soft TV-scale shadow.
 pub const SHADOW_BLUR: f32 = 14.0;
+
+/// How hard [`render_glow_shape`] drives the dense end of its blur ramp to full
+/// coverage — the collar of light sitting on the shape's own edge.
+const GLOW_EDGE_GAIN: f32 = 2.1;
+/// And how sharply the rest of the ramp falls away past it. Above 1.0 shortens the halo;
+/// 1.0 leaves the plain blur profile.
+const GLOW_FALLOFF_GAMMA: f32 = 1.8;
 
 /// Rasterizes a `(w, h)` rounded-rect shape into a small padded alpha buffer and
 /// box-blurs it (3 passes — a cheap approximation of a Gaussian blur, good enough
@@ -426,10 +477,11 @@ pub fn render_shadow_shape(w: u32, h: u32, radius: i32, pad: i32, blur: f32, opa
     Some(shape)
 }
 
-/// Rasterizes a `(w, h)` rounded-rect shape filled with `color` and box-blurs it
-/// on all four channels (unlike `render_shadow_shape`, a colored glow can't
-/// reduce to a single alpha channel) — see `Painter::fill_glow`'s cache, keyed
-/// on everything that determines these pixels.
+/// Rasterizes a `(w, h)` rounded-rect shape filled with `color` and box-blurs it on all
+/// four channels (unlike `render_shadow_shape`, a colored glow can't reduce to a single
+/// alpha channel), then keeps the silhouette sharp and reshapes the blur outside it into
+/// a short, edge-hugging tail — see `Painter::fill_glow`'s cache, keyed on everything
+/// that determines these pixels.
 pub fn render_glow_shape(w: u32, h: u32, radius: i32, pad: i32, blur: f32, color: Color) -> Option<Pixmap> {
     let (pw, ph) = (w as i32 + 2 * pad, h as i32 + 2 * pad);
     if pw <= 0 || ph <= 0 {
@@ -453,6 +505,32 @@ pub fn render_glow_shape(w: u32, h: u32, radius: i32, pad: i32, blur: f32, color
         for channel in 0..4 {
             box_blur_channel(&mut data, &mut scratch, pwu, phu, channel, radius_px);
         }
+    }
+    // A blur alone leaves a symmetric ramp — half-strength exactly at the shape's edge,
+    // the rest spread evenly outward — which reads as haze rather than light coming off
+    // the edge. The gain saturates its dense end into a collar flush against that edge and
+    // the gamma pulls the far tail down; both are monotonic, so it stays one continuous
+    // falloff rather than the two-tone of two stacked blurs.
+    //
+    // Through a table because the input is a u8 alpha: 256 possible outputs against ~80k
+    // `powf` calls over the padded buffer on a softfloat CPU. Premultiplied, one flat
+    // source colour, so all four channels follow the reshaped alpha.
+    let lut: [[u8; 4]; 256] = std::array::from_fn(|a| {
+        let shaped = ((a as f32 / 255.0) * GLOW_EDGE_GAIN).min(1.0).powf(GLOW_FALLOFF_GAMMA);
+        let premul = |c: u8| (f32::from(c) * shaped).round() as u8;
+        [
+            premul(color.r),
+            premul(color.g),
+            premul(color.b),
+            (shaped * 255.0).round() as u8,
+        ]
+    });
+    // `shape` still holds the unblurred silhouette; `max`ing the blurred alpha against it
+    // means the blur only ever supplies the tail *outside* the shape — inside, the light
+    // stays at the shape's own coverage, so it ends exactly on that outline and corner
+    // curvature rather than on the rounder, larger figure a blur leaves behind.
+    for (px, sharp) in data.chunks_exact_mut(4).zip(shape.data().chunks_exact(4)) {
+        px.copy_from_slice(&lut[px[3].max(sharp[3]) as usize]);
     }
     Pixmap::from_vec(data, IntSize::from_wh(pw as u32, ph as u32)?)
 }

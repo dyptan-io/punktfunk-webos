@@ -298,10 +298,18 @@ impl App {
     }
 
     /// Grid family compose: the card tiles at their scrolled positions, the pinned
-    /// divider, and the focused card with its ring/outline/pin-badge pop. Only reached
+    /// divider, and the focused card with its ring/title-strip/pin-badge pop. Only reached
     /// once the grid is revealed. Extracted from `draw_list` (A2 staging).
     #[allow(clippy::too_many_arguments)]
-    fn compose_grid(&self, screen_h: u32, grid_x: i32, available_w: u32, columns: usize, cmds: &mut Vec<DrawCmd>) {
+    fn compose_grid(
+        &self,
+        screen_h: u32,
+        grid_x: i32,
+        available_w: u32,
+        columns: usize,
+        tiles: &TileStore,
+        cmds: &mut Vec<DrawCmd>,
+    ) {
         let count = self.grid_len(columns);
         let focused = match self.home_focus {
             HomeFocus::Grid(i) if i < count => Some(i),
@@ -349,7 +357,7 @@ impl App {
                 // The focus pop: the GPU scales the (unfocused) card tile up
                 // around its center as the pop progresses, with the shared glow
                 // tile fading in behind it at the same scale.
-                let f = ui::animation::anim_frac(self.focus_anim, ui::animation::FOCUS_POP);
+                let f = ui::animation::anim_frac_smooth(self.focus_anim, ui::animation::CARD_FOCUS_POP);
                 let r = self.scrolled_card_rect(idx, columns, grid_x, available_w);
                 let card_base = r.inflate(pad);
                 let Some(card) = self.card_ids.get(pin_id) else {
@@ -357,15 +365,16 @@ impl App {
                 };
                 let pop = self.card_pop_frac(pin_id);
                 let popped = |base: Rect| ui::animation::pop_in_rect(base, pop, CARD_POP_SHRINK);
-                // Glow drawn first — it's a halo behind the card, not an outline
-                // on top of it.
-                let rp = ui::tiles::FOCUS_RING_PAD;
-                let ring_base = Rect::new(
-                    r.x() - rp,
-                    r.y() - rp,
-                    r.width() + 2 * rp as u32,
-                    r.height() + 2 * rp as u32,
-                );
+                // The card's total scale, for anything composited on top of it that has to
+                // fold in the same transform about the card's centre rather than its own.
+                let card_scale =
+                    ui::animation::zoom_scale(f, CARD_GROWTH) * ui::animation::pop_in_scale(pop, CARD_POP_SHRINK);
+                // Glow first — a halo behind the card, not an outline on top of it. Its
+                // alpha rides the same eased `f` as the zoom, so it blooms over the whole
+                // travel instead of snapping on ahead of it. No fade-out to match: focus
+                // leaving a card kills its glow in one frame, since the card moved *to* is
+                // already blooming and two lit cards read as ambiguous focus.
+                let ring_base = r.inflate(ui::tiles::FOCUS_RING_PAD);
                 cmds.push(DrawCmd::Tex {
                     tile: tile::RING,
                     dst: popped(ui::animation::zoom_rect(ring_base, f, CARD_GROWTH)),
@@ -379,19 +388,36 @@ impl App {
                     dst: popped(ui::animation::zoom_rect(card_base, f, CARD_GROWTH)),
                     alpha: (255.0 * pop) as u8,
                 });
-                // The crisp outline, on top of the card art — a clean edge
-                // between it and the glow behind, unlike the glow's own
-                // soft, blurred boundary.
-                let op = ui::tiles::CARD_OUTLINE_PAD;
-                let outline_base = Rect::new(
-                    r.x() - op,
-                    r.y() - op,
-                    r.width() + 2 * op as u32,
-                    r.height() + 2 * op as u32,
-                );
+                // The title strip wipes up the card's bottom edge — a wipe, not a slide:
+                // the tile's bottom `shown` rows go to the card's bottom `shown` rows, so
+                // the frosted art baked into it stays registered with the art beneath.
+                // Sliding the whole tile dragged that baked cover fragment up with it,
+                // reading as the card shifting under the glass. `r` is the pivot: a band
+                // scaled about its own center drifts off the edge it sits flush to.
+                if let Some(strip_h) = tiles.get(tile::CARD_TITLE).map(ui::Painter::height) {
+                    let wipe = ui::animation::anim_frac(self.focus_anim, ui::animation::CARD_FOCUS_POP);
+                    let shown = (strip_h as f32 * wipe) as u32;
+                    if shown > 0 {
+                        let visible = Rect::new(r.x(), r.bottom() - shown as i32, r.width(), shown);
+                        cmds.push(DrawCmd::TexCropped {
+                            tile: tile::CARD_TITLE,
+                            src: Rect::new(0, (strip_h - shown) as i32, r.width(), shown),
+                            dst: ui::animation::scale_about(visible, r, card_scale),
+                            alpha: (255.0 * pop) as u8,
+                        });
+                    }
+                }
+                // The lit edge last, over the art *and* the strip, so the card ends on one
+                // unbroken line. It gives the glow behind a hard boundary to end on, so
+                // the halo reads as light off the edge rather than a smudge fading into
+                // the art. `CARD_RADIUS`-rounded like the rest of the stack.
                 cmds.push(DrawCmd::Tex {
                     tile: tile::CARD_OUTLINE,
-                    dst: popped(ui::animation::zoom_rect(outline_base, f, CARD_GROWTH)),
+                    dst: popped(ui::animation::zoom_rect(
+                        r.inflate(ui::tiles::CARD_OUTLINE_PAD),
+                        f,
+                        CARD_GROWTH,
+                    )),
                     alpha: (255.0 * f * pop) as u8,
                 });
                 if self.selected_known_host().is_some_and(|h| h.is_pinned(pin_id)) {
@@ -464,7 +490,7 @@ impl App {
                 alpha: 0xff,
             });
         } else {
-            self.compose_grid(screen_h, grid_x, available_w, columns, &mut cmds);
+            self.compose_grid(screen_h, grid_x, available_w, columns, tiles, &mut cmds);
         }
         if input.has_status {
             if let Some(p) = tiles.get(tile::STATUS) {

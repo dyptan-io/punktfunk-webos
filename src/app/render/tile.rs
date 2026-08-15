@@ -14,7 +14,7 @@ pub const SIDEBAR: TileId = TileId(0);
 pub const FOCUS_ROW: TileId = TileId(1);
 /// The shared focus-ring glow (one card size at a time), drawn behind a focused card.
 pub const RING: TileId = TileId(2);
-/// The shared crisp card edge, drawn over a focused card's art.
+/// The focused card's crisp lit edge, composited over its art.
 pub const CARD_OUTLINE: TileId = TileId(3);
 /// The pinned badge, composited over a focused pinned card.
 pub const PIN_BADGE: TileId = TileId(4);
@@ -51,6 +51,9 @@ pub const LOG_OVERLAY: TileId = TileId(18);
 /// The in-stream disconnect confirm dialog, and its focused button.
 pub const DISCONNECT_DIALOG: TileId = TileId(19);
 pub const DISCONNECT_FOCUS_BUTTON: TileId = TileId(20);
+/// The focused card's title strip, wiped up over its bottom edge. One slot: only one
+/// card is focused at a time, and it is versioned by that card's identity.
+pub const CARD_TITLE: TileId = TileId(21);
 
 /// First id of the spinner band. One per decoded GIF frame, so the compositor keeps every
 /// frame's texture and the animation is a swap rather than an upload.
