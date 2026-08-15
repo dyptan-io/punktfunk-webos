@@ -455,6 +455,10 @@ impl App {
             selected_host,
         } = loaded;
         let entries = known_entries(&known_hosts);
+
+        // Catches hosts that left the list while the app was closed (migration, torn document);
+        // in-session removals reconcile at their own sites.
+        crate::services::art::reconcile_host_caches(&known_hosts);
         let (discovered, discovery_daemon) = match crate::services::discovery::browse() {
             Some((rx, daemon)) => (rx, Some(daemon)),
             None => (std::sync::mpsc::channel().1, None),

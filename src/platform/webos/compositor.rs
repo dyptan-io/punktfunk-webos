@@ -7,7 +7,7 @@
 //! which is what makes 60fps animation feasible on this hardware (the previous
 //! CPU compositor measured ~25-45ms/frame; see docs/NOTES.md).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use anyhow::Result;
 use sdl2::pixels::PixelFormatEnum;
@@ -25,20 +25,47 @@ fn to_sdl_color(c: Color) -> sdl2::pixels::Color {
     sdl2::pixels::Color::RGBA(c.r, c.g, c.b, c.a)
 }
 
+/// How many freed textures are kept for reuse. The grid's card tiles are all one size, so a
+/// scroll frees and immediately re-creates the same shape; a handful of spares covers a row
+/// either way without holding VRAM the app isn't about to use again.
+const TEXTURE_POOL_CAP: usize = 16;
+
+/// A texture's dimensions and pixel format — what makes one interchangeable with another, so
+/// what the pool is searched by. Cached rather than re-read: `Texture::query` is an FFI call,
+/// and a pool scan would otherwise make one per candidate per acquire.
+type Shape = (u32, u32, PixelFormatEnum);
+
+/// One tile's GPU texture and everything the compositor knows about it.
+///
+/// One record rather than a map per attribute: a texture's premultiplied-ness and its last
+/// applied mod are only meaningful for as long as *that* texture is this tile's, so they are
+/// invalidated by construction whenever it is replaced or released.
+struct Tile {
+    texture: Texture,
+    shape: Shape,
+    /// Whether the texture holds premultiplied pixels, so `present` knows to scale its colour
+    /// alongside its alpha (see [`Compositor::faded_tile`]).
+    premultiplied: bool,
+    /// The `(alpha, colour)` mod last applied, so a frame that doesn't move a fade issues no
+    /// SDL calls at all. `None` until set — a recycled texture carries the previous tile's.
+    mods: Option<(u8, u8)>,
+}
+
 pub struct Compositor {
-    textures: HashMap<TileId, Texture>,
+    tiles: HashMap<TileId, Tile>,
+    /// Textures freed by [`Compositor::drop_tile`], kept to be handed straight back out at the
+    /// same shape. Scrolling the grid otherwise runs a `glDeleteTextures` plus a `glGenTextures`
+    /// and a fresh storage allocation per card per row, for an object the next row wants again.
+    pool: Vec<(Shape, Texture)>,
     /// Reused staging buffer for the premultiplied → straight-alpha conversion, on the
     /// fallback path only (see [`premultiplied_blend`]).
     staging: Vec<u8>,
     /// The composed premultiplied blend mode, probed once — `None` until probed, `Some(None)`
     /// if the renderer refused it.
     premultiplied: Option<Option<sdl2::sys::SDL_BlendMode>>,
-    /// Tiles whose texture holds premultiplied pixels, so `present` knows to scale their colour
-    /// alongside their alpha (see [`set_tile_alpha`]).
-    premul_tiles: HashSet<TileId>,
 }
 
-/// Applies a draw list's per-tile fade `alpha` to a texture.
+/// The `(alpha, colour)` mod a draw list's per-tile fade `alpha` becomes.
 ///
 /// A premultiplied source needs its colour scaled by the same factor as its alpha, which
 /// `set_alpha_mod` alone does not do — SDL modulates the texel by the vertex colour, whose RGB
@@ -48,10 +75,8 @@ pub struct Compositor {
 ///
 /// Straight-alpha and opaque tiles must keep colour mod at 255 — their colour is independent of
 /// coverage, so scaling it would darken them as they faded.
-fn set_tile_alpha(tex: &mut Texture, alpha: u8, premultiplied: bool) {
-    tex.set_alpha_mod(alpha);
-    let c = if premultiplied { alpha } else { 255 };
-    tex.set_color_mod(c, c, c);
+fn tile_alpha_mod(alpha: u8, premultiplied: bool) -> (u8, u8) {
+    (alpha, if premultiplied { alpha } else { 255 })
 }
 
 /// Premultiplied-source blending: `dst = src + dst * (1 - src.a)`, i.e. the same result the
@@ -65,7 +90,7 @@ fn set_tile_alpha(tex: &mut Texture, alpha: u8, premultiplied: bool) {
 /// and removes the staging buffer's second full-size copy with it.
 ///
 /// Per-tile fade alpha then has to scale source colour *and* alpha together, which alpha mod
-/// alone does not do — see [`set_tile_alpha`].
+/// alone does not do — see [`tile_alpha_mod`].
 fn premultiplied_blend() -> sdl2::sys::SDL_BlendMode {
     use sdl2::sys::{SDL_BlendFactor, SDL_BlendOperation};
     // SAFETY: a pure value computation in SDL — it packs the factors into a blend-mode enum
@@ -88,7 +113,7 @@ fn premultiplied_blend() -> sdl2::sys::SDL_BlendMode {
 /// place that goes through `sdl2::sys`. The GLES2 backend answers via its `SupportsBlendMode`
 /// hook, so a refusal is a real "this renderer can't" rather than an error to propagate.
 fn set_raw_blend_mode(tex: &Texture, mode: sdl2::sys::SDL_BlendMode) -> bool {
-    // SAFETY: `tex.raw()` is a live texture owned by `self.textures`, and `SDL_SetTextureBlendMode`
+    // SAFETY: `tex.raw()` is a live texture owned by `self.tiles`, and `SDL_SetTextureBlendMode`
     // only reads the mode value.
     unsafe { sdl2::sys::SDL_SetTextureBlendMode(tex.raw(), mode) == 0 }
 }
@@ -114,10 +139,49 @@ static RECIP_ALPHA: [u32; 256] = {
 impl Compositor {
     pub fn new() -> Self {
         Self {
-            textures: HashMap::new(),
+            tiles: HashMap::new(),
+            pool: Vec::new(),
             staging: Vec::new(),
             premultiplied: None,
-            premul_tiles: HashSet::new(),
+        }
+    }
+
+    /// Installs `shape`'s texture as `tile`'s — recycled from the pool if one is waiting,
+    /// created otherwise — and releases whatever it replaces. Only the GL object is reused;
+    /// every caller overwrites the pixels with `update` before the tile is drawn.
+    fn acquire(&mut self, creator: &TextureCreator<WindowContext>, tile: TileId, shape: Shape) -> Result<()> {
+        let (w, h, format) = shape;
+        let texture = match self.pool.iter().position(|(s, _)| *s == shape) {
+            Some(i) => self.pool.swap_remove(i).1,
+            None => creator
+                .create_texture_static(format, w, h)
+                .map_err(|e| anyhow::anyhow!("create texture {tile:?} {w}x{h}: {e}"))?,
+        };
+        let replaced = self.tiles.insert(
+            tile,
+            Tile {
+                texture,
+                shape,
+                premultiplied: false,
+                mods: None,
+            },
+        );
+        if let Some(old) = replaced {
+            self.release(old);
+        }
+        Ok(())
+    }
+
+    /// Hands a tile's texture back for reuse, destroying it once the pool is full.
+    ///
+    /// SAFETY (both branches): `unsafe_textures` makes destruction the owner's job. The tile
+    /// has already left `tiles`, so this is its only owner and the pool never holds a texture
+    /// that is still reachable as a tile.
+    fn release(&mut self, tile: Tile) {
+        if self.pool.len() < TEXTURE_POOL_CAP {
+            self.pool.push((tile.shape, tile.texture));
+        } else {
+            unsafe { tile.texture.destroy() };
         }
     }
 
@@ -146,26 +210,38 @@ impl Compositor {
         resolved
     }
 
-    /// Uploads straight-RGBA8 bytes to a new GPU texture. No-op if already cached.
+    /// Uploads already-decoded pixels to a GPU texture. No-op if already cached.
+    ///
+    /// `format` is the caller's, not this module's — a straight-RGBA8 source and a 16-bit one
+    /// blend identically here, since a fade comes from the texture's alpha mod rather than from
+    /// its pixels. It is checked against `pixels` rather than trusted: a producer that changes
+    /// its encoding without its call site following would otherwise upload at the wrong pitch,
+    /// which shows up as a skewed texture and nothing else.
     pub fn upload_raw(
         &mut self,
         creator: &TextureCreator<WindowContext>,
         tile: TileId,
         w: u32,
         h: u32,
-        rgba_straight: &[u8],
+        format: PixelFormatEnum,
+        pixels: &[u8],
     ) -> Result<()> {
-        if self.textures.contains_key(&tile) {
+        if self.tiles.contains_key(&tile) {
             return Ok(());
         }
-        let mut tex = creator
-            .create_texture_static(PixelFormatEnum::RGBA32, w, h)
-            .map_err(|e| anyhow::anyhow!("create texture {tile:?} {w}x{h}: {e}"))?;
-        let pitch = w as usize * 4;
-        tex.update(None, rgba_straight, pitch)
-            .map_err(|e| anyhow::anyhow!("upload {tile:?}: {e}"))?;
-        tex.set_blend_mode(BlendMode::Blend);
-        self.textures.insert(tile, tex);
+        let pitch = w as usize * format.byte_size_per_pixel();
+        let expected = pitch * h as usize;
+        anyhow::ensure!(
+            pixels.len() == expected,
+            "upload {tile:?}: {} bytes for {w}x{h} {format:?} (want {expected})",
+            pixels.len(),
+        );
+        self.acquire(creator, tile, (w, h, format))?;
+        let tile = self.tiles.get_mut(&tile).expect("just acquired");
+        tile.texture
+            .update(None, pixels, pitch)
+            .map_err(|e| anyhow::anyhow!("upload raw: {e}"))?;
+        tile.texture.set_blend_mode(BlendMode::Blend);
         Ok(())
     }
 
@@ -186,20 +262,13 @@ impl Compositor {
     ) -> Result<()> {
         let (w, h) = (pm.width(), pm.height());
         let premultiplied = (!opaque).then(|| self.premultiplied_mode(creator)).flatten();
-        let recreate = match self.textures.get(&tile) {
-            Some(t) => {
-                let q = t.query();
-                q.width != w || q.height != h
-            }
-            None => true,
-        };
-        if recreate {
-            let tex = creator
-                .create_texture_static(PixelFormatEnum::RGBA32, w, h)
-                .map_err(|e| anyhow::anyhow!("create texture {tile:?} {w}x{h}: {e}"))?;
-            self.textures.insert(tile, tex);
+        let shape = (w, h, PixelFormatEnum::RGBA32);
+        if self.tiles.get(&tile).map(|t| t.shape) != Some(shape) {
+            self.acquire(creator, tile, shape)?;
         }
-        let tex = self.textures.get_mut(&tile).expect("just inserted");
+        let entry = self.tiles.get_mut(&tile).expect("acquired above or already fresh");
+        entry.premultiplied = premultiplied.is_some();
+        let tex = &mut entry.texture;
         let pitch = w as usize * 4;
         if opaque {
             tex.update(None, pm.data(), pitch)
@@ -235,43 +304,41 @@ impl Compositor {
                 .map_err(|e| anyhow::anyhow!("upload {tile:?}: {e}"))?;
             tex.set_blend_mode(BlendMode::Blend);
         }
-        if premultiplied.is_some() {
-            self.premul_tiles.insert(tile);
-        } else {
-            self.premul_tiles.remove(&tile);
-        }
         Ok(())
     }
 
     /// Destroys all cached GPU textures (call on stream start to free VRAM).
     pub fn clear_all(&mut self) {
         // SAFETY: `unsafe_textures` detaches each `Texture` from its creator's
-        // lifetime, making the owner responsible for destruction. We drain the
-        // map so nothing can reach these textures again, then destroy each one
-        // exactly once. Same invariant as `drop_tile`.
-        for (_, tex) in self.textures.drain() {
+        // lifetime, making the owner responsible for destruction. We drain both
+        // collections so nothing can reach these textures again, then destroy each
+        // one exactly once. Same invariant as `release`.
+        let tiles = self.tiles.drain().map(|(_, t)| t.texture);
+        for tex in tiles.chain(self.pool.drain(..).map(|(_, t)| t)) {
             unsafe { tex.destroy() };
         }
-        self.premul_tiles.clear();
     }
 
-    /// Drops tile's GPU texture. Needed for windowed card tiles to free VRAM
-    /// when scrolled out of view (SDL object must be explicitly destroyed).
+    /// Releases tile's GPU texture. Needed for windowed card tiles when they scroll out of
+    /// view; the texture goes to the pool for the row scrolling in to reuse, and is destroyed
+    /// outright once that is full.
     pub fn drop_tile(&mut self, tile: TileId) {
-        if let Some(tex) = self.textures.remove(&tile) {
-            // SAFETY: see `clear_all`.
-            unsafe { tex.destroy() };
+        if let Some(tile) = self.tiles.remove(&tile) {
+            self.release(tile);
         }
-        self.premul_tiles.remove(&tile);
     }
 
     /// The tile's texture with this frame's fade `alpha` applied, or `None` if it hasn't been
     /// uploaded yet (e.g. art still loading) and the caller should skip the draw.
-    fn faded_tile(&mut self, tile: &TileId, alpha: u8) -> Option<&Texture> {
-        let premultiplied = self.premul_tiles.contains(tile);
-        let tex = self.textures.get_mut(tile)?;
-        set_tile_alpha(tex, alpha, premultiplied);
-        Some(tex)
+    fn faded_tile(&mut self, id: &TileId, alpha: u8) -> Option<&Texture> {
+        let tile = self.tiles.get_mut(id)?;
+        let wanted = tile_alpha_mod(alpha, tile.premultiplied);
+        if tile.mods != Some(wanted) {
+            tile.mods = Some(wanted);
+            tile.texture.set_alpha_mod(wanted.0);
+            tile.texture.set_color_mod(wanted.1, wanted.1, wanted.1);
+        }
+        Some(&tile.texture)
     }
 
     /// Executes one frame's draw list. The caller has already cleared the canvas

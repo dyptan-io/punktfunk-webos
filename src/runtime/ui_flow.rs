@@ -45,6 +45,7 @@ pub(super) fn run_ui_flow(
             tile::spinner(idx),
             frame.width,
             frame.height,
+            sdl2::pixels::PixelFormatEnum::RGBA32,
             &frame.pixels,
         )?;
     }
@@ -361,11 +362,25 @@ pub(super) fn run_ui_flow(
         for id in updated {
             if let Some(idx) = tile::spinner_index(id) {
                 if let Some(frame) = crate::assets::spinner_frame(idx) {
-                    compositor.upload_raw(texture_creator, id, frame.width, frame.height, &frame.pixels)?;
+                    compositor.upload_raw(
+                        texture_creator,
+                        id,
+                        frame.width,
+                        frame.height,
+                        sdl2::pixels::PixelFormatEnum::RGBA32,
+                        &frame.pixels,
+                    )?;
                 }
             } else if id == tile::HERO {
                 if let Some(hero) = app.hero.uploaded_image() {
-                    compositor.upload_raw(texture_creator, id, hero.width, hero.height, &hero.pixels)?;
+                    compositor.upload_raw(
+                        texture_creator,
+                        id,
+                        hero.width,
+                        hero.height,
+                        sdl2::pixels::PixelFormatEnum::RGB565,
+                        &hero.pixels,
+                    )?;
                 }
             } else if let Some(pm) = tiles.get(id) {
                 compositor.upload(texture_creator, id, pm, id == tile::SIDEBAR)?;

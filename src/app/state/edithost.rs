@@ -65,6 +65,8 @@ impl App {
                 pinned: old.pinned.clone(),
             },
         );
+        // The address is the cache key, so the old one's art is now orphaned.
+        crate::services::art::reconcile_host_caches(&self.known_hosts);
         self.persist();
         self.rebuild_entries();
 

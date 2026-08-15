@@ -598,8 +598,8 @@ impl App {
             return;
         };
         let (host, port) = (h.host.clone(), h.port);
-        crate::services::art::clear_host_cache(&host, port);
         self.known_hosts.retain(|k| !(k.host == host && k.port == port));
+        crate::services::art::reconcile_host_caches(&self.known_hosts);
         self.rebuild_entries();
         if self.selected_host.as_ref() == Some(&(host, port)) {
             self.clear_selected_host();

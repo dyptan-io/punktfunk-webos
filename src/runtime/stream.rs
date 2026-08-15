@@ -53,6 +53,9 @@ pub(super) fn run_inner() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("create window: {e}"))?;
     let mut canvas = window
         .into_canvas()
+        // Explicit, so a GLES2 renderer that won't come up is a hard error rather than a silent
+        // fall back to SDL's software path — ~25-45ms/frame on this SoC.
+        .accelerated()
         .build()
         .map_err(|e| anyhow::anyhow!("create canvas: {e}"))?;
     let texture_creator = canvas.texture_creator();
