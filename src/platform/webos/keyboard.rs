@@ -164,7 +164,7 @@ pub fn vk_from_evdev(code: u16) -> Option<u32> {
         25 => 0x50,  // KEY_P
         26 => 0xDB,  // KEY_LEFTBRACE
         27 => 0xDD,  // KEY_RIGHTBRACE
-        28 => 0x0D,  // KEY_ENTER
+        28 | 96 => 0x0D, // KEY_ENTER / KEY_KPENTER
         29 => 0xA2,  // KEY_LEFTCTRL
         30 => 0x41,  // KEY_A
         31 => 0x53,  // KEY_S
@@ -223,7 +223,6 @@ pub fn vk_from_evdev(code: u16) -> Option<u32> {
         86 => 0xE2,  // KEY_102ND
         87 => 0x7A,  // KEY_F11
         88 => 0x7B,  // KEY_F12
-        96 => 0x0D,  // KEY_KPENTER
         97 => 0xA3,  // KEY_RIGHTCTRL
         98 => 0x6F,  // KEY_KPSLASH
         99 => 0x2C,  // KEY_SYSRQ

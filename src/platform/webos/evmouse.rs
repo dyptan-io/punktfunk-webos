@@ -25,7 +25,7 @@
 //! TV-wide" — the kernel releases the grab the moment our fd closes (including on panic), and the
 //! surface-manager's own fd stays open throughout, just starved of events while ours holds it.
 //! The Magic Remote never matches the mouse/keyboard filter, so it stays usable via SDL —
-//! which is what [`HidMouse::owns_sdl_motion`] is for.
+//! which is what [`HidMouse::owns_sdl_keys`] is for (drop HID keyboard echoes, keep remote keys).
 //!
 //! **One flag, two effects.** "Grabbed" and "forwarded to the host" are the same condition by
 //! construction, not two atomics a caller has to keep in sync: [`HidMouse::set_active`]`(false)`
@@ -123,7 +123,6 @@ pub struct HidMouse {
 struct Shared {
     stop: AtomicBool,
     has_device: AtomicBool,
-    has_keyboard: AtomicBool,
     /// Desired grab/forward state — see [`HidMouse::set_active`]. Read by [`reader_loop`] (to
     /// drive `EVIOCGRAB`) and by the reader thread's gated `sink` wrapper; the per-device
     /// *applied* grab state lives on [`Device`], not here.
@@ -185,7 +184,6 @@ impl HidMouse {
         let shared = Arc::new(Shared {
             stop: AtomicBool::new(false),
             has_device: AtomicBool::new(false),
-            has_keyboard: AtomicBool::new(false),
             grab: AtomicBool::new(active),
             grab_mouse: AtomicBool::new(grab_mouse),
             activity: Activity::new(),
@@ -225,23 +223,6 @@ impl HidMouse {
         self.shared.has_device.load(Ordering::Relaxed)
     }
 
-    /// A USB/Bluetooth keyboard node is open. Distinct from [`Self::has_device`]: a mouse-only
-    /// dongle must not make the stream drop Magic Remote keys.
-    pub fn has_keyboard(&self) -> bool {
-        self.shared.has_keyboard.load(Ordering::Relaxed)
-    }
-
-    /// True while the mouse moved within [`IN_USE_WINDOW`] — caller should drop SDL's echo of it.
-    pub fn owns_sdl_motion(&self) -> bool {
-        self.shared.activity.recent(&self.shared.activity.motion_ms)
-    }
-
-    /// Same question for SDL's buttons/wheel; also true during motion, so a click mid-drag is
-    /// covered even if its echo arrives before this reader's own read of it.
-    pub fn owns_sdl_clicks(&self) -> bool {
-        self.shared.activity.recent(&self.shared.activity.discrete_ms) || self.owns_sdl_motion()
-    }
-
     /// True while a HID keyboard key was seen within [`IN_USE_WINDOW`] — caller should drop
     /// SDL's echo of that keyboard without dropping the Magic Remote.
     pub fn owns_sdl_keys(&self) -> bool {
@@ -277,7 +258,7 @@ struct Device {
     /// Which `want` value the last failed ioctl was for, so a device stuck failing every retry
     /// (device gone, held elsewhere) warns once per state change instead of once per poll cycle.
     grab_warned_for: Option<bool>,
-    /// Relative pointer (REL_X/REL_Y). Independent of [`Self::keyboard`]: Logitech combo
+    /// Relative pointer (`REL_X`/`REL_Y`). Independent of [`Self::keyboard`]: Logitech combo
     /// receivers often expose both on separate nodes, occasionally on one.
     mouse: bool,
     /// Alphanumeric/modifier keys. Magic Remote nodes are excluded by [`open_hid`].
@@ -397,7 +378,7 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
     Probe::Hid(dev)
 }
 
-/// LG's virtual remotes advertise a full QWERTY keymap, so a "has KEY_A" filter would steal
+/// LG's virtual remotes advertise a full QWERTY keymap, so a "has `KEY_A`" filter would steal
 /// the Magic Remote / RCU from the compositor. Match names from `/proc/bus/input/devices`.
 fn is_tv_builtin(name: &str) -> bool {
     name.starts_with("LGE") || name == "CHECK INPUT" || name == "IoT keypad" || name.starts_with("Bluetooth-audio")
@@ -545,9 +526,6 @@ fn store_presence(devices: &[Device], shared: &Shared) {
     shared
         .has_device
         .store(devices.iter().any(|d| d.mouse), Ordering::Relaxed);
-    shared
-        .has_keyboard
-        .store(devices.iter().any(|d| d.keyboard), Ordering::Relaxed);
 }
 
 fn pollfds(devices: &[Device]) -> Vec<libc::pollfd> {
