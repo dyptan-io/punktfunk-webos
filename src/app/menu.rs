@@ -52,12 +52,12 @@ pub const ROW_BITRATE: usize = 2;
 /// choice (webOS 3.5-4.x, see `caps::smp_selectable`), and above Codec deliberately: the
 /// pick is what decides whether HEVC and HDR exist as options at all.
 pub const ROW_VIDEO_BACKEND: usize = 3;
-/// Hidden where the backend has no HEVC — there is only one decodable codec then (see `row_shown`).
+/// Locked where the backend has no HEVC — there is only one decodable codec then (see `row_lock`).
 pub const ROW_CODEC: usize = 4;
-/// Directly below Codec: HDR applies only to HEVC, so the row is hidden on an explicit
-/// H.264 pick (see `row_shown`) — adjacency keeps that dependency discoverable.
+/// Directly below Codec: HDR applies only to HEVC, so the row locks on an explicit
+/// H.264 pick (see `row_lock`) — adjacency keeps that dependency discoverable.
 pub const ROW_HDR: usize = 5;
-/// Hidden where the backend is capped at stereo — the only channel count then (see `row_shown`).
+/// Locked where the backend is capped at stereo — the only channel count then (see `row_lock`).
 pub const ROW_AUDIO: usize = 6;
 /// Which controller the host presents to the game — see `store::GamepadType`. Last of the
 /// real settings: it's the only input-side one, and picking `DualSense` is what turns on
@@ -102,25 +102,18 @@ pub const DIAG_ROW_SHOW_LOGS: usize = 2;
 pub const DIAG_ROW_SEND_LOGS: usize = 3;
 pub const DIAGNOSTICS_ROW_COUNT: usize = 4;
 
-/// Whether one focusable row is offered, given the settings and what this TV's video backend can
-/// do.
+/// Whether one focusable row is offered at all.
 ///
-/// **The sole visibility predicate — one arm per row, every condition for that row inside it.**
-/// Everything else (row list, count, display↔logical mapping, focus clamping) derives from
-/// [`settings_visible_logical_rows`]; a second opinion anywhere is a row you can focus but not see.
-pub(crate) fn row_shown(row: usize, settings: &Settings) -> bool {
-    let caps = video_caps();
+/// **The sole visibility predicate.** A row is hidden only when nothing the user can reach from
+/// inside the app could ever make it usable — the environment decides it (the OS release for the
+/// backend row, root for Experimental's Game mode). Everything a *setting* constrains stays on
+/// screen and greys out instead, so the dependency is visible rather than inferred from a
+/// vanishing row: see [`row_lock`].
+///
+/// Consequence worth keeping: no user action changes this, so the display↔logical mapping is
+/// fixed for the run and no site has to re-anchor focus after a mutation.
+pub(crate) fn row_shown(row: usize, _settings: &Settings) -> bool {
     match row {
-        // HDR only applies to HEVC: the host never resolves it for an explicit H.264 session, so
-        // the toggle would be a no-op (Automatic keeps the row — HEVC may still be resolved). A
-        // backend without HDR has nothing to toggle either way. Application is gated on the
-        // *negotiated* codec too — see `session::connect`.
-        ROW_HDR => settings.codec != CodecPref::H264 && caps.hdr,
-        // A dropdown with one entry is noise — without HEVC there is a single decodable codec
-        // (see `VideoCaps::codec_prefs`), so there is nothing to pick.
-        ROW_CODEC => caps.codec_prefs().len() > 1,
-        // Same rule: a backend capped at stereo leaves Stereo as the only entry.
-        ROW_AUDIO => audio_option_count() > 1,
         // Only a choice where NDL is the narrow v1 generation — everywhere else NDL v2 is
         // strictly better and the row would be a trap.
         ROW_VIDEO_BACKEND => crate::core::caps::smp_selectable(),
@@ -128,9 +121,43 @@ pub(crate) fn row_shown(row: usize, settings: &Settings) -> bool {
     }
 }
 
+/// Why a row is shown but not editable, or `None` while it is. Distinct from [`row_shown`]:
+/// a lock can lift without a restart (switching codec away from H.264, plugging in a pad),
+/// where an unshown row cannot become shown at all this run. The caption text is
+/// [`app::view::settings`]'s business (it needs the OS release to phrase it); this is the
+/// predicate both the renderer and the input path read, so a greyed row and a rejected
+/// keypress can't disagree.
+pub(crate) enum RowLock {
+    /// HDR under an explicit H.264 pick: the host never resolves HDR for such a session, so the
+    /// toggle would be a no-op. `Automatic` leaves it editable — HEVC may still be resolved.
+    /// Application is gated on the *negotiated* codec too, see `session::connect`.
+    HdrNeedsHevc,
+    /// The active backend has no HDR at all (NDL v1) — nothing to toggle either way.
+    NoHdr,
+    /// One decodable codec, so `codec_prefs` collapses to a single entry.
+    OneCodec,
+    /// The backend is capped at stereo, leaving one channel count.
+    StereoOnly,
+    /// Nothing is plugged into the TV, so there is no controller to describe to the host.
+    NoGamepad,
+}
+
+/// `detected` is the attached pad per `gamepad::detect_type` — `None` with nothing attached
+/// (or an unrecognized pad), which is what locks the Controller row.
+pub(crate) fn row_lock(row: usize, settings: &Settings, detected: Option<GamepadType>) -> Option<RowLock> {
+    let caps = video_caps();
+    match row {
+        ROW_HDR if !caps.hdr => Some(RowLock::NoHdr),
+        ROW_HDR if settings.codec == CodecPref::H264 => Some(RowLock::HdrNeedsHevc),
+        ROW_CODEC if caps.codec_prefs().len() < 2 => Some(RowLock::OneCodec),
+        ROW_AUDIO if audio_option_count() < 2 => Some(RowLock::StereoOnly),
+        ROW_GAMEPAD if detected.is_none() => Some(RowLock::NoGamepad),
+        _ => None,
+    }
+}
+
 /// Logical `ROW_*` indices currently visible, in display order — the single source of truth
-/// every visibility-aware helper derives from. Hidden rows are dropped rather than shown
-/// disabled, so the list renumbers itself and no caller carries a fixed index.
+/// every visibility-aware helper derives from.
 pub fn settings_visible_logical_rows(settings: &Settings) -> impl Iterator<Item = usize> + '_ {
     (0..SETTINGS_ROW_COUNT).filter(|&row| row_shown(row, settings))
 }
@@ -339,7 +366,18 @@ pub fn dropdown_current_index(settings: &Settings, row_index: usize) -> usize {
     }
 }
 
-pub fn apply_dropdown_choice(settings: &mut Settings, row_index: usize, choice_index: usize) {
+/// Applies a dropdown pick. Refuses on a locked row (see [`row_lock`]) rather than trusting
+/// every caller to have checked first — the same guard [`adjust_setting`] applies, so there is
+/// one place a locked row's value is actually protected, not one per call site.
+pub fn apply_dropdown_choice(
+    settings: &mut Settings,
+    row_index: usize,
+    choice_index: usize,
+    detected: Option<GamepadType>,
+) {
+    if row_lock(row_index, settings, detected).is_some() {
+        return;
+    }
     match row_index {
         ROW_RESOLUTION => {
             if let Some((w, h, _)) = RESOLUTIONS.get(choice_index) {
@@ -385,7 +423,13 @@ pub fn apply_dropdown_choice(settings: &mut Settings, row_index: usize, choice_i
 ///
 /// Every dropdown row shares one arm — the option list is the authority on how many entries
 /// there are (see [`dropdown_option_count`]), so a new dropdown row needs no code here.
-pub fn adjust_setting(settings: &mut Settings, row_index: usize, forward: bool) -> bool {
+///
+/// A locked row (see [`row_lock`]) refuses every adjustment: the same predicate that greys it
+/// is what rejects the keypress, so nothing can edit a value the UI shows as fixed.
+pub fn adjust_setting(settings: &mut Settings, row_index: usize, forward: bool, detected: Option<GamepadType>) -> bool {
+    if row_lock(row_index, settings, detected).is_some() {
+        return false;
+    }
     match row_index {
         ROW_BITRATE => {
             if settings.bitrate_kbps == BITRATE_AUTOMATIC {
@@ -413,7 +457,7 @@ pub fn adjust_setting(settings: &mut Settings, row_index: usize, forward: bool) 
                 return false;
             }
             let next = cycle_index(dropdown_current_index(settings, row), len, forward);
-            apply_dropdown_choice(settings, row, next);
+            apply_dropdown_choice(settings, row, next, detected);
             true
         }
     }

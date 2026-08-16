@@ -48,6 +48,7 @@ pub fn install_style() {
             accent_bright: Color::RGB(0xa7, 0x9f, 0xf8),
             text: Color::RGB(0xf5, 0xf5, 0xf5),
             muted: Color::RGB(0x9b, 0x94, 0xb8),
+            disabled: Color::RGB(0x5c, 0x57, 0x72),
             warning: Color::RGB(0xff, 0xc1, 0x07),
             // A desaturated mint rather than a signal green — it sits next to brand purple
             // on every row, and a pure green fights it.

@@ -27,12 +27,9 @@ impl App {
                     // Not persisted here — `MenuEvent::Back` below (leaving the
                     // whole Settings screen) saves once for every change made
                     // during this visit, not per-row.
-                    menu::apply_dropdown_choice(&mut self.settings, logical, choice);
+                    menu::apply_dropdown_choice(&mut self.settings, logical, choice, self.detected_gamepad_type);
                     self.dropdown_fade.close((row, dd.focused));
                     self.dropdown = None;
-                    // A codec change hides/shows the HDR row above; keep focus on the
-                    // row just edited rather than letting the shift slide it away.
-                    self.refocus_logical(logical);
                 }
                 MenuEvent::Back => {
                     self.dropdown_fade.close((row, dd.focused));
@@ -82,12 +79,16 @@ impl App {
                     self.persist();
                     self.open_diagnostics();
                 }
+                // A locked row (see `menu::row_lock`) never opens its dropdown — there is
+                // nothing to pick, which is exactly what the greyed row already says.
                 logical @ (menu::ROW_RESOLUTION
                 | menu::ROW_FRAMERATE
                 | menu::ROW_VIDEO_BACKEND
                 | menu::ROW_CODEC
                 | menu::ROW_AUDIO
-                | menu::ROW_GAMEPAD) => {
+                | menu::ROW_GAMEPAD)
+                    if menu::row_lock(logical, &self.settings, self.detected_gamepad_type).is_none() =>
+                {
                     let focused = menu::dropdown_current_index(&self.settings, logical);
                     // `row` is the display position (what the overlay is drawn against);
                     // the logical row is recovered on lookup via `settings_logical_row`.
@@ -115,30 +116,20 @@ impl App {
 
     /// Adjusts row in memory; persisted on `Back` (not per-keystroke). Starts `switch_anim` for toggle slides.
     /// `display_row` is the on-screen position; resolved to a logical `ROW_*` first.
+    ///
+    /// No focus re-anchoring afterwards: which rows are shown depends on the environment only
+    /// (see `menu::row_shown`), so no adjustment can renumber the list under the cursor.
     pub(crate) fn apply_setting_adjust(&mut self, display_row: usize, forward: bool) {
         let row = menu::settings_logical_row(&self.settings, display_row);
         let toggled_from = match row {
             menu::ROW_HDR => Some(self.settings.hdr_enabled),
             _ => None,
         };
-        if menu::adjust_setting(&mut self.settings, row, forward) {
+        if menu::adjust_setting(&mut self.settings, row, forward, self.detected_gamepad_type) {
             if let Some(from) = toggled_from {
                 // Scope the slide to the display row being rendered (see `toggle_frac`).
                 self.switch_anim = Some((Instant::now(), from, display_row));
             }
         }
-        // Cycling the codec can hide/show the HDR row above; keep focus on `row`.
-        self.refocus_logical(row);
-    }
-
-    /// After a mutation that may have shown or hidden rows (a codec change toggles the
-    /// HDR row's visibility), re-derive the display index of `logical` so focus stays on
-    /// the same setting instead of sliding to whatever now occupies its old slot.
-    fn refocus_logical(&mut self, logical: usize) {
-        let position = menu::settings_visible_logical_rows(&self.settings).position(|r| r == logical);
-        self.settings_focused = position.unwrap_or_else(|| {
-            let count = menu::settings_row_count(&self.settings);
-            self.settings_focused.min(count.saturating_sub(1))
-        });
     }
 }

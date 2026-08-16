@@ -35,6 +35,9 @@ pub struct Theme {
     pub text: Color,
     /// Secondary text, unfocused icons.
     pub muted: Color,
+    /// A control that exists but cannot be changed here — dimmer than [`Self::muted`], which
+    /// is merely "not focused". Reads as inert next to a focused row's white label.
+    pub disabled: Color,
     pub warning: Color,
     /// A muted caution caption — dimmer than [`Self::warning`], so it reads as a hint
     /// rather than an alert.
@@ -58,6 +61,7 @@ impl Theme {
         accent_bright: Color::RGB(0x9f, 0x9f, 0xf8),
         text: Color::RGB(0xf5, 0xf5, 0xf5),
         muted: Color::RGB(0x94, 0x94, 0x9b),
+        disabled: Color::RGB(0x5a, 0x5a, 0x60),
         warning: Color::RGB(0xff, 0xc1, 0x07),
         caution: Color::RGB(0xd1, 0x84, 0x4a),
         error: Color::RGB(0xff, 0x6b, 0x6b),

@@ -2,7 +2,7 @@
 //! Logic lives in `app::state::settings`.
 use crate::app::menu;
 use crate::core::VERSION;
-use crate::services::store::{CodecPref, GamepadType, Settings, VideoBackend};
+use crate::services::store::{GamepadType, Settings, VideoBackend};
 use crate::ui;
 use crate::ui::render::Rect;
 use crate::ui::widgets::FocusRow;
@@ -45,7 +45,37 @@ pub(crate) const EDGE_MARGIN: u32 = 120;
 /// shallower peek shows only the row's internal padding, i.e. nothing to dissolve.
 pub(crate) const PEEK: u32 = 44;
 
-/// One row per `menu::ROW_*`, in order, filtered by `menu::row_shown`.
+/// The caption a locked row carries: what fixed its value, and where to go to change it.
+///
+/// Lives on the row that is *immutable*, not on the one that caused it — the greyed control is
+/// what the user is looking at when they want the reason.
+///
+/// `webos_major` is the OS major (`None` where it couldn't be read); named only where the OS is
+/// the whole story, i.e. where there's no backend to switch to either.
+fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
+    // Where the Video backend row exists, the limit is the *pick*, not the TV, and SMP lifts it —
+    // so the caption points at the fix instead of at a version number the user can't change.
+    let source = || {
+        if crate::core::caps::smp_selectable() {
+            "the NDL backend — try SMP".to_string()
+        } else {
+            match webos_major {
+                Some(major) => format!("webOS {major}"),
+                None => "this TV".to_string(),
+            }
+        }
+    };
+    match lock {
+        menu::RowLock::HdrNeedsHevc => "HDR is not supported by H.264".to_string(),
+        menu::RowLock::NoHdr => format!("HDR is not supported by {}", source()),
+        menu::RowLock::OneCodec => format!("H.264 is the only codec supported by {}", source()),
+        menu::RowLock::StereoOnly => format!("Stereo is the only audio supported by {}", source()),
+        menu::RowLock::NoGamepad => "Connect a controller to your TV".to_string(),
+    }
+}
+
+/// One row per `menu::ROW_*`, in order, filtered by `menu::row_shown` and greyed by
+/// `menu::row_lock` (whose reason becomes the row's caption, see [`lock_caption`]).
 ///
 /// `detected_gamepad_type` is the attached pad per `gamepad::detect_type`, `None` with nothing
 /// attached or an unrecognized pad — it only changes what "Automatic" reads as.
@@ -53,8 +83,7 @@ pub(crate) const PEEK: u32 = 44;
 /// `dualsense_limited`: the *effective* controller type (the explicit pick, or on `Auto`
 /// whatever's actually plugged in) is a `DualSense`/`Edge` and the TV's kernel isn't running
 /// `hid-playstation` — see `platform::webos::dualsense::hid_playstation_bound`. Computed by
-/// the caller, like `webos_major` (the OS major named in the Video backend row's caption,
-/// `None` where it couldn't be read), so this module stays platform-neutral.
+/// the caller, like `webos_major`, so this module stays platform-neutral.
 pub(crate) fn rows(
     settings: &Settings,
     detected_gamepad_type: Option<GamepadType>,
@@ -99,21 +128,11 @@ pub(crate) fn rows(
                 VideoBackend::Ndl => "NDL",
                 VideoBackend::Smp => "SMP",
             },
-        )
-        .with_subtext_opt((settings.video_backend == VideoBackend::Ndl).then(|| {
-            ui::widgets::RowSubtext::caution(match webos_major {
-                Some(major) => format!("Limitted HDR support on webOS {major}"),
-                None => String::new(),
-            })
-        })),
+        ),
         FocusRow::dropdown(
             crate::app::view::icons::ICON_MOVIE,
             "Codec",
             menu::codec_label(settings.codec),
-        )
-        .with_subtext_opt(
-            (settings.codec == CodecPref::H264)
-                .then(|| ui::widgets::RowSubtext::hint("HDR is not supported with this codec")),
         ),
         FocusRow::toggle(crate::app::view::icons::ICON_SUN, "HDR", settings.hdr_enabled),
         FocusRow::dropdown(
@@ -149,17 +168,26 @@ pub(crate) fn rows(
         menu::SETTINGS_ROW_COUNT,
         "one row per logical index, in order"
     );
-    // Driven by the one visibility predicate rather than repeating its conditions, so a row hidden
-    // there can never linger here. Index == logical row, guaranteed by the assert above.
+    // Driven by the two predicates rather than repeating their conditions, so a row hidden or
+    // locked there can never disagree here. Index == logical row, guaranteed by the assert above.
     rows.into_iter()
         .enumerate()
-        .filter(|(row, _)| menu::row_shown(*row, settings))
-        .map(|(_, row)| row)
+        .filter(|(logical, _)| menu::row_shown(*logical, settings))
+        .map(
+            |(logical, row)| match menu::row_lock(logical, settings, detected_gamepad_type) {
+                // The lock's caption replaces whatever contextual one the row carried: a row the
+                // user can't change has nothing more useful to say than why.
+                Some(lock) => row
+                    .locked(true)
+                    .with_subtext(ui::widgets::RowSubtext::hint(lock_caption(lock, webos_major))),
+                None => row,
+            },
+        )
         .collect()
 }
 
-/// How many rows are *fully* visible. Capped at the live row count so a hidden row (HDR on
-/// an explicit H.264 pick) leaves no empty slot.
+/// How many rows are *fully* visible. Capped at the live row count so a hidden row (the Video
+/// backend row off webOS 3.5-4.x) leaves no empty slot.
 ///
 /// When the list overflows, one row's worth of budget is spent on [`PEEK`] instead —
 /// the partially-visible sliver the bottom fade dissolves. Computed without the peek first,

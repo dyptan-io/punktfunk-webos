@@ -32,6 +32,13 @@ pub struct FocusRow {
     /// Destructive action (Forget host) — drawn in `theme().error` rather than the
     /// normal muted/white pair, so it reads as dangerous before it's confirmed.
     pub danger: bool,
+    /// The row is shown but its value cannot be changed here — dictated by another setting or
+    /// by the hardware (e.g. HDR under an H.264 codec pick). Only the *control* greys out
+    /// (`theme().disabled`); icon and label keep their normal focus colors, so the row still
+    /// reads as a live list entry whose value happens to be fixed. Still focusable, so its
+    /// [`subtext`](Self::subtext) — where the reason belongs — can be read. Rejecting the
+    /// input is the caller's business, not this widget's.
+    pub locked: bool,
     /// `Some` gives this row its own ⋯ actions button, drawn and focused exactly like
     /// a sidebar host row's ([`Canvas::sidebar_menu_button`]) — the bool is whether the
     /// *button* has focus rather than the row body. A row with one has a second thing
@@ -72,6 +79,19 @@ impl RowSubtext {
     }
 }
 
+/// The one rule every row control's color follows: a locked row is `theme().disabled`
+/// regardless of `active` (focus, or an open dropdown) — locked overrides everything else,
+/// so every call site expresses that as data instead of repeating the same `if` three times.
+fn locked_fg(locked: bool, active: bool, active_color: Color, inactive_color: Color) -> Color {
+    if locked {
+        theme().disabled
+    } else if active {
+        active_color
+    } else {
+        inactive_color
+    }
+}
+
 impl FocusRow {
     /// A plain [`RowKind::Action`] row — the common case for list-modal screens.
     pub fn action(icon: &'static str, label: impl Into<String>) -> Self {
@@ -82,6 +102,7 @@ impl FocusRow {
             kind: RowKind::Action,
             fraction: 0.0,
             danger: false,
+            locked: false,
             menu: None,
             subtext: None,
         }
@@ -125,6 +146,12 @@ impl FocusRow {
     /// Marks this row destructive (see [`FocusRow::danger`]).
     pub fn danger(mut self) -> Self {
         self.danger = true;
+        self
+    }
+
+    /// Greys this row out and marks its value fixed (see [`FocusRow::locked`]).
+    pub fn locked(mut self, locked: bool) -> Self {
+        self.locked = locked;
         self
     }
 
@@ -281,8 +308,8 @@ pub fn render_focus_rows_tile(
 
 impl Canvas<'_, '_> {
     /// Draws one focus row (icon + label + control per `RowKind`) at normal size.
-    /// `dropdown_open` is independent of `focused` — pill brightens only when the
-    /// dropdown overlay itself is expanded, not on row focus alone.
+    /// `dropdown_open` is independent of `focused` — a dropdown row's pill brightens while
+    /// its overlay is expanded too, not only on row focus.
     pub fn focus_row(
         &mut self,
         row: &FocusRow,
@@ -332,7 +359,8 @@ impl Canvas<'_, '_> {
         match row.kind {
             RowKind::Dropdown => {
                 let right_edge = row_rect.right() - control_pad;
-                self.dropdown_value(row_rect, right_edge, &row.value, dropdown_open)?;
+                let value_fg = locked_fg(row.locked, focused || dropdown_open, theme().text, theme().muted);
+                self.dropdown_value(row_rect, right_edge, &row.value, value_fg)?;
             }
             RowKind::Slider => {
                 let value_w = self.fonts.raster.measure(value_font, &row.value).0;
@@ -342,7 +370,7 @@ impl Canvas<'_, '_> {
                     &row.value,
                     slot_right - value_w as i32,
                     value_y,
-                    if focused { theme().text } else { theme().muted },
+                    locked_fg(row.locked, focused, theme().text, theme().muted),
                 )?;
                 let track_w = 220u32.min(row_rect.width() / 3);
                 let track = Rect::new(
@@ -351,7 +379,8 @@ impl Canvas<'_, '_> {
                     track_w,
                     10,
                 );
-                self.painter.slider_with_thumb(track, row.fraction, focused);
+                self.painter
+                    .slider_with_thumb(track, row.fraction, focused, !row.locked);
             }
             RowKind::Toggle => {
                 let switch = Rect::new(
@@ -360,7 +389,7 @@ impl Canvas<'_, '_> {
                     64,
                     34,
                 );
-                self.painter.switch(switch, switch_frac);
+                self.painter.switch(switch, switch_frac, !row.locked);
             }
             // Action rows have no control; `value` is a muted hint only, never interactive.
             RowKind::Action => {
@@ -384,11 +413,10 @@ impl Canvas<'_, '_> {
     }
 
     /// The dropdown value + chevron, right-aligned to `right_edge` and vertically
-    /// centered on `row_rect` — no box, the row's own focus state already
-    /// provides one. Both tint toward accent when the dropdown overlay itself is
-    /// expanded.
-    pub fn dropdown_value(&mut self, row_rect: Rect, right_edge: i32, label: &str, open: bool) -> Result<()> {
-        let fg = if open { theme().accent_bright } else { theme().text };
+    /// centered on `row_rect` — no box, the row's own focus state already provides one.
+    /// Text and chevron share `fg`, so the caller decides what the pill's state means
+    /// (brighter while focused or the overlay is expanded, grey while the row is locked).
+    pub fn dropdown_value(&mut self, row_rect: Rect, right_edge: i32, label: &str, fg: Color) -> Result<()> {
         let chevron_size = 20u32;
         let chevron_rect = Rect::new(
             right_edge - chevron_size as i32,
@@ -412,20 +440,30 @@ impl Canvas<'_, '_> {
 }
 
 impl Painter {
-    /// Slider track with round-thumbed, shadowed knob.
-    pub fn slider_with_thumb(&mut self, rect: Rect, fraction: f32, focused: bool) {
+    /// Slider track with round-thumbed, shadowed knob. `enabled` false greys the fill and
+    /// knob — the value still reads, but not as something this screen will change.
+    pub fn slider_with_thumb(&mut self, rect: Rect, fraction: f32, focused: bool, enabled: bool) {
         let track_h = rect.height();
         self.fill_rounded_rect(rect, track_h as i32 / 2, Color::RGBA(0xff, 0xff, 0xff, 0x22));
         let filled_w = (rect.width() as f32 * fraction.clamp(0.0, 1.0)) as u32;
         if filled_w > 0 {
             let filled = Rect::new(rect.x(), rect.y(), filled_w.max(track_h), track_h);
-            self.fill_rounded_rect(filled, track_h as i32 / 2, theme().accent);
+            self.fill_rounded_rect(
+                filled,
+                track_h as i32 / 2,
+                if enabled { theme().accent } else { theme().disabled },
+            );
         }
         let thumb_r = 14.0;
         let cx = rect.x() as f32 + filled_w as f32;
         let cy = rect.y() as f32 + rect.height() as f32 / 2.0;
         self.fill_circle(cx + 2.0, cy + 3.0, thumb_r, Color::RGBA(0x00, 0x00, 0x00, 0x50));
-        self.fill_circle(cx, cy, thumb_r, if focused { theme().text } else { theme().muted });
+        self.fill_circle(
+            cx,
+            cy,
+            thumb_r,
+            locked_fg(!enabled, focused, theme().text, theme().muted),
+        );
     }
 }
 
@@ -445,18 +483,20 @@ pub const SWITCH_OFF_TRACK: Color = Color::RGBA(0xff, 0xff, 0xff, 0x22);
 
 impl Painter {
     /// Modern sliding pill switch. `frac` (0.0=off, 1.0=on) lerps position & color
-    /// for smooth animation; pass static 0.0/1.0 for immediate toggle.
-    pub fn switch(&mut self, rect: Rect, frac: f32) {
+    /// for smooth animation; pass static 0.0/1.0 for immediate toggle. `enabled` false
+    /// greys the "on" track, so a locked toggle still shows its state without inviting a press.
+    pub fn switch(&mut self, rect: Rect, frac: f32, enabled: bool) {
         let frac = frac.clamp(0.0, 1.0);
         let radius = rect.height() as i32 / 2;
-        self.fill_rounded_rect(rect, radius, lerp_color(SWITCH_OFF_TRACK, theme().accent, frac));
+        let on_track = if enabled { theme().accent } else { theme().disabled };
+        self.fill_rounded_rect(rect, radius, lerp_color(SWITCH_OFF_TRACK, on_track, frac));
         let knob_r = radius as f32 - 4.0;
         let cy = rect.y() as f32 + rect.height() as f32 / 2.0;
         let left = rect.x() as f32 + radius as f32;
         let right = rect.x() as f32 + rect.width() as f32 - radius as f32;
         let cx = left + (right - left) * frac;
         self.fill_circle(cx + 1.0, cy + 2.0, knob_r, Color::RGBA(0x00, 0x00, 0x00, 0x40));
-        self.fill_circle(cx, cy, knob_r, theme().text);
+        self.fill_circle(cx, cy, knob_r, if enabled { theme().text } else { theme().disabled });
     }
 }
 

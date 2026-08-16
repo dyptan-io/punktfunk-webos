@@ -16,44 +16,31 @@ pub const SUBTITLE: &str = "Debug aids for on-device investigation.";
 /// Order must match `menu::DIAG_ROW_*`.
 pub fn rows(settings: &Settings) -> Vec<FocusRow> {
     vec![
-        FocusRow {
-            icon: crate::app::view::icons::ICON_BUG,
-            label: "Log level".into(),
-            value: menu::log_level_label(settings.log_level_override).into(),
-            kind: ui::widgets::RowKind::Dropdown,
-            fraction: 0.0,
-            danger: false,
-            menu: None,
-            subtext: None,
-        },
-        FocusRow {
-            icon: crate::app::view::icons::ICON_CHART,
-            label: "Stats overlay".into(),
-            value: if settings.stats_overlay {
-                "On".into()
-            } else {
-                "Off".into()
-            },
-            kind: ui::widgets::RowKind::Toggle,
-            fraction: 0.0,
-            danger: false,
-            menu: None,
-            subtext: settings
+        FocusRow::dropdown(
+            crate::app::view::icons::ICON_BUG,
+            "Log level",
+            menu::log_level_label(settings.log_level_override),
+        ),
+        FocusRow::toggle(
+            crate::app::view::icons::ICON_CHART,
+            "Stats overlay",
+            settings.stats_overlay,
+        )
+        .with_subtext_opt(
+            settings
                 .stats_overlay
                 .then(|| ui::widgets::RowSubtext::hint("Or use the Green button")),
-        },
-        FocusRow {
-            icon: crate::app::view::icons::ICON_VISIBILITY,
-            label: "Show logs".into(),
-            value: if settings.show_logs { "On".into() } else { "Off".into() },
-            kind: ui::widgets::RowKind::Toggle,
-            fraction: 0.0,
-            danger: false,
-            menu: None,
-            subtext: settings
+        ),
+        FocusRow::toggle(
+            crate::app::view::icons::ICON_VISIBILITY,
+            "Show logs",
+            settings.show_logs,
+        )
+        .with_subtext_opt(
+            settings
                 .show_logs
                 .then(|| ui::widgets::RowSubtext::hint("Or use the Yellow button")),
-        },
+        ),
         FocusRow::action(crate::app::view::icons::ICON_SEND, "Send logs to developer")
             .with_subtext(ui::widgets::RowSubtext::hint("If a developer asked you to")),
     ]
