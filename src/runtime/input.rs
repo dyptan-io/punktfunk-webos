@@ -635,6 +635,14 @@ pub(super) fn handle_ui_event(
                 EventAction::Next
             };
         }
+        // Ends a Bitrate drag armed in `handle_mouse_click` — without this the slider
+        // would keep tracking the pointer (or a stale last position) past the release.
+        Event::MouseButtonUp {
+            mouse_btn: sdl2::mouse::MouseButton::Left,
+            ..
+        } => {
+            app.slider_drag = false;
+        }
         // Direct digit entry via the remote's number buttons — PIN entry on the
         // pairing screen, IP entry on the add/edit-host screens.
         Event::KeyDown { keycode: Some(k), .. }

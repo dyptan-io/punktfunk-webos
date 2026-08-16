@@ -49,11 +49,10 @@ pub enum ScrollContentKey {
 pub enum ModalShellKey {
     // Only what `render_settings` reads — the whole `Settings` struct (or the
     // dropdown row) would invalidate this key, forcing a full-screen re-raster,
-    // on every keystroke or dropdown open/close.
-    Settings {
-        show_bitrate_warning: bool,
-        hover_close: bool,
-    },
+    // on every keystroke or dropdown open/close. The shell draws chrome only (no
+    // row content, not even the Bitrate caution — that's the focus tile's job),
+    // so the only thing that can actually change it is the close-button hover.
+    Settings { hover_close: bool },
     Wake {
         name: String,
         mac_empty: bool,

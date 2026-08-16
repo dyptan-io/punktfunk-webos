@@ -31,6 +31,13 @@ impl App {
         screen_h: u32,
         fonts: &ui::text::Fonts,
     ) -> bool {
+        // A press already landed on the Bitrate track (see `handle_mouse_click`) — every
+        // motion until release drags the thumb, rather than re-hit-testing the row list
+        // under a pointer that may have wandered off it.
+        if self.slider_drag {
+            self.drag_bitrate_slider(x, screen_w, screen_h);
+            return true;
+        }
         let focus_changed = self.hover_focus_at(x, y, screen_w, screen_h, fonts);
         // Parity with the D-pad: a hover that moves modal focus replays the focus-pop zoom
         // (and shows the new row's caption). Home drives its own `focus_anim` instead, so
@@ -228,16 +235,54 @@ impl App {
     /// `modal_scroll_px` the rows render with — a fixed-offset hit-test drifts a row
     /// off once the list has scrolled. `None` outside the viewport or in a row gap.
     pub(crate) fn settings_row_at(&self, x: i32, y: i32, screen_w: u32, screen_h: u32) -> Option<usize> {
-        let (_, content) = view::settings::layout(screen_w, screen_h);
+        let (content, scroll_px) = self.settings_content_scroll(screen_w, screen_h);
         if !content.contains_point((x, y)) {
             return None;
         }
+        let total = menu::settings_row_count();
+        (0..total).find(|&r| ui::widgets::focus_row_rect_at_px(content, r, scroll_px).contains_point((x, y)))
+    }
+
+    /// Settings' content viewport and its current animated scroll offset — the shared
+    /// geometry `settings_row_at`'s hit test and `settings_row_rect`'s lookup both index
+    /// into, so a scrolled list can't put them at odds.
+    fn settings_content_scroll(&self, screen_w: u32, screen_h: u32) -> (Rect, i32) {
+        let (_, content) = view::settings::layout(screen_w, screen_h);
         let stride = ui::widgets::focus_row_stride() as i32;
         let total = menu::settings_row_count();
         let scroll_px = self
             .modal_scroll_px
             .clamp(0, Self::max_scroll_px(total, stride, content.height()));
-        (0..total).find(|&r| ui::widgets::focus_row_rect_at_px(content, r, scroll_px).contains_point((x, y)))
+        (content, scroll_px)
+    }
+
+    /// Display row `row`'s on-screen rect, same animated scroll offset `settings_row_at`
+    /// hit-tests against — the geometry the Bitrate drag anchors to.
+    fn settings_row_rect(&self, row: usize, screen_w: u32, screen_h: u32) -> Rect {
+        let (content, scroll_px) = self.settings_content_scroll(screen_w, screen_h);
+        ui::widgets::focus_row_rect_at_px(content, row, scroll_px)
+    }
+
+    /// The Bitrate row's rect and track — `settings_focused` is already that row (set by
+    /// whatever press started the drag), so this is the one geometry lookup both the arming
+    /// click and every later drag motion need.
+    fn bitrate_row_and_track(&self, screen_w: u32, screen_h: u32) -> (Rect, Rect) {
+        let row_rect = self.settings_row_rect(self.settings_focused, screen_w, screen_h);
+        (row_rect, ui::widgets::slider_track_rect(row_rect))
+    }
+
+    /// Sets the Bitrate row from the pointer's current x against its track — shared by the
+    /// initial press (which also has to decide whether the click landed on the track at
+    /// all) and every drag motion after it.
+    fn set_bitrate_from_x(&mut self, x: i32, track: Rect) {
+        let fraction = (x - track.x()) as f32 / track.width() as f32;
+        menu::set_bitrate_fraction(&mut self.settings, fraction);
+    }
+
+    /// Drags the Bitrate slider to `x`.
+    fn drag_bitrate_slider(&mut self, x: i32, screen_w: u32, screen_h: u32) {
+        let (_, track) = self.bitrate_row_and_track(screen_w, screen_h);
+        self.set_bitrate_from_x(x, track);
     }
 
     /// The dropdown option index under the pointer, if a dropdown is open and the
@@ -398,6 +443,23 @@ impl App {
                 // `?` bails if the click hit the gap between rows or outside the
                 // viewport — nothing to focus or confirm.
                 self.settings_focused = self.settings_row_at(x, y, screen_w, screen_h)?;
+                // A press on the Bitrate track sets the value under the cursor directly and
+                // arms the drag (see `handle_mouse_motion`) instead of nudging one notch the
+                // way `Confirm` below would — a slider is for landing on a value, not stepping
+                // to it one click at a time.
+                if menu::settings_logical_row(self.settings_focused) == menu::ROW_BITRATE
+                    && menu::row_lock(menu::ROW_BITRATE, &self.settings, self.detected_gamepad_type).is_none()
+                {
+                    let (row_rect, track) = self.bitrate_row_and_track(screen_w, screen_h);
+                    // Full row height, not just the thin track — vertical precision on a
+                    // slider isn't worth demanding of a Magic Remote pointer.
+                    let in_track = x >= track.x() && x < track.right() && y >= row_rect.y() && y < row_rect.bottom();
+                    if in_track {
+                        self.slider_drag = true;
+                        self.set_bitrate_from_x(x, track);
+                        return None;
+                    }
+                }
                 self.handle_settings_event(MenuEvent::Confirm, screen_h);
                 None
             }

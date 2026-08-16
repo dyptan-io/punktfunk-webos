@@ -231,6 +231,12 @@ pub struct App {
     /// it's driving, but the Controller row's `DualSense` caption does (see `settings_rows`).
     pub(crate) detected_gamepad_type: Option<store::GamepadType>,
     pub settings_focused: usize,
+    /// Whether the mouse button is down on the Settings screen's slider row (Bitrate) with
+    /// the press having landed on the track itself — while `true`, `MouseMotion` drags the
+    /// thumb to the pointer's x instead of just moving hover focus. Cleared on
+    /// `MouseButtonUp`; never survives a screen change since the button can't be released
+    /// on another screen from webOS's own D-pad OK -> click translation.
+    pub(crate) slider_drag: bool,
     /// Scroll state for overflowing modal content.
     pub(crate) scroll: ui::scroll::ScrollWindow,
     /// Settings' scroll position, stashed while About borrows `scroll` for its
@@ -504,6 +510,7 @@ impl App {
             state_writer,
             detected_gamepad_type: None,
             settings_focused: 0,
+            slider_drag: false,
             scroll: ui::scroll::ScrollWindow::new(),
             settings_scroll: ui::scroll::ScrollWindow::new(),
             content_window: ui::scroll::ContentWindow::new(),

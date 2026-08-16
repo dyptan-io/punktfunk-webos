@@ -200,6 +200,21 @@ pub const SLIDER_VALUE_SLOT_W: i32 = 150;
 /// Extra gap between the track's right edge and the value slot.
 const SLIDER_TRACK_GAP: i32 = 16;
 
+/// A slider row's track rect within `row_rect` — shared by [`Canvas::focus_row`]'s draw and
+/// the pointer path's click/drag hit-testing, so a dragged thumb always lands under the
+/// cursor exactly where the track was drawn.
+pub fn slider_track_rect(row_rect: Rect) -> Rect {
+    let control_pad = 28;
+    let slot_right = row_rect.right() - control_pad;
+    let track_w = 220u32.min(row_rect.width() / 3);
+    Rect::new(
+        slot_right - SLIDER_VALUE_SLOT_W - SLIDER_TRACK_GAP - track_w as i32,
+        row_rect.y() + (row_rect.height() as i32 - 10) / 2,
+        track_w,
+        10,
+    )
+}
+
 /// A modal's focus-row list: icon + label left, control right, one row per
 /// [`FocusRow`] stacked at [`focus_row_stride`]. Only the focused row gets a background
 /// card; others draw bare. Rows render at normal size — the focused row's zoom is a GPU
@@ -372,13 +387,7 @@ impl Canvas<'_, '_> {
                     value_y,
                     locked_fg(row.locked, focused, theme().text, theme().muted),
                 )?;
-                let track_w = 220u32.min(row_rect.width() / 3);
-                let track = Rect::new(
-                    slot_right - SLIDER_VALUE_SLOT_W - SLIDER_TRACK_GAP - track_w as i32,
-                    row_rect.y() + (row_rect.height() as i32 - 10) / 2,
-                    track_w,
-                    10,
-                );
+                let track = slider_track_rect(row_rect);
                 self.painter
                     .slider_with_thumb(track, row.fraction, focused, !row.locked);
             }

@@ -426,7 +426,6 @@ impl App {
         // `content_dirty` tick, same as every modal did before this split.
         let modal_shell_key = match self.screen {
             Screen::Settings => Some(ModalShellKey::Settings {
-                show_bitrate_warning: self.settings.bitrate_kbps > menu::BITRATE_WARN_KBPS,
                 hover_close: self.hover_close,
             }),
             Screen::Wake => self.wake.as_ref().map(|w| ModalShellKey::Wake {

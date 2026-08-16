@@ -20,11 +20,13 @@ pub fn nav_dir(ev: MenuEvent) -> Option<Dir> {
     }
 }
 
-/// User-requested presets: 1080p, 1440p, 4K.
-pub const RESOLUTIONS: [(u32, u32, &str); 3] = [
-    (1920, 1080, "1920 x 1080"),
-    (2560, 1440, "2560 x 1440"),
-    (3840, 2160, "3840 x 2160"),
+/// User-requested presets: 1080p, 1440p, 4K. `(width, height, row value, dropdown name)` —
+/// the row's collapsed value stays plain pixel dimensions, while the dropdown option gets
+/// the friendlier name alongside them (see `resolution_dropdown_label`).
+pub const RESOLUTIONS: [(u32, u32, &str, &str); 3] = [
+    (1920, 1080, "1920 x 1080", "FHD"),
+    (2560, 1440, "2560 x 1440", "QHD"),
+    (3840, 2160, "3840 x 2160", "4K"),
 ];
 
 /// Sent to host as exact wire refresh rate.
@@ -184,8 +186,15 @@ pub fn cycle_index(current: usize, len: usize, forward: bool) -> usize {
 pub fn resolution_label(width: u32, height: u32) -> String {
     RESOLUTIONS
         .iter()
-        .find(|(w, h, _)| *w == width && *h == height)
-        .map_or_else(|| format!("{width}x{height}"), |(_, _, s)| s.to_string())
+        .find(|(w, h, _, _)| *w == width && *h == height)
+        .map_or_else(|| format!("{width}x{height}"), |(_, _, s, _)| s.to_string())
+}
+
+/// Dropdown-only label — the row's own value stays the plain pixel dimensions
+/// ([`resolution_label`]); the option list gets the friendlier name plus the vertical count
+/// alongside them, e.g. "FHD - 1080p - 1920x1080".
+fn resolution_dropdown_label(width: u32, height: u32, name: &str) -> String {
+    format!("{name} - {height}p - {width}x{height}")
 }
 
 pub const LOG_LEVEL_OPTIONS: [LogLevelOverride; 4] = [
@@ -299,7 +308,10 @@ fn video_backend_label(backend: VideoBackend) -> &'static str {
 pub fn dropdown_options(row_index: usize, detected: Option<GamepadType>) -> Vec<String> {
     match row_index {
         ROW_VIDEO_BACKEND => VIDEO_BACKENDS.iter().map(|&b| video_backend_label(b).into()).collect(),
-        ROW_RESOLUTION => RESOLUTIONS.iter().map(|(w, h, _)| resolution_label(*w, *h)).collect(),
+        ROW_RESOLUTION => RESOLUTIONS
+            .iter()
+            .map(|(w, h, _, name)| resolution_dropdown_label(*w, *h, name))
+            .collect(),
         ROW_FRAMERATE => REFRESH_RATES.iter().map(|hz| format!("{hz} Hz")).collect(),
         ROW_CODEC => video_caps()
             .codec_prefs()
@@ -340,7 +352,7 @@ pub fn dropdown_current_index(settings: &Settings, row_index: usize) -> usize {
     match row_index {
         ROW_RESOLUTION => RESOLUTIONS
             .iter()
-            .position(|(w, h, _)| *w == settings.width && *h == settings.height)
+            .position(|(w, h, _, _)| *w == settings.width && *h == settings.height)
             .unwrap_or(0),
         ROW_FRAMERATE => REFRESH_RATES
             .iter()
@@ -381,7 +393,7 @@ pub fn apply_dropdown_choice(
     }
     match row_index {
         ROW_RESOLUTION => {
-            if let Some((w, h, _)) = RESOLUTIONS.get(choice_index) {
+            if let Some((w, h, _, _)) = RESOLUTIONS.get(choice_index) {
                 settings.width = *w;
                 settings.height = *h;
             }
@@ -466,4 +478,19 @@ pub fn adjust_setting(settings: &mut Settings, row_index: usize, forward: bool, 
             true
         }
     }
+}
+
+/// Sets the Bitrate row directly from a dragged/clicked `fraction` (0.0-1.0 along the
+/// track), snapped to [`BITRATE_STEP_KBPS`] — the mouse-drag counterpart of
+/// [`adjust_setting`]'s per-notch `Left`/`Right`. Below one step above the floor snaps to
+/// `Automatic`, mirroring the notch `adjust_setting` leaves for it at the low end.
+pub fn set_bitrate_fraction(settings: &mut Settings, fraction: f32) {
+    let span = BITRATE_MAX_KBPS - BITRATE_MIN_KBPS;
+    let raw = BITRATE_MIN_KBPS + (fraction.clamp(0.0, 1.0) * span as f32) as u32;
+    let stepped = ((raw + BITRATE_STEP_KBPS / 2) / BITRATE_STEP_KBPS) * BITRATE_STEP_KBPS;
+    settings.bitrate_kbps = if stepped <= BITRATE_MIN_KBPS {
+        BITRATE_AUTOMATIC
+    } else {
+        stepped.clamp(BITRATE_MIN_KBPS, BITRATE_MAX_KBPS)
+    };
 }
