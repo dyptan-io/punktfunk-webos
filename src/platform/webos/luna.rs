@@ -47,9 +47,9 @@ pub fn available() -> bool {
     })
 }
 
-/// Opens the webOS launcher by relaunching the Home app — the stand-in for the OS's
-/// Home shortcut once `KEYS_HOME` capture takes it over (so a keyboard's Windows key
-/// reaches the host). Fire-and-forget: a Home press must not block the input loop.
+/// Opens the webOS launcher by relaunching the Home app — the stand-in for the OS's Home
+/// shortcut once `KEYS_HOME` capture takes it over (capture being what stops webOS killing
+/// the app on Home). Fire-and-forget: a Home press must not block the input loop.
 pub fn launch_home() {
     std::thread::spawn(|| {
         if let Err(e) = call(

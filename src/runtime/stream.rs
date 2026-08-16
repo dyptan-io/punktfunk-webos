@@ -14,18 +14,16 @@ fn reveal_deadline(started: Option<Instant>) -> Instant {
 }
 
 pub(super) fn run_inner() -> Result<()> {
-    // Stops webOS's launcher intercepting Back/Windows-Meta/Guide as its own Home shortcut
-    // (see `keyboard.rs`'s LGui/RGui and `gamepad.rs`'s BTN_GUIDE mapping). Must be set before
-    // window creation — these hints only latch at creation time.
+    // Stops webOS's launcher intercepting Back/Guide as its own shortcut (see `gamepad.rs`'s
+    // BTN_GUIDE mapping). Must be set before window creation — these hints only latch there.
     sdl2::hint::set("SDL_WEBOS_ACCESS_POLICY_KEYS_BACK", "true");
     // Without this webOS SIGTERMs the app on a held/root-level Back before it can react.
     sdl2::hint::set("SDL_WEBOS_ACCESS_POLICY_KEYS_EXIT", "true");
-    // Shares the Home-class policy with the remote's Home button (no separate policy exists);
-    // capturing is the only way a keyboard's Super key reaches the app to forward as
-    // VK_LWIN/VK_RWIN. Cost: remote Home no longer opens the launcher natively, so the input
-    // loop detects it (bare keycode, no scancode) and relaunches via `luna::launch_home`.
+    // Same for the remote's Home button, which otherwise backgrounds and kills the app; the
+    // input loop re-opens the launcher itself via `luna::launch_home` instead. No `KEYS_META`
+    // alongside it: a keyboard's Super key is Home-class, so that hint never suppressed it, and
+    // in-stream it now reaches the host over evdev anyway (`platform::webos::evdev`).
     sdl2::hint::set("SDL_WEBOS_ACCESS_POLICY_KEYS_HOME", "true");
-    sdl2::hint::set("SDL_WEBOS_ACCESS_POLICY_KEYS_META", "true");
     sdl2::hint::set("SDL_WEBOS_ACCESS_POLICY_KEYS_GUIDE", "true");
     // Suppress webOS's launcher ribbon popping over the foregrounded app.
     sdl2::hint::set("SDL_WEBOS_ACCESS_POLICY_RIBBON", "false");
@@ -322,19 +320,19 @@ pub(super) fn run_inner() -> Result<()> {
             for event in events.poll_iter() {
                 use sdl2::event::Event;
                 // Which SDL events are the compositor's echo of input this app already read off
-                // evdev. Read once per event, not per guard — the window is 250ms, so per-arm
-                // freshness buys nothing. Keys always go by recency so Magic Remote keys, which
-                // never appear on an evdev node we hold, still pass.
+                // evdev. Owning the pointer node is the whole answer for buttons — it's decided
+                // in `evdev` (Capture, and whether the keyboard shares the node), so it isn't
+                // re-derived from the setting here. Keys go by recency instead, so the Magic
+                // Remote's keys — which never appear on a node we hold — still pass. Read once
+                // per event, not per guard: the window is 250ms, so per-arm freshness buys
+                // nothing.
                 let (hid_motion, hid_clicks, hid_keys) = match hid.as_ref() {
-                    // Capture on with a HID mouse: every SDL pointer event is an echo.
-                    Some(hid) if settings.cursor_capture && hid.has_mouse() => (true, true, hid.keyboard_busy()),
-                    // Desktop/absolute: the compositor still owns the mouse, so its clicks are
-                    // the real ones and must pass — Ctrl+click is the whole point. Only motion
-                    // is dropped, and only while a keyboard is busy: a keypress makes the
-                    // compositor warp its pointer to centre, which would drag the host cursor.
                     Some(hid) => {
+                        let pointer = hid.has_mouse();
+                        // A keypress with the pointer left to the compositor still moves it:
+                        // webOS warps to screen centre, which would drag the host cursor along.
                         let keys = hid.keyboard_busy();
-                        (keys, false, keys)
+                        (pointer || keys, pointer, keys)
                     }
                     None => (false, false, false),
                 };

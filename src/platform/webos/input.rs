@@ -102,8 +102,10 @@ pub const WEBOS_GREEN_SCANCODE: i32 = 487;
 pub const WEBOS_YELLOW_SCANCODE: i32 = 488;
 pub const WEBOS_BLUE_SCANCODE: i32 = 489;
 
-/// webOS Home key (`SDL_SCANCODE_WEBOS_HOME = 384`, also the keyboard Super key).
-/// Polled to re-open the launcher once `KEYS_HOME` capture stops the OS doing it.
+/// webOS Home key (`SDL_SCANCODE_WEBOS_HOME = 384`). Polled to re-open the launcher once
+/// `KEYS_HOME` capture stops the OS doing it. A USB keyboard's Super key is Home-class and
+/// lands on this same scancode — indistinguishable here, which is why the host gets it over
+/// evdev instead (`super::evdev`) rather than through this path.
 pub const WEBOS_HOME_SCANCODE: i32 = 384;
 
 /// webOS EXIT key (`SDL_SCANCODE_WEBOS_EXIT`). A held/root-level Back is turned

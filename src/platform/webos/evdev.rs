@@ -202,7 +202,7 @@ impl HidInput {
         })
     }
 
-    /// Grab (or release) every open mouse node exclusively, and — same flag — start or stop
+    /// Grab (or release) every open node exclusively, and — same flag — start or stop
     /// calling `sink` with what they report (see the module docs). Applied on the reader thread's
     /// own cadence (bounded by [`POLL_TIMEOUT_MS`]), including to any node that shows up after
     /// this call, so callers don't need to re-invoke it on hot-plug.
@@ -237,7 +237,7 @@ impl Drop for HidInput {
     }
 }
 
-/// An open mouse node, plus motion accumulated from it (`REL_X`/`REL_Y` only mean anything
+/// An open evdev node, plus motion accumulated from it (`REL_X`/`REL_Y` only mean anything
 /// together, at the next `SYN_REPORT`).
 struct Device {
     fd: RawFd,
@@ -274,10 +274,10 @@ enum Probe {
     Unopenable,
 }
 
-/// Opens every mouse-shaped node not already in `seen`, appending the paths it takes.
+/// Opens every node this reader wants that isn't already in `seen`, appending the paths it takes.
 fn scan(seen: &mut Vec<PathBuf>, grab_mouse: bool) -> Vec<Device> {
     let Ok(entries) = std::fs::read_dir("/dev/input") else {
-        tracing::warn!("/dev/input unreadable — no HID mouse support");
+        tracing::warn!("/dev/input unreadable — no HID input support");
         return Vec::new();
     };
     let mut paths: Vec<PathBuf> = entries
@@ -354,7 +354,10 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
     // without being a keyboard. Absolute-pointer remotes are already excluded above.
     dev.keyboard = !absolute_pointer && (bit(&key, KEY_A) || bit(&key, KEY_LEFTCTRL));
     // A grab is per node, never per event type: taking a combo node's keys takes its pointer
-    // too, so forward that pointer as well or the mouse would go dead in desktop mode.
+    // too, so forward that pointer as well or the mouse would go dead. Desktop mode pays for
+    // that — a combo receiver loses the TV cursor and aims relatively like a captured mouse,
+    // where a separate mouse node keeps aiming absolutely. Better than the alternatives: not
+    // grabbing means the modifier bug this exists to fix comes back on exactly that hardware.
     dev.mouse = pointer && (grab_mouse || dev.keyboard);
     if !dev.mouse && !dev.keyboard {
         // Not ours, or a pointer-only node in desktop mode — left with the compositor so the
@@ -476,7 +479,7 @@ fn reader_loop(sink: &impl Fn(&InputEvent), shared: &Shared) {
                         continue;
                     }
                     let gone = devices.remove(i);
-                    tracing::info!("HID mouse gone: {}", gone.path.display());
+                    tracing::info!("HID device gone: {}", gone.path.display());
                     seen.retain(|p| *p != gone.path);
                 }
                 fds = pollfds(&devices);

@@ -146,8 +146,8 @@ pub(super) fn run_ui_flow(
             log_overlay_last = None;
         }
         yellow_held = yellow_down;
-        // Home key re-opens the webOS launcher (captured so a keyboard's Super key can
-        // reach the host); works from any menu state, a long Back never trips it.
+        // Home key re-opens the webOS launcher (captured, or webOS kills the app instead of
+        // backgrounding it); works from any menu state, a long Back never trips it.
         if home_key_fired(&mut home_held) {
             crate::platform::webos::luna::launch_home();
         }
