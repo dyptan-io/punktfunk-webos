@@ -404,6 +404,10 @@ pub fn apply_dropdown_choice(
         ROW_CODEC => {
             if let Some(&pref) = video_caps().codec_prefs().get(choice_index) {
                 settings.codec = pref;
+                // H.264 never resolves HDR (see `RowLock::HdrNeedsHevc`).
+                if pref == CodecPref::H264 {
+                    settings.hdr_enabled = false;
+                }
             }
         }
         ROW_AUDIO => {
