@@ -4,7 +4,18 @@ linker = "scripts/cc-shim.sh"
 # Use softfp (real VFP/NEON instructions, not soft-float emulation) to avoid ~300ms/render tax.
 # Tune for cortex-a73 (LG CX's α9-gen3 SoC); binary still runs on cortex-a53.
 # See docs/NOTES.md for detailed rationale on both choices.
-rustflags = ["-C", "target-feature=+neon,+vfp3,-soft-float", "-C", "target-cpu=cortex-a73"]
+# getrandom's stock Linux backend resolves getrandom(2) through dlsym(RTLD_DEFAULT), which finds
+# nothing on webOS 4.x's old glibc, then falls back to /dev/urandom, which the app sandbox does not
+# expose — so every RNG user (rand, quinn) panicked with ENOENT before the first packet (issue #88).
+# `linux_raw` issues the syscall by inline asm instead: no libc symbol, no /dev.
+rustflags = [
+    "-C",
+    "target-feature=+neon,+vfp3,-soft-float",
+    "-C",
+    "target-cpu=cortex-a73",
+    "--cfg",
+    'getrandom_backend="linux_raw"',
+]
 
 [env]
 CC_armv7_unknown_linux_gnueabi = { value = "scripts/cc-shim.sh", relative = true }
