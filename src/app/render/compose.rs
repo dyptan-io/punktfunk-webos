@@ -69,18 +69,13 @@ impl App {
         if !matches!(screen, Screen::Home) {
             let dy = ((1.0 - m) * MODAL_RISE) as i32;
             // The tile now covers only the card region (see `prepare_modal`), so it
-            // composites there rather than full-screen. `pop_in_rect` scaling around this
-            // rect's center is the card's own center — the same visual pop as before.
+            // composites there rather than full-screen. Opening plays the same motion
+            // `compose_modal`'s closing snapshot uses below, in reverse — fade + rise, no
+            // scale.
             let modal_base = self.modal_tile_region.offset(0, dy);
-            let pop = ui::animation::pop_in_scale(m, MODAL_POP_SHRINK);
-            // Everything composited *onto* the card rides its pop, about the card's centre
-            // — otherwise the shell scales while its contents sit still. A modal whose rows
-            // live in the shell tile (the host menu) gets this free; scrollable ones don't.
-            let ride = |r: Rect| ui::animation::scale_about(r, modal_base, pop);
-            let modal_dst = ui::animation::pop_in_rect(modal_base, m, MODAL_POP_SHRINK);
             cmds.push(DrawCmd::Tex {
                 tile: tile::MODAL,
-                dst: modal_dst,
+                dst: modal_base,
                 alpha: (255.0 * m) as u8,
             });
             // Scrollable content geometry (Settings rows or About document), computed
@@ -95,7 +90,7 @@ impl App {
                     cmds.push(DrawCmd::TexCropped {
                         tile: tile::SCROLL_CONTENT,
                         src,
-                        dst: ride(dst.offset(0, dy)),
+                        dst: dst.offset(0, dy),
                         alpha: (255.0 * m) as u8,
                     });
                 }
@@ -113,19 +108,19 @@ impl App {
                 if scroll_px > 0 {
                     cmds.push(DrawCmd::Tex {
                         tile: tile::SCROLL_FADE_TOP,
-                        dst: ride(Rect::new(content.x(), content.y() + dy, content.width(), fade_h)),
+                        dst: Rect::new(content.x(), content.y() + dy, content.width(), fade_h),
                         alpha: (255.0 * m) as u8,
                     });
                 }
                 if scroll_px < Self::max_scroll_px(total, stride, content.height()) {
                     cmds.push(DrawCmd::Tex {
                         tile: tile::SCROLL_FADE,
-                        dst: ride(Rect::new(
+                        dst: Rect::new(
                             content.x(),
                             content.y() + dy + (content.height() - fade_h) as i32,
                             content.width(),
                             fade_h,
-                        )),
+                        ),
                         alpha: (255.0 * m) as u8,
                     });
                 }
@@ -137,12 +132,12 @@ impl App {
                     let options_len = self.dropdown_options_len(row);
                     cmds.push(DrawCmd::Tex {
                         tile: tile::DROPDOWN_OVERLAY,
-                        dst: ride(Rect::new(
+                        dst: Rect::new(
                             overlay_rect.x(),
                             overlay_rect.y() + dy,
                             overlay_rect.width(),
                             options_len as u32 * ui::widgets::DROPDOWN_OPTION_H,
-                        )),
+                        ),
                         alpha: (255.0 * m * dd_alpha) as u8,
                     });
                 }
@@ -197,7 +192,7 @@ impl App {
                 // this (except while `switch_anim` animates its content, see
                 // `prepare_tiles`).
                 let f = ui::animation::anim_frac(self.modal_focus_anim, ui::animation::FOCUS_POP);
-                let dst = ride(ui::animation::zoom_rect(base, f, 0.02));
+                let dst = ui::animation::zoom_rect(base, f, 0.02);
                 let alpha = (255.0 * m) as u8;
                 // In a scrolling modal the focused row can hang past the viewport's bottom
                 // edge mid-glide (the crop lags the row offset by up to one stride), so it is
@@ -206,7 +201,7 @@ impl App {
                 let tile_size = tiles.get(tile::MODAL_FOCUS).map(|p| (p.width(), p.height()));
                 match (scroll_geom, tile_size) {
                     (Some((_, _, _, content)), Some((tw, th))) => {
-                        let viewport = ride(content.inflate(pad).offset(0, dy));
+                        let viewport = content.inflate(pad).offset(0, dy);
                         if let Some((src, visible)) = Self::clip_tile(dst, viewport, tw, th) {
                             cmds.push(DrawCmd::TexCropped {
                                 tile: tile::MODAL_FOCUS,
@@ -233,12 +228,12 @@ impl App {
                     let option_rect = ui::widgets::dropdown_option_rect(overlay_rect, focused);
                     cmds.push(DrawCmd::Tex {
                         tile: tile::DROPDOWN_FOCUS,
-                        dst: ride(Rect::new(
+                        dst: Rect::new(
                             option_rect.x(),
                             option_rect.y() + dy,
                             option_rect.width(),
                             option_rect.height(),
-                        )),
+                        ),
                         alpha: (255.0 * m * dd_alpha) as u8,
                     });
                 }
@@ -264,12 +259,12 @@ impl App {
                         // overlap a Settings row's dropdown pill/slider/switch. The `26`
                         // offset isn't derived from either modal's own width fraction —
                         // re-check both if either changes.
-                        let dst = ride(Rect::new(
+                        let dst = Rect::new(
                             card.right() - 26,
                             content.y() + dy,
                             SCROLL_INDICATOR_TILE_W,
                             content.height(),
-                        ));
+                        );
                         cmds.push(DrawCmd::Tex {
                             tile: tile::SCROLL_INDICATOR,
                             dst,

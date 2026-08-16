@@ -252,7 +252,7 @@ impl ConfirmDialog {
         h: u32,
         cmds: &mut Vec<DrawCmd>,
     ) -> Result<()> {
-        let Some((focus, m, closing)) = self.frame(MODAL_FADE) else {
+        let Some((focus, m, _closing)) = self.frame(MODAL_FADE) else {
             return Ok(());
         };
         let full = crate::ui::render::Rect::new(0, 0, w, h);
@@ -275,8 +275,8 @@ impl ConfirmDialog {
             )?;
             compositor.upload(texture_creator, tile::DISCONNECT_FOCUS_BUTTON, &tile, false)?;
         }
-        // Same open/close motion as the `App`'s `Screen` modals (see `draw_list`): slide
-        // in from ~26px below while fading, and the shell scales up on open.
+        // Same open/close motion as the `App`'s `Screen` modals (see `compose_modal`):
+        // slide in/out ~26px while fading, same curve in both directions, no scale.
         let dy = ((1.0 - m) * 26.0) as i32;
         let pad = crate::ui::tiles::ROW_TILE_PAD;
         let base = crate::ui::render::Rect::new(
@@ -286,12 +286,7 @@ impl ConfirmDialog {
             btn_rect.height() + 2 * pad as u32,
         );
         let f = crate::ui::animation::anim_frac(self.focus_anim, crate::ui::animation::FOCUS_POP);
-        let modal_base = crate::ui::render::Rect::new(0, dy, w, h);
-        let shell_dst = if closing {
-            modal_base
-        } else {
-            crate::ui::animation::pop_in_rect(modal_base, m, MODAL_POP_SHRINK)
-        };
+        let shell_dst = crate::ui::render::Rect::new(0, dy, w, h);
         cmds.push(DrawCmd::Fill {
             rect: full,
             color: crate::ui::render::Color::RGBA(0, 0, 0, (f32::from(crate::ui::style::theme().scrim.a) * m) as u8),

@@ -54,13 +54,11 @@ pub(crate) const CARD_POP: Duration = Duration::from_millis(300);
 pub(crate) const CARD_POP_SHRINK: f32 = 0.14;
 /// Modal open. Short: the card is the response to a keypress, and delay there reads as
 /// a slow TV, not as an animation.
-pub(crate) const MODAL_FADE: Duration = Duration::from_millis(50);
+pub(crate) const MODAL_FADE: Duration = Duration::from_millis(75);
 /// Modal close. Slower than the open — nothing is waiting on it, and outlasting the
 /// incoming card is what makes a modal-to-modal step read as one replacing the other.
-pub(crate) const MODAL_FADE_OUT: Duration = Duration::from_millis(100);
+pub(crate) const MODAL_FADE_OUT: Duration = Duration::from_millis(150);
 pub(crate) const DROPDOWN_FADE: Duration = MODAL_FADE;
-/// Scale during open — subtle, since fade dominates for full-screen modal.
-pub(crate) const MODAL_POP_SHRINK: f32 = 0.05;
 /// Transparent margin the modal tile leaves around the card so its drop shadow
 /// (`Painter::card_shadow`: blur `SHADOW_BLUR`=14, offset dy 5) fits inside the tile.
 /// The tile is sized to the card's bounding box plus this pad rather than the whole
