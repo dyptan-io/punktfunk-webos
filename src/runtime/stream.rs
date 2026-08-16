@@ -229,17 +229,13 @@ pub(super) fn run_inner() -> Result<()> {
         // its Red key — see `RemoteButtons`. Fed only the remote's own input; a real HID mouse's
         // clicks never reach it.
         let mut buttons = mouse::RemoteButtons::default();
-        // Raw evdev mouse, only under cursor capture (uncaptured, raw deltas can't express the
-        // remote's absolute pointing). Sends happen on the reader thread, not queued for the
-        // ~2ms main loop, to avoid re-resampling a 1000 Hz mouse. Active from the start so the
-        // compositor never draws its own arrow over what we're forwarding — see `evmouse`'s
-        // module docs; deactivated below whenever the disconnect dialog needs the pointer back.
-        let hid_mouse = if settings.cursor_capture {
-            let input = connected.input();
-            crate::platform::webos::evmouse::HidMouse::start(true, move |ev| input.send(ev))
-        } else {
-            None
-        };
+        // Raw evdev HID. Keyboard nodes are always grabbed so the compositor doesn't see
+        // Ctrl/Alt/Shift or typing (that's what made the TV pointer fight the host). Mouse
+        // nodes follow Capture: on = exclusive relative grab; off = compositor keeps the
+        // pointer for desktop/absolute aiming.
+        let input = connected.input();
+        let hid_mouse =
+            crate::platform::webos::evmouse::HidMouse::start(true, settings.cursor_capture, move |ev| input.send(ev));
         // Flips once a HID mouse is found — `HidMouse::start` no longer scans before returning
         // (that blocked every stream connect on the node-open cost), so presence is only known
         // once the reader thread's own scan catches up; checked each tick below.
@@ -310,7 +306,8 @@ pub(super) fn run_inner() -> Result<()> {
                 connected.disconnect_quit();
                 break 'running StreamOutcome::Quit;
             }
-            if !hid_device_seen
+            if settings.cursor_capture
+                && !hid_device_seen
                 && hid_mouse
                     .as_ref()
                     .is_some_and(crate::platform::webos::evmouse::HidMouse::has_device)
@@ -324,13 +321,17 @@ pub(super) fn run_inner() -> Result<()> {
             }
             for event in events.poll_iter() {
                 use sdl2::event::Event;
-                // While the HID reader is seeing mouse reports, SDL's pointer events are that
-                // same input echoed by the compositor and must be dropped; once it idles, what
-                // arrives is the remote. Read once per event, not per guard — the window is
-                // 250ms, so per-arm freshness buys nothing.
-                let (hid_motion, hid_clicks) = match hid_mouse.as_ref() {
-                    Some(hid) => (hid.owns_sdl_motion(), hid.owns_sdl_clicks()),
-                    None => (false, false),
+                // Capture on + HID mouse: drop every SDL pointer event. Capture off: compositor
+                // owns the mouse; drop pointer events only while a HID keyboard is busy so a
+                // keypress can't warp the host cursor to centre. Keyboard echoes use recency
+                // so Magic Remote keys still pass.
+                let (hid_motion, hid_clicks, hid_keys) = match hid_mouse.as_ref() {
+                    Some(hid) if settings.cursor_capture && hid.has_device() => (true, true, hid.owns_sdl_keys()),
+                    // Desktop/absolute: compositor owns the mouse. Drop pointer events only
+                    // while a HID keyboard is busy, so a keypress can't warp the host cursor
+                    // to centre via an SDL echo.
+                    Some(hid) => (hid.owns_sdl_keys(), hid.owns_sdl_keys(), hid.owns_sdl_keys()),
+                    None => (false, false, false),
                 };
                 match event {
                     Event::Quit { .. } => {
@@ -366,7 +367,7 @@ pub(super) fn run_inner() -> Result<()> {
                         }
                     }
                     // Scancode keys are real game input — forward only, never open the dialog.
-                    Event::KeyDown { scancode: Some(sc), .. } => {
+                    Event::KeyDown { scancode: Some(sc), .. } if !hid_keys => {
                         if let Some(ev) = keyboard::key_event(sc, true) {
                             connected.send_input(&ev);
                         }
@@ -407,7 +408,7 @@ pub(super) fn run_inner() -> Result<()> {
                             connected.send_input(&ev);
                         }
                     }
-                    Event::KeyUp { scancode: Some(sc), .. } => {
+                    Event::KeyUp { scancode: Some(sc), .. } if !hid_keys => {
                         if let Some(ev) = keyboard::key_event(sc, false) {
                             connected.send_input(&ev);
                         }
@@ -586,16 +587,14 @@ pub(super) fn run_inner() -> Result<()> {
             was_holding = holding_now;
             // The dialog is navigated with the Magic Remote's pointer, so a captured stream
             // must hand the pointer back while it's up — hidden/relative there'd be nothing
-            // to aim with. Recaptured on dismiss.
+            // to aim with. Recaptured on dismiss. HID is independent of Capture: keyboard
+            // stays grabbed in desktop mode, and both modes pause it while the dialog is open.
             let want_captured = settings.cursor_capture && !disconnect.is_open();
             if want_captured != cursor.is_captured() {
                 cursor.set_captured(want_captured);
-                // Deactivate with the dialog open — the remote needs the OS pointer back to
-                // navigate it, and holding the grab would just leave a HID mouse dead for that
-                // duration; deactivating also stops forwarding in the same store, see `evmouse`.
-                if let Some(hid) = &hid_mouse {
-                    hid.set_active(want_captured);
-                }
+            }
+            if let Some(hid) = &hid_mouse {
+                hid.set_active(!disconnect.is_open());
             }
             // Wider than `is_open()`: a dismissed dialog still draws (fading out) a few more
             // ticks, used below to skip the stats overlay for exactly those ticks.

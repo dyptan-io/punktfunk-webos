@@ -11,5 +11,6 @@
     "splashBackground": "splash.png",
     "appDescription": "Punktfunk — low-latency desktop/game streaming client",
     "supportTouchMode": "full",
-    "useAllMouseButtons": true
+    "useAllMouseButtons": true,
+    "useAllKeyboardKeys": true
 }
