@@ -106,12 +106,12 @@ const fn eviocgrab() -> libc::c_ulong {
     eioc(IOC_WRITE, 0x90, 4)
 }
 
-/// How long after a report this device still owns SDL's pointer events — bridges pauses within
-/// one drag, short enough that switching to the remote still feels immediate.
+/// How long after a keypress a HID keyboard still owns SDL's key events — bridges the gaps
+/// within a burst of typing, short enough that reaching for the remote still feels immediate.
 const IN_USE_WINDOW: Duration = Duration::from_millis(250);
 
-/// A HID mouse reader: one thread polling every mouse-shaped evdev node, handing each wire
-/// event straight to `sink`. Dropping it stops and joins the thread.
+/// A HID reader: one thread polling every mouse- or keyboard-shaped evdev node, handing each
+/// wire event straight to `sink`. Dropping it stops and joins the thread.
 pub struct HidInput {
     shared: Arc<Shared>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -121,7 +121,7 @@ pub struct HidInput {
 /// the lot instead of a clone-and-thread-per-field.
 struct Shared {
     stop: AtomicBool,
-    has_device: AtomicBool,
+    has_mouse: AtomicBool,
     /// Desired grab/forward state — see [`HidInput::set_active`]. Read by [`reader_loop`] (to
     /// drive `EVIOCGRAB`) and by the reader thread's gated `sink` wrapper; the per-device
     /// *applied* grab state lives on [`Device`], not here.
@@ -129,38 +129,33 @@ struct Shared {
     /// Cursor capture, fixed for this reader's life (the setting only takes effect next stream):
     /// off leaves a pointer-only node with the compositor, so the TV cursor still aims.
     grab_mouse: bool,
-    activity: Activity,
+    keys: KeyActivity,
 }
 
-/// Last-report timestamp, shared with the main thread to tell the mouse and remote apart — SDL
-/// gives no device identity here, so recency is the only discriminator. Millis since `base`,
-/// not `Instant`, since `Instant` isn't atomic.
-struct Activity {
+/// Last keyboard report, shared with the main thread to tell a HID keyboard from the remote —
+/// SDL gives no device identity, so recency is the only discriminator. The pointer needs no
+/// equivalent: whether this reader owns the mouse is a fixed fact for a stream, not a recency
+/// question ([`HidInput::has_mouse`]). Millis since `base`, since `Instant` isn't atomic.
+struct KeyActivity {
     base: Instant,
-    motion_ms: std::sync::atomic::AtomicU64,
-    /// Separate from motion: a click moves nothing, so a still mouse would look idle otherwise.
-    discrete_ms: std::sync::atomic::AtomicU64,
-    /// Keyboard reports — so SDL's echo of those keys can be dropped without swallowing Magic
-    /// Remote keys, which never appear on these nodes.
-    key_ms: std::sync::atomic::AtomicU64,
+    last_ms: std::sync::atomic::AtomicU64,
 }
 
-impl Activity {
+impl KeyActivity {
     fn new() -> Self {
         Self {
             base: Instant::now(),
-            motion_ms: std::sync::atomic::AtomicU64::new(0),
-            discrete_ms: std::sync::atomic::AtomicU64::new(0),
-            key_ms: std::sync::atomic::AtomicU64::new(0),
+            last_ms: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
-    fn touch(&self, slot: &std::sync::atomic::AtomicU64) {
-        slot.store(self.base.elapsed().as_millis() as u64, Ordering::Relaxed);
+    fn touch(&self) {
+        self.last_ms
+            .store(self.base.elapsed().as_millis() as u64, Ordering::Relaxed);
     }
 
-    fn recent(&self, slot: &std::sync::atomic::AtomicU64) -> bool {
-        let last = slot.load(Ordering::Relaxed);
+    fn recent(&self) -> bool {
+        let last = self.last_ms.load(Ordering::Relaxed);
         // 0 = nothing seen yet.
         last != 0 && self.base.elapsed().as_millis() as u64 - last < IN_USE_WINDOW.as_millis() as u64
     }
@@ -183,10 +178,10 @@ impl HidInput {
     pub fn start(active: bool, grab_mouse: bool, sink: impl Fn(&InputEvent) + Send + 'static) -> Option<Self> {
         let shared = Arc::new(Shared {
             stop: AtomicBool::new(false),
-            has_device: AtomicBool::new(false),
+            has_mouse: AtomicBool::new(false),
             grab: AtomicBool::new(active),
             grab_mouse,
-            activity: Activity::new(),
+            keys: KeyActivity::new(),
         });
         let thread_shared = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
@@ -220,13 +215,13 @@ impl HidInput {
     /// Callers use this instead of `is_some()`/`is_none()` to tell "no HID mouse yet" apart from
     /// "not asked for one", since the reader thread always exists once `start` returns `Some`.
     pub fn has_mouse(&self) -> bool {
-        self.shared.has_device.load(Ordering::Relaxed)
+        self.shared.has_mouse.load(Ordering::Relaxed)
     }
 
     /// True while a HID keyboard key was seen within [`IN_USE_WINDOW`] — caller should drop
     /// SDL's echo of that keyboard without dropping the Magic Remote.
     pub fn keyboard_busy(&self) -> bool {
-        self.shared.activity.recent(&self.shared.activity.key_ms)
+        self.shared.keys.recent()
     }
 }
 
@@ -470,7 +465,7 @@ fn reader_loop(sink: &impl Fn(&InputEvent), shared: &Shared) {
         if rc > 0 {
             for (i, pfd) in fds.iter().enumerate() {
                 if pfd.revents & libc::POLLIN != 0 {
-                    read_device(&mut devices[i], sink, &shared.activity);
+                    read_device(&mut devices[i], sink, &shared.keys);
                 }
             }
             // An unplugged node polls ready forever with POLLERR/HUP; checked cheaply since
@@ -517,7 +512,7 @@ fn reader_loop(sink: &impl Fn(&InputEvent), shared: &Shared) {
 /// which a keyboard-only reader says nothing about.
 fn store_presence(devices: &[Device], shared: &Shared) {
     shared
-        .has_device
+        .has_mouse
         .store(devices.iter().any(|d| d.mouse), Ordering::Relaxed);
 }
 
@@ -535,7 +530,7 @@ fn pollfds(devices: &[Device]) -> Vec<libc::pollfd> {
 /// Drains one device's pending events, emitting the summed motion once at the end — a burst is
 /// reports the kernel already queued, so summing costs no latency and beats a datagram per event
 /// at 1kHz (the host's own injector coalesces the same way).
-fn read_device(dev: &mut Device, sink: &impl Fn(&InputEvent), activity: &Activity) {
+fn read_device(dev: &mut Device, sink: &impl Fn(&InputEvent), keys: &KeyActivity) {
     let size = std::mem::size_of::<InputEventRaw>();
     let mut buf = [0u8; 1024];
     loop {
@@ -553,7 +548,6 @@ fn read_device(dev: &mut Device, sink: &impl Fn(&InputEvent), activity: &Activit
             match ev.kind {
                 EV_REL if dev.mouse => match ev.code {
                     REL_X | REL_Y => {
-                        activity.touch(&activity.motion_ms);
                         if ev.code == REL_X {
                             dev.dx += ev.value;
                         } else {
@@ -563,7 +557,6 @@ fn read_device(dev: &mut Device, sink: &impl Fn(&InputEvent), activity: &Activit
                     // evdev's wheel is one unit per notch, same as SDL's, so the ×120 wire
                     // scaling accumulator applies unchanged.
                     REL_WHEEL | REL_HWHEEL => {
-                        activity.touch(&activity.discrete_ms);
                         flush_motion(dev, sink);
                         if let Some(e) = dev.scroll.scroll_event(ev.value, ev.code == REL_HWHEEL) {
                             sink(&e);
@@ -576,12 +569,11 @@ fn read_device(dev: &mut Device, sink: &impl Fn(&InputEvent), activity: &Activit
                     // Buttons and keys share `EV_KEY`, and a combo node reports both — the code
                     // ranges are what tells them apart, not the device.
                     if let Some(button) = dev.mouse.then(|| button_code(ev.code)).flatten() {
-                        activity.touch(&activity.discrete_ms);
                         // Motion first: the click must land where the pointer already is.
                         flush_motion(dev, sink);
                         sink(&mouse::raw_button_event(button, ev.value == 1));
                     } else if let Some(vk) = dev.keyboard.then(|| keyboard::vk_from_evdev(ev.code)).flatten() {
-                        activity.touch(&activity.key_ms);
+                        keys.touch();
                         sink(&keyboard::raw_key_event(vk, ev.value == 1));
                     }
                 }
