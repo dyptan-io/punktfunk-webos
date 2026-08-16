@@ -4,7 +4,7 @@ pub mod cursor;
 pub mod device;
 pub(crate) mod dl;
 pub mod dualsense;
-pub mod evmouse;
+pub mod evdev;
 pub mod game_mode;
 pub mod gamepad;
 pub mod input;

@@ -27,7 +27,7 @@ pub fn button_event(button: MouseButton, pressed: bool) -> Option<InputEvent> {
     Some(raw_button_event(button_code(button)?, pressed))
 }
 
-/// Same wire event from an already-mapped button number — for [`super::evmouse`], whose
+/// Same wire event from an already-mapped button number — for [`super::evdev`], whose
 /// buttons come off evdev and never pass through an `sdl2::mouse::MouseButton`.
 pub fn raw_button_event(code: u32, pressed: bool) -> InputEvent {
     InputEvent {
@@ -87,7 +87,7 @@ pub struct RemoteButtons {
 /// toward a drag the user didn't ask for. `DRAG_HOLD` sits well clear of `LONG_PRESS` so the
 /// right-click window is something a person can actually hit.
 ///
-/// Only ever fed the Magic Remote's SDL button. A real USB mouse (see [`super::evmouse`])
+/// Only ever fed the Magic Remote's SDL button. A real USB mouse (see [`super::evdev`])
 /// has its own right button and its clicks stay a straight pass-through — nothing here
 /// applies to it.
 struct OkPress {

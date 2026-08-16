@@ -2,7 +2,7 @@
 //! compositor's (`SDL_webOSCursorVisibility`, global state, re-shown on activity — see
 //! [`restore_on_exit`]).
 //!
-//! The compositor layer is normally kept quiet by `evmouse`'s `EVIOCGRAB` — starved of reports,
+//! The compositor layer is normally kept quiet by `evdev`'s `EVIOCGRAB` — starved of reports,
 //! it stops drawing. But starving only stops *future* draws: an arrow already on screen when the
 //! stream starts stays painted until something retracts it, which is why the hide is also
 //! requested outright on each [`Cursor::apply`] and again once the grab is actually in place
@@ -52,7 +52,7 @@ impl Cursor {
         }
     }
 
-    /// Stop asking SDL for relative mode, for when motion is read via `super::evmouse` instead:
+    /// Stop asking SDL for relative mode, for when motion is read via `super::evdev` instead:
     /// the fork emulates relative mode with a screen-centre warp per motion event, which is
     /// pure waste for a source we don't read. aurora-tv does the same under `hardware_mouse`.
     pub fn disable_sdl_relative(&mut self) {
@@ -82,7 +82,7 @@ impl Cursor {
     }
 
     /// Asks the compositor once more to drop its pointer. For the point where the evdev grab has
-    /// actually landed — [`apply`](Self::apply) runs before `evmouse`'s background scan finds a
+    /// actually landed — [`apply`](Self::apply) runs before `evdev`'s background scan finds a
     /// node, so any motion in that window can repaint the arrow it just retracted. No-op while
     /// uncaptured.
     pub fn reassert_hidden(&mut self) {

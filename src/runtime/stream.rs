@@ -229,14 +229,14 @@ pub(super) fn run_inner() -> Result<()> {
         // its Red key — see `RemoteButtons`. Fed only the remote's own input; a real HID mouse's
         // clicks never reach it.
         let mut buttons = mouse::RemoteButtons::default();
-        // Raw evdev HID. Keyboard nodes are always grabbed so the compositor doesn't see
-        // Ctrl/Alt/Shift or typing (that's what made the TV pointer fight the host). Mouse
-        // nodes follow Capture: on = exclusive relative grab; off = compositor keeps the
-        // pointer for desktop/absolute aiming.
+        // Raw evdev HID, sending on the reader thread rather than queued for the ~2ms main loop
+        // so a 1000 Hz mouse isn't re-resampled. Keyboards are grabbed whatever Capture says, or
+        // the compositor sees Ctrl/Alt/Shift and warps its pointer mid-click; mouse nodes follow
+        // Capture: on = exclusive relative grab, off = compositor keeps the pointer to aim with.
         let input = connected.input();
-        let hid_mouse =
-            crate::platform::webos::evmouse::HidMouse::start(true, settings.cursor_capture, move |ev| input.send(ev));
-        // Flips once a HID mouse is found — `HidMouse::start` no longer scans before returning
+        let hid =
+            crate::platform::webos::evdev::HidInput::start(true, settings.cursor_capture, move |ev| input.send(ev));
+        // Flips once a HID mouse is found — `HidInput::start` no longer scans before returning
         // (that blocked every stream connect on the node-open cost), so presence is only known
         // once the reader thread's own scan catches up; checked each tick below.
         let mut hid_device_seen = false;
@@ -308,9 +308,9 @@ pub(super) fn run_inner() -> Result<()> {
             }
             if settings.cursor_capture
                 && !hid_device_seen
-                && hid_mouse
+                && hid
                     .as_ref()
-                    .is_some_and(crate::platform::webos::evmouse::HidMouse::has_device)
+                    .is_some_and(crate::platform::webos::evdev::HidInput::has_mouse)
             {
                 hid_device_seen = true;
                 cursor.disable_sdl_relative();
@@ -321,16 +321,21 @@ pub(super) fn run_inner() -> Result<()> {
             }
             for event in events.poll_iter() {
                 use sdl2::event::Event;
-                // Capture on + HID mouse: drop every SDL pointer event. Capture off: compositor
-                // owns the mouse; drop pointer events only while a HID keyboard is busy so a
-                // keypress can't warp the host cursor to centre. Keyboard echoes use recency
-                // so Magic Remote keys still pass.
-                let (hid_motion, hid_clicks, hid_keys) = match hid_mouse.as_ref() {
-                    Some(hid) if settings.cursor_capture && hid.has_device() => (true, true, hid.owns_sdl_keys()),
-                    // Desktop/absolute: compositor owns the mouse. Drop pointer events only
-                    // while a HID keyboard is busy, so a keypress can't warp the host cursor
-                    // to centre via an SDL echo.
-                    Some(hid) => (hid.owns_sdl_keys(), hid.owns_sdl_keys(), hid.owns_sdl_keys()),
+                // Which SDL events are the compositor's echo of input this app already read off
+                // evdev. Read once per event, not per guard — the window is 250ms, so per-arm
+                // freshness buys nothing. Keys always go by recency so Magic Remote keys, which
+                // never appear on an evdev node we hold, still pass.
+                let (hid_motion, hid_clicks, hid_keys) = match hid.as_ref() {
+                    // Capture on with a HID mouse: every SDL pointer event is an echo.
+                    Some(hid) if settings.cursor_capture && hid.has_mouse() => (true, true, hid.keyboard_busy()),
+                    // Desktop/absolute: the compositor still owns the mouse, so its clicks are
+                    // the real ones and must pass — Ctrl+click is the whole point. Only motion
+                    // is dropped, and only while a keyboard is busy: a keypress makes the
+                    // compositor warp its pointer to centre, which would drag the host cursor.
+                    Some(hid) => {
+                        let keys = hid.keyboard_busy();
+                        (keys, false, keys)
+                    }
                     None => (false, false, false),
                 };
                 match event {
@@ -587,13 +592,14 @@ pub(super) fn run_inner() -> Result<()> {
             was_holding = holding_now;
             // The dialog is navigated with the Magic Remote's pointer, so a captured stream
             // must hand the pointer back while it's up — hidden/relative there'd be nothing
-            // to aim with. Recaptured on dismiss. HID is independent of Capture: keyboard
-            // stays grabbed in desktop mode, and both modes pause it while the dialog is open.
+            // to aim with. Recaptured on dismiss. The evdev reader releases its grabs for the
+            // same window in either Capture mode — the dialog needs the remote's keys as much
+            // as its pointer, and holding a grab would only leave a HID device dead meanwhile.
             let want_captured = settings.cursor_capture && !disconnect.is_open();
             if want_captured != cursor.is_captured() {
                 cursor.set_captured(want_captured);
             }
-            if let Some(hid) = &hid_mouse {
+            if let Some(hid) = &hid {
                 hid.set_active(!disconnect.is_open());
             }
             // Wider than `is_open()`: a dismissed dialog still draws (fading out) a few more

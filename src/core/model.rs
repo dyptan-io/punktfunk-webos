@@ -234,8 +234,8 @@ pub struct Settings {
     /// hidden, relative `MouseMove` deltas sent (absolute coords stop at the panel edge), host
     /// draws the only cursor. Off: absolute `MouseMoveAbs`, and `CLIENT_CAP_CURSOR` tells a
     /// capable host to stop compositing its own so the local pointer stays visible — otherwise
-    /// two cursors or none. USB/Bluetooth keyboards are grabbed in both modes so the compositor
-    /// never sees modifiers or typing; mice follow this flag. Takes effect next stream.
+    /// two cursors or none. Only the mouse follows this flag — a USB keyboard is grabbed either
+    /// way, or the compositor sees modifiers and fights the host pointer. Takes effect next stream.
     pub cursor_capture: bool,
     /// Ask the TV to switch to its Game picture mode for the duration of a stream (the
     /// app-plane stand-in for HDMI ALLM — see `platform::webos::game_mode`). Off by default;
