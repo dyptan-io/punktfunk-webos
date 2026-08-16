@@ -40,9 +40,9 @@ impl App {
     ) -> Option<(usize, usize, Rect, Rect)> {
         match screen {
             Screen::Settings => {
-                let (card, content) = view::settings::layout(&self.settings, screen_w, screen_h);
-                let visible = view::settings::visible_rows(&self.settings, screen_h);
-                Some((menu::settings_row_count(&self.settings), visible, card, content))
+                let (card, content) = view::settings::layout(screen_w, screen_h);
+                let visible = view::settings::visible_rows(screen_h);
+                Some((menu::settings_row_count(), visible, card, content))
             }
             Screen::About => {
                 let card = view::about::card_rect(screen_w, screen_h);
@@ -258,7 +258,7 @@ impl App {
     pub(crate) fn dropdown_options_len(&self, screen: Screen, row: usize) -> usize {
         match screen {
             Screen::Diagnostics => menu::LOG_LEVEL_OPTIONS.len(),
-            _ => menu::dropdown_option_count(menu::settings_logical_row(&self.settings, row)),
+            _ => menu::dropdown_option_count(menu::settings_logical_row(row)),
         }
     }
 
@@ -272,9 +272,7 @@ impl App {
     pub(crate) fn with_modal_screen<R>(&self, f: impl FnOnce(&dyn ui::ModalScreen) -> R) -> Option<R> {
         Some(match self.screen {
             Screen::Home => return None,
-            Screen::Settings => f(&view::settings::Modal {
-                settings: &self.settings,
-            }),
+            Screen::Settings => f(&view::settings::Modal),
             Screen::Pairing => f(&view::pairing::Modal {
                 pin_digits: &self.pin_digits,
                 status: self.pairing_status.as_ref(),

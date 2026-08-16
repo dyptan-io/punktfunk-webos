@@ -16,7 +16,7 @@ impl App {
         if let Some(dd) = self.dropdown.as_mut() {
             // `dd.row` is the display position; setting lookups need the logical row.
             let row = dd.row;
-            let logical = menu::settings_logical_row(&self.settings, row);
+            let logical = menu::settings_logical_row(row);
             let len = menu::dropdown_option_count(logical).max(1);
             match ev {
                 MenuEvent::Up | MenuEvent::Down => {
@@ -39,7 +39,7 @@ impl App {
             }
             return;
         }
-        let total = menu::settings_row_count(&self.settings);
+        let total = menu::settings_row_count();
         match ev {
             // No wraparound here (unlike most other row lists) — wrapping a scrolled
             // list would silently jump the scroll position across the whole card.
@@ -59,7 +59,7 @@ impl App {
             }
             MenuEvent::Left => self.apply_setting_adjust(self.settings_focused, false),
             MenuEvent::Right => self.apply_setting_adjust(self.settings_focused, true),
-            MenuEvent::Confirm => match menu::settings_logical_row(&self.settings, self.settings_focused) {
+            MenuEvent::Confirm => match menu::settings_logical_row(self.settings_focused) {
                 // Not a setting — a link out to the About screen (see `menu::ROW_ABOUT`).
                 // Settings are saved on the way out so the visit's changes aren't lost
                 // behind the navigation.
@@ -120,7 +120,7 @@ impl App {
     /// No focus re-anchoring afterwards: which rows are shown depends on the environment only
     /// (see `menu::row_shown`), so no adjustment can renumber the list under the cursor.
     pub(crate) fn apply_setting_adjust(&mut self, display_row: usize, forward: bool) {
-        let row = menu::settings_logical_row(&self.settings, display_row);
+        let row = menu::settings_logical_row(display_row);
         let toggled_from = match row {
             menu::ROW_HDR => Some(self.settings.hdr_enabled),
             _ => None,

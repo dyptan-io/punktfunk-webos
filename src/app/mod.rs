@@ -616,9 +616,9 @@ impl App {
 
     /// Scrolls `settings_focused` into view.
     pub(crate) fn scroll_settings_into_view(&mut self, screen_h: u32) {
-        let visible = view::settings::visible_rows(&self.settings, screen_h);
+        let visible = view::settings::visible_rows(screen_h);
         self.scroll
-            .scroll_into_view(self.settings_focused, menu::settings_row_count(&self.settings), visible);
+            .scroll_into_view(self.settings_focused, menu::settings_row_count(), visible);
     }
 
     /// `(row, focused, alpha)` for the open dropdown or its close-fade; `None` if neither.

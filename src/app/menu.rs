@@ -112,7 +112,7 @@ pub const DIAGNOSTICS_ROW_COUNT: usize = 4;
 ///
 /// Consequence worth keeping: no user action changes this, so the display↔logical mapping is
 /// fixed for the run and no site has to re-anchor focus after a mutation.
-pub(crate) fn row_shown(row: usize, _settings: &Settings) -> bool {
+pub(crate) fn row_shown(row: usize) -> bool {
     match row {
         // Only a choice where NDL is the narrow v1 generation — everywhere else NDL v2 is
         // strictly better and the row would be a trap.
@@ -157,19 +157,20 @@ pub(crate) fn row_lock(row: usize, settings: &Settings, detected: Option<Gamepad
 }
 
 /// Logical `ROW_*` indices currently visible, in display order — the single source of truth
-/// every visibility-aware helper derives from.
-pub fn settings_visible_logical_rows(settings: &Settings) -> impl Iterator<Item = usize> + '_ {
-    (0..SETTINGS_ROW_COUNT).filter(|&row| row_shown(row, settings))
+/// every visibility-aware helper derives from. Settings-independent (see [`row_shown`]), so
+/// this mapping is fixed for the run.
+pub fn settings_visible_logical_rows() -> impl Iterator<Item = usize> {
+    (0..SETTINGS_ROW_COUNT).filter(|&row| row_shown(row))
 }
 
 /// Live row count (vs. `SETTINGS_ROW_COUNT`, the maximum).
-pub fn settings_row_count(settings: &Settings) -> usize {
-    settings_visible_logical_rows(settings).count()
+pub fn settings_row_count() -> usize {
+    settings_visible_logical_rows().count()
 }
 
 /// On-screen row position -> logical `ROW_*` index, skipping past any hidden rows.
-pub fn settings_logical_row(settings: &Settings, display: usize) -> usize {
-    settings_visible_logical_rows(settings).nth(display).unwrap_or(display)
+pub fn settings_logical_row(display: usize) -> usize {
+    settings_visible_logical_rows().nth(display).unwrap_or(display)
 }
 
 pub fn cycle_index(current: usize, len: usize, forward: bool) -> usize {

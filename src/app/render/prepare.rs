@@ -529,7 +529,7 @@ impl App {
             if stale {
                 let tile = match self.screen {
                     Screen::Settings => {
-                        let (_, content) = view::settings::layout(&self.settings, screen_w, screen_h);
+                        let (_, content) = view::settings::layout(screen_w, screen_h);
                         let rows = self.settings_rows();
                         let dropdown_open = self.dropdown.as_ref().is_some_and(|dd| dd.row == self.settings_focused);
                         let target_on = rows.get(self.settings_focused).is_some_and(|r| r.value == "On");
@@ -662,8 +662,8 @@ impl App {
                     (menu::log_level_dropdown_options(), content.width())
                 }
                 _ => {
-                    let (_, content) = view::settings::layout(&self.settings, screen_w, screen_h);
-                    let logical = menu::settings_logical_row(&self.settings, dd.row);
+                    let (_, content) = view::settings::layout(screen_w, screen_h);
+                    let logical = menu::settings_logical_row(dd.row);
                     (
                         menu::dropdown_options(logical, self.detected_gamepad_type),
                         content.width(),
@@ -771,7 +771,7 @@ impl App {
                         // Settings' whole row list always fits one tile — no windowing.
                         self.content_window = ui::scroll::ContentWindow {
                             start: 0,
-                            len: menu::settings_row_count(&self.settings),
+                            len: menu::settings_row_count(),
                         };
                         updated.push(tile::SCROLL_CONTENT);
                     }
@@ -822,10 +822,9 @@ impl App {
         let mut scratch = Painter::new(screen_w, screen_h);
         view::settings::render(
             &mut ui::Canvas::new(&mut scratch, text_cache, fonts, screen_w, screen_h),
-            &self.settings,
             self.hover_close,
         )?;
-        let (_, content) = view::settings::layout(&self.settings, screen_w, screen_h);
+        let (_, content) = view::settings::layout(screen_w, screen_h);
         let rows = self.settings_rows();
         let _ = ui::widgets::render_focus_rows_tile(text_cache, fonts, &rows, content.width(), None)?;
         let _ = ui::widgets::render_focus_row_tile(text_cache, fonts, &rows, content.width(), 0, false, 0.0)?;

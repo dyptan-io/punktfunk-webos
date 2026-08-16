@@ -216,9 +216,9 @@ impl App {
     ) -> Option<(Rect, i32)> {
         match screen {
             Screen::Settings => {
-                let (_, content) = view::settings::layout(&self.settings, screen_w, screen_h);
+                let (_, content) = view::settings::layout(screen_w, screen_h);
                 let stride = ui::widgets::focus_row_stride() as i32;
-                let total = menu::settings_row_count(&self.settings);
+                let total = menu::settings_row_count();
                 // Anchor to the animated offset so an open dropdown stays attached to
                 // its row while the list is still settling.
                 let px = self
@@ -236,12 +236,12 @@ impl App {
     /// `modal_scroll_px` the rows render with — a fixed-offset hit-test drifts a row
     /// off once the list has scrolled. `None` outside the viewport or in a row gap.
     pub(crate) fn settings_row_at(&self, x: i32, y: i32, screen_w: u32, screen_h: u32) -> Option<usize> {
-        let (_, content) = view::settings::layout(&self.settings, screen_w, screen_h);
+        let (_, content) = view::settings::layout(screen_w, screen_h);
         if !content.contains_point((x, y)) {
             return None;
         }
         let stride = ui::widgets::focus_row_stride() as i32;
-        let total = menu::settings_row_count(&self.settings);
+        let total = menu::settings_row_count();
         let scroll_px = self
             .modal_scroll_px
             .clamp(0, Self::max_scroll_px(total, stride, content.height()));

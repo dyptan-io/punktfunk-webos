@@ -172,7 +172,7 @@ pub(crate) fn rows(
     // locked there can never disagree here. Index == logical row, guaranteed by the assert above.
     rows.into_iter()
         .enumerate()
-        .filter(|(logical, _)| menu::row_shown(*logical, settings))
+        .filter(|(logical, _)| menu::row_shown(*logical))
         .map(
             |(logical, row)| match menu::row_lock(logical, settings, detected_gamepad_type) {
                 // The lock's caption replaces whatever contextual one the row carried: a row the
@@ -193,9 +193,9 @@ pub(crate) fn rows(
 /// the partially-visible sliver the bottom fade dissolves. Computed without the peek first,
 /// because a list that fits entirely has nothing below to peek at and should not give up
 /// the space.
-pub(crate) fn visible_rows(settings: &Settings, screen_h: u32) -> usize {
+pub(crate) fn visible_rows(screen_h: u32) -> usize {
     let stride = ui::widgets::focus_row_stride();
-    let total = menu::settings_row_count(settings);
+    let total = menu::settings_row_count();
     let budget = screen_h.saturating_sub(CHROME_TOP + CHROME_BOTTOM + EDGE_MARGIN);
     if (budget / stride) as usize >= total {
         return total.max(1);
@@ -207,9 +207,9 @@ pub(crate) fn visible_rows(settings: &Settings, screen_h: u32) -> usize {
 /// Height of the scrolling viewport: the fully-visible rows plus a peek strip past each
 /// edge while the list overflows. Deliberately *not* a whole multiple of the row stride
 /// when scrolling — see [`PEEK`].
-pub(crate) fn content_h(settings: &Settings, screen_h: u32) -> u32 {
-    let visible = visible_rows(settings, screen_h);
-    let peeks = if visible < menu::settings_row_count(settings) {
+pub(crate) fn content_h(screen_h: u32) -> u32 {
+    let visible = visible_rows(screen_h);
+    let peeks = if visible < menu::settings_row_count() {
         2 * PEEK
     } else {
         0
@@ -223,10 +223,10 @@ pub(crate) const SIDE_PAD: u32 = 40;
 
 /// Card and content rects, shared by render and hit-test. One split, read twice: the card's
 /// height is what its own stack adds up to, and the viewport is the middle slot of it.
-pub(crate) fn layout(settings: &Settings, screen_w: u32, screen_h: u32) -> (Rect, Rect) {
+pub(crate) fn layout(screen_w: u32, screen_h: u32) -> (Rect, Rect) {
     let stack = ui::layout::Layout::vertical([
         ui::layout::Constraint::Length(CHROME_TOP),
-        ui::layout::Constraint::Length(content_h(settings, screen_h)),
+        ui::layout::Constraint::Length(content_h(screen_h)),
         ui::layout::Constraint::Length(CHROME_BOTTOM),
     ]);
     // Widened from 0.56 to fit the scroll indicator on the right edge.
@@ -252,8 +252,8 @@ pub(crate) fn dropdown_overlay_rect_at_px(content: Rect, row: usize, scroll_px: 
 /// The shell only: card chrome, title and rule. The row list is its own scroll-content
 /// tile and the open dropdown its own overlay tile, so neither scrolling nor navigating
 /// options re-rasterizes this.
-pub(crate) fn render(c: &mut Canvas, settings: &Settings, hover_close: bool) -> Result<()> {
-    let (card, _content) = layout(settings, c.screen_w, c.screen_h);
+pub(crate) fn render(c: &mut Canvas, hover_close: bool) -> Result<()> {
+    let (card, _content) = layout(c.screen_w, c.screen_h);
     let column = content_column(card);
     c.modal_shell(card, hover_close)?;
     c.text(c.fonts.label, TITLE, column.x(), card.y() + 36, ui::style::theme().text)?;
@@ -262,16 +262,14 @@ pub(crate) fn render(c: &mut Canvas, settings: &Settings, hover_close: bool) -> 
 }
 
 /// The settings modal as a [`ModalScreen`].
-pub(crate) struct Modal<'a> {
-    pub settings: &'a Settings,
-}
+pub(crate) struct Modal;
 
-impl ModalScreen for Modal<'_> {
+impl ModalScreen for Modal {
     fn card_rect(&self, screen_w: u32, screen_h: u32, _fonts: &ui::text::Fonts) -> Rect {
-        layout(self.settings, screen_w, screen_h).0
+        layout(screen_w, screen_h).0
     }
 
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
-        render(c, self.settings, hover_close)
+        render(c, hover_close)
     }
 }
