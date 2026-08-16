@@ -21,6 +21,30 @@ fn button_code(button: MouseButton) -> Option<u32> {
     }
 }
 
+/// Whether this is a mouse event synthesized from a touch device (`which` is
+/// `SDL_TOUCH_MOUSEID`) rather than one a real pointer reported. Dropped at the head of both of
+/// `runtime`'s event loops, so nothing downstream has to know the difference.
+///
+/// A `DualSense` publishes its touchpad as its own absolute/multitouch evdev node, which the
+/// compositor picks up as a touch device; the emulation then holds the left button down for as
+/// long as a finger is on the pad, so a thumb resting there drags whatever the host cursor is
+/// over. `SDL_TOUCH_MOUSE_EVENTS=0` (set in `runtime::stream`) turns SDL's own half off, and
+/// [`super::evdev`] claims the node so the compositor can't drive the TV cursor from it either;
+/// this is the last of the three, covering anything synthesized before SDL sees it.
+///
+/// `SDL_TOUCH_MOUSEID` is `(Uint32)-1`; rust-sdl2 doesn't re-export it.
+pub fn is_touch_emulated(event: &sdl2::event::Event) -> bool {
+    use sdl2::event::Event;
+    let (Event::MouseMotion { which, .. }
+    | Event::MouseButtonDown { which, .. }
+    | Event::MouseButtonUp { which, .. }
+    | Event::MouseWheel { which, .. }) = *event
+    else {
+        return false;
+    };
+    which == u32::MAX
+}
+
 /// `None` for a button id the host has no mapping for (`MouseButton::Unknown`) —
 /// the caller just drops the event.
 pub fn button_event(button: MouseButton, pressed: bool) -> Option<InputEvent> {

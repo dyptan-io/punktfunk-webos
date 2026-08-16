@@ -217,6 +217,11 @@ pub(super) fn run_ui_flow(
         }
         for event in events.poll_iter() {
             use sdl2::event::Event;
+            // Dropped in the menu too, or a thumb resting on a pad's touchpad hovers rows and
+            // clicks them — see `mouse::is_touch_emulated`.
+            if mouse::is_touch_emulated(&event) {
+                continue;
+            }
             // Launch committed: the menu is behind the loading screen and its input would
             // move a grid the user can no longer see. Only shutdown still counts.
             if app.launch_anim.is_some() {

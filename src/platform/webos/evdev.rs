@@ -59,6 +59,13 @@ const BTN_RIGHT: u16 = 0x111;
 const BTN_MIDDLE: u16 = 0x112;
 const BTN_SIDE: u16 = 0x113;
 const BTN_EXTRA: u16 = 0x114;
+/// Finger-on-surface, which only touch-class nodes carry — the pad's own node reports
+/// `BTN_SOUTH`/`BTN_EAST` and never this. See [`is_pad_touchpad`].
+const BTN_TOUCH: u16 = 0x14a;
+
+/// Sony's USB/BT vendor id. `hid-playstation` binds only Sony pads, and it's the split-node
+/// layout that creates the touchpad node this identifies.
+const VENDOR_SONY: u16 = 0x054c;
 
 const KEY_LEFTCTRL: u16 = 29;
 const KEY_A: u16 = 30;
@@ -270,6 +277,9 @@ struct Device {
     mouse: bool,
     /// Alphanumeric/modifier keys. Magic Remote nodes are excluded by [`open_hid`].
     keyboard: bool,
+    /// Claimed purely to keep it away from the compositor — nothing is forwarded (neither
+    /// `mouse` nor `keyboard`, so [`read_device`] drains and drops it). See [`is_pad_touchpad`].
+    silent: bool,
 }
 
 impl Drop for Device {
@@ -353,6 +363,7 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
         grab_warned_for: None,
         mouse: false,
         keyboard: false,
+        silent: false,
     };
     let rel = event_bits(fd, EV_REL);
     let abs = event_bits(fd, EV_ABS);
@@ -371,7 +382,10 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
     // where a separate mouse node keeps aiming absolutely. Better than the alternatives: not
     // grabbing means the modifier bug this exists to fix comes back on exactly that hardware.
     dev.mouse = pointer && (grab_mouse || dev.keyboard);
-    if !dev.mouse && !dev.keyboard {
+    // Claimed in both cursor modes, unlike a mouse node: leaving it to the compositor is what
+    // produces the stuck left button, which desktop mode wants gone just as much.
+    dev.silent = is_pad_touchpad(absolute_pointer, bit(&key, BTN_TOUCH), || device_vendor(fd));
+    if !dev.mouse && !dev.keyboard && !dev.silent {
         // Not ours, or a pointer-only node in desktop mode — left with the compositor so the
         // TV cursor is still the one you aim.
         return Probe::Skip;
@@ -381,9 +395,10 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
     }
     tracing::info!(
         "HID {}: {} ({})",
-        match (dev.mouse, dev.keyboard) {
-            (true, true) => "mouse+keyboard",
-            (true, false) => "mouse",
+        match (dev.mouse, dev.keyboard, dev.silent) {
+            (_, _, true) => "pad touchpad (claimed, dropped)",
+            (true, true, _) => "mouse+keyboard",
+            (true, false, _) => "mouse",
             _ => "keyboard",
         },
         name,
@@ -404,6 +419,32 @@ fn set_repeat(fd: RawFd) {
 /// LG's virtual remotes advertise a full QWERTY keymap, so a "has `KEY_A`" filter would steal
 /// the Magic Remote / RCU from the compositor and leave the TV unnavigable. Names as they read
 /// in `/proc/bus/input/devices` on-device.
+/// A `PlayStation` pad's touchpad, which the kernel publishes as its own absolute/multitouch node
+/// alongside the pad itself — the source of the stuck left button [`mouse::is_touch_emulated`]
+/// describes, since the compositor drives the TV cursor from it. Claiming it takes it away from
+/// the compositor entirely; the events go nowhere, as the wire has no controller-touch kind to
+/// forward them on. The pad's own *click* is unaffected — that arrives on the pad node as
+/// `BTN_TOUCHPAD` through SDL's controller layer, not here.
+///
+/// Matched on ids and capability bits, not the device name, which varies by driver and firmware:
+/// `BTN_TOUCH` on an absolute pointer (the pad's own node reports face buttons instead), from a
+/// Sony vendor id. `vendor` is lazy because it costs an ioctl the bit tests don't.
+fn is_pad_touchpad(absolute_pointer: bool, has_btn_touch: bool, vendor: impl FnOnce() -> u16) -> bool {
+    absolute_pointer && has_btn_touch && vendor() == VENDOR_SONY
+}
+
+/// The vendor id out of `EVIOCGID`'s `struct input_id` (`bustype, vendor, product, version`) —
+/// the only field anything here needs. `0` when the ioctl fails, which matches no vendor.
+fn device_vendor(fd: RawFd) -> u16 {
+    let mut id = [0u16; 4];
+    // SAFETY: as `event_bits` — length-encoding request, buffer of exactly that length.
+    let rc = unsafe { libc::ioctl(fd, eviocg(0x02, std::mem::size_of_val(&id) as u32), id.as_mut_ptr()) };
+    if rc < 0 {
+        return 0;
+    }
+    id[1]
+}
+
 fn is_tv_builtin(name: &str) -> bool {
     name.starts_with("LGE") || name.starts_with("Bluetooth-audio") || matches!(name, "CHECK INPUT" | "IoT keypad")
 }
@@ -567,6 +608,15 @@ fn read_device(dev: &mut Device, sink: &impl Fn(&InputEvent), keys: &KeyActivity
             return; // EAGAIN on an empty non-blocking node, or the node went away
         }
         let n = n as usize;
+        // A claimed touchpad reports multitouch continuously for as long as a thumb rests on it,
+        // and every one of those events decodes to nothing — drain it without looking. Draining
+        // is still required: an unread node keeps polling ready and spins this thread.
+        if dev.silent {
+            if n < buf.len() {
+                return;
+            }
+            continue;
+        }
         for chunk in buf[..n].chunks_exact(size) {
             // SAFETY: `InputEventRaw` is plain `repr(C)` integers with no padding
             // invariants, and the chunk is exactly its size; read unaligned because the
@@ -643,7 +693,7 @@ fn button_code(code: u16) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_tv_builtin;
+    use super::{is_pad_touchpad, is_tv_builtin};
 
     #[test]
     fn tv_builtins_are_skipped_by_name() {
@@ -652,5 +702,20 @@ mod tests {
         assert!(is_tv_builtin("CHECK INPUT"));
         assert!(!is_tv_builtin("M720 Triathlon Mouse"));
         assert!(!is_tv_builtin("MX MCHNCL M Keyboard"));
+    }
+
+    /// Sony's other nodes must not match: claiming the pad node would take the gamepad away from
+    /// SDL, and the motion-sensor node reports absolutely without ever being touched.
+    #[test]
+    fn pad_touchpad_matches_only_the_touch_node() {
+        let sony = || 0x054c;
+        // Touchpad: BTN_TOUCH on an absolute pointer.
+        assert!(is_pad_touchpad(true, true, sony));
+        // Pad node — absolute (sticks), face buttons instead of BTN_TOUCH.
+        assert!(!is_pad_touchpad(true, false, sony));
+        // Motion sensors — no touch, no pointer axes.
+        assert!(!is_pad_touchpad(false, false, sony));
+        // A touchscreen from anyone else stays the compositor's.
+        assert!(!is_pad_touchpad(true, true, || 0x046d));
     }
 }

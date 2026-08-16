@@ -29,6 +29,9 @@ pub(super) fn run_inner() -> Result<()> {
     sdl2::hint::set("SDL_WEBOS_ACCESS_POLICY_RIBBON", "false");
     // Linear texture filtering — the focus-pop scale shimmers on SDL's default nearest.
     sdl2::hint::set("SDL_RENDER_SCALE_QUALITY", "1");
+    // Nothing here wants a mouse synthesized from touch — the Magic Remote is a real pointer,
+    // and a pad's touchpad must not be one at all (`mouse::is_touch_emulated`).
+    sdl2::hint::set("SDL_TOUCH_MOUSE_EVENTS", "0");
     let sdl = sdl2::init().map_err(|e| anyhow::anyhow!("SDL_Init: {e}"))?;
     let ttf = sdl2::ttf::init().map_err(|e| anyhow::anyhow!("SDL_ttf init: {e}"))?;
     let video = sdl.video().map_err(|e| anyhow::anyhow!("SDL video subsystem: {e}"))?;
@@ -323,6 +326,10 @@ pub(super) fn run_inner() -> Result<()> {
             }
             for event in events.poll_iter() {
                 use sdl2::event::Event;
+                // Never real pointer input, so never the host's — see `mouse::is_touch_emulated`.
+                if mouse::is_touch_emulated(&event) {
+                    continue;
+                }
                 // Which SDL events are the compositor's echo of input this app already read off
                 // evdev. Owning the pointer node is the whole answer for buttons — it's decided
                 // in `evdev` (Capture, and whether the keyboard shares the node), so it isn't
