@@ -76,7 +76,7 @@ pub fn install(ndl_caps: VideoCaps) {
 /// which does have HEVC and HDR on the releases NDL v1 does not — so the pick widens what this
 /// client advertises, and the row/wire clamps follow from here.
 pub fn set_backend(backend: VideoBackend) {
-    let smp = backend == VideoBackend::Smp;
+    let smp = effective_backend(backend) == VideoBackend::Smp;
     if SMP_ACTIVE.swap(smp, Ordering::Relaxed) != smp {
         tracing::info!("video caps now {:?} ({backend:?})", video_caps());
     }
@@ -98,4 +98,12 @@ pub fn video_caps() -> VideoCaps {
 /// (`session::open_player`) rather than costing the user the choice.
 pub fn smp_selectable() -> bool {
     NDL_BASELINE.get() == Some(&VideoCaps::H264_SDR)
+}
+
+pub fn effective_backend(pick: VideoBackend) -> VideoBackend {
+    if pick == VideoBackend::Smp && !smp_selectable() {
+        VideoBackend::Ndl
+    } else {
+        pick
+    }
 }

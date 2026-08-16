@@ -50,8 +50,14 @@ pub(super) fn run_inner() -> Result<()> {
         display_mode.refresh_rate
     );
 
+    // The stream clears to alpha 0 for NDL's punch-through plane, and the GLES2 renderer's EGL
+    // config carries no alpha channel by default — without this every transparent clear composites
+    // as opaque black. `.opengl()` below is what makes the attribute apply.
+    video.gl_attr().set_alpha_size(8);
+
     let window = video
         .window("punktfunk", display_mode.w as u32, display_mode.h as u32)
+        .opengl()
         .fullscreen()
         .build()
         .map_err(|e| anyhow::anyhow!("create window: {e}"))?;

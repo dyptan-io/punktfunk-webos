@@ -237,7 +237,7 @@ fn open_player(
     codec: NdlCodec,
     audio_channels: u8,
 ) -> Result<VideoPlayer> {
-    if matches!(backend, VideoBackend::Smp) {
+    if crate::core::caps::effective_backend(backend) == VideoBackend::Smp {
         match crate::platform::webos::smp::SmpVideo::load(app_id, width, height, fps, codec) {
             Ok(sf) => return Ok(VideoPlayer::Smp(sf)),
             Err(e) => tracing::warn!("SMP load failed ({e:#}) — falling back to NDL"),

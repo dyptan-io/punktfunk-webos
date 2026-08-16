@@ -282,6 +282,11 @@ impl Settings {
     /// whenever the backend row changes, so the document never holds a *set* value whose row
     /// the UI has just hidden. `session::connect` clamps the wire regardless.
     pub fn clamp_to_caps(&mut self) {
+        let backend = crate::core::caps::effective_backend(self.video_backend);
+        if backend != self.video_backend {
+            tracing::info!("settings: SMP isn't offerable on this TV — using NDL");
+            self.video_backend = backend;
+        }
         let caps = crate::core::caps::video_caps();
         let codecs = caps.codec_prefs();
         if !codecs.contains(&self.codec) {
