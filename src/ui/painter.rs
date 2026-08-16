@@ -59,6 +59,7 @@ pub fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Option<
 /// single `Painter`; `main.rs` uploads the result to one SDL2 texture and presents
 /// it, rather than issuing a texture copy per widget as the old canvas-based
 /// version did.
+#[derive(Clone)]
 pub struct Painter {
     pixmap: Pixmap,
     /// Drawing offset: every coordinate a caller passes is shifted by `-origin`

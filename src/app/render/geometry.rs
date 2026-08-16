@@ -28,9 +28,8 @@ impl App {
         self.scroll_geometry_for(self.screen, screen_w, screen_h, fonts)
     }
 
-    /// Same as `scroll_geometry`, but for an explicit screen rather than
-    /// `self.screen` — `draw_list`'s closing-fade needs the screen it captured at
-    /// `back()` time, not whatever `self.screen` (already `Home`) says now.
+    /// Same as `scroll_geometry`, but for an explicit screen — `snapshot_closing_modal`
+    /// needs the screen being *left*, which `self.screen` has already moved off.
     pub(crate) fn scroll_geometry_for(
         &self,
         screen: Screen,
@@ -87,6 +86,39 @@ impl App {
     /// the final row (and is what the row-quantized version did).
     pub(crate) fn max_scroll_px(total: usize, stride: i32, viewport_h: u32) -> i32 {
         (total as i32 * stride - viewport_h as i32).max(0)
+    }
+
+    /// Which slice of `screen`'s baked `tile::SCROLL_CONTENT` is showing, as `(src crop,
+    /// dst rect)` — `None` for a screen whose body lives in its shell tile.
+    ///
+    /// The one place the window rebase lives: `compose_modal` draws the live modal with it,
+    /// `snapshot_closing_modal` freezes the same crop for the fading one.
+    pub(crate) fn scroll_src_rect(
+        &self,
+        screen: Screen,
+        screen_w: u32,
+        screen_h: u32,
+        fonts: &ui::text::Fonts,
+    ) -> Option<(Rect, Rect)> {
+        let (total, _, _, content) = self.scroll_geometry_for(screen, screen_w, screen_h, fonts)?;
+        // About uses a bounded window; for other screens, window_start is 0.
+        let window_start = match screen {
+            Screen::About => self.content_window.start,
+            _ => 0,
+        };
+        let stride = self.scroll_stride_for(screen, fonts);
+        // The animated offset (see `sync_modal_scroll`), in absolute content pixels,
+        // rebased onto whatever slice is currently baked into the tile.
+        let scroll_px = self
+            .modal_scroll_px
+            .clamp(0, Self::max_scroll_px(total, stride, content.height()));
+        let src = Rect::new(
+            0,
+            scroll_px - window_start as i32 * stride,
+            content.width(),
+            content.height(),
+        );
+        Some((src, content))
     }
 
     /// Re-derives `modal_scroll_target_px` from the integral offset, snapping rather than
@@ -255,8 +287,8 @@ impl App {
 
     /// How many options the open dropdown lists. Read by both the overlay's drawn height
     /// and its hit test, so the two can't disagree about where the last option ends.
-    pub(crate) fn dropdown_options_len(&self, screen: Screen, row: usize) -> usize {
-        match screen {
+    pub(crate) fn dropdown_options_len(&self, row: usize) -> usize {
+        match self.screen {
             Screen::Diagnostics => menu::LOG_LEVEL_OPTIONS.len(),
             _ => menu::dropdown_option_count(menu::settings_logical_row(row)),
         }

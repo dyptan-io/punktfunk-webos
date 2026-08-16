@@ -11,8 +11,6 @@ impl App {
     /// toggles: capture mode and the OK-button gestures.
     pub(crate) fn open_cursor_settings(&mut self) {
         self.cursor_settings_focused = 0;
-        // Stash scroll so Back can restore it; this screen doesn't use it.
-        self.settings_scroll = self.scroll;
         self.screen = Screen::CursorSettings;
     }
 
@@ -40,7 +38,6 @@ impl App {
             (_, MenuEvent::Back) => {
                 self.persist();
                 self.screen = Screen::Settings;
-                self.scroll = self.settings_scroll;
             }
             _ => {}
         }

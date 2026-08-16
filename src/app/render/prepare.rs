@@ -354,6 +354,54 @@ impl App {
         updated.push(tile::HERO);
     }
 
+    /// Copies the leaving modal's pixels aside so it can fade out while the entering one
+    /// rebuilds `tile::MODAL` — on the frame `advance_frame` started a close fade, only.
+    /// Cloned rather than re-rendered: the left screen's state may already be torn down
+    /// (a cleared `host_menu_index`), and these pixels are what was on screen last frame.
+    fn snapshot_closing_modal(
+        &mut self,
+        tiles: &mut TileStore,
+        fonts: &ui::text::Fonts,
+        screen_w: u32,
+        screen_h: u32,
+        screen_changed: bool,
+        updated: &mut Vec<TileId>,
+    ) {
+        let closing = self.modal_fade.closing_frame(MODAL_FADE_OUT);
+        if closing.is_none() {
+            // Fade over (or cancelled by reopening the same screen) — drop the copies
+            // rather than keep two card-sized textures alive for nothing.
+            if self.modal_prev.take().is_some() {
+                tiles.remove(tile::MODAL_PREV);
+                tiles.remove(tile::MODAL_PREV_CONTENT);
+                self.evicted_tiles.push(tile::MODAL_PREV);
+                self.evicted_tiles.push(tile::MODAL_PREV_CONTENT);
+            }
+            return;
+        }
+        let Some((_, left)) = closing.filter(|_| screen_changed) else {
+            return;
+        };
+        let Some(shell) = tiles.get(tile::MODAL).cloned() else {
+            return;
+        };
+        // Still the left card's — `modal_painter` moves it on later in this same call.
+        let region = self.modal_tile_region;
+        // The crop `compose_modal` was drawing for this screen last frame, frozen.
+        let content = self
+            .scroll_src_rect(left, screen_w, screen_h, fonts)
+            .zip(tiles.get(tile::SCROLL_CONTENT).cloned())
+            .map(|((src, dst), body)| (body, src, dst));
+        tiles.put(tile::MODAL_PREV, cache::STATIC, shell);
+        updated.push(tile::MODAL_PREV);
+        let content = content.map(|(body, src, dst)| {
+            tiles.put(tile::MODAL_PREV_CONTENT, cache::STATIC, body);
+            updated.push(tile::MODAL_PREV_CONTENT);
+            (src, dst)
+        });
+        self.modal_prev = Some(crate::app::render::ModalSnapshot { region, content });
+    }
+
     /// Modal family: the open modal's full-screen shell tile (rebuilt only on content
     /// change, keyed by `ModalShellKey`) and its single focused-widget tile (keyed by
     /// `ModalFocusKey`). Extracted from `prepare_tiles` (A2 staging).
@@ -369,6 +417,7 @@ impl App {
         screen_changed: bool,
         updated: &mut Vec<TileId>,
     ) -> Result<()> {
+        self.snapshot_closing_modal(tiles, fonts, screen_w, screen_h, screen_changed, updated);
         let modal_open = !matches!(self.screen, Screen::Home);
         // Every modal's shell only reacts to *content* changes — not to
         // `content_dirty`, which is also `true` on plain focus movement (see
@@ -849,6 +898,8 @@ impl App {
         screen_changed: bool,
     ) -> Result<Vec<TileId>> {
         let mut updated = Vec::new();
+        // The transition frame's cost is what decides whether the open fade is visible.
+        let started = screen_changed.then(Instant::now);
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
         // `self.card_size` is set by `advance_frame` (same formula) before this runs; the
@@ -909,6 +960,20 @@ impl App {
         self.prepare_dropdown(tiles, text_cache, fonts, screen_w, screen_h, &mut updated)?;
 
         self.prepare_scroll(tiles, text_cache, fonts, screen_w, screen_h, &mut updated)?;
+
+        // Entering a modal rasterizes it — shell, rows, and (Settings/About) the full
+        // content strip: tens of ms on this SoC, more than the fade itself. `advance_frame`
+        // started the clocks before all that, so re-stamp them here and the fade is
+        // measured from the first frame that can show it.
+        if let Some(started) = started {
+            tracing::debug!(
+                "entered {:?}: {} tiles rasterized in {:?}",
+                self.screen,
+                updated.len(),
+                started.elapsed()
+            );
+            self.modal_fade.restart();
+        }
         Ok(updated)
     }
 }

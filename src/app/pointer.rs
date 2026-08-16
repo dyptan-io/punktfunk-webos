@@ -205,16 +205,8 @@ impl App {
     /// The `(content viewport, pixel scroll offset)` an open dropdown anchors its
     /// option overlay to, matching what `draw_list` renders so hit-testing lands
     /// exactly where options are drawn. `None` for a screen with no dropdown.
-    /// `screen` is a param (not `self.screen`) so `draw_list`'s close-fade can pass
-    /// the screen it captured at `back()` time.
-    pub(crate) fn dropdown_geom(
-        &self,
-        screen: Screen,
-        screen_w: u32,
-        screen_h: u32,
-        fonts: &ui::text::Fonts,
-    ) -> Option<(Rect, i32)> {
-        match screen {
+    pub(crate) fn dropdown_geom(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<(Rect, i32)> {
+        match self.screen {
             Screen::Settings => {
                 let (_, content) = view::settings::layout(screen_w, screen_h);
                 let stride = ui::widgets::focus_row_stride() as i32;
@@ -261,9 +253,9 @@ impl App {
         fonts: &ui::text::Fonts,
     ) -> Option<usize> {
         let dd = self.dropdown.as_ref()?;
-        let (content, scroll_px) = self.dropdown_geom(self.screen, screen_w, screen_h, fonts)?;
+        let (content, scroll_px) = self.dropdown_geom(screen_w, screen_h, fonts)?;
         let overlay = view::settings::dropdown_overlay_rect_at_px(content, dd.row, scroll_px);
-        let options_len = self.dropdown_options_len(self.screen, dd.row);
+        let options_len = self.dropdown_options_len(dd.row);
         (0..options_len).find(|&i| ui::widgets::dropdown_option_rect(overlay, i).contains_point((x, y)))
     }
 

@@ -50,6 +50,20 @@ impl<T: Copy + PartialEq> ModalFade<T> {
         self.closing = Some((Instant::now(), payload));
     }
 
+    /// Re-stamps whichever fades are in flight to now — for a caller that does expensive
+    /// work between starting a fade and the first frame that can show it (rasterizing a
+    /// modal outlasts `MODAL_FADE`, so the clock is spent before there are pixels and the
+    /// card snaps in opaque). Both clocks move together, keeping a cross-fade in step.
+    pub fn restart(&mut self) {
+        let now = Instant::now();
+        if self.open_since.is_some() {
+            self.open_since = Some(now);
+        }
+        if let Some((t, _)) = self.closing.as_mut() {
+            *t = now;
+        }
+    }
+
     /// Cancels an in-flight close only if it's fading out `payload`.
     pub fn cancel_closing(&mut self, payload: T) {
         if self.closing.is_some_and(|(_, p)| p == payload) {
@@ -88,15 +102,21 @@ impl<T: Copy + PartialEq> ModalFade<T> {
 
     /// Advances the clock; returns whether either fade is still in flight.
     pub fn tick(&mut self, dur: Duration) -> bool {
+        self.tick_split(dur, dur)
+    }
+
+    /// [`tick`](Self::tick) for a caller whose two directions run at different speeds —
+    /// each clock clears on its own duration, or the shorter keeps asking for dead redraws.
+    pub fn tick_split(&mut self, open_dur: Duration, close_dur: Duration) -> bool {
         let mut animating = false;
         if let Some(t) = self.open_since {
-            if t.elapsed() >= dur {
+            if t.elapsed() >= open_dur {
                 self.open_since = None;
             }
             animating = true;
         }
         if let Some((t, _)) = self.closing {
-            if t.elapsed() >= dur {
+            if t.elapsed() >= close_dur {
                 self.closing = None;
             }
             animating = true;

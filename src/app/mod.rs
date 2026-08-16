@@ -22,6 +22,7 @@ use tiny_skia::Pixmap;
 use crate::app::hosts::HostEntry;
 use crate::app::render::key::ModalShellKey;
 use crate::app::render::tile;
+use crate::app::render::ModalSnapshot;
 use crate::app::state::addhost::AddHostState;
 use crate::core::event::MenuEvent;
 pub use crate::core::model::ConnectTarget;
@@ -51,7 +52,12 @@ pub(crate) const LAUNCH_GROWTH: f32 = 3.5;
 const PIN_BADGE_MARGIN: i32 = 10;
 pub(crate) const CARD_POP: Duration = Duration::from_millis(300);
 pub(crate) const CARD_POP_SHRINK: f32 = 0.14;
-pub(crate) const MODAL_FADE: Duration = Duration::from_millis(200);
+/// Modal open. Short: the card is the response to a keypress, and delay there reads as
+/// a slow TV, not as an animation.
+pub(crate) const MODAL_FADE: Duration = Duration::from_millis(50);
+/// Modal close. Slower than the open — nothing is waiting on it, and outlasting the
+/// incoming card is what makes a modal-to-modal step read as one replacing the other.
+pub(crate) const MODAL_FADE_OUT: Duration = Duration::from_millis(100);
 pub(crate) const DROPDOWN_FADE: Duration = MODAL_FADE;
 /// Scale during open — subtle, since fade dominates for full-screen modal.
 pub(crate) const MODAL_POP_SHRINK: f32 = 0.05;
@@ -372,10 +378,12 @@ pub struct App {
     pub(crate) modal_scroll_screen: Option<Screen>,
     /// Screen-space region the `tile::MODAL` painter currently covers (card bbox +
     /// [`MODAL_TILE_PAD`]) — set by `prepare_modal` when it (re)builds the tile, read by
-    /// `compose_modal` to place it. Held across frames so the close-fade, which renders
-    /// the still-uploaded tile after `self.screen` has moved to Home, still knows where
-    /// to draw it.
+    /// `compose_modal` to place it. Only the *live* modal's; a fading one carries its own
+    /// region in [`ModalSnapshot`].
     pub(crate) modal_tile_region: Rect,
+    /// The fading-out modal's pixels, taken the frame it was left. `None` when no close
+    /// fade is in flight.
+    pub(crate) modal_prev: Option<ModalSnapshot>,
     /// Whether the grid's initial build for the current library has finished — while
     /// `false`, the grid shows the loading spinner (`tile::spinner`) instead of
     /// popping cards in one by one. One-shot per library: only `prepare_tiles`'s
@@ -395,8 +403,8 @@ pub struct App {
     /// `ui::animation::FOCUS_POP` — set on every d-pad focus move).
     pub(crate) focus_anim: Option<Instant>,
     /// Open/close fade for whichever modal is up — see `ui::fade::ModalFade`'s docs. Payload
-    /// is the `Screen` that was open, so a close-fade can keep rendering it after
-    /// `self.screen` has already moved on.
+    /// is the `Screen` that was left — `snapshot_closing_modal` needs it to freeze that
+    /// screen's scroll crop after `self.screen` has moved on.
     pub(crate) modal_fade: ui::fade::ModalFade<Screen>,
     /// When the open modal's focused widget last moved (zooms it in over
     /// `ui::animation::FOCUS_POP`, same GPU-scale technique as `focus_anim` — see
@@ -546,6 +554,7 @@ impl App {
             modal_scroll_target_px: 0,
             modal_scroll_screen: None,
             modal_tile_region: Rect::new(0, 0, 1, 1),
+            modal_prev: None,
             grid_reveal_ready: true,
             spinner_frame: None,
             spinner_since: None,
@@ -945,7 +954,7 @@ impl App {
             }
             animating = true;
         }
-        if self.modal_fade.tick(MODAL_FADE) {
+        if self.modal_fade.tick_split(MODAL_FADE, MODAL_FADE_OUT) {
             animating = true;
         }
         if self.dropdown_fade.tick(DROPDOWN_FADE) {
@@ -1052,15 +1061,14 @@ impl App {
 
         // Every screen transition triggers close-fade for the left screen and
         // open-fade for the entered screen, centralized here rather than at each
-        // dispatch site. Close-fade only on returning to Home: a direct
-        // modal-to-modal jump (Settings <-> About) shares `modal_tile`, which
-        // `prepare_tiles` rebuilds for the entered screen — a close-fade
-        // there would replay a tile that already holds the new screen's content.
+        // dispatch site. Every modal exit fades, modal-to-modal included: the leaving
+        // card's pixels go to `tile::MODAL_PREV` (see `snapshot_closing_modal`), so the
+        // entering screen taking over `tile::MODAL` no longer forces the close to be a cut.
         let screen_changed = self.screen != self.last_screen;
         if screen_changed {
             let left = self.last_screen;
             self.last_screen = self.screen;
-            if !matches!(left, Screen::Home) && matches!(self.screen, Screen::Home) {
+            if !matches!(left, Screen::Home) {
                 self.modal_fade.close(left);
             }
             if !matches!(self.screen, Screen::Home) {

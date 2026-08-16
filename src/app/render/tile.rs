@@ -57,6 +57,12 @@ pub const CARD_TITLE: TileId = TileId(21);
 /// The card drop shadow, drawn behind every card — identical on all of them, so it is one
 /// shared tile rather than a margin baked into each.
 pub const CARD_SHADOW: TileId = TileId(22);
+/// The modal fading *out* — a snapshot of [`MODAL`] taken the frame it was left, so the
+/// entering modal can own [`MODAL`] while this one finishes (see `App::modal_prev`).
+pub const MODAL_PREV: TileId = TileId(23);
+/// That snapshot's scrolled content, for a leaving modal whose body lives in
+/// [`SCROLL_CONTENT`] rather than in its shell (Settings, About).
+pub const MODAL_PREV_CONTENT: TileId = TileId(24);
 
 /// First id of the spinner band. One per decoded GIF frame, so the compositor keeps every
 /// frame's texture and the animation is a swap rather than an upload.

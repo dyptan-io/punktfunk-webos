@@ -11,8 +11,6 @@ impl App {
     /// off-by-default toggles (the frame pacer).
     pub(crate) fn open_experimental(&mut self) {
         self.experimental_focused = 0;
-        // Stash scroll so Back can restore it; Experimental doesn't use it.
-        self.settings_scroll = self.scroll;
         self.screen = Screen::Experimental;
     }
 
@@ -37,7 +35,6 @@ impl App {
             (_, MenuEvent::Back) => {
                 self.persist();
                 self.screen = Screen::Settings;
-                self.scroll = self.settings_scroll;
             }
             _ => {}
         }
