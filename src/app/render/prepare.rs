@@ -19,6 +19,14 @@ use crate::ui::render::{Rect, TileId};
 use crate::ui::Painter;
 
 impl App {
+    /// Stands the loading spinner down: both its clocks and the frame it last showed. Called
+    /// wherever the grid stops waiting — whether it revealed, was invalidated, or lost its host.
+    fn clear_spinner(&mut self) {
+        self.spinner_since = None;
+        self.spinner_frame = None;
+        self.grid_build_since = None;
+    }
+
     /// Sidebar family: the focus-free strip (rebuilt on content change) plus the
     /// single focused-row overlay tile. Pushes any rebuilt tiles onto `updated`.
     /// Extracted from `prepare_tiles` as a self-contained family (A2 staging).
@@ -122,9 +130,17 @@ impl App {
                 self.grid_cards_dirty.clear();
                 // Scrolling or re-pinning a card must not hide the already-visible
                 // grid behind the spinner again.
+                let was_spinning = !self.grid_reveal_ready;
                 self.grid_reveal_ready = false;
-                self.spinner_since = None;
-                self.spinner_frame = None;
+                // This rebuild *is* the build the deadline times, so its clock always restarts.
+                self.grid_build_since = None;
+                // The rotation doesn't. A landing fetch sets `grid_dirty`, so this reset fires
+                // mid-spin on the handover from waiting to building, and starting the phase over
+                // there reads as the spinner visibly jumping.
+                if !was_spinning {
+                    self.spinner_since = None;
+                    self.spinner_frame = None;
+                }
             } else {
                 for id in std::mem::take(&mut self.grid_cards_dirty) {
                     if let Some(t) = self.card_ids.release(&id) {
@@ -271,21 +287,28 @@ impl App {
             // built earlier can still be waiting behind a re-dirtied sibling; requires
             // `art_ready` too so a placeholder built this tick can't count as revealed.
             if !self.grid_reveal_ready {
-                let window_ready = (0..count)
-                    .filter(|&idx| {
-                        let row = row_of(idx);
-                        row >= build_lo && row <= build_hi
-                    })
-                    .all(|idx| {
-                        layout
-                            .pin_id_at(&self.games, idx)
-                            .is_none_or(|id| self.card_ids.get(id).is_some_and(|t| tiles.contains(t)) && art_ready(idx))
-                    });
                 let since = *self.spinner_since.get_or_insert_with(Instant::now);
-                self.grid_reveal_ready = window_ready || since.elapsed() >= SPINNER_MAX_WAIT;
+                // The spinner covers the fetch too, not just the card build: while the request
+                // is in flight `count` is 0, so the window check below would find nothing
+                // outstanding and reveal an empty grid for a whole network round-trip. The
+                // build's deadline stays unarmed for the same reason — it must not expire on
+                // time the build never got.
+                if !self.library_fetch_in_flight() {
+                    let build_since = *self.grid_build_since.get_or_insert_with(Instant::now);
+                    let window_ready = (0..count)
+                        .filter(|&idx| {
+                            let row = row_of(idx);
+                            row >= build_lo && row <= build_hi
+                        })
+                        .all(|idx| {
+                            layout.pin_id_at(&self.games, idx).is_none_or(|id| {
+                                self.card_ids.get(id).is_some_and(|t| tiles.contains(t)) && art_ready(idx)
+                            })
+                        });
+                    self.grid_reveal_ready = window_ready || build_since.elapsed() >= SPINNER_MAX_WAIT;
+                }
                 if self.grid_reveal_ready {
-                    self.spinner_since = None;
-                    self.spinner_frame = None;
+                    self.clear_spinner();
                     // Everything built behind the spinner becomes visible in this
                     // one frame, so it all zooms in off a single clock.
                     let now = Instant::now();
@@ -321,7 +344,7 @@ impl App {
             }
         } else {
             self.grid_reveal_ready = true;
-            self.spinner_since = None;
+            self.clear_spinner();
             if tiles.ensure_static(tile::NO_HOST, || {
                 ui::tiles::render_text_tile(
                     text_cache,

@@ -399,6 +399,11 @@ pub struct App {
     pub(crate) spinner_frame: Option<usize>,
     /// When the grid last became not-ready — feeds the spinner's rotation phase.
     pub(crate) spinner_since: Option<Instant>,
+    /// The clock [`SPINNER_MAX_WAIT`] is measured against, armed on the first frame the grid
+    /// has a library to build from. Stays `None` for the fetch before that, which is why it
+    /// can't be `spinner_since`: that one starts at the fetch and must run continuously, or
+    /// the spinner's rotation jumps when the games land.
+    pub(crate) grid_build_since: Option<Instant>,
     // ------------------------------------------------------------ animations --
     /// Grid scroll offset actually rendered this frame (px; 0 = row 0 at
     /// `GRID_TOP_Y`) — eases toward `grid_scroll_target` each tick.
@@ -567,6 +572,7 @@ impl App {
             grid_reveal_ready: true,
             spinner_frame: None,
             spinner_since: None,
+            grid_build_since: None,
             grid_scroll: 0,
             grid_scroll_target: 0,
             focus_anim: None,

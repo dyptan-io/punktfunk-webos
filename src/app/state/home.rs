@@ -465,6 +465,13 @@ impl App {
         ));
     }
 
+    /// Whether `select_host`'s library fetch is still out. Deliberately not `!games_loaded`:
+    /// that stays `false` down the `Unreachable` path too, which would leave the grid's
+    /// loading spinner running forever behind the Wake dialog.
+    pub(crate) fn library_fetch_in_flight(&self) -> bool {
+        self.games_rx.is_some()
+    }
+
     /// Drains `select_host`'s library fetch; switching hosts aborts old fetches safely.
     pub fn drain_games(&mut self) -> bool {
         let Some(rx) = &self.games_rx else { return false };
