@@ -224,6 +224,24 @@ impl Painter {
         self.fill(&path, color);
     }
 
+    /// [`fill_circle`](Self::fill_circle) with `Screen` blend (overlapping circles lighten).
+    pub fn fill_circle_screen(&mut self, cx: f32, cy: f32, r: f32, color: Color) {
+        if r <= 0.0 {
+            return;
+        }
+        let (cx, cy) = (cx - self.origin.0 as f32, cy - self.origin.1 as f32);
+        let Some(path) = PathBuilder::from_circle(cx, cy, r) else {
+            return;
+        };
+        let paint = Paint {
+            blend_mode: tiny_skia::BlendMode::Screen,
+            anti_alias: true,
+            ..solid_paint(color)
+        };
+        self.pixmap
+            .fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+    }
+
     fn fill(&mut self, path: &tiny_skia::Path, color: Color) {
         let paint = solid_paint(color);
         self.pixmap

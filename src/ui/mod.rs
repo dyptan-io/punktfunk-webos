@@ -18,6 +18,7 @@ pub mod layout;
 pub mod painter;
 pub mod render;
 pub mod scroll;
+pub mod spinner;
 pub mod style;
 pub mod text;
 pub mod text_raster;

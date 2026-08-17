@@ -584,12 +584,7 @@ impl App {
                 app.select_host(host, port, mgmt_port);
             }
         }
-        // Decodes the spinner GIF now, off the render thread, so the LZW/frame-compose
-        // cost lands here instead of stalling the first `draw_list` call that needs a
-        // frame (right when the grid starts loading — the worst possible moment for a
-        // render-thread hitch). `spinner_frames`'s `OnceLock` makes this a pure warm-up:
-        // harmless if the spinner is drawn before this thread finishes, redundant work
-        // (never a race) if it finishes first.
+        // Rasterizes the spinner's frames off the render thread (OnceLock warm-up).
         // Applies the persisted "Show logs" preference to the otherwise-ephemeral overlay.
         if app.settings.show_logs {
             crate::runtime::set_log_overlay_enabled(true);

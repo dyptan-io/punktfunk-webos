@@ -307,6 +307,10 @@ impl Compositor {
         Ok(())
     }
 
+    pub fn has_tile(&self, tile: TileId) -> bool {
+        self.tiles.contains_key(&tile)
+    }
+
     /// Destroys all cached GPU textures (call on stream start to free VRAM).
     pub fn clear_all(&mut self) {
         // SAFETY: `unsafe_textures` detaches each `Texture` from its creator's

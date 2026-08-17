@@ -64,8 +64,7 @@ pub const MODAL_PREV: TileId = TileId(23);
 /// [`SCROLL_CONTENT`] rather than in its shell (Settings, About).
 pub const MODAL_PREV_CONTENT: TileId = TileId(24);
 
-/// First id of the spinner band. One per decoded GIF frame, so the compositor keeps every
-/// frame's texture and the animation is a swap rather than an upload.
+/// First id of the spinner band. One per frame, so animation is a swap not an upload.
 const SPINNER_BASE: u32 = 64;
 /// First id of the grid-card band, interned by pin id (see [`CardIds`]).
 const CARD_BASE: u32 = 256;

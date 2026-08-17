@@ -1,5 +1,5 @@
-//! Everything this app ships as bytes: its brand font family, its icon font, the sidebar
-//! logo and the loading spinner.
+//! Everything this app ships as bytes: its brand font family, its icon font, the
+//! sidebar logo, and the loading spinner (rasterized via [`crate::ui::spinner`]).
 //!
 //! Deliberately not in `ui`. `ui` is a widget library — it names font *roles*
 //! ([`ui::text::FontId`]) and takes glyphs through [`ui::text_raster::TextRaster`]; which
@@ -44,76 +44,37 @@ pub fn logo_pixmap() -> Option<&'static Pixmap> {
     .as_ref()
 }
 
-/// The animated loading spinner (purple, from
-/// lottiefiles.com/free-animation/purple-spinner-peYjszu1K5, embedded as
-/// `assets/logo/punktfunk-spinner.gif`).
-static SPINNER_GIF_BYTES: &[u8] = include_bytes!("../assets/logo/punktfunk-spinner.gif");
+/// One pre-rasterized spinner frame, ready to upload as a tile texture.
+pub type SpinnerFrame = crate::ui::Painter;
 
-/// One decoded spinner frame (straight RGBA8) and when it leaves the screen.
-pub struct SpinnerFrame {
-    pub width: u32,
-    pub height: u32,
-    /// Nanoseconds from the start of the loop to the end of this frame — the cumulative sum
-    /// of every delay up to and including this one, so [`spinner_frame_at`] can binary-search
-    /// it instead of re-adding the whole table on every call while the spinner is on screen.
-    pub end_ns: u128,
-    pub pixels: Vec<u8>,
-}
-
-/// Decodes `SPINNER_GIF_BYTES` once into pre-decoded straight RGBA8 frames.
+/// Rasterizes the spinner's whole cycle once, in the brand's two violets.
+/// All frames up front so the render thread never stalls on a `tiny_skia` fill.
 pub fn spinner_frames() -> &'static [SpinnerFrame] {
     static FRAMES: std::sync::OnceLock<Vec<SpinnerFrame>> = std::sync::OnceLock::new();
     FRAMES.get_or_init(|| {
-        use image::{codecs::gif::GifDecoder, AnimationDecoder};
-        let Ok(decoder) = GifDecoder::new(std::io::Cursor::new(SPINNER_GIF_BYTES)) else {
-            return Vec::new();
-        };
-        let Ok(raw_frames) = decoder.into_frames().collect::<image::ImageResult<Vec<_>>>() else {
-            return Vec::new();
-        };
-        let mut frames = Vec::with_capacity(raw_frames.len());
-        let mut end_ns = 0u128;
-        for frame in raw_frames {
-            let (w, h) = frame.buffer().dimensions();
-            let (numer, denom) = frame.delay().numer_denom_ms();
-            let raw_delay = numer.checked_div(denom).unwrap_or(0);
-            // WHY: clamp to ~30 FPS min to avoid busy-looping the render thread.
-            let delay_ms = if raw_delay < 20 { 33 } else { raw_delay };
-            end_ns += std::time::Duration::from_millis(u64::from(delay_ms)).as_nanos();
-            let pixels = frame.into_buffer().into_raw();
-            frames.push(SpinnerFrame {
-                width: w,
-                height: h,
-                end_ns,
-                pixels,
-            });
-        }
-        frames
+        let theme = crate::ui::style::theme();
+        (0..crate::ui::spinner::FRAMES)
+            .map(|i| {
+                crate::ui::spinner::frame(
+                    i as f32 / crate::ui::spinner::FRAMES as f32,
+                    theme.accent_bright,
+                    theme.accent,
+                )
+            })
+            .collect()
     })
 }
 
-/// Returns `SpinnerFrame` at index `idx`, or `None` when the GIF decoded to zero frames.
+/// Returns `SpinnerFrame` at index `idx`.
 pub fn spinner_frame(idx: usize) -> Option<&'static SpinnerFrame> {
     spinner_frames().get(idx)
 }
 
 /// Returns the frame index and reference for `phase` seconds after the spinner started.
-/// Falls back to a 1×1 transparent dummy if the GIF decoded to zero frames.
 pub fn spinner_frame_at(phase: f32) -> (usize, &'static SpinnerFrame) {
     let frames = spinner_frames();
-    let Some(last) = frames.last() else {
-        static DUMMY: std::sync::OnceLock<SpinnerFrame> = std::sync::OnceLock::new();
-        let dummy = DUMMY.get_or_init(|| SpinnerFrame {
-            width: 1,
-            height: 1,
-            end_ns: 100_000_000,
-            pixels: vec![0, 0, 0, 0],
-        });
-        return (0, dummy);
-    };
-    let elapsed = std::time::Duration::from_secs_f32(phase.max(0.0)).as_nanos() % last.end_ns.max(1);
-    // First frame whose end is past `elapsed` — the frames are sorted by `end_ns` by
-    // construction, which is what makes the search valid.
-    let idx = frames.partition_point(|f| f.end_ns <= elapsed).min(frames.len() - 1);
+    let cycle = crate::ui::spinner::CYCLE.as_secs_f32();
+    let t = (phase.max(0.0) % cycle) / cycle;
+    let idx = ((t * frames.len() as f32) as usize).min(frames.len() - 1);
     (idx, &frames[idx])
 }

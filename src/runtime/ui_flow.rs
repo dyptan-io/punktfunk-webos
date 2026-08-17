@@ -1,21 +1,17 @@
 use super::*;
 
-/// Uploads one decoded GIF frame as `tile::spinner(idx)`'s texture. Both the pre-upload
-/// below and the per-tick `updated` pass go through here, so they can't drift on format.
+/// Uploads one rasterized spinner frame as `tile::spinner(idx)`'s texture.
 fn upload_spinner(
     compositor: &mut Compositor,
     texture_creator: &sdl2::render::TextureCreator<sdl2::video::WindowContext>,
     idx: usize,
 ) -> Result<()> {
+    let tile = tile::spinner(idx);
+    if compositor.has_tile(tile) {
+        return Ok(());
+    }
     if let Some(frame) = crate::assets::spinner_frame(idx) {
-        compositor.upload_raw(
-            texture_creator,
-            tile::spinner(idx),
-            frame.width,
-            frame.height,
-            sdl2::pixels::PixelFormatEnum::RGBA32,
-            &frame.pixels,
-        )?;
+        compositor.upload(texture_creator, tile, frame, false)?;
     }
     Ok(())
 }
@@ -41,11 +37,11 @@ pub(super) fn run_ui_flow(
 ) -> Result<Option<ConnectOutcome>> {
     // Target period for this loop's render ticks, animating or not. Each active
     // (render) iteration used to sleep a flat 16ms *on top of* whatever the tick's own
-    // work cost, so its real period was `work + 16ms` rather than 16ms — at a GIF frame
-    // delay of ~33ms that was enough overshoot to occasionally miss a frame's window
+    // work cost, so its real period was `work + 16ms` rather than 16ms — at a spinner
+    // frame delay of ~40ms that was enough overshoot to occasionally miss a frame's window
     // and skip straight to the next one. Pacing off each tick's own start time keeps
     // the loop at a steady ~60Hz regardless of work cost, which comfortably samples
-    // every 33ms spinner frame.
+    // every 40ms spinner frame.
     const TICK_BUDGET: Duration = Duration::from_millis(16);
     canvas.window_mut().show();
     let mut app = App::new(identity.clone());
@@ -53,7 +49,7 @@ pub(super) fn run_ui_flow(
     // Recreated per menu entry, same as `app`.
     let mut tiles = crate::ui::cache::TileStore::new();
     // Upload every spinner frame's GPU texture now, once, rather than letting each
-    // frame's first appearance create it lazily inside the render loop. `upload_raw`
+    // frame's first appearance create it lazily inside the render loop. The upload
     // creates a *new* static texture (allocation, not just a pixel copy) the first
     // time a `tile::spinner(idx)` is seen — done inline during the animation
     // that meant the first spin cycle stalled once per unique frame, right when the
@@ -374,9 +370,9 @@ pub(super) fn run_ui_flow(
         for tile in std::mem::take(&mut app.evicted_tiles) {
             compositor.drop_tile(tile);
         }
-        // Two families upload from raw decoded pixels rather than from a rasterized
-        // painter (the spinner's GIF frames, the hero's cover art); everything else is a
-        // tile the store just built.
+        // Two families upload from outside the tile store (the spinner's pre-rasterized
+        // frames, the hero's raw decoded cover art); everything else is a tile the store
+        // just built.
         for id in updated {
             if let Some(idx) = tile::spinner_index(id) {
                 upload_spinner(compositor, texture_creator, idx)?;

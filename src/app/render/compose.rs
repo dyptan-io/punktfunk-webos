@@ -508,13 +508,14 @@ impl App {
         } else if !input.grid_reveal_ready {
             let phase = self.spinner_since.map_or(0.0, |s| s.elapsed().as_secs_f32());
             let (idx, frame) = crate::assets::spinner_frame_at(phase);
-            let x = grid_x + (available_w as i32 - frame.width as i32) / 2;
+            let (fw, fh) = (frame.width(), frame.height());
+            let x = grid_x + (available_w as i32 - fw as i32) / 2;
             // 40% down rather than dead-center, which reads as slightly low on a TV.
             let area_h = screen_h as i32 - view::home::GRID_TOP_Y;
-            let y = view::home::GRID_TOP_Y + (area_h - frame.height as i32) * 2 / 5;
+            let y = view::home::GRID_TOP_Y + (area_h - fh as i32) * 2 / 5;
             cmds.push(DrawCmd::Tex {
                 tile: tile::spinner(idx),
-                dst: Rect::new(x, y, frame.width, frame.height),
+                dst: Rect::new(x, y, fw, fh),
                 alpha: 0xff,
             });
         } else {
