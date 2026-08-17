@@ -329,6 +329,14 @@ pub(super) fn run_ui_flow(
         // Polled every tick like the streaming loop's toast, not gated behind
         // `content_dirty` — its own fade needs frames regardless of anything else.
         let notif_frame = notif.frame();
+        // The deferred half of a press (see `App::press`): the dip has played out, so the
+        // widget's action runs now.
+        if let Some(launched) = app.poll_press(display_mode.w as u32, display_mode.h as u32, fonts) {
+            dirty = true;
+            if launched.is_some() {
+                break 'ui;
+            }
+        }
         let animating = app.tick_animations()
             || app.tiles_pending
             || !app.grid_reveal_ready

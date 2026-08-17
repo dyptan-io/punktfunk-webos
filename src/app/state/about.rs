@@ -20,21 +20,19 @@ impl App {
 
     /// Navigate: Up/Down scroll by line, Left/Right by page.
     pub(crate) fn handle_about_event(&mut self, ev: MenuEvent, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) {
-        let (total, visible) = self.about_scroll_geometry(screen_w, screen_h, fonts);
-        // Page step with anchor: show last few lines of previous page
-        let page_step = visible.saturating_sub(2).max(1);
+        // Only the scrolling events need the document measured (wrapping it is the
+        // expensive part), so leaving is not made to pay for it.
         match ev {
-            MenuEvent::Up => {
-                self.scroll.scroll_by(-1, total, visible);
-            }
-            MenuEvent::Down => {
-                self.scroll.scroll_by(1, total, visible);
-            }
-            MenuEvent::Left => {
-                self.scroll.page(page_step, false, total, visible);
-            }
-            MenuEvent::Right => {
-                self.scroll.page(page_step, true, total, visible);
+            MenuEvent::Up | MenuEvent::Down | MenuEvent::Left | MenuEvent::Right => {
+                let (total, visible) = self.about_scroll_geometry(screen_w, screen_h, fonts);
+                // Page step with anchor: show last few lines of previous page
+                let page_step = visible.saturating_sub(2).max(1);
+                match ev {
+                    MenuEvent::Up => self.scroll.scroll_by(-1, total, visible),
+                    MenuEvent::Down => self.scroll.scroll_by(1, total, visible),
+                    MenuEvent::Left => self.scroll.page(page_step, false, total, visible),
+                    _ => self.scroll.page(page_step, true, total, visible),
+                };
             }
             // Return to Settings (not Home) to preserve settings context
             MenuEvent::Back | MenuEvent::Confirm => {

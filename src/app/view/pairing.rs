@@ -134,10 +134,7 @@ pub fn render_digit_tile(text_cache: &mut ui::text::TextCache, fonts: &Fonts, di
 /// like the shell's copy (see `ui::Canvas::primary_button`), not the surface-card treatment
 /// the digit tiles use, so the primary action keeps its emphasis while focused.
 pub fn render_button_tile(text_cache: &mut ui::text::TextCache, fonts: &Fonts, w: u32, h: u32) -> Result<ui::Painter> {
-    let pad = ui::tiles::ROW_TILE_PAD;
-    let mut p = ui::Painter::new(w + 2 * pad as u32, h + 2 * pad as u32);
-    ui::Canvas::tile(&mut p, text_cache, fonts).primary_button(Rect::new(pad, pad, w, h), REQUEST_LABEL)?;
-    Ok(p)
+    ui::tiles::padded_widget_tile(text_cache, fonts, w, h, |c, rect| c.primary_button(rect, REQUEST_LABEL))
 }
 
 /// The pairing modal as a [`ModalScreen`].

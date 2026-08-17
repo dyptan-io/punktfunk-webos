@@ -9,6 +9,57 @@ pub const FOCUS_POP: Duration = Duration::from_millis(140);
 /// driving them (`App::focus_anim`) is cleared on it, so nothing may outlast it.
 pub const CARD_FOCUS_POP: Duration = Duration::from_millis(160);
 
+/// How long a pressed button takes to spring back out of its dip.
+pub const PRESS_POP: Duration = Duration::from_millis(120);
+
+/// How far a pressed widget sinks, in px.
+const PRESS_DROP: f32 = 5.0;
+
+/// How far a focused widget's tile grows while focused — the pop every composited focus
+/// tile rides (see [`focus_tile_rect`]).
+pub const FOCUS_GROWTH: f32 = 0.02;
+
+/// A button being pushed in. Same animation wherever a button lives, so only the clock
+/// belongs to its owner (`App`'s focused widget, the in-stream `ConfirmDialog`).
+#[derive(Default, Clone, Copy)]
+pub struct Press(Option<Instant>);
+
+impl Press {
+    /// Starts the dip. The owner decides whether to wait for it before acting.
+    pub fn arm(&mut self) {
+        self.0 = Some(Instant::now());
+    }
+
+    /// Whether a dip is in flight — frames are owed while it is.
+    pub fn armed(self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Whether an armed dip has played all the way out.
+    pub fn landed(self) -> bool {
+        self.0.is_some_and(|t| t.elapsed() >= PRESS_POP)
+    }
+
+    /// Disarms, reporting whether anything was armed.
+    pub fn take(&mut self) -> bool {
+        self.0.take().is_some()
+    }
+
+    /// `base` pushed down by however far this press has got.
+    ///
+    /// A translation, not a scale: the tile blits 1:1, so its label and icon never
+    /// resample, and it reads the same on a narrow button as on a full-width row.
+    pub fn rect(self, base: Rect) -> Rect {
+        base.offset(0, (PRESS_DROP * (1.0 - anim_frac(self.0, PRESS_POP))) as i32)
+    }
+}
+
+/// Where a composited focus tile is drawn: the focus pop's zoom with any press dip on
+/// top. Every focus tile goes through this, so the two motions always compose alike.
+pub fn focus_tile_rect(base: Rect, focus_anim: Option<Instant>, press: Press) -> Rect {
+    press.rect(zoom_rect(base, anim_frac(focus_anim, FOCUS_POP), FOCUS_GROWTH))
+}
+
 /// Cubic ease-out function.
 pub fn ease(f: f32) -> f32 {
     1.0 - (1.0 - f).powi(3)

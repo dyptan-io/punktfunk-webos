@@ -240,7 +240,12 @@ impl App {
             return None;
         }
         let total = menu::settings_row_count();
-        (0..total).find(|&r| ui::widgets::focus_row_rect_at_px(content, r, scroll_px).contains_point((x, y)))
+        (0..total).find(|&r| {
+            let rect = ui::widgets::focus_row_rect_at_px(content, r, scroll_px);
+            // Clipped edge rows aren't hoverable: a focused row composites on its own
+            // unclipped tile, so hovering one would pop it outside the card.
+            rect.y() >= content.y() && rect.bottom() <= content.bottom() && rect.contains_point((x, y))
+        })
     }
 
     /// Settings' content viewport and its current animated scroll offset — the shared
@@ -395,11 +400,20 @@ impl App {
         self.handle_mouse_motion(x, y, screen_w, screen_h, fonts);
         if self.hover_close {
             // Same "what Back means here" as everywhere else — see `back`'s docs.
-            return self.back();
+            return self.back(screen_w, screen_h, fonts);
+        }
+        // An open dropdown owns the click wherever it landed: an option, or outside it,
+        // which closes it. Same as hover.
+        if self.dropdown.is_some() {
+            let ev = self.dropdown_click_event(x, y, screen_w, screen_h, fonts);
+            self.handle_menu_event(ev, screen_w, screen_h, fonts);
+            return None;
         }
         // Unlike hover, a click DOES move `home_focus`/`settings_focused` — fresh at
         // the click's own position, so it confirms what was actually clicked rather
-        // than whatever the keyboard/remote last focused elsewhere.
+        // than whatever the keyboard/remote last focused elsewhere. Each arm only
+        // *places* focus (or bails on a click that landed on nothing); the shared
+        // `press` below is what confirms it, so a click and an OK press act alike.
         match self.screen {
             Screen::Home => {
                 // The ⋯ button sits inside its row, so it has to be tested first or the
@@ -432,14 +446,8 @@ impl App {
                     }
                     self.home_focus = HomeFocus::Grid(idx);
                 }
-                self.handle_home_event(MenuEvent::Confirm, screen_w, screen_h)
             }
             Screen::Settings => {
-                if self.dropdown.is_some() {
-                    let ev = self.dropdown_click_event(x, y, screen_w, screen_h, fonts);
-                    self.handle_settings_event(ev, screen_h);
-                    return None;
-                }
                 // `?` bails if the click hit the gap between rows or outside the
                 // viewport — nothing to focus or confirm.
                 self.settings_focused = self.settings_row_at(x, y, screen_w, screen_h)?;
@@ -460,87 +468,39 @@ impl App {
                         return None;
                     }
                 }
-                self.handle_settings_event(MenuEvent::Confirm, screen_h);
-                None
             }
             Screen::Pairing => {
                 // The Magic Remote pointer is the most reliable input on this TV, so the
                 // "Request access" button is clickable directly: focus it and confirm.
                 let card = view::pairing::card_rect(screen_w, screen_h, fonts);
-                if view::pairing::request_button_rect(card, fonts).contains_point((x, y)) {
-                    self.pairing_focus = PairingFocus::RequestAccess;
-                    self.handle_pairing_event(MenuEvent::Confirm);
+                if !view::pairing::request_button_rect(card, fonts).contains_point((x, y)) {
+                    return None;
                 }
-                None
+                self.pairing_focus = PairingFocus::RequestAccess;
             }
-            Screen::Wake => {
-                self.handle_wake_event(MenuEvent::Confirm);
-                None
-            }
-            Screen::ForgetHost => {
-                self.handle_forget_host_event(MenuEvent::Confirm);
-                None
-            }
-            // A click focuses the row it landed on first, then confirms it — same
-            // click-moves-focus rule as Home/Settings above.
             Screen::HostMenu => {
                 let (i, dots) = self.host_menu_row_at(x, y, screen_w, screen_h, fonts)?;
                 self.menu_focused = i;
                 self.host_menu_dots = dots;
-                self.handle_host_menu_event(MenuEvent::Confirm);
-                None
             }
+            // One row, already focused — the click only has to have landed on it.
             Screen::WakeSettings => {
                 let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
-                if ui::widgets::focus_row_rect(content, 0).contains_point((x, y)) {
-                    self.handle_wake_settings_event(MenuEvent::Confirm);
-                }
-                None
-            }
-            Screen::SpeedTest => {
-                self.handle_speed_test_event(MenuEvent::Confirm);
-                None
-            }
-            // A click anywhere but the close button (handled above) dismisses it,
-            // same as the one OK button would — there's nothing else on this card.
-            Screen::PinLimit => {
-                self.handle_pin_limit_event(MenuEvent::Confirm);
-                None
-            }
-            Screen::Diagnostics => {
-                if self.dropdown.is_some() {
-                    let ev = self.dropdown_click_event(x, y, screen_w, screen_h, fonts);
-                    self.handle_diagnostics_event(ev);
+                if !ui::widgets::focus_row_rect(content, 0).contains_point((x, y)) {
                     return None;
                 }
-                if let Some(row) = self.modal_list_row_at(x, y, screen_w, screen_h, fonts) {
-                    self.diagnostics_focused = row;
-                    self.handle_diagnostics_event(MenuEvent::Confirm);
-                }
-                None
             }
-            Screen::Experimental => {
-                if let Some(row) = self.modal_list_row_at(x, y, screen_w, screen_h, fonts) {
-                    self.experimental_focused = row;
-                    self.handle_experimental_event(MenuEvent::Confirm);
-                }
-                None
+            // Identical row-list geometry; only which focus field they carry differs.
+            Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings => {
+                let row = self.modal_list_row_at(x, y, screen_w, screen_h, fonts)?;
+                *self.list_modal_focused_mut()? = row;
             }
-            Screen::CursorSettings => {
-                if let Some(row) = self.modal_list_row_at(x, y, screen_w, screen_h, fonts) {
-                    self.cursor_settings_focused = row;
-                    self.handle_cursor_settings_event(MenuEvent::Confirm);
-                }
-                None
-            }
-            // A click confirms whichever of Cancel/Send currently has focus —
-            // same click-confirms-the-focused-button shape as ForgetHost.
-            Screen::SendLogs => {
-                self.handle_send_logs_event(MenuEvent::Confirm);
-                None
-            }
+            // Nothing positional to hit: the confirm dialogs confirm whichever button
+            // already has focus, and PinLimit has a single OK.
+            Screen::Wake | Screen::ForgetHost | Screen::SpeedTest | Screen::SendLogs | Screen::PinLimit => {}
             // Nothing clickable but the close button (handled above).
-            Screen::AddHost | Screen::EditHost | Screen::About => None,
+            Screen::AddHost | Screen::EditHost | Screen::About => return None,
         }
+        self.press(screen_w, screen_h, fonts)
     }
 }

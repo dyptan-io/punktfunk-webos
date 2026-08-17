@@ -199,31 +199,28 @@ pub fn render_focused_row_tile(
     menu_focused: bool,
     online: Option<bool>,
 ) -> Result<ui::Painter> {
-    let pad = ui::tiles::ROW_TILE_PAD;
     let (w, h) = (
         ui::widgets::SIDEBAR_W - 2 * ui::widgets::SIDEBAR_PAD as u32,
         ui::widgets::SIDEBAR_ROW_H,
     );
-    let rect = Rect::new(pad, pad, w, h);
-    let mut p = ui::Painter::new(w + 2 * pad as u32, h + 2 * pad as u32);
-    let c = &mut Canvas::tile(&mut p, text_cache, fonts);
-    if let Some(entry) = entries.get(index) {
-        draw_host_row(
-            c,
-            rect,
-            entry.name(),
-            &HostRowState {
-                paired: entry.is_paired(),
-                focused: true,
-                selected: false,
-                menu_focused,
-                online,
-            },
-        )?;
-    } else if index == entries.len() {
-        draw_utility_row(c, rect, "+ Add host", true)?;
-    } else {
-        draw_utility_row(c, rect, "Settings", true)?;
-    }
-    Ok(p)
+    ui::tiles::padded_widget_tile(text_cache, fonts, w, h, |c, rect| {
+        if let Some(entry) = entries.get(index) {
+            draw_host_row(
+                c,
+                rect,
+                entry.name(),
+                &HostRowState {
+                    paired: entry.is_paired(),
+                    focused: true,
+                    selected: false,
+                    menu_focused,
+                    online,
+                },
+            )
+        } else if index == entries.len() {
+            draw_utility_row(c, rect, "+ Add host", true)
+        } else {
+            draw_utility_row(c, rect, "Settings", true)
+        }
+    })
 }

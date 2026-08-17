@@ -25,6 +25,23 @@ fn padded_card_tile(w: u32, h: u32, pad: i32, draw: impl FnOnce(&mut Painter, Re
     p
 }
 
+/// A widget rasterized with [`ROW_TILE_PAD`] of transparent margin all round, handed its
+/// own rect within it — the shape every composited focus tile shares. The margin is what
+/// lets the compositor pop and dip the tile without clipping its shadow.
+pub fn padded_widget_tile(
+    text_cache: &mut TextCache,
+    fonts: &Fonts,
+    w: u32,
+    h: u32,
+    draw: impl FnOnce(&mut Canvas, Rect) -> Result<()>,
+) -> Result<Painter> {
+    let pad = ROW_TILE_PAD;
+    let mut p = Painter::new(w + 2 * pad as u32, h + 2 * pad as u32);
+    let mut c = Canvas::tile(&mut p, text_cache, fonts);
+    draw(&mut c, Rect::new(pad, pad, w, h))?;
+    Ok(p)
+}
+
 /// The card drop shadow as a shared tile (all cards are one size), composited *behind*
 /// each card rather than baked into it. Every card's shadow is identical, so baking it in
 /// bought nothing and cost every card tile a 20px margin a side — ~35% more pixels

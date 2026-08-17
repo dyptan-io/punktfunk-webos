@@ -114,6 +114,8 @@ pub(super) struct ConfirmDialog {
     shell_dirty: bool,
     focus_dirty: bool,
     focus_anim: Option<Instant>,
+    /// The focused button's press dip, playing out over the close fade it starts.
+    press: crate::ui::animation::Press,
     tc: crate::ui::text::TextCache,
 }
 
@@ -132,6 +134,7 @@ impl ConfirmDialog {
             shell_dirty: false,
             focus_dirty: false,
             focus_anim: None,
+            press: crate::ui::animation::Press::default(),
             tc: crate::ui::text::TextCache::new(),
         }
     }
@@ -143,6 +146,7 @@ impl ConfirmDialog {
     /// Opens (or reopens) with `focus` focused.
     pub(super) fn open(&mut self, focus: usize) {
         self.focus = Some(focus);
+        self.press = crate::ui::animation::Press::default();
         self.fade.reopen();
         self.shell_dirty = true;
         self.focus_dirty = true;
@@ -154,6 +158,11 @@ impl ConfirmDialog {
         self.focus = Some(focus);
         self.focus_dirty = true;
         self.focus_anim = Some(Instant::now());
+    }
+
+    /// Dips the focused button, over whatever the press starts (close fade, teardown).
+    fn press(&mut self) {
+        self.press.arm();
     }
 
     /// Starts close-fade with the focused button.
@@ -207,14 +216,14 @@ impl ConfirmDialog {
                 y,
                 ..
             } => {
-                return match button_at(x, y) {
-                    Some(0) => Some(ConfirmAction::Confirmed),
-                    Some(_) => {
-                        self.dismiss();
-                        Some(ConfirmAction::Dismissed)
-                    }
-                    None => None,
-                };
+                let i = button_at(x, y)?;
+                self.press();
+                return Some(if i == 0 {
+                    ConfirmAction::Confirmed
+                } else {
+                    self.dismiss();
+                    ConfirmAction::Dismissed
+                });
             }
             _ => {}
         }
@@ -232,8 +241,15 @@ impl ConfirmDialog {
                 self.set_focus(1 - focus);
                 Some(ConfirmAction::Navigated)
             }
-            Some(MenuEvent::Confirm) if focus == 0 => Some(ConfirmAction::Confirmed),
-            Some(MenuEvent::Confirm | MenuEvent::Back) => {
+            Some(MenuEvent::Confirm) if focus == 0 => {
+                self.press();
+                Some(ConfirmAction::Confirmed)
+            }
+            Some(ev @ (MenuEvent::Confirm | MenuEvent::Back)) => {
+                // Back is a dismissal, not a press — only the pressed button dips.
+                if ev == MenuEvent::Confirm {
+                    self.press();
+                }
                 self.dismiss();
                 Some(ConfirmAction::Dismissed)
             }
@@ -285,7 +301,6 @@ impl ConfirmDialog {
             btn_rect.width() + 2 * pad as u32,
             btn_rect.height() + 2 * pad as u32,
         );
-        let f = crate::ui::animation::anim_frac(self.focus_anim, crate::ui::animation::FOCUS_POP);
         let shell_dst = crate::ui::render::Rect::new(0, dy, w, h);
         cmds.push(DrawCmd::Fill {
             rect: full,
@@ -298,7 +313,7 @@ impl ConfirmDialog {
         });
         cmds.push(DrawCmd::Tex {
             tile: tile::DISCONNECT_FOCUS_BUTTON,
-            dst: crate::ui::animation::zoom_rect(base, f, 0.02),
+            dst: crate::ui::animation::focus_tile_rect(base, self.focus_anim, self.press),
             alpha: (255.0 * m) as u8,
         });
         Ok(())
@@ -496,10 +511,7 @@ fn pin_hold_gate(
     // toggled, or one whose screen/focus moved out from under it, resolves to
     // nothing.
     let tapped = !hold.fired && matches!(app.screen, Screen::Home) && hold.focus == app.home_focus;
-    let launched = tapped
-        && app
-            .handle_home_event(MenuEvent::Confirm, display_mode.w as u32, display_mode.h as u32)
-            .is_some();
+    let launched = tapped && app.press(display_mode.w as u32, display_mode.h as u32, fonts).is_some();
     Some(if launched {
         EventAction::Launch
     } else {
@@ -507,8 +519,8 @@ fn pin_hold_gate(
     })
 }
 
-/// Routes a resolved `MenuEvent` to whichever screen is up — one of the
-/// dispatch sites a new screen has to be added to.
+/// Feeds a resolved `MenuEvent` to the app, translating what it returns into this
+/// loop's terms. The per-screen routing is `App::handle_menu_event`.
 fn dispatch_menu_event(
     app: &mut App,
     menu_ev: MenuEvent,
@@ -517,33 +529,20 @@ fn dispatch_menu_event(
 ) -> EventAction {
     let (w, h) = (display_mode.w as u32, display_mode.h as u32);
     if menu_ev == MenuEvent::Back {
-        return if app.back().is_some() {
+        return if app.back(w, h, fonts).is_some() {
             EventAction::Launch
         } else {
             EventAction::Next
         };
     }
-    match app.screen {
-        Screen::Home => {
-            if app.handle_home_event(menu_ev, w, h).is_some() {
-                return EventAction::Launch;
-            }
-        }
-        Screen::Pairing => app.handle_pairing_event(menu_ev),
-        Screen::Settings => app.handle_settings_event(menu_ev, h),
-        Screen::AddHost => app.handle_add_host_event(menu_ev),
-        Screen::Wake => app.handle_wake_event(menu_ev),
-        Screen::ForgetHost => app.handle_forget_host_event(menu_ev),
-        Screen::HostMenu => app.handle_host_menu_event(menu_ev),
-        Screen::WakeSettings => app.handle_wake_settings_event(menu_ev),
-        Screen::SpeedTest => app.handle_speed_test_event(menu_ev),
-        Screen::EditHost => app.handle_edit_host_event(menu_ev),
-        Screen::About => app.handle_about_event(menu_ev, w, h, fonts),
-        Screen::PinLimit => app.handle_pin_limit_event(menu_ev),
-        Screen::Diagnostics => app.handle_diagnostics_event(menu_ev),
-        Screen::Experimental => app.handle_experimental_event(menu_ev),
-        Screen::CursorSettings => app.handle_cursor_settings_event(menu_ev),
-        Screen::SendLogs => app.handle_send_logs_event(menu_ev),
+    // Confirm goes through the press animation; everything else dispatches straight.
+    let launched = if menu_ev == MenuEvent::Confirm {
+        app.press(w, h, fonts)
+    } else {
+        app.handle_menu_event(menu_ev, w, h, fonts)
+    };
+    if launched.is_some() {
+        return EventAction::Launch;
     }
     EventAction::Next
 }

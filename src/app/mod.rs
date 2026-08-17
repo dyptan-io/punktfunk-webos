@@ -8,6 +8,7 @@ pub(crate) mod hero;
 pub(crate) mod hosts;
 pub(crate) mod menu;
 pub(crate) mod pointer;
+pub(crate) mod press;
 pub(crate) mod render;
 pub(crate) mod render_input;
 pub(crate) mod state;
@@ -416,6 +417,9 @@ pub struct App {
     /// modal (Settings row, Wake row, Pairing digit/button, `ForgetHost`
     /// button) since only one is ever open, and focused, at a time.
     pub(crate) modal_focus_anim: Option<Instant>,
+    /// The focused button's press dip, if one is in flight — the widget's action runs when
+    /// it lands (see `App::press`).
+    pub(crate) press: ui::animation::Press,
     /// In-flight `Toggle` row flip: `(when it started, the value it flipped
     /// from, the focused row it flipped)` — lets `modal_focus_tile`'s render
     /// slide the switch knob from its old state to its new one over
@@ -568,6 +572,7 @@ impl App {
             focus_anim: None,
             modal_fade: ui::fade::ModalFade::new(),
             modal_focus_anim: None,
+            press: ui::animation::Press::default(),
             switch_anim: None,
             last_screen: Screen::Home,
             pairing_rx: None,
@@ -826,87 +831,24 @@ impl App {
     /// dispatch: `main.rs`'s Back handling on Home (a no-op there, but routed
     /// through here so the policy lives in one place) and a modal's close (X)
     /// button click (`handle_mouse_click`'s `hover_close` branch below).
-    pub fn back(&mut self) -> Option<ConnectTarget> {
-        match self.screen {
-            // Back steps focus out of the game grid (and the ⋯ column) back onto the
-            // host sidebar first. Only a Back from the sidebar itself is a no-op here
-            // — the menu loop turns that into the quit dialog.
-            Screen::Home => {
-                match self.home_focus {
-                    HomeFocus::Grid(_) => {
-                        self.home_focus = HomeFocus::Sidebar(self.sidebar_index_for_selected());
-                    }
-                    HomeFocus::SidebarMenu(i) => self.home_focus = HomeFocus::Sidebar(i),
-                    HomeFocus::Sidebar(_) => {}
+    pub fn back(&mut self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<ConnectTarget> {
+        // Back steps focus out of the game grid (and the ⋯ column) back onto the
+        // host sidebar first. Only a Back from the sidebar itself is a no-op here
+        // — the menu loop turns that into the quit dialog.
+        if matches!(self.screen, Screen::Home) {
+            match self.home_focus {
+                HomeFocus::Grid(_) => {
+                    self.home_focus = HomeFocus::Sidebar(self.sidebar_index_for_selected());
                 }
-                None
+                HomeFocus::SidebarMenu(i) => self.home_focus = HomeFocus::Sidebar(i),
+                HomeFocus::Sidebar(_) => {}
             }
-            Screen::Pairing => {
-                self.handle_pairing_event(MenuEvent::Back);
-                None
-            }
-            Screen::Settings => {
-                // `Back` never consults `screen_h` (only `Up`/`Down` scroll) — 0 is fine.
-                self.handle_settings_event(MenuEvent::Back, 0);
-                None
-            }
-            Screen::AddHost => {
-                self.handle_add_host_event(MenuEvent::Back);
-                None
-            }
-            Screen::Wake => {
-                self.handle_wake_event(MenuEvent::Back);
-                None
-            }
-            Screen::ForgetHost => {
-                self.handle_forget_host_event(MenuEvent::Back);
-                None
-            }
-            Screen::HostMenu => {
-                self.handle_host_menu_event(MenuEvent::Back);
-                None
-            }
-            Screen::WakeSettings => {
-                self.handle_wake_settings_event(MenuEvent::Back);
-                None
-            }
-            Screen::SpeedTest => {
-                self.handle_speed_test_event(MenuEvent::Back);
-                None
-            }
-            Screen::EditHost => {
-                self.handle_edit_host_event(MenuEvent::Back);
-                None
-            }
-            // About's Back returns to Settings, not Home — see `handle_about_event`.
-            // The screen size/fonts are irrelevant for a Back, so a zero probe is fine.
-            Screen::About => {
-                self.screen = Screen::Settings;
-                self.scroll = self.settings_scroll;
-                None
-            }
-            Screen::PinLimit => {
-                self.handle_pin_limit_event(MenuEvent::Back);
-                None
-            }
-            Screen::Diagnostics => {
-                self.handle_diagnostics_event(MenuEvent::Back);
-                None
-            }
-            Screen::Experimental => {
-                self.handle_experimental_event(MenuEvent::Back);
-                None
-            }
-            Screen::CursorSettings => {
-                self.handle_cursor_settings_event(MenuEvent::Back);
-                None
-            }
-            Screen::SendLogs => {
-                self.handle_send_logs_event(MenuEvent::Back);
-                None
-            }
+            return None;
         }
+        // Every modal decides for itself where Back goes.
+        self.handle_menu_event(MenuEvent::Back, screen_w, screen_h, fonts)
     }
+
     /// Advances every live animation one tick — the eased scroll, the focus pop,
     /// the modal fade — and reports whether anything is still moving (the main
     /// loop keeps rendering while true). Expired animations report one final
@@ -972,6 +914,10 @@ impl App {
             if t.elapsed() >= ui::animation::FOCUS_POP {
                 self.modal_focus_anim = None;
             }
+            animating = true;
+        }
+        // Disarmed by `poll_press` (the render loop runs the deferred action), not here.
+        if self.press.armed() {
             animating = true;
         }
         if let Some((t, _, _)) = self.switch_anim {

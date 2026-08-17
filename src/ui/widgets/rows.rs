@@ -294,14 +294,12 @@ pub fn render_focus_row_tile(
     dropdown_open: bool,
     switch_frac: f32,
 ) -> Result<Painter> {
-    let pad = ROW_TILE_PAD;
-    let rect = Rect::new(pad, pad, content_width, FOCUS_ROW_H);
-    let mut p = Painter::new(content_width + 2 * pad as u32, FOCUS_ROW_H + 2 * pad as u32);
-    if let Some(row) = rows.get(index) {
-        let mut c = Canvas::tile(&mut p, text_cache, fonts);
-        c.focus_row(row, true, dropdown_open, switch_frac, rect)?;
-    }
-    Ok(p)
+    crate::ui::tiles::padded_widget_tile(text_cache, fonts, content_width, FOCUS_ROW_H, |c, rect| {
+        match rows.get(index) {
+            Some(row) => c.focus_row(row, true, dropdown_open, switch_frac, rect),
+            None => Ok(()),
+        }
+    })
 }
 
 /// All rows unfocused as one tile. GPU-side `DrawCmd::TexCropped` handles
@@ -746,11 +744,7 @@ pub fn render_confirm_button_tile(
     w: u32,
     h: u32,
 ) -> Result<Painter> {
-    let pad = ROW_TILE_PAD;
-    let mut p = Painter::new(w + 2 * pad as u32, h + 2 * pad as u32);
-    let mut c = Canvas::tile(&mut p, text_cache, fonts);
-    c.confirm_button(button, true, Rect::new(pad, pad, w, h))?;
-    Ok(p)
+    crate::ui::tiles::padded_widget_tile(text_cache, fonts, w, h, |c, rect| c.confirm_button(button, true, rect))
 }
 
 impl Canvas<'_, '_> {

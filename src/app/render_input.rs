@@ -19,4 +19,6 @@ pub struct RenderInput<'a> {
     pub has_status: bool,
     /// The grid's cards are built and revealed (past the load spinner).
     pub grid_reveal_ready: bool,
+    /// The focused row's press dip (see `App::press`) — the sidebar's rows are buttons.
+    pub press: crate::ui::animation::Press,
 }

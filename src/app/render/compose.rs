@@ -25,6 +25,7 @@ impl App {
             host_selected: self.selected_host.is_some(),
             has_status: self.home_status.is_some(),
             grid_reveal_ready: self.grid_reveal_ready,
+            press: self.press,
         }
     }
 
@@ -145,44 +146,7 @@ impl App {
             // Focused widget of the active modal (setting row, button, etc.);
             // composites on shell at its on-screen position (no re-rasterize on move).
             // The entering screen's only — the snapshot has its own focused row baked in.
-            let focus_rect = match screen {
-                Screen::Settings => {
-                    let (total, _, _, content) = scroll_geom.expect("screen is Screen::Settings");
-                    // Positioned from the animated pixel offset, not the row index: the baked
-                    // list is cropped at that offset, and the focus tile *is* the focused row
-                    // re-rendered — so anchoring it to the quantized row would show that row's
-                    // content twice, in two places, for the length of every scroll.
-                    let stride = ui::widgets::focus_row_stride() as i32;
-                    let px = self
-                        .modal_scroll_px
-                        .clamp(0, Self::max_scroll_px(total, stride, content.height()));
-                    Some(ui::widgets::focus_row_rect_at_px(content, self.settings_focused, px))
-                }
-                // Every two-button confirm dialog: one subtitle drives the card, so one
-                // button-row geometry serves all four.
-                Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest => self
-                    .confirm_subtitle()
-                    .zip(self.confirm_focused())
-                    .map(|(subtitle, i)| Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &subtitle, i)),
-                Screen::Pairing => {
-                    let card = view::pairing::card_rect(screen_w, screen_h, fonts);
-                    Some(match self.pairing_focus {
-                        PairingFocus::Pin => {
-                            let digit_y = view::pairing::pin_row_y(card, fonts);
-                            view::pairing::digit_rect(card, digit_y, self.pin_digit_index)
-                        }
-                        PairingFocus::RequestAccess => view::pairing::request_button_rect(card, fonts),
-                    })
-                }
-                // Every plain list modal: one geometry, measured off the `ModalScreen`
-                // the painter draws, indexed by that screen's own focus cursor.
-                Screen::HostMenu
-                | Screen::WakeSettings
-                | Screen::Diagnostics
-                | Screen::Experimental
-                | Screen::CursorSettings => self.list_modal_focus_rect(screen_w, screen_h, fonts),
-                Screen::Home | Screen::AddHost | Screen::EditHost | Screen::About | Screen::PinLimit => None,
-            };
+            let focus_rect = self.modal_focus_rect(screen, screen_w, screen_h, fonts);
             if let Some(rect) = focus_rect {
                 let pad = ui::tiles::ROW_TILE_PAD;
                 let base = rect.inflate(pad).offset(0, dy);
@@ -191,8 +155,7 @@ impl App {
                 // rasterized once at its literal size, never re-rendered for
                 // this (except while `switch_anim` animates its content, see
                 // `prepare_tiles`).
-                let f = ui::animation::anim_frac(self.modal_focus_anim, ui::animation::FOCUS_POP);
-                let dst = ui::animation::zoom_rect(base, f, 0.02);
+                let dst = ui::animation::focus_tile_rect(base, self.modal_focus_anim, self.press);
                 let alpha = (255.0 * m) as u8;
                 // In a scrolling modal the focused row can hang past the viewport's bottom
                 // edge mid-glide (the crop lags the row offset by up to one stride), so it is
@@ -308,7 +271,7 @@ impl App {
             let pad = ui::tiles::ROW_TILE_PAD;
             cmds.push(DrawCmd::Tex {
                 tile: tile::FOCUS_ROW,
-                dst: rect.inflate(pad),
+                dst: input.press.rect(rect.inflate(pad)),
                 alpha: 0xff,
             });
         }
