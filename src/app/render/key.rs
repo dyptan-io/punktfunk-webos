@@ -26,8 +26,7 @@ pub enum ModalFocusKey {
     MenuRow(usize, String, bool),
     /// (focused row, log level, stats-overlay on, show-logs on) — any change invalidates the tile.
     DiagnosticsRow(usize, LogLevelOverride, bool, bool),
-    /// (focused row, frame-pacing on, game-mode on) — any change invalidates the tile.
-    ExperimentalRow(usize, bool, bool),
+    ExperimentalRow(usize, bool, bool, bool),
     /// (focused row, cursor-capture on, cursor-gestures on) — any change invalidates the tile.
     CursorSettingsRow(usize, bool, bool),
     /// Which `Screen::SendLogs` button is focused (0 = Cancel, 1 = Send).
@@ -95,6 +94,7 @@ pub enum ModalShellKey {
     },
     Experimental {
         video_pacing: bool,
+        force_software_audio: bool,
         game_mode: bool,
         hover_close: bool,
     },
