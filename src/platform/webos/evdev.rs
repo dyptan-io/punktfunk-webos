@@ -106,6 +106,19 @@ const fn eviocgrab() -> libc::c_ulong {
     eioc(IOC_WRITE, 0x90, 4)
 }
 
+/// `EVIOCSREP` = `_IOW('E', 0x03, unsigned int[2])` — sets `[REP_DELAY, REP_PERIOD]` in ms,
+/// the parameters the kernel generates `value == 2` autorepeat from.
+const fn eviocsrep() -> libc::c_ulong {
+    const IOC_WRITE: u32 = 1;
+    eioc(IOC_WRITE, 0x03, 8)
+}
+
+/// Autorepeat delay/period pushed onto every keyboard node we own, in ms. The kernel's own
+/// defaults (250/33) are what a bare console uses; every desktop OS re-tunes them, and this
+/// client is the only thing between the node and the host, so it has to do it too.
+const REPEAT_DELAY_MS: u32 = 500;
+const REPEAT_PERIOD_MS: u32 = 33;
+
 /// How long after a keypress a HID keyboard still owns SDL's key events — bridges the gaps
 /// within a burst of typing, short enough that reaching for the remote still feels immediate.
 const IN_USE_WINDOW: Duration = Duration::from_millis(250);
@@ -364,6 +377,9 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
         // TV cursor is still the one you aim.
         return Probe::Skip;
     }
+    if dev.keyboard {
+        set_repeat(fd);
+    }
     tracing::info!(
         "HID {}: {} ({})",
         match (dev.mouse, dev.keyboard) {
@@ -375,6 +391,17 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
         path.display()
     );
     Probe::Hid(dev)
+}
+
+/// Retunes a keyboard node's autorepeat to desktop-like timing. Best-effort: a node that
+/// refuses (or generates no repeat at all) just keeps whatever the kernel set, which costs
+/// repeat timing, not input.
+fn set_repeat(fd: RawFd) {
+    let rep: [u32; 2] = [REPEAT_DELAY_MS, REPEAT_PERIOD_MS];
+    // SAFETY: `fd` is an open evdev node and the ioctl reads exactly the two u32s `rep` holds.
+    if unsafe { libc::ioctl(fd, eviocsrep(), rep.as_ptr()) } < 0 {
+        tracing::debug!("EVIOCSREP: {}", std::io::Error::last_os_error());
+    }
 }
 
 /// LG's virtual remotes advertise a full QWERTY keymap, so a "has `KEY_A`" filter would steal
@@ -567,17 +594,20 @@ fn read_device(dev: &mut Device, sink: &impl Fn(&InputEvent), keys: &KeyActivity
                     }
                     _ => {}
                 },
-                // `value == 2` is autorepeat, keyboard-only; matching 0/1 explicitly to be safe.
-                EV_KEY if ev.value == 0 || ev.value == 1 => {
+                // 0 = release, 1 = press, 2 = autorepeat (keyboard-only).
+                EV_KEY if matches!(ev.value, 0..=2) => {
                     // Buttons and keys share `EV_KEY`, and a combo node reports both — the code
                     // ranges are what tells them apart, not the device.
-                    if let Some(button) = dev.mouse.then(|| button_code(ev.code)).flatten() {
+                    // Buttons take presses and releases only: a repeat would double-fire the click.
+                    if let Some(button) = (dev.mouse && ev.value != 2).then(|| button_code(ev.code)).flatten() {
                         // Motion first: the click must land where the pointer already is.
                         flush_motion(dev, sink);
                         sink(&mouse::raw_button_event(button, ev.value == 1));
                     } else if let Some(vk) = dev.keyboard.then(|| keyboard::vk_from_evdev(ev.code)).flatten() {
                         keys.touch();
-                        sink(&keyboard::raw_key_event(vk, ev.value == 1));
+                        // Autorepeat rides as a repeated KeyDown: the host has no repeat timer of
+                        // its own, so dropping these kills held-key repeat (Backspace, arrows).
+                        sink(&keyboard::raw_key_event(vk, ev.value != 0));
                     }
                 }
                 _ => {}
