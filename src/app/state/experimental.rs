@@ -8,7 +8,7 @@ use std::time::Instant;
 
 impl App {
     /// Opens the Experimental screen (Settings → `menu::ROW_EXPERIMENTAL`). Holds unstable,
-    /// off-by-default toggles (the frame pacer).
+    /// off-by-default toggles (the frame pacer, the software-audio override).
     pub(crate) fn open_experimental(&mut self) {
         self.experimental_focused = 0;
         self.screen = Screen::Experimental;
@@ -25,6 +25,11 @@ impl App {
             (menu::EXP_ROW_FRAME_PACER, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
                 let from = self.settings.video_pacing;
                 self.settings.video_pacing = !from;
+                self.switch_anim = Some((Instant::now(), from, self.experimental_focused));
+            }
+            (menu::EXP_ROW_SOFTWARE_AUDIO, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
+                let from = self.settings.force_software_audio;
+                self.settings.force_software_audio = !from;
                 self.switch_anim = Some((Instant::now(), from, self.experimental_focused));
             }
             (menu::EXP_ROW_GAME_MODE, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {

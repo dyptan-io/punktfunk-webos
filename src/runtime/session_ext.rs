@@ -49,6 +49,20 @@ impl Connected {
         }
     }
 
+    /// The negotiated channel layout, for the overlay's audio line. Names the layout rather than
+    /// the count — "5.1" is what the user picked in Settings, `6` is not.
+    pub(crate) fn audio_layout(&self) -> &'static str {
+        match self.client.audio_channels {
+            1 => "1.0",
+            2 => "2.0",
+            3 => "2.1",
+            4 => "4.0",
+            6 => "5.1",
+            8 => "7.1",
+            _ => "?",
+        }
+    }
+
     /// The cells the A/V sync loop trades through — handed to the audio player at construction.
     pub(crate) fn sync_cells(&self) -> crate::platform::webos::audio::SyncCells {
         crate::platform::webos::audio::SyncCells {

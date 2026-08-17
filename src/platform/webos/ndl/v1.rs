@@ -86,7 +86,7 @@ impl NdlV1Video {
         }
         device::ensure_jail_ok("NDL v1")?;
         let fns = ffi::v1()?;
-        ensure_init(app_id)?;
+        ensure_init(app_id, false)?;
         let mut info = ffi::V1VideoInfo {
             width,
             height,

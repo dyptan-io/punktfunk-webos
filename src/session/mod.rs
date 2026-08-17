@@ -187,26 +187,29 @@ impl Connected {
     }
 }
 
-/// Master switch for decoding Opus through NDL (hardware offload). **Disabled**: an
-/// audio-enabled `NDL_DirectMediaLoad` holds the first video frame forever on the tested
-/// webOS 10.3 (G5), despite byte-exact `mariotaku/ss4s` parity (kHz sample rate, the
-/// `opus_empty_frame_211` prime, combined load, feed-time PTS). The load returns success,
-/// so the failure can't be probe-detected — the only safe move is not taking the path.
-/// Flip to `true` to re-test the NDL audio path on another model.
-const NDL_AUDIO_OFFLOAD: bool = false;
-
-/// Whether NDL should decode audio itself. Gated off by [`NDL_AUDIO_OFFLOAD`]; software
-/// Opus→SDL is the default. Stereo only even when enabled: NDL's struct has no multistream
-/// mapping field, so 5.1/7.1 layouts would produce noise and stay on the software decoder.
-fn ndl_audio_config(resolved_channels: u8) -> Option<crate::platform::webos::ndl::NdlAudioConfig> {
-    if !NDL_AUDIO_OFFLOAD {
+/// Whether NDL should decode Opus itself, and with what configuration — `None` puts the session
+/// on the software decoder (`platform::webos::audio`).
+///
+/// Hardware decode is the default wherever NDL takes it. It was disabled for a while over a
+/// freeze that turned out to be the two planes being stamped in different clocks; both now share
+/// one latched offset (`NdlVideo::latch_pts_offset`, docs/NOTES.md § "Opus offload to NDL").
+///
+/// Software decode remains the answer on four routes this function never sees — NDL v1 (no Opus
+/// audio type), SMP (loads video-only), an audio-enabled load NDL rejects, and a TV that accepts
+/// the load and then plays nothing — plus `force_software` for the last of those, which cannot be
+/// detected at runtime (`NDL_DirectAudioPlay` reports success either way). **Stereo only**: NDL's
+/// struct has no multistream mapping field, so 5.1/7.1 would decode as noise.
+fn ndl_audio_config(
+    resolved_channels: u8,
+    force_software: bool,
+) -> Option<crate::platform::webos::ndl::NdlAudioConfig> {
+    if force_software {
         return None;
     }
     (resolved_channels == 2).then_some(crate::platform::webos::ndl::NdlAudioConfig {
         channels: 2,
-        // NDL wants the sample rate in **kHz**, not Hz.
+        // kHz, not Hz — NDL's own unit, and what ss4s passes (`info->sampleRate / 1000.0`).
         // punktfunk's audio plane is fixed at 48 kHz (see `audio.rs`'s SAMPLE_RATE).
-        // Passing Hz here was the offload-freeze root cause.
         sample_rate: 48.0,
     })
 }
@@ -235,7 +238,7 @@ fn open_player(
     height: i32,
     fps: u32,
     codec: NdlCodec,
-    audio_channels: u8,
+    ndl_audio: Option<crate::platform::webos::ndl::NdlAudioConfig>,
 ) -> Result<VideoPlayer> {
     if crate::core::caps::effective_backend(backend) == VideoBackend::Smp {
         match crate::platform::webos::smp::SmpVideo::load(app_id, width, height, fps, codec) {
@@ -245,7 +248,7 @@ fn open_player(
     }
     match device::ndl_generation() {
         NdlGeneration::V2 => Ok(VideoPlayer::V2(Arc::new(
-            NdlVideo::load(app_id, width, height, codec, ndl_audio_config(audio_channels)).context("NDL load")?,
+            NdlVideo::load(app_id, width, height, codec, ndl_audio).context("NDL load")?,
         ))),
         NdlGeneration::V1 => Ok(VideoPlayer::V1(
             NdlV1Video::load(app_id, width, height, codec).context("NDL v1 load")?,
@@ -276,6 +279,7 @@ pub fn connect(
     video_pacing: bool,
     gamepad_type: crate::services::store::GamepadType,
     cursor_capture: bool,
+    force_software_audio: bool,
 ) -> Result<Connected> {
     // Fails before touching the network: a full handshake would only end in `NdlVideo::load()`
     // rejecting the same gate, pointlessly holding the host's pending-session slot for `timeout`.
@@ -382,7 +386,15 @@ pub fn connect(
         NdlCodec::from_wire(client.codec).with_context(|| format!("unsupported codec 0x{:02x}", client.codec))?;
     let app_id = crate::platform::webos::ndl::app_id();
     let (width, height) = (resolved_mode.width as i32, resolved_mode.height as i32);
-    let player = open_player(video_backend, &app_id, width, height, fps, codec, client.audio_channels)?;
+    let player = open_player(
+        video_backend,
+        &app_id,
+        width,
+        height,
+        fps,
+        codec,
+        ndl_audio_config(client.audio_channels, force_software_audio),
+    )?;
     tracing::info!(
         "{} loaded ({codec:?} {}x{}@{fps}fps)",
         player.backend_name(),
@@ -416,14 +428,22 @@ pub fn connect(
     }
 
     let ndl_audio = player.ndl_audio_handle();
+    // Naming the REASON matters: "software Opus" is the correct outcome on four different
+    // routes plus the user's own override, and a silent session looks identical on all of
+    // them. Without this the first debugging question has no answer in the log.
+    let path = match (&ndl_audio, force_software_audio, &player) {
+        (Some(_), _, _) => "NDL hardware Opus decode",
+        (None, true, _) => "software Opus decode -> SDL2 (forced: Experimental setting)",
+        (None, _, VideoPlayer::V1(_)) => "software Opus decode -> SDL2 (NDL v1 has no Opus audio type)",
+        (None, _, VideoPlayer::Smp(_)) => "software Opus decode -> SDL2 (SMP loads video-only)",
+        (None, _, VideoPlayer::V2(_)) if client.audio_channels != 2 => {
+            "software Opus decode -> SDL2 (NDL Opus is stereo-only)"
+        }
+        (None, _, VideoPlayer::V2(_)) => "software Opus decode -> SDL2 (NDL rejected the audio-enabled load)",
+    };
     tracing::info!(
-        "audio path: {} (host resolved {} channel(s))",
-        if ndl_audio.is_some() {
-            "NDL hardware Opus decode"
-        } else {
-            "software Opus decode -> SDL2"
-        },
-        client.audio_channels,
+        "audio path: {path} (host resolved {} channel(s))",
+        client.audio_channels
     );
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -966,9 +986,7 @@ fn video_pump(
 /// audio into ≤500 ms stalls *with packets already waiting*, and in normal flow
 /// packets drained in per-video-frame clumps that all took the same drain-time PTS.
 /// Core's `next_audio` docs ask for exactly this thread ("packets arrive every 5 ms"),
-/// and its pull methods are one-thread-per-plane safe by contract. Draining within a
-/// scheduler tick of arrival is also what makes `NdlVideo::play_audio`'s
-/// arrival-time PTS stamp accurate.
+/// and its pull methods are one-thread-per-plane safe by contract.
 ///
 /// Teardown safety: this thread holds one of the two `Arc<NdlVideo>` owners, so the
 /// process-global NDL unload in `NdlVideo::drop` cannot run until this thread has
@@ -982,7 +1000,7 @@ fn ndl_audio_pump(client: &NativeClient, ndl: &NdlVideo, stop: &AtomicBool) {
     while !stop.load(Ordering::Relaxed) {
         match client.next_audio(Duration::from_millis(100)) {
             Ok(packet) => {
-                if let Err(e) = ndl.play_audio(&packet.data) {
+                if let Err(e) = ndl.play_audio(&packet.data, packet.pts_ns) {
                     tracing::warn!("NDL audio error (seq {}): {e:#}", packet.seq);
                 }
             }

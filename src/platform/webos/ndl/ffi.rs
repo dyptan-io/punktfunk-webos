@@ -74,23 +74,29 @@ pub(super) struct DataInfo {
 /// H.265 `mastering_display_colour_volume`/`content_light_level_info` SEI syntax
 /// element names verbatim, so punktfunk's own `HdrMeta` (same SEI-derived fields,
 /// same units) copies straight across with no unit conversion.
+/// Fifteen `unsigned int` per `webosbrew/webos-userland@00a5f87`, which also dropped the
+/// trailing `reserved[32]` an older header revision declared. The padding is kept anyway: this
+/// struct is passed BY VALUE, so a set built against the older layout would read 32 bytes past
+/// our argument copy. Carrying it is safe under both revisions; dropping it only under the new
+/// one, and which revision a given TV's `libndl-directmedia` was built against isn't knowable
+/// from here.
 #[repr(C)]
 pub(super) struct HdrInfo {
-    pub(super) display_primaries_x0: c_int,
-    pub(super) display_primaries_y0: c_int,
-    pub(super) display_primaries_x1: c_int,
-    pub(super) display_primaries_y1: c_int,
-    pub(super) display_primaries_x2: c_int,
-    pub(super) display_primaries_y2: c_int,
-    pub(super) white_point_x: c_int,
-    pub(super) white_point_y: c_int,
-    pub(super) max_display_mastering_luminance: c_int,
-    pub(super) min_display_mastering_luminance: c_int,
-    pub(super) max_content_light_level: c_int,
-    pub(super) max_pic_average_light_level: c_int,
-    pub(super) transfer_characteristics: c_int,
-    pub(super) color_primaries: c_int,
-    pub(super) matrix_coeffs: c_int,
+    pub(super) display_primaries_x0: c_uint,
+    pub(super) display_primaries_y0: c_uint,
+    pub(super) display_primaries_x1: c_uint,
+    pub(super) display_primaries_y1: c_uint,
+    pub(super) display_primaries_x2: c_uint,
+    pub(super) display_primaries_y2: c_uint,
+    pub(super) white_point_x: c_uint,
+    pub(super) white_point_y: c_uint,
+    pub(super) max_display_mastering_luminance: c_uint,
+    pub(super) min_display_mastering_luminance: c_uint,
+    pub(super) max_content_light_level: c_uint,
+    pub(super) max_pic_average_light_level: c_uint,
+    pub(super) transfer_characteristics: c_uint,
+    pub(super) color_primaries: c_uint,
+    pub(super) matrix_coeffs: c_uint,
     pub(super) reserved: [u8; 32],
 }
 
@@ -113,10 +119,16 @@ pub(super) type LoadStateCallback = Option<extern "C" fn(c_int, c_longlong, *con
 /// v1's frame-done callback: the `userdata` its feed was given, echoed back.
 pub(super) type FrameCallback = Option<extern "C" fn(c_ulonglong)>;
 
+/// `NDL_DirectMediaInit`'s two prototypes: API 1 takes the resource-released callback, API 2 the
+/// app id alone (`webosbrew/webos-userland@00a5f87`). One symbol, resolved once, typed twice.
+pub(super) type InitV1 = unsafe extern "C" fn(*const c_char, ResourceReleased) -> c_int;
+pub(super) type InitV2 = unsafe extern "C" fn(*const c_char) -> c_int;
+
 /// The three calls both generations share.
 pub(super) struct Common {
     pub(super) get_error: unsafe extern "C" fn() -> *const c_char,
-    pub(super) init: unsafe extern "C" fn(*const c_char, ResourceReleased) -> c_int,
+    pub(super) init_v1: InitV1,
+    pub(super) init_v2: InitV2,
     pub(super) quit: unsafe extern "C" fn() -> c_int,
 }
 
@@ -189,9 +201,12 @@ fn cached<T: 'static>(
 pub(super) fn common() -> Result<&'static Common> {
     static CACHE: OnceLock<std::result::Result<Common, String>> = OnceLock::new();
     cached(&CACHE, |lib| {
+        let init_v1: InitV1 = lib.sym(c"NDL_DirectMediaInit")?;
         Ok(Common {
             get_error: lib.sym(c"NDL_DirectMediaGetError")?,
-            init: lib.sym(c"NDL_DirectMediaInit")?,
+            init_v1,
+            // SAFETY: the same address, retyped to the prototype API 2 declares for it.
+            init_v2: unsafe { std::mem::transmute::<InitV1, InitV2>(init_v1) },
             quit: lib.sym(c"NDL_DirectMediaQuit")?,
         })
     })

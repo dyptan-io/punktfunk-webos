@@ -243,6 +243,12 @@ pub struct Settings {
     /// stream start (SDR "game" / HDR "hdrGame" per the negotiated colour path) and reverted
     /// on stream exit.
     pub game_mode: bool,
+    /// Decode Opus in software even where NDL would take it (`session::ndl_audio_config`).
+    /// Off by default: on webOS 5+ NDL decodes Opus itself, one less thread and no SDL audio
+    /// device at all. The escape hatch exists because a TV that accepts the offloaded load and
+    /// then stays silent cannot be detected at runtime (`NDL_DirectAudioPlay` reports success
+    /// either way). Takes effect on the next stream.
+    pub force_software_audio: bool,
     /// Resolve the Magic Remote's OK button into left click / right click / drag by how long
     /// it's held (see `platform::webos::mouse::RemoteButtons`). Off by default — with it
     /// off, OK stays the plain immediate left click it has always been, since a remote with
@@ -273,6 +279,7 @@ impl Default for Settings {
             gamepad_type: GamepadType::Auto,
             cursor_capture: true,
             game_mode: false,
+            force_software_audio: false,
             cursor_gestures: false,
         }
     }

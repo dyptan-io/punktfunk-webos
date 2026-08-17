@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use punktfunk_core::quic;
 
 use crate::platform::webos::ndl::v1::NdlV1Video;
-use crate::platform::webos::ndl::NdlVideo;
+use crate::platform::webos::ndl::{NdlVideo, NotLoadedYet};
 use crate::platform::webos::smp::SmpVideo;
 use crate::session::pacing::{reconciled_pace_interval_ns, HostPtsAnchor, PtsPacer};
 use crate::session::StreamStats;
@@ -169,25 +169,63 @@ impl VideoPlayer {
 
     /// Unpaced PTS reference for `frame` in NDL's clock domain, smoothed by [`PtsPacer`]
     /// before it reaches [`Self::play`]. NDL has no PTS clock of its own (see
-    /// `NdlVideo::elapsed_ns`); with `anchor` present the host PTS is mapped onto NDL's
-    /// player clock ([`HostPtsAnchor`]) so the reference tracks host frame cadence instead
-    /// of feed-time wall-clock, keeping delivery jitter out of the pacer's drift-clamp
-    /// anchor. Without `anchor` (pacing off) NDL falls back to raw player time.
+    /// `NdlVideo::elapsed_ns`), so the host PTS is mapped onto NDL's player clock
+    /// ([`HostPtsAnchor`]) and the reference tracks host frame cadence instead of feed-time
+    /// wall-clock, keeping delivery jitter out of the pacer's drift-clamp anchor.
+    ///
+    /// **V2 anchors whether or not pacing is on.** It used to fall back to raw player time with
+    /// pacing off, which stamps video in *feed* time while offloaded audio is stamped in *host*
+    /// time (`NdlVideo::play_audio`) — two clocks that agree only by luck, and stop agreeing the
+    /// moment a receive-backlog flush jumps the client to live. Anchoring unconditionally is what
+    /// makes the two planes share one mapping by construction. Pacing off now means only that
+    /// [`PtsPacer`]'s smoothing is skipped.
     ///
     /// SMP is mapped the same way as V2 — its PTS domain is nanoseconds since *its own* load
     /// (`now - openTime`), not the host's clock, so an unmapped host PTS would sit an
     /// arbitrary epoch away and `pauseAtDecodeTime` would hold every frame. V1 has nothing to pace
     /// against at all (no PTS input, no player clock), so the host PTS returns untouched there and
     /// the pacer's output is discarded at the feed.
-    fn pace_base_ns(&self, frame_pts_ns: u64, anchor: Option<&mut HostPtsAnchor>) -> u64 {
+    fn pace_base_ns(&self, frame_pts_ns: u64, anchor: &mut HostPtsAnchor, pacing_on: bool) -> u64 {
         let player_clock_ns = match self {
             Self::V2(ndl) => ndl.elapsed_ns(),
             Self::Smp(sf) => sf.elapsed_ns(),
             Self::V1(_) => return frame_pts_ns,
         };
-        match anchor {
-            Some(a) => a.map(frame_pts_ns, player_clock_ns),
-            None => player_clock_ns,
+        if pacing_on || matches!(self, Self::V2(_)) {
+            anchor.map(frame_pts_ns, player_clock_ns)
+        } else {
+            player_clock_ns
+        }
+    }
+
+    /// Hand the audio plane the host-PTS → player-clock offset this frame was stamped with, so
+    /// offloaded Opus lands in the same timeline as the picture (`NdlVideo::play_audio`). Only
+    /// the first frame after an anchor reset is taken (see `NdlVideo::latch_pts_offset`) — this
+    /// is called per frame so that re-latch happens promptly, not so the offset tracks.
+    /// `base_ns` is the *unpaced* reference — the pacer's ±half-frame smoothing is video-only
+    /// jitter compensation and must not be projected onto the audio timeline.
+    ///
+    /// V2 only, and only when audio is offloaded; no other backend feeds audio through NDL.
+    fn latch_pts_offset(&self, frame_pts_ns: u64, base_ns: u64) {
+        if let Some(ndl) = self.offloaded_ndl() {
+            ndl.latch_pts_offset(base_ns as i64 - frame_pts_ns as i64);
+        }
+    }
+
+    /// Decouple the audio plane from a timeline that no longer holds — the anchor it was
+    /// derived from is being reset. Audio holds until the next fed frame republishes.
+    fn clear_pts_offset(&self) {
+        if let Some(ndl) = self.offloaded_ndl() {
+            ndl.clear_pts_offset();
+        }
+    }
+
+    /// The NDL handle the audio plane shares, or `None` on every backend/load that decodes Opus
+    /// in software — the gate both offset calls above answer to.
+    fn offloaded_ndl(&self) -> Option<&NdlVideo> {
+        match self {
+            Self::V2(ndl) => ndl.audio_offloaded().then(|| ndl.as_ref()),
+            Self::V1(_) | Self::Smp(_) => None,
         }
     }
 
@@ -327,6 +365,15 @@ impl NdlSink {
         ready
     }
 
+    /// Drop everything derived from a mapping that no longer holds: the pacer's accumulator, the
+    /// host anchor, and the audio plane's copy of that anchor. The three move in lockstep or the
+    /// planes end up on timelines that disagree.
+    fn reset_timeline(&mut self) {
+        self.pacer.reset();
+        self.host_anchor.reset();
+        self.player.clear_pts_offset();
+    }
+
     fn begin_hold(&mut self) {
         self.stats.holding.store(true, Ordering::Relaxed);
         self.hold_started.get_or_insert_with(Instant::now);
@@ -432,8 +479,7 @@ impl NdlSink {
             );
             // The real timeline just jumped (freeze then reanchor/give-up) — nothing about
             // the pre-hold accumulator is worth continuing.
-            self.pacer.reset();
-            self.host_anchor.reset();
+            self.reset_timeline();
         }
         self.stats.holding.store(false, Ordering::Relaxed);
         self.hold_started = None;
@@ -442,14 +488,11 @@ impl NdlSink {
         // up from the current frame rather than a stale grid.
         let pacing_on = self.stats.pacing_enabled.load(Ordering::Relaxed);
         if pacing_on && !self.pacing_was_on {
-            self.pacer.reset();
-            self.host_anchor.reset();
+            self.reset_timeline();
         }
         self.pacing_was_on = pacing_on;
 
-        let base_ns = self
-            .player
-            .pace_base_ns(pts_ns, pacing_on.then_some(&mut self.host_anchor));
+        let base_ns = self.player.pace_base_ns(pts_ns, &mut self.host_anchor, pacing_on);
         let paced_ns = if pacing_on {
             let paced = self.pacer.next(base_ns);
             self.stats
@@ -487,6 +530,11 @@ impl NdlSink {
             // Only a frame NDL actually accepted is on its way to the glass. A failed feed is
             // followed by a flush and a hold below, where the reference would be meaningless.
             self.publish_video_e2e(submit_realtime_ns, pts_ns, backlog);
+            // Same reason, and it also doubles as the audio plane's start gate. `play_audio` has
+            // no `ensure_loaded` guard of its own, so latching off a REJECTED frame turns the
+            // audio thread loose on a pipeline NDL hasn't loaded yet — which costs the session
+            // its audio outright.
+            self.player.latch_pts_offset(pts_ns, base_ns);
         }
         let decode_us =
             (self.cfg.report_decode_latency && play_result.is_ok()).then(|| self.decode_us(feed_elapsed, backlog));
@@ -497,8 +545,17 @@ impl NdlSink {
                 flags.index,
                 paced_ns as f64 / 1_000_000.0,
             );
+            // A frame refused because the pipeline hasn't finished loading is NOT a decode
+            // error, and must not be answered with a flush: `NDL_DirectVideoFlushRenderBuffer`
+            // against a not-yet-loaded pipeline silently kills the audio plane for the rest of
+            // the session (video recovers, audio never does — observed on CX). Holding and asking
+            // for a keyframe is the whole of the correct response here; the frames are being
+            // dropped on our side, so there is nothing queued in NDL to discard anyway.
+            let not_loaded = e.downcast_ref::<NotLoadedYet>().is_some();
             if self.take_keyframe_slot() {
-                let _ = self.player.flush();
+                if !not_loaded {
+                    let _ = self.player.flush();
+                }
                 self.begin_hold();
                 need_keyframe = true;
             }

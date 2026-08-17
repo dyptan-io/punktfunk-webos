@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 
-pub use v2::{NdlAudioConfig, NdlVideo};
+pub use v2::{NdlAudioConfig, NdlVideo, NotLoadedYet};
 
 /// `NDL_VIDEO_TYPE` values this client can request (matches the codec the host's
 /// `Welcome` resolved — see `punktfunk_core::quic::CODEC_*`).
@@ -286,16 +286,23 @@ pub fn ensure_not_poisoned() -> Result<()> {
 
 static INIT_DONE: AtomicBool = AtomicBool::new(false);
 
-/// Calls `NDL_DirectMediaInit` once (process-global, idempotent-guarded). Same symbol and same
-/// NULL resource-released callback on both generations.
-fn ensure_init(app_id: &str) -> Result<()> {
+/// Calls `NDL_DirectMediaInit` once (process-global, idempotent-guarded). One symbol, two
+/// prototypes: `api2` picks the app-id-only form v2 declares, against v1's app id plus
+/// resource-released callback (always NULL here). See [`ffi::Common`].
+fn ensure_init(app_id: &str, api2: bool) -> Result<()> {
     if INIT_DONE.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
     let fns = ffi::common()?;
     let c_app_id = CString::new(app_id).unwrap_or_default();
     // SAFETY: `c_app_id` is valid for the duration of this call.
-    let ret = unsafe { (fns.init)(c_app_id.as_ptr(), None) };
+    let ret = unsafe {
+        if api2 {
+            (fns.init_v2)(c_app_id.as_ptr())
+        } else {
+            (fns.init_v1)(c_app_id.as_ptr(), None)
+        }
+    };
     if ret != 0 {
         INIT_DONE.store(false, Ordering::SeqCst);
         bail!("NDL_DirectMediaInit failed: ret={ret} error={}", ffi::last_error());

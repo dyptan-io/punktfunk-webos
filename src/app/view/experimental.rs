@@ -16,7 +16,7 @@ pub const TITLE: &str = "Experimental";
 pub const SUBTITLE: &str = "Unstable, off by default.";
 
 /// The frame pacer toggle (`session::PtsPacer`, live-toggleable mid-stream with the Blue
-/// button) and Game mode on rooted sets. Both off by default and untested on hardware.
+/// button), the software-audio override, and Game mode on rooted sets. All off by default.
 /// Order must match `menu::EXP_ROW_*`.
 pub fn rows(settings: &Settings, rooted: bool) -> Vec<FocusRow> {
     let mut rows = vec![FocusRow::toggle(
@@ -29,6 +29,22 @@ pub fn rows(settings: &Settings, rooted: bool) -> Vec<FocusRow> {
     } else {
         "May improve framerate smoothness, adds latency"
     }))];
+    // Hardware Opus is the default on webOS 5+, and the software decoder is the fallback for
+    // every case NDL can't take (older TVs, SMP, surround) — so this only forces a path that
+    // always exists. It's a row because a TV can accept the offloaded load and then play
+    // nothing, and neither the app nor the user can tell that apart from a host sending silence.
+    rows.push(
+        FocusRow::toggle(
+            crate::app::view::icons::ICON_MEMORY,
+            "Software audio",
+            settings.force_software_audio,
+        )
+        .with_subtext(ui::widgets::RowSubtext::hint(if settings.force_software_audio {
+            "Opus on the CPU"
+        } else {
+            "Use if the TV plays no sound"
+        })),
+    );
     // Driving the TV's Game picture/sound modes needs the Homebrew Channel's root helper — the
     // public bus is denied `settingsservice` outright (see `platform::webos::game_mode`). So the
     // row only exists on a rooted set, where it's known to work.
@@ -44,7 +60,7 @@ pub fn rows(settings: &Settings, rooted: bool) -> Vec<FocusRow> {
 /// Row count without building the `FocusRow` vec — for card sizing and hit-testing. The
 /// Game mode row is only offered on a rooted TV, so the screen is one row shorter otherwise.
 pub fn row_count(rooted: bool) -> usize {
-    1 + usize::from(rooted)
+    2 + usize::from(rooted)
 }
 
 pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, rooted: bool) -> Rect {

@@ -751,9 +751,19 @@ pub(super) fn run_inner() -> Result<()> {
                     // working. `buf` is what is queued ahead of the speaker; `A/V` is positive when
                     // audio plays BEHIND the picture. Both read 0 until the loop has evidence
                     // (100 observations, and a frame on the glass to compare against).
-                    {
+                    //
+                    // Which decoder is running leads the line: the two paths fail differently
+                    // (HW plays or is silent with nothing to measure; SW underruns visibly in
+                    // `buf`), so reading the numbers without knowing which one produced them
+                    // has already cost real debugging time. HW carries no ring and no sync loop
+                    // of its own — NDL owns both — so the two figures are omitted there rather
+                    // than printed as a pair of zeroes that look like a stalled plane.
+                    let layout = connected.audio_layout();
+                    if connected.audio_offloaded {
+                        lines.push(format!("HW {layout} · NDL Opus"));
+                    } else {
                         let (buf_ms, av_ms) = connected.audio_stats();
-                        lines.push(format!("Audio buf {buf_ms} ms · A/V {av_ms:+} ms"));
+                        lines.push(format!("SW {layout} · buf {buf_ms} ms · A/V {av_ms:+} ms"));
                     }
                     if let Some(line) = cpu_mem_line {
                         lines.push(line);
