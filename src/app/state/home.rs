@@ -443,7 +443,8 @@ impl App {
         // Dropping the loader stops its worker (its request channel closes), so a host
         // switch abandons in-flight fetches for the previous library.
         self.art_loader = None;
-        self.home_focus = HomeFocus::Grid(0);
+        // Focus stays on the sidebar until `drain_games` has cards to land on: `navigate`
+        // can't move off a key with no rect, so an empty grid would kill the d-pad.
         self.grid_focus_last = 0;
         self.sidebar_dirty = true;
         self.grid_dirty = true;
@@ -499,6 +500,12 @@ impl App {
                 ));
                 self.games = games;
                 self.games_loaded = true;
+                // Hand the grid the focus `select_host` held back — only if the user hasn't
+                // navigated off that row, so a late fetch can't yank them.
+                if matches!(self.home_focus, HomeFocus::Sidebar(i) if Some(i) == self.sidebar_index_of_selected_host())
+                {
+                    self.home_focus = HomeFocus::Grid(0);
+                }
                 if !self.home_status_sticky {
                     self.home_status = None;
                 }
