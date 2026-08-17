@@ -19,6 +19,15 @@ pub fn solid_paint(color: Color) -> Paint<'static> {
     paint
 }
 
+/// [`solid_paint`] with anti-aliasing on, for curved or diagonal edges. Affordable where
+/// `solid_paint` isn't because AA costs per edge-pixel, not per covered pixel: a corner arc
+/// pays for a handful, a full-screen fill for all of them.
+fn aa_paint(color: Color) -> Paint<'static> {
+    let mut paint = solid_paint(color);
+    paint.anti_alias = true;
+    paint
+}
+
 /// [`rounded_rect_path`] over a `Rect` — `None` for an empty one, so callers need no
 /// size guard of their own. The rect must already be painter-local (see `Painter::off`).
 fn rect_path(rect: Rect, radius: i32) -> Option<tiny_skia::Path> {
@@ -31,13 +40,25 @@ fn rect_path(rect: Rect, radius: i32) -> Option<tiny_skia::Path> {
     )
 }
 
+/// The radius [`rounded_rect_path`] will actually draw with: a caller's request clamped to
+/// what the box can hold. Below half a pixel it draws a plain rect instead, so this doubles
+/// as the test for whether a shape has corner arcs worth anti-aliasing.
+fn effective_radius(w: f32, h: f32, radius: f32) -> f32 {
+    let r = radius.max(0.0).min(w / 2.0).min(h / 2.0);
+    if r < 0.5 {
+        0.0
+    } else {
+        r
+    }
+}
+
 /// Rounded-rect as Bezier path (`tiny_skia` has no built-in); falls back to plain rect if radius ~0.
 pub fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Option<tiny_skia::Path> {
     const K: f32 = 0.552_284_7;
 
-    let r = radius.max(0.0).min(w / 2.0).min(h / 2.0);
+    let r = effective_radius(w, h, radius);
     let mut pb = PathBuilder::new();
-    if r < 0.5 {
+    if r == 0.0 {
         pb.push_rect(tiny_skia::Rect::from_xywh(x, y, w, h)?);
         return pb.finish();
     }
@@ -197,14 +218,17 @@ impl Painter {
         let Some(path) = rect_path(self.off(rect), radius) else {
             return;
         };
-        self.fill(&path, color);
+        let curved = effective_radius(rect.width() as f32, rect.height() as f32, radius as f32) > 0.0;
+        self.fill_with(&path, if curved { aa_paint(color) } else { solid_paint(color) });
     }
 
+    /// Always anti-aliased, even for a square rect: a fractional-width stroke straddles the
+    /// pixel grid on every edge, so hard scan-conversion renders it at uneven widths.
     pub fn stroke_rounded_rect(&mut self, rect: Rect, radius: i32, color: Color, width: f32) {
         let Some(path) = rect_path(self.off(rect), radius) else {
             return;
         };
-        let paint = solid_paint(color);
+        let paint = aa_paint(color);
         let stroke = Stroke {
             width,
             ..Stroke::default()
@@ -221,7 +245,7 @@ impl Painter {
         let Some(path) = PathBuilder::from_circle(cx, cy, r) else {
             return;
         };
-        self.fill(&path, color);
+        self.fill_with(&path, aa_paint(color));
     }
 
     /// [`fill_circle`](Self::fill_circle) with `Screen` blend (overlapping circles lighten).
@@ -235,15 +259,12 @@ impl Painter {
         };
         let paint = Paint {
             blend_mode: tiny_skia::BlendMode::Screen,
-            anti_alias: true,
-            ..solid_paint(color)
+            ..aa_paint(color)
         };
-        self.pixmap
-            .fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+        self.fill_with(&path, paint);
     }
 
-    fn fill(&mut self, path: &tiny_skia::Path, color: Color) {
-        let paint = solid_paint(color);
+    fn fill_with(&mut self, path: &tiny_skia::Path, paint: Paint<'_>) {
         self.pixmap
             .fill_path(path, &paint, FillRule::Winding, Transform::identity(), None);
     }
