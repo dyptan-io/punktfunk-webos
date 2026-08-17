@@ -44,20 +44,38 @@ pub(super) struct AudioOpusInfo {
     pub(super) sample_rate: f64,
     /// Stream header (undocumented, passed null).
     pub(super) stream_header: *const c_char,
+    /// The struct's trailing padding, made explicit so it is *initialized*.
+    ///
+    /// `f64` is 8-aligned on this ABI, so the fields end at 28 and `size_of` rounds to 32 — and
+    /// [`Self::to_union`] copies all 32 bytes. Left implicit, those last four go to NDL as
+    /// whatever was on the stack: the load is then rejected asynchronously (returning 0, with no
+    /// `LOADCOMPLETED` ever) for some values and not others, which is why hardware Opus came up
+    /// black only some of the time.
+    pub(super) _padding: [u8; 4],
 }
+
+/// The union arm is 32 bytes (the header's own `char padding[32]`); the copy below assumes the
+/// struct fills it exactly, with no implicit padding left uninitialized.
+///
+/// Asserted only for the 32-bit-pointer ABI this ships on (armv7 webOS). A 64-bit `stream_header`
+/// makes the struct 40 bytes and `_padding` land in the wrong place — the layout would have to be
+/// re-derived for such a target, so the assert would be false there for a real reason rather than
+/// a portability nit; it is scoped instead of relaxed so a host `cargo check` still builds.
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(size_of::<AudioOpusInfo>() == 32);
 
 impl AudioOpusInfo {
     /// Pack into the union [`DataInfo`] takes.
     pub(super) fn to_union(self) -> AudioUnion {
         let mut bytes = [0u8; 32];
-        // SAFETY: `Self` is `repr(C)` and no larger than the union's 32-byte arm (the header's
-        // own `char padding[32]`), so this copy stays in bounds. Any trailing bytes remain
-        // zero, matching the C compiler's own padding.
+        // SAFETY: `Self` is `repr(C)` and exactly the union arm's 32 bytes on the shipping target
+        // (asserted above), so this copy stays in bounds and every byte of it is initialized. The
+        // clamp only matters on a host build, where the struct is wider and unusable anyway.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 std::ptr::from_ref(&self).cast::<u8>(),
                 bytes.as_mut_ptr(),
-                size_of::<Self>().min(32),
+                size_of::<Self>().min(bytes.len()),
             );
         }
         AudioUnion { bytes }
@@ -81,7 +99,7 @@ pub(super) struct DataInfo {
 /// one, and which revision a given TV's `libndl-directmedia` was built against isn't knowable
 /// from here.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct HdrInfo {
     pub(super) display_primaries_x0: c_uint,
     pub(super) display_primaries_y0: c_uint,

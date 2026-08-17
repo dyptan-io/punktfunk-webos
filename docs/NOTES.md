@@ -127,26 +127,44 @@ The host stamps `pts_ns` on every audio datagram; this client decoded it and thr
 - ⚠ **Use `frame.pts_ns`, never the paced value.** Both are in scope at the submit site with near-identical names; the paced one has been mapped into NDL's *player* clock by `HostPtsAnchor`. Using it regulates against a fiction that still looks plausible.
 - The estimator's unit tests ship in-tree but **cannot run off-device**: `cargo test` links the whole binary and `-lNDL_directmedia` exists only in the cross sysroot.
 
-## Opus offload to NDL (ON, awaiting device re-test)
+## Opus offload to NDL (OPT-IN, working on CX)
 
 NDL is the sole video backend. Audio is either software Opus→SDL or, when NDL accepts an
-audio-enabled load, decoded by NDL itself — hardware decode is the default wherever it works.
+audio-enabled load, decoded by NDL itself. **Software Opus is the default**; the offload is
+opt-in per `Settings::ndl_audio_offload` while it is being proven on more models.
 
 **Software Opus is not a legacy path and must stay wired.** It is the correct outcome on five
 routes: NDL v1 (`NDL_DirectAudio*` has no Opus source type), SMP (loads `needAudio: false`),
 non-stereo layouts (NDL's Opus struct has no multistream mapping field), an audio-enabled load
-NDL rejects, and Experimental → "Software audio" (`Settings::force_software_audio`). The last
-exists because a TV can accept the offloaded load and then play nothing, which no runtime probe
-can detect. `Connected::audio_channels()` returns `None` only when offload actually took the
+NDL rejects, and the default state of Experimental → "Hardware audio decode"
+(`Settings::ndl_audio_offload`). The last exists because a TV can accept the offloaded load and
+then play nothing, which no runtime probe can detect. `Connected::audio_channels()` returns `None` only when offload actually took the
 stream, so every other route opens the SDL device and spawns `audio_feed_pump` as before. The
 session log names the route it took and why; the stats overlay leads its audio line with
 `Audio HW · NDL Opus` or `Audio SW · buf … · A/V …`.
 
 The load wiring is byte-exact with `mariotaku/ss4s` `ndl/webos5`: `NdlAudioConfig.sample_rate`
 in **kHz** (`48.0`, not `48000.0`), the stereo `opus_empty_frame_211 = {0xec,0xff,0xfe}` decoder
-prime fed once right after a successful audio-enabled `NDL_DirectMediaLoad`, and combined
-audio+video in one load. Struct layouts (`NDL_DIRECTMEDIA_AUDIO_OPUS_INFO_T`,
-`..._DATA_INFO_T`) match `webosbrew/webos-userland` field-for-field.
+prime, and combined audio+video in one load. Struct layouts
+(`NDL_DIRECTMEDIA_AUDIO_OPUS_INFO_T`, `..._DATA_INFO_T`) match `webosbrew/webos-userland`
+field-for-field, including the explicit trailing `_padding` — the whole struct is memcpy'd into a
+fixed-size union arm, so **any implicit padding in a `repr(C)` struct handed to NDL is
+uninitialized stack on the wire**.
+
+⚠ **The prime is what completes the load, and it was missing for months.** An audio-enabled load
+does not report `LOADCOMPLETED` until its audio plane has actually received a packet — but the
+pumps that would send one don't spawn until `session::connect` returns, which is after the load
+wait. The load waited on data the session refused to send until the load completed, and the
+result was a whole session of black picture with working sound, no error anywhere. So
+`NdlVideo::prime_audio` feeds bursts of empty frames (stamps from 0, 5 ms apart) through the
+load window itself. On a CX that turns "never" into `LOADCOMPLETED` in ~41 ms. The prime's
+highest stamp seeds `last_audio_pts_ms`, so the host's first real packets are floored rather
+than read as a rewind (see the LATCHED-offset warning below — a rewind mutes the session).
+Full history in `docs/HANDOVER-NDL-OPUS-OFFLOAD.md`.
+
+The corollary is that **`LOADCOMPLETED` is reliable** and can gate things. The earlier claim in
+these notes and in `ndl/v2.rs` that it "lands anywhere from 4s to never" was this bug, not the
+callback: a video-only load confirms in well under a second, every time, with nothing fed.
 
 **What was wrong, and what "full ss4s parity" hid.** The path held the first video frame forever
 on the tested G5 (webOS 10.3) despite that parity, because the parity was on the *load* and not on
@@ -167,8 +185,8 @@ This was the cause of "video fine, audio silent", and it took four device rounds
 every symptom pointed at timestamps. `NDL_DirectVideoFlushRenderBuffer` issued before
 `LOADCOMPLETED` takes the audio plane out permanently; video recovers and gives no sign. The sink
 used to reach it through its ordinary decode-error path, and frame 0 is refused
-(`NDL pipeline not loaded yet`) on any session where `LOADCOMPLETED` is late — routine on CX,
-where it lands ~3.3s after the first feed. `ensure_loaded` now returns a typed
+(`NDL pipeline not loaded yet`) on any session where `LOADCOMPLETED` is late — which, before the
+prime above, was every offloaded session on a CX. `ensure_loaded` now returns a typed
 `ndl::NotLoadedYet` and `sink::submit` holds + requests a keyframe **without** flushing. Nothing
 is queued in NDL at that point anyway, so the flush was never doing work.
 
@@ -194,7 +212,7 @@ one. Both guards are needed — the floor alone would leave audio stalled at a f
 ⚠ The audio-enabled load returns success even on a TV that then dies silently, so **no runtime
 probe can distinguish the two** — if a model regresses, the `NDL load state:`
 (`LOADCOMPLETED`/`PLAYING`) log is the signal for whether the present pipeline ever starts, and
-Experimental → "Software audio" is the way out.
+turning Experimental → "Hardware audio decode" back off is the way out.
 
 ## ABR startup probe: 2 Gbps, upstream-hardcoded
 

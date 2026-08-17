@@ -545,18 +545,28 @@ impl NdlSink {
                 flags.index,
                 paced_ns as f64 / 1_000_000.0,
             );
-            // A frame refused because the pipeline hasn't finished loading is NOT a decode
-            // error, and must not be answered with a flush: `NDL_DirectVideoFlushRenderBuffer`
-            // against a not-yet-loaded pipeline silently kills the audio plane for the rest of
-            // the session (video recovers, audio never does — observed on CX). Holding and asking
-            // for a keyframe is the whole of the correct response here; the frames are being
-            // dropped on our side, so there is nothing queued in NDL to discard anyway.
+            // A frame refused because the pipeline hasn't finished loading is NOT a decode error,
+            // and gets neither of the two loss responses.
+            //
+            // No flush: `NDL_DirectVideoFlushRenderBuffer` against a not-yet-loaded pipeline
+            // silently kills the audio plane for the rest of the session (video recovers, audio
+            // never does — observed on CX). The frames are dropped on our side anyway, so there is
+            // nothing queued in NDL to discard.
+            //
+            // No hold either: freeze-until-reanchor is a mid-stream recovery, and this fires at
+            // frame 0 where there is no last-good picture to freeze on — only the black
+            // punch-through plane. Worse, holding skips frames before [`Self::submit`] reaches
+            // `play`, which is the only caller of the pipeline's feed-anyway escape, so the hold
+            // outlives the condition that caused it: recovery then needs the host's reanchor or
+            // `HOLD_GIVE_UP`, both evaluated only when a frame arrives. A static desktop sends
+            // none, so the session sits black until the user generates motion. Asking for a
+            // keyframe and letting the next frame retry the feed is the whole correct response.
             let not_loaded = e.downcast_ref::<NotLoadedYet>().is_some();
             if self.take_keyframe_slot() {
                 if !not_loaded {
                     let _ = self.player.flush();
+                    self.begin_hold();
                 }
-                self.begin_hold();
                 need_keyframe = true;
             }
         }

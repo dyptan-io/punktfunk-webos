@@ -14,9 +14,36 @@ use anyhow::{bail, Result};
 use super::{arm_load, ensure_init, ensure_not_poisoned, ffi, settle_before_retry, wait_load_completed};
 use super::{lock_ffi, mark_frame_fed_logged, NdlCodec, LOAD_COMPLETED};
 
-/// How long past `load()` [`NdlVideo::ensure_loaded`] holds frames while `LOADCOMPLETED` is
-/// missing. Measured from the load, so it follows `LOAD_COMPLETE_TIMEOUT`.
+/// How long past the `NDL_DirectMediaLoad` CALL [`NdlVideo::ensure_loaded`] holds frames while
+/// `LOADCOMPLETED` is missing.
+///
+/// Measured from `load_requested`, not `load_instant`: the latter is stamped after
+/// `wait_load_completed`, so timing the grace from it stacks the two windows and a unit whose
+/// callback never comes eats `LOAD_COMPLETE_TIMEOUT` + this before the first frame — three seconds
+/// of black on a CX, for a callback that provably was not going to arrive. Overlapping them means
+/// the wait alone already spends the grace, so the first feed goes straight through.
 const FEED_ANYWAY_AFTER: Duration = Duration::from_millis(1_000);
+
+/// One empty Opus frame. `mariotaku/ss4s`'s `opus_empty_frame_211`, byte for byte: its TOC
+/// declares STEREO, which is what [`NdlAudioConfig`] loads with (stereo only, see there). The
+/// generic `0xF8 0xFF 0xFE` silence frame declares mono, and priming a stereo decoder with a mono
+/// TOC is the kind of mismatch the prime exists to get right — NDL accepted both on a CX, so the
+/// choice here is the known-good reference, not a measured difference.
+const OPUS_SILENCE: [u8; 3] = [0xec, 0xff, 0xfe];
+
+/// Packet duration of the prime's stamps (ms). punktfunk's audio plane is fixed at 48 kHz /
+/// 5 ms packets (`SAMPLE_RATE` in `platform::webos::audio`), and the prime must look like it.
+const PRIME_PACKET_MS: i64 = 5;
+
+/// How far ahead of wall-clock the prime's stamps are allowed to run, in packets — enough of a
+/// burst for a decoder to configure itself off, and the bound on how far the ceiling handed to
+/// `last_audio_pts_ms` can overshoot (see [`NdlVideo::prime_audio`]).
+const PRIME_LEAD: i64 = 8;
+
+/// Gap between prime bursts while waiting for `LOADCOMPLETED`. Polled through, not slept
+/// through: the callback landed mid-gap on both measured launches, and this sits in the launch
+/// path where every millisecond is black screen.
+const PRIME_RETRY: Duration = Duration::from_millis(20);
 
 /// [`NdlVideo::play`] refusing a frame because `LOADCOMPLETED` hasn't landed. A distinct type
 /// because the caller must NOT respond to it the way it responds to a decode error: the usual
@@ -54,6 +81,7 @@ impl NdlAudioConfig {
             unknown2: 0,
             sample_rate: self.sample_rate,
             stream_header: std::ptr::null(),
+            _padding: [0; 4],
         }
         .to_union()
     }
@@ -64,6 +92,10 @@ pub struct NdlVideo {
     fns: &'static ffi::V2,
     /// PTS in ms since load (NDL's local clock, not wall-clock or host capture clock).
     load_instant: Instant,
+    /// When `NDL_DirectMediaLoad` was issued — earlier than `load_instant` by however long
+    /// `wait_load_completed` blocked. Only [`FEED_ANYWAY_AFTER`] is measured from it; the PTS
+    /// domain stays on `load_instant`.
+    load_requested: Instant,
     audio_offloaded: bool,
     /// Host-PTS → NDL-player-clock offset in ns, republished by the video plane on every fed
     /// frame (`session::sink`) and read by [`Self::play_audio`] so both planes land in ONE
@@ -77,12 +109,29 @@ pub struct NdlVideo {
     /// refuses to feed until it lands or [`FEED_ANYWAY_AFTER`] passes. Latched once, so the
     /// steady-state feed path costs one relaxed load.
     load_confirmed: AtomicBool,
-    /// HDR mastering metadata that arrived while the pipeline was still loading.
-    /// `NDL_DirectVideoSetHDRInfo` returns success against an unloaded pipeline but does
-    /// nothing — the panel never enters HDR mode, and since the host only sends the packet
-    /// on change there is no second chance. Observed on a CX as an all-black launch that a
-    /// reconnect fixed. So the last value is kept here and replayed once the load confirms.
+    /// HDR mastering metadata that arrived before the video plane had taken a frame.
+    /// `NDL_DirectVideoSetHDRInfo` returns success against a pipeline that isn't ingesting yet
+    /// but does nothing — the panel never enters HDR mode, and since the host only sends the
+    /// packet on change there is no second chance. Observed on a CX as an all-black launch that
+    /// a reconnect fixed.
+    ///
+    /// The gate is the first ACCEPTED frame, not `LOADCOMPLETED`: the callback says the pipeline
+    /// loaded, not that it is ingesting, and a frame NDL took is the only evidence of the latter.
+    /// It matches what the working launches show — the metadata that stuck was always the one
+    /// applied after the first feed. (The sessions that appeared to run without any
+    /// `LOADCOMPLETED` at all were the unprimed audio-enabled loads of [`Self::prime_audio`],
+    /// not an unreliable callback.)
     pending_hdr: Mutex<Option<ffi::HdrInfo>>,
+    /// Last metadata actually handed to `NDL_DirectVideoSetHDRInfo`, so an unchanged one is never
+    /// re-applied.
+    ///
+    /// The host re-sends the mastering packet without waiting for it to change — three identical
+    /// ones inside 10 ms at session start — and `session::video_pump` treats every packet its
+    /// queue yields as fresh. Each call re-enters panel HDR mode, which on a CX drops 1440p120 out
+    /// of its high-rate mode and leaves the stream black. This was latent before the metadata was
+    /// deferred: the repeats used to land against a pipeline that wasn't ingesting yet and did
+    /// nothing, and deferring them bunched all of them onto the live plane at once.
+    applied_hdr: Mutex<Option<ffi::HdrInfo>>,
 }
 
 impl NdlVideo {
@@ -99,24 +148,37 @@ impl NdlVideo {
             unknown1: 0,
         };
         if let Some(audio) = audio {
+            // An audio-enabled load must PROVE itself with `LOADCOMPLETED`, where a video-only one
+            // is allowed to proceed unconfirmed (below). `NDL_DirectMediaLoad` returning 0 is only
+            // "request accepted": an Opus config the pipeline rejects fails asynchronously, so it
+            // returns 0, never reports `LOADCOMPLETED` or `PLAYING`, and then accepts every fed
+            // frame into a pipeline that is not running — an entire session of black picture with
+            // no error anywhere. Treating `ret != 0` as the only failure left this fallback
+            // unreachable for the exact case it exists to catch.
+            // Video-only fallback: audio offload is optimization, not critical. Unload first — a
+            // failed load may hold decoder resources (docs/NOTES.md). The unconfirmed handle has
+            // already dropped (and so unloaded) by here; the call below is what covers the `Err`
+            // arm, where there is no handle, and is harmless as a repeat.
+            // Snapshotted BEFORE the attempt, because the unconfirmed handle's own `Drop` unloads
+            // at the end of the match: a snapshot taken after it would miss that
+            // `UNLOADCOMPLETED` and wait out the settle for a callback already spent.
+            let unloads_before = super::unload_count();
             match Self::try_load(fns, video, audio.to_union(), true) {
-                Ok(loaded) => return Ok(loaded),
-                Err(e) => {
-                    // Video-only fallback: audio offload is optimization, not critical. Unload
-                    // first — a failed load may hold decoder resources (docs/NOTES.md).
-                    tracing::warn!("NDL audio-enabled load failed ({e:#}) — retrying video-only");
-                    // SAFETY: no arguments; best-effort cleanup of the rejected load.
-                    let _ = unsafe { (fns.unload)() };
-                    // The rejected load's callbacks are indistinguishable from the retry's, so let
-                    // them land BEFORE arming below rather than racing them.
-                    settle_before_retry();
-                }
+                Ok(loaded) if loaded.load_confirmed.load(Ordering::Relaxed) => return Ok(loaded),
+                Ok(_) => tracing::warn!("NDL audio-enabled load failed (no LOADCOMPLETED) — retrying video-only"),
+                Err(e) => tracing::warn!("NDL audio-enabled load failed ({e:#}) — retrying video-only"),
             }
+            // SAFETY: no arguments; best-effort cleanup of the rejected load.
+            let _ = unsafe { (fns.unload)() };
+            // The rejected load's callbacks are indistinguishable from the retry's, so let them
+            // land BEFORE arming below rather than racing them.
+            settle_before_retry(unloads_before);
         }
         Self::try_load(fns, video, ffi::AudioUnion::SILENT, false)
     }
 
-    /// One `NDL_DirectMediaLoad` attempt, waited out to `LOADCOMPLETED`.
+    /// One `NDL_DirectMediaLoad` attempt, waited out to `LOADCOMPLETED` — priming the audio plane
+    /// through the wait when the load asked for one (see [`Self::prime_audio`]).
     fn try_load(
         fns: &'static ffi::V2,
         video: ffi::VideoInfo,
@@ -125,23 +187,95 @@ impl NdlVideo {
     ) -> Result<Self> {
         let mut info = ffi::DataInfo { video, audio };
         arm_load();
+        let load_requested = Instant::now();
         // SAFETY: `info` is valid for the duration of this call.
         let ret = unsafe { (fns.load)(&mut info, Some(super::on_load_state)) };
         if ret != 0 {
             bail!("NDL_DirectMediaLoad failed: ret={ret} error={}", ffi::last_error());
         }
-        // `ret == 0` is "request accepted", not "pipeline ready" — the caller's first feed (and
-        // the Opus prime, when there is one) still needs LOADCOMPLETED.
-        let confirmed = wait_load_completed();
+        // `ret == 0` is "request accepted", not "pipeline ready" — the first feed still needs
+        // LOADCOMPLETED, and an audio-enabled load will not report it until its audio plane has
+        // seen a packet, which is what the prime supplies.
+        let (primed_pts_ms, confirmed) = if audio_offloaded {
+            Self::prime_audio(fns)
+        } else {
+            (0, wait_load_completed())
+        };
         Ok(Self {
             fns,
             load_instant: Instant::now(),
+            load_requested,
             audio_offloaded,
             pts_offset_ns: AtomicI64::new(NO_PTS_OFFSET),
-            last_audio_pts_ms: AtomicI64::new(0),
+            last_audio_pts_ms: AtomicI64::new(primed_pts_ms),
             load_confirmed: AtomicBool::new(confirmed),
             pending_hdr: Mutex::new(None),
+            applied_hdr: Mutex::new(None),
         })
+    }
+
+    /// Feed silent Opus packets until the audio-enabled load reports `LOADCOMPLETED`, bounded by
+    /// `LOAD_COMPLETE_TIMEOUT`. Returns the highest stamp fed and whether the load confirmed.
+    ///
+    /// An audio-enabled load does not complete on its own the way a video-only one does: it has a
+    /// decoder and a sink to configure and will not report until the audio plane has actually
+    /// received data. The pumps that would supply it don't spawn until `session::connect` returns,
+    /// i.e. until this wait is over — the load waits for data the session refuses to send until the
+    /// load completes, which is the whole of the black-picture-with-sound bug. So the load window
+    /// feeds itself.
+    ///
+    /// A burst at a time, because a packet fed before the plane exists may simply be dropped and
+    /// NDL reports success either way (`NDL_DirectAudioPlay` cannot distinguish them).
+    ///
+    /// Stamps run from 0 by [`PRIME_PACKET_MS`] and the ceiling is handed to `last_audio_pts_ms`:
+    /// the host's real packets arrive stamped in the video plane's domain, which also starts near
+    /// 0, so without the floor the first of them would look to NDL like a rewind — and a rewind
+    /// mutes the session permanently (see [`Self::play_audio`]). Flooring costs the first few
+    /// packets their exact stamp, which is inaudible; the alternative is no audio at all.
+    fn prime_audio(fns: &'static ffi::V2) -> (i64, bool) {
+        let start = Instant::now();
+        let mut pts_ms = 0;
+        while !LOAD_COMPLETED.fired() {
+            if start.elapsed() >= super::LOAD_COMPLETE_TIMEOUT {
+                tracing::warn!(
+                    "NDL load: no LOADCOMPLETED within {:?} of priming {pts_ms}ms of silence",
+                    super::LOAD_COMPLETE_TIMEOUT
+                );
+                return (pts_ms, false);
+            }
+            // Stamps track wall-clock, [`PRIME_LEAD`] packets ahead of it. A fixed count per gap
+            // advances them at ~2x real time instead, and the ceiling returned here is the floor
+            // real audio is pinned to — a 200ms load would hold the first 400ms of the session's
+            // audio at one stamp, ahead of a video plane starting from 0.
+            let target_ms = start.elapsed().as_millis() as i64 + PRIME_LEAD * PRIME_PACKET_MS;
+            {
+                let _ffi = lock_ffi();
+                while pts_ms < target_ms {
+                    // SAFETY: NDL reads `size` bytes synchronously and does not retain the pointer.
+                    let ret = unsafe {
+                        (fns.audio_play)(
+                            OPUS_SILENCE.as_ptr() as *mut c_void,
+                            OPUS_SILENCE.len() as c_uint,
+                            pts_ms as c_longlong,
+                        )
+                    };
+                    if ret != 0 {
+                        tracing::warn!(
+                            "NDL audio prime rejected at {pts_ms}ms: ret={ret} error={}",
+                            ffi::last_error()
+                        );
+                        return (pts_ms, LOAD_COMPLETED.fired());
+                    }
+                    pts_ms += PRIME_PACKET_MS;
+                }
+            }
+            super::poll_until(PRIME_RETRY, || LOAD_COMPLETED.fired());
+        }
+        tracing::info!(
+            "NDL audio prime: LOADCOMPLETED after {:?} ({pts_ms}ms of silence)",
+            start.elapsed()
+        );
+        (pts_ms, true)
     }
 
     /// Whether NDL accepted the Opus config and is decoding audio itself — if false the
@@ -224,7 +358,7 @@ impl NdlVideo {
         if self.load_confirmed.load(Ordering::Relaxed) {
             return Ok(());
         }
-        let elapsed = self.load_instant.elapsed();
+        let elapsed = self.load_requested.elapsed();
         if LOAD_COMPLETED.fired() {
             tracing::info!("NDL LOADCOMPLETED landed {elapsed:?} after load");
         } else if elapsed >= FEED_ANYWAY_AFTER {
@@ -232,24 +366,7 @@ impl NdlVideo {
         } else {
             return Err(NotLoadedYet.into());
         }
-        // Flag and slot move together under the one lock. `set_color_info` runs on a different
-        // thread (`session::connect` applies the host's colour info while the pump is starting),
-        // and reading the flag as unconfirmed, then storing into a slot this path has already
-        // drained, would strand that metadata in it for the rest of the session.
-        let held = {
-            let mut pending = self.pending_hdr();
-            self.load_confirmed.store(true, Ordering::Relaxed);
-            pending.take()
-        };
-        // The load just became real; anything held back for it applies now, before the first feed.
-        // A colour failure stays here: the caller reads an `Err` from this function as the feed
-        // being refused, and answers it with a flush and a keyframe request.
-        if let Some(info) = held {
-            tracing::info!("NDL: replaying HDR metadata held during load");
-            if let Err(e) = self.apply_hdr_info(info) {
-                tracing::warn!("NDL: replaying held HDR metadata failed: {e:#}");
-            }
-        }
+        self.load_confirmed.store(true, Ordering::Relaxed);
         Ok(())
     }
 
@@ -258,7 +375,37 @@ impl NdlVideo {
         self.pending_hdr.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Apply metadata held back for the load, on the edge where the first frame was accepted.
+    /// A colour failure only logs: the caller reads an `Err` out of [`Self::play`] as a decode
+    /// error and answers it with a flush and a keyframe request.
+    fn replay_pending_hdr(&self) {
+        // Same lock the deferral decision is taken under, so a `set_color_info` racing this from
+        // the connect thread either lands before the drain or applies directly — never stores into
+        // a slot already drained, which would strand it there for the session. Held ACROSS the
+        // apply too: released at the drain, a racing newer value applies first and this stale one
+        // then overwrites it, and `applied_hdr` won't dedupe a value that genuinely differs.
+        let mut pending = self.pending_hdr();
+        if let Some(info) = pending.take() {
+            tracing::info!("NDL: applying HDR metadata held until the first accepted frame");
+            if let Err(e) = self.apply_hdr_info(info) {
+                tracing::warn!("NDL: applying held HDR metadata failed: {e:#}");
+            }
+        }
+    }
+
+    /// Apply metadata, unless it is what the panel is already on — see [`Self::applied_hdr`].
+    /// The slot is held across the FFI call so two threads can't both decide the value is new.
     fn apply_hdr_info(&self, info: ffi::HdrInfo) -> Result<()> {
+        let mut applied = self.applied_hdr.lock().unwrap_or_else(PoisonError::into_inner);
+        if *applied == Some(info) {
+            return Ok(());
+        }
+        self.set_hdr_info(info)?;
+        *applied = Some(info);
+        Ok(())
+    }
+
+    fn set_hdr_info(&self, info: ffi::HdrInfo) -> Result<()> {
         let _ffi = lock_ffi();
         // SAFETY: passed by value; no pointers or aliasing.
         let ret = unsafe { (self.fns.set_hdr_info)(info) };
@@ -276,14 +423,20 @@ impl NdlVideo {
     pub fn play(&self, au: &[u8], pts_ns: u64) -> Result<()> {
         self.ensure_loaded()?;
         let pts_ms = (pts_ns / 1_000_000) as c_longlong;
-        let _ffi = lock_ffi();
-        // SAFETY: NDL reads `size` bytes from `buffer` synchronously and does not
-        // retain the pointer.
-        let ret = unsafe { (self.fns.video_play)(au.as_ptr() as *mut c_void, au.len() as c_uint, pts_ms) };
-        if ret != 0 {
-            bail!("NDL_DirectVideoPlay failed: ret={ret} error={}", ffi::last_error());
+        let first_frame = {
+            let _ffi = lock_ffi();
+            // SAFETY: NDL reads `size` bytes from `buffer` synchronously and does not
+            // retain the pointer.
+            let ret = unsafe { (self.fns.video_play)(au.as_ptr() as *mut c_void, au.len() as c_uint, pts_ms) };
+            if ret != 0 {
+                bail!("NDL_DirectVideoPlay failed: ret={ret} error={}", ffi::last_error());
+            }
+            mark_frame_fed_logged("NDL", self.load_instant)
+        };
+        // Outside the FFI guard — `replay_pending_hdr` takes it again, and it isn't reentrant.
+        if first_frame {
+            self.replay_pending_hdr();
         }
-        mark_frame_fed_logged("NDL", self.load_instant);
         Ok(())
     }
 
@@ -299,7 +452,7 @@ impl NdlVideo {
     /// info — the earlier reason this was called unconditionally — but forcing the panel
     /// into HDR for SDR content is the worse outcome.)
     ///
-    /// Deferred until the load confirms — see [`Self::pending_hdr`].
+    /// Deferred until the plane has accepted a frame — see [`Self::pending_hdr`].
     pub fn set_color_info(
         &self,
         meta: Option<&punktfunk_core::quic::HdrMeta>,
@@ -328,9 +481,9 @@ impl NdlVideo {
             matrix_coeffs: c_uint::from(color.matrix),
             reserved: [0; 32],
         };
-        // Checked under the slot's lock, against the drain in `ensure_loaded`.
+        // Checked under the slot's lock, against the drain in `replay_pending_hdr`.
         let mut pending = self.pending_hdr();
-        if !self.load_confirmed.load(Ordering::Relaxed) {
+        if !super::presenting() {
             *pending = Some(info);
             return Ok(());
         }

@@ -29,7 +29,7 @@ mod ffi;
 pub mod v1;
 mod v2;
 
-use std::ffi::{c_char, c_int, c_longlong, CString};
+use std::ffi::{c_char, c_int, c_longlong, CStr, CString};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -138,7 +138,7 @@ static PLAYING: EventSeq = EventSeq::new();
 static FRAME_FED: EventSeq = EventSeq::new();
 
 /// Records v2 load-state transitions so loads, feeds and the UI reveal can wait on them.
-extern "C" fn on_load_state(state: c_int, _num: c_longlong, _str: *const c_char) {
+extern "C" fn on_load_state(state: c_int, num: c_longlong, detail: *const c_char) {
     let name = match state {
         STATE_LOADCOMPLETED => {
             LOAD_COMPLETED.bump();
@@ -152,7 +152,18 @@ extern "C" fn on_load_state(state: c_int, _num: c_longlong, _str: *const c_char)
             PLAYING.bump();
             "PLAYING"
         }
-        _ => "other",
+        // Never swallow one silently: an error state arriving here is the only signal a load
+        // rejected asynchronously, and NDL reports nothing else about it.
+        _ => {
+            // SAFETY: NDL passes a NUL-terminated string or null, valid for this call only.
+            let detail = if detail.is_null() {
+                String::new()
+            } else {
+                unsafe { CStr::from_ptr(detail) }.to_string_lossy().into_owned()
+            };
+            tracing::warn!("NDL load state: unknown 0x{state:x} ({state}) num={num} {detail}");
+            return;
+        }
     };
     tracing::info!("NDL load state: {name} (0x{state:x})");
 }
@@ -191,11 +202,14 @@ pub fn mark_frame_fed() -> bool {
     FRAME_FED.bump_first()
 }
 
-/// [`mark_frame_fed`] plus the log line both generations emit; `since` is the handle's load instant.
-fn mark_frame_fed_logged(backend: &str, since: Instant) {
-    if mark_frame_fed() {
+/// [`mark_frame_fed`] plus the log line both generations emit; `since` is the handle's load
+/// instant. Returns whether this was the armed load's first frame.
+fn mark_frame_fed_logged(backend: &str, since: Instant) -> bool {
+    let first = mark_frame_fed();
+    if first {
         tracing::info!("{backend} first frame fed {:?} after load", since.elapsed());
     }
+    first
 }
 
 /// Every NDL entry point is a process singleton and none is documented as thread-safe, so one lock
@@ -207,28 +221,40 @@ fn lock_ffi() -> MutexGuard<'static, ()> {
     FFI_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Lets the rejected audio-enabled load's callbacks land before the video-only retry is armed:
-/// waits for its `UNLOADCOMPLETED`, then a fixed settle for anything still in flight behind it.
-fn settle_before_retry() {
-    let unloads = UNLOAD_COMPLETED.count();
+/// Sleeps in [`POLL`] steps until `done` or `limit` elapses; `true` if `done` won. Every wait in
+/// this module is a callback arriving on NDL's own thread with nothing to block on.
+fn poll_until(limit: Duration, done: impl Fn() -> bool) -> bool {
     let start = Instant::now();
-    while UNLOAD_COMPLETED.count() == unloads && start.elapsed() < CALLBACK_SETTLE {
-        std::thread::sleep(POLL);
-    }
-    std::thread::sleep(CALLBACK_SETTLE);
-}
-
-/// Blocks until the armed load's `LOADCOMPLETED` lands. Returns `false` on timeout.
-fn wait_load_completed() -> bool {
-    let start = Instant::now();
-    while !LOAD_COMPLETED.fired() {
-        if start.elapsed() >= LOAD_COMPLETE_TIMEOUT {
-            tracing::warn!("NDL load: no LOADCOMPLETED within {LOAD_COMPLETE_TIMEOUT:?} — holding the first frames");
+    while !done() {
+        if start.elapsed() >= limit {
             return false;
         }
         std::thread::sleep(POLL);
     }
     true
+}
+
+/// `UNLOADCOMPLETED` count, for [`settle_before_retry`]'s baseline.
+fn unload_count() -> u64 {
+    UNLOAD_COMPLETED.count()
+}
+
+/// Lets the rejected audio-enabled load's callbacks land before the video-only retry is armed:
+/// waits for its `UNLOADCOMPLETED`, then a fixed settle for anything still in flight behind it.
+/// `unloads_before` is [`unload_count`] from before the rejected load was even attempted — the
+/// caller's own teardown may have unloaded already, and this must not wait out a spent callback.
+fn settle_before_retry(unloads_before: u64) {
+    poll_until(CALLBACK_SETTLE, || UNLOAD_COMPLETED.count() != unloads_before);
+    std::thread::sleep(CALLBACK_SETTLE);
+}
+
+/// Blocks until the armed load's `LOADCOMPLETED` lands. Returns `false` on timeout.
+fn wait_load_completed() -> bool {
+    let completed = poll_until(LOAD_COMPLETE_TIMEOUT, || LOAD_COMPLETED.fired());
+    if !completed {
+        tracing::warn!("NDL load: no LOADCOMPLETED within {LOAD_COMPLETE_TIMEOUT:?} — holding the first frames");
+    }
+    completed
 }
 
 /// Count of video/audio pump threads leaked past `SHUTDOWN_JOIN_TIMEOUT` (see

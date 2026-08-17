@@ -950,6 +950,13 @@ fn video_pump(
                     tracing::info!("video: {frames_received} frames (idle)");
                 }
             }
+            // A teardown the user asked for reaches both pumps as `Closed`; only the audio one
+            // said so at INFO, so every clean disconnect left an ERROR as the last thing in the
+            // log — the one line triage looks for first.
+            Err(punktfunk_core::PunktfunkError::Closed) => {
+                tracing::info!("video pump ending: session closed");
+                break;
+            }
             Err(e) => {
                 tracing::error!("video pump: {e:#}");
                 break;
@@ -957,8 +964,10 @@ fn video_pump(
         }
 
         if is_hdr {
-            // `next_hdr_meta` is a queue drained non-blocking, so an Ok here is a
-            // freshly received / changed mastering-metadata packet, not a repeat.
+            // A non-blocking drain of freshly *received* packets — which is NOT the same as
+            // changed. The host re-sends unchanged mastering metadata (three identical packets
+            // inside 10 ms at session start, observed on a CX), so the on-change filtering has to
+            // happen against the last value actually applied; the player does it.
             if let Ok(meta) = client.next_hdr_meta(Duration::ZERO) {
                 tracing::info!(
                     "HDR metadata received: primaries={:?} white={:?} max_dml={} min_dml={} max_cll={} max_fall={}",
