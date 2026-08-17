@@ -760,10 +760,10 @@ pub(super) fn run_inner() -> Result<()> {
                     // than printed as a pair of zeroes that look like a stalled plane.
                     let layout = connected.audio_layout();
                     if connected.audio_offloaded {
-                        lines.push(format!("HW {layout} · NDL Opus"));
+                        lines.push(format!("Opus HW {layout} · NDL"));
                     } else {
                         let (buf_ms, av_ms) = connected.audio_stats();
-                        lines.push(format!("SW {layout} · buf {buf_ms} ms · A/V {av_ms:+} ms"));
+                        lines.push(format!("Opus SW {layout} · buf {buf_ms} ms · A/V {av_ms:+} ms"));
                     }
                     if let Some(line) = cpu_mem_line {
                         lines.push(line);
