@@ -106,16 +106,15 @@ const fn eviocgrab() -> libc::c_ulong {
     eioc(IOC_WRITE, 0x90, 4)
 }
 
-/// `EVIOCSREP` = `_IOW('E', 0x03, unsigned int[2])` — sets `[REP_DELAY, REP_PERIOD]` in ms,
-/// the parameters the kernel generates `value == 2` autorepeat from.
+/// `EVIOCSREP` = `_IOW('E', 0x03, unsigned int[2])` — `[REP_DELAY, REP_PERIOD]` in ms, what the
+/// kernel generates `value == 2` autorepeat from.
 const fn eviocsrep() -> libc::c_ulong {
     const IOC_WRITE: u32 = 1;
     eioc(IOC_WRITE, 0x03, 8)
 }
 
-/// Autorepeat delay/period pushed onto every keyboard node we own, in ms. The kernel's own
-/// defaults (250/33) are what a bare console uses; every desktop OS re-tunes them, and this
-/// client is the only thing between the node and the host, so it has to do it too.
+/// Autorepeat delay/period for every keyboard node we own, in ms. The kernel's 250/33 default is
+/// console timing; a desktop OS would re-tune it, and here nothing else will.
 const REPEAT_DELAY_MS: u32 = 500;
 const REPEAT_PERIOD_MS: u32 = 33;
 
@@ -393,9 +392,7 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
     Probe::Hid(dev)
 }
 
-/// Retunes a keyboard node's autorepeat to desktop-like timing. Best-effort: a node that
-/// refuses (or generates no repeat at all) just keeps whatever the kernel set, which costs
-/// repeat timing, not input.
+/// Best-effort: a node that refuses keeps the kernel's timing, which costs repeat feel, not input.
 fn set_repeat(fd: RawFd) {
     let rep: [u32; 2] = [REPEAT_DELAY_MS, REPEAT_PERIOD_MS];
     // SAFETY: `fd` is an open evdev node and the ioctl reads exactly the two u32s `rep` holds.
@@ -598,15 +595,15 @@ fn read_device(dev: &mut Device, sink: &impl Fn(&InputEvent), keys: &KeyActivity
                 EV_KEY if matches!(ev.value, 0..=2) => {
                     // Buttons and keys share `EV_KEY`, and a combo node reports both — the code
                     // ranges are what tells them apart, not the device.
-                    // Buttons take presses and releases only: a repeat would double-fire the click.
+                    // Buttons skip repeats: one would double-fire the click.
                     if let Some(button) = (dev.mouse && ev.value != 2).then(|| button_code(ev.code)).flatten() {
                         // Motion first: the click must land where the pointer already is.
                         flush_motion(dev, sink);
                         sink(&mouse::raw_button_event(button, ev.value == 1));
                     } else if let Some(vk) = dev.keyboard.then(|| keyboard::vk_from_evdev(ev.code)).flatten() {
                         keys.touch();
-                        // Autorepeat rides as a repeated KeyDown: the host has no repeat timer of
-                        // its own, so dropping these kills held-key repeat (Backspace, arrows).
+                        // Autorepeat rides as a repeated KeyDown — the host has no repeat timer of
+                        // its own, so dropping these kills held-key repeat.
                         sink(&keyboard::raw_key_event(vk, ev.value != 0));
                     }
                 }

@@ -474,7 +474,9 @@ impl NdlVideo {
             *pending = Some(info);
             return Ok(());
         }
-        drop(pending);
+        // Guard held across the apply, like `replay_pending_hdr`: released here, a racing replay
+        // could land its older value last, and `applied_hdr` won't dedupe differing values.
+        *pending = None;
         self.apply_hdr_info(info)
     }
 
