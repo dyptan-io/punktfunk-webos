@@ -81,6 +81,7 @@ pub(super) struct DataInfo {
 /// one, and which revision a given TV's `libndl-directmedia` was built against isn't knowable
 /// from here.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub(super) struct HdrInfo {
     pub(super) display_primaries_x0: c_uint,
     pub(super) display_primaries_y0: c_uint,

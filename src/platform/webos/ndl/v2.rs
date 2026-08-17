@@ -6,6 +6,7 @@
 //! punch-through plane (v1 can't; see [`super::v1`]).
 use std::ffi::{c_int, c_longlong, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
@@ -76,6 +77,12 @@ pub struct NdlVideo {
     /// refuses to feed until it lands or [`FEED_ANYWAY_AFTER`] passes. Latched once, so the
     /// steady-state feed path costs one relaxed load.
     load_confirmed: AtomicBool,
+    /// HDR mastering metadata that arrived while the pipeline was still loading.
+    /// `NDL_DirectVideoSetHDRInfo` returns success against an unloaded pipeline but does
+    /// nothing — the panel never enters HDR mode, and since the host only sends the packet
+    /// on change there is no second chance. Observed on a CX as an all-black launch that a
+    /// reconnect fixed. So the last value is kept here and replayed once the load confirms.
+    pending_hdr: Mutex<Option<ffi::HdrInfo>>,
 }
 
 impl NdlVideo {
@@ -133,6 +140,7 @@ impl NdlVideo {
             pts_offset_ns: AtomicI64::new(NO_PTS_OFFSET),
             last_audio_pts_ms: AtomicI64::new(0),
             load_confirmed: AtomicBool::new(confirmed),
+            pending_hdr: Mutex::new(None),
         })
     }
 
@@ -224,7 +232,42 @@ impl NdlVideo {
         } else {
             return Err(NotLoadedYet.into());
         }
-        self.load_confirmed.store(true, Ordering::Relaxed);
+        // Flag and slot move together under the one lock. `set_color_info` runs on a different
+        // thread (`session::connect` applies the host's colour info while the pump is starting),
+        // and reading the flag as unconfirmed, then storing into a slot this path has already
+        // drained, would strand that metadata in it for the rest of the session.
+        let held = {
+            let mut pending = self.pending_hdr();
+            self.load_confirmed.store(true, Ordering::Relaxed);
+            pending.take()
+        };
+        // The load just became real; anything held back for it applies now, before the first feed.
+        // A colour failure stays here: the caller reads an `Err` from this function as the feed
+        // being refused, and answers it with a flush and a keyframe request.
+        if let Some(info) = held {
+            tracing::info!("NDL: replaying HDR metadata held during load");
+            if let Err(e) = self.apply_hdr_info(info) {
+                tracing::warn!("NDL: replaying held HDR metadata failed: {e:#}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Guard on the deferred-HDR slot (see [`Self::pending_hdr`]).
+    fn pending_hdr(&self) -> MutexGuard<'_, Option<ffi::HdrInfo>> {
+        self.pending_hdr.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn apply_hdr_info(&self, info: ffi::HdrInfo) -> Result<()> {
+        let _ffi = lock_ffi();
+        // SAFETY: passed by value; no pointers or aliasing.
+        let ret = unsafe { (self.fns.set_hdr_info)(info) };
+        if ret != 0 {
+            bail!(
+                "NDL_DirectVideoSetHDRInfo failed: ret={ret} error={}",
+                ffi::last_error()
+            );
+        }
         Ok(())
     }
 
@@ -255,6 +298,8 @@ impl NdlVideo {
     /// NDL can't be used to correct a bitstream with missing/"unspecified" VUI colour
     /// info — the earlier reason this was called unconditionally — but forcing the panel
     /// into HDR for SDR content is the worse outcome.)
+    ///
+    /// Deferred until the load confirms — see [`Self::pending_hdr`].
     pub fn set_color_info(
         &self,
         meta: Option<&punktfunk_core::quic::HdrMeta>,
@@ -283,16 +328,14 @@ impl NdlVideo {
             matrix_coeffs: c_uint::from(color.matrix),
             reserved: [0; 32],
         };
-        let _ffi = lock_ffi();
-        // SAFETY: passed by value; no pointers or aliasing.
-        let ret = unsafe { (self.fns.set_hdr_info)(info) };
-        if ret != 0 {
-            bail!(
-                "NDL_DirectVideoSetHDRInfo failed: ret={ret} error={}",
-                ffi::last_error()
-            );
+        // Checked under the slot's lock, against the drain in `ensure_loaded`.
+        let mut pending = self.pending_hdr();
+        if !self.load_confirmed.load(Ordering::Relaxed) {
+            *pending = Some(info);
+            return Ok(());
         }
-        Ok(())
+        drop(pending);
+        self.apply_hdr_info(info)
     }
 
     /// Buffered-but-undisplayed frames in NDL (None if the query fails).
