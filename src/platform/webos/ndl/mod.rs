@@ -152,8 +152,7 @@ extern "C" fn on_load_state(state: c_int, num: c_longlong, detail: *const c_char
             PLAYING.bump();
             "PLAYING"
         }
-        // Never swallow one silently: an error state arriving here is the only signal a load
-        // rejected asynchronously, and NDL reports nothing else about it.
+        // Never swallowed: an error state here is the only signal a load rejected async.
         _ => {
             // SAFETY: NDL passes a NUL-terminated string or null, valid for this call only.
             let detail = if detail.is_null() {
@@ -221,8 +220,8 @@ fn lock_ffi() -> MutexGuard<'static, ()> {
     FFI_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Sleeps in [`POLL`] steps until `done` or `limit` elapses; `true` if `done` won. Every wait in
-/// this module is a callback arriving on NDL's own thread with nothing to block on.
+/// Sleeps in [`POLL`] steps until `done` or `limit` elapses; `true` if `done` won. Polled, not
+/// blocked on: every wait here is for a callback on NDL's own thread.
 fn poll_until(limit: Duration, done: impl Fn() -> bool) -> bool {
     let start = Instant::now();
     while !done() {
@@ -241,8 +240,8 @@ fn unload_count() -> u64 {
 
 /// Lets the rejected audio-enabled load's callbacks land before the video-only retry is armed:
 /// waits for its `UNLOADCOMPLETED`, then a fixed settle for anything still in flight behind it.
-/// `unloads_before` is [`unload_count`] from before the rejected load was even attempted — the
-/// caller's own teardown may have unloaded already, and this must not wait out a spent callback.
+/// `unloads_before` is [`unload_count`] from before the rejected load was attempted: the caller's
+/// own teardown may have unloaded already, and a spent callback must not be waited out.
 fn settle_before_retry(unloads_before: u64) {
     poll_until(CALLBACK_SETTLE, || UNLOAD_COMPLETED.count() != unloads_before);
     std::thread::sleep(CALLBACK_SETTLE);
