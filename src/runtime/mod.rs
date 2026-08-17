@@ -101,7 +101,7 @@ fn spawn_connect(
                 settings.video_pacing,
                 settings.gamepad_type,
                 settings.cursor_capture,
-                settings.force_software_audio,
+                settings.ndl_audio_offload,
             )
             // Flagged before the handle is joined, so the loading screen can stop waiting
             // for a stream that is not coming — the error itself still travels by `Result`.

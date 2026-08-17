@@ -475,7 +475,7 @@ impl App {
             }),
             Screen::Experimental => Some(ModalShellKey::Experimental {
                 video_pacing: self.settings.video_pacing,
-                force_software_audio: self.settings.force_software_audio,
+                ndl_audio_offload: self.settings.ndl_audio_offload,
                 game_mode: self.settings.game_mode,
                 hover_close: self.hover_close,
             }),
@@ -557,7 +557,7 @@ impl App {
             Screen::Experimental => Some(ModalFocusKey::ExperimentalRow(
                 self.experimental_focused,
                 self.settings.video_pacing,
-                self.settings.force_software_audio,
+                self.settings.ndl_audio_offload,
                 self.settings.game_mode,
             )),
             Screen::CursorSettings => Some(ModalFocusKey::CursorSettingsRow(

@@ -85,7 +85,7 @@ pub const SETTINGS_ROW_COUNT: usize = 12;
 
 /// Experimental modal row indices (see `app::view::experimental::rows`).
 pub const EXP_ROW_FRAME_PACER: usize = 0;
-pub const EXP_ROW_SOFTWARE_AUDIO: usize = 1;
+pub const EXP_ROW_HW_AUDIO: usize = 1;
 /// Only present on rooted TVs, so it's the last row when shown.
 pub const EXP_ROW_GAME_MODE: usize = 2;
 

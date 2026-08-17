@@ -51,7 +51,9 @@ pub enum ModalShellKey {
     // on every keystroke or dropdown open/close. The shell draws chrome only (no
     // row content, not even the Bitrate caution — that's the focus tile's job),
     // so the only thing that can actually change it is the close-button hover.
-    Settings { hover_close: bool },
+    Settings {
+        hover_close: bool,
+    },
     Wake {
         name: String,
         mac_empty: bool,
@@ -94,7 +96,7 @@ pub enum ModalShellKey {
     },
     Experimental {
         video_pacing: bool,
-        force_software_audio: bool,
+        ndl_audio_offload: bool,
         game_mode: bool,
         hover_close: bool,
     },

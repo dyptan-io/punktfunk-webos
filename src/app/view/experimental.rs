@@ -29,20 +29,20 @@ pub fn rows(settings: &Settings, rooted: bool) -> Vec<FocusRow> {
     } else {
         "May improve framerate smoothness, adds latency"
     }))];
-    // Hardware Opus is the default on webOS 5+, and the software decoder is the fallback for
-    // every case NDL can't take (older TVs, SMP, surround) — so this only forces a path that
-    // always exists. It's a row because a TV can accept the offloaded load and then play
-    // nothing, and neither the app nor the user can tell that apart from a host sending silence.
+    // Opt-in, not the default: the audio-enabled load is rejected on at least some webOS 5+ sets
+    // and takes the video plane down with it (black picture, sound fine — see
+    // `Settings::ndl_audio_offload`). Software Opus is the path that always exists, so it stays
+    // the default and this offers the offload to anyone whose TV can take it.
     rows.push(
         FocusRow::toggle(
             crate::app::view::icons::ICON_MEMORY,
-            "Software audio",
-            settings.force_software_audio,
+            "Hardware audio decode",
+            settings.ndl_audio_offload,
         )
-        .with_subtext(ui::widgets::RowSubtext::hint(if settings.force_software_audio {
-            "Opus on the CPU"
+        .with_subtext(ui::widgets::RowSubtext::hint(if settings.ndl_audio_offload {
+            "Opus decoded by NDL"
         } else {
-            "Use if the TV plays no sound"
+            "Opus on the CPU — turn on to let NDL decode it"
         })),
     );
     // Driving the TV's Game picture/sound modes needs the Homebrew Channel's root helper — the

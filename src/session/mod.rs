@@ -190,20 +190,18 @@ impl Connected {
 /// Whether NDL should decode Opus itself, and with what configuration — `None` puts the session
 /// on the software decoder (`platform::webos::audio`).
 ///
-/// Hardware decode is the default wherever NDL takes it. It was disabled for a while over a
-/// freeze that turned out to be the two planes being stamped in different clocks; both now share
-/// one latched offset (`NdlVideo::latch_pts_offset`, docs/NOTES.md § "Opus offload to NDL").
+/// Software decode is the default, and hardware offload is **opt-in** (`offload`, the
+/// Experimental screen's "Hardware audio decode"). The audio-enabled load is rejected on at least
+/// some webOS 5+ sets — `NDL_DirectMediaLoad` returns 0, `LOADCOMPLETED` never arrives, the audio
+/// plane plays and the video plane never starts, so the session is black with sound. Until that is
+/// understood the offload cannot be the default, whatever it saves.
 ///
-/// Software decode remains the answer on four routes this function never sees — NDL v1 (no Opus
-/// audio type), SMP (loads video-only), an audio-enabled load NDL rejects, and a TV that accepts
-/// the load and then plays nothing — plus `force_software` for the last of those, which cannot be
-/// detected at runtime (`NDL_DirectAudioPlay` reports success either way). **Stereo only**: NDL's
-/// struct has no multistream mapping field, so 5.1/7.1 would decode as noise.
-fn ndl_audio_config(
-    resolved_channels: u8,
-    force_software: bool,
-) -> Option<crate::platform::webos::ndl::NdlAudioConfig> {
-    if force_software {
+/// Software decode is also the only answer on three routes this function never sees — NDL v1 (no
+/// Opus audio type), SMP (loads video-only), and an audio-enabled load NDL refuses outright.
+/// **Stereo only**: NDL's struct has no multistream mapping field, so 5.1/7.1 would decode as
+/// noise.
+fn ndl_audio_config(resolved_channels: u8, offload: bool) -> Option<crate::platform::webos::ndl::NdlAudioConfig> {
+    if !offload {
         return None;
     }
     (resolved_channels == 2).then_some(crate::platform::webos::ndl::NdlAudioConfig {
@@ -279,7 +277,7 @@ pub fn connect(
     video_pacing: bool,
     gamepad_type: crate::services::store::GamepadType,
     cursor_capture: bool,
-    force_software_audio: bool,
+    ndl_audio_offload: bool,
 ) -> Result<Connected> {
     // Fails before touching the network: a full handshake would only end in `NdlVideo::load()`
     // rejecting the same gate, pointlessly holding the host's pending-session slot for `timeout`.
@@ -393,7 +391,7 @@ pub fn connect(
         height,
         fps,
         codec,
-        ndl_audio_config(client.audio_channels, force_software_audio),
+        ndl_audio_config(client.audio_channels, ndl_audio_offload),
     )?;
     tracing::info!(
         "{} loaded ({codec:?} {}x{}@{fps}fps)",
@@ -431,9 +429,9 @@ pub fn connect(
     // Naming the REASON matters: "software Opus" is the correct outcome on four different
     // routes plus the user's own override, and a silent session looks identical on all of
     // them. Without this the first debugging question has no answer in the log.
-    let path = match (&ndl_audio, force_software_audio, &player) {
+    let path = match (&ndl_audio, ndl_audio_offload, &player) {
         (Some(_), _, _) => "NDL hardware Opus decode",
-        (None, true, _) => "software Opus decode -> SDL2 (forced: Experimental setting)",
+        (None, false, _) => "software Opus decode -> SDL2 (default; Experimental setting opts in)",
         (None, _, VideoPlayer::V1(_)) => "software Opus decode -> SDL2 (NDL v1 has no Opus audio type)",
         (None, _, VideoPlayer::Smp(_)) => "software Opus decode -> SDL2 (SMP loads video-only)",
         (None, _, VideoPlayer::V2(_)) if client.audio_channels != 2 => {

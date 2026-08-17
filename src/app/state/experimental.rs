@@ -27,9 +27,9 @@ impl App {
                 self.settings.video_pacing = !from;
                 self.switch_anim = Some((Instant::now(), from, self.experimental_focused));
             }
-            (menu::EXP_ROW_SOFTWARE_AUDIO, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
-                let from = self.settings.force_software_audio;
-                self.settings.force_software_audio = !from;
+            (menu::EXP_ROW_HW_AUDIO, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
+                let from = self.settings.ndl_audio_offload;
+                self.settings.ndl_audio_offload = !from;
                 self.switch_anim = Some((Instant::now(), from, self.experimental_focused));
             }
             (menu::EXP_ROW_GAME_MODE, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
