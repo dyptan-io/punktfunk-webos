@@ -71,7 +71,7 @@ ureq = { version = "3", features = ["rustls-no-provider", "rustls-webpki-roots"]
 # `ring` and `aws_lc_rs` are compiled, so `ClientConfig::builder()` panics rather than picking.
 # aws-lc-rs also carries ML-KEM, so the QUIC/mgmt handshakes get post-quantum key exchange.
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 # Pre-stream UI rendering (software rasterizer); png-format off (already-decoded buffers only).
 tiny-skia = { version = "0.12", default-features = false, features = ["std"] }
 
