@@ -99,6 +99,14 @@ pub fn clock_ticks_per_sec() -> u64 {
     (unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64).max(1) // SAFETY: no pointers
 }
 
+/// How often the video pump prints its heartbeat. Well past the 2 s stats cadence it rides on —
+/// the line is a trend ("still draining, still not holding"), and one every couple of seconds
+/// buried the rest of the log without saying anything new.
+const VIDEO_HEARTBEAT_LOG: Duration = Duration::from_secs(15);
+/// Audio packets between peak lines in [`audio_feed_pump`] — 5 ms each, so ~15 s to match
+/// [`VIDEO_HEARTBEAT_LOG`].
+const AUDIO_PEAK_LOG_PACKETS: u32 = 3_000;
+
 /// Ceiling on each teardown join below. The video/audio pumps re-check `stop` on a bounded
 /// cadence, but the FFI calls they make between checks (NDL `play`/`play_audio`, and the
 /// QUIC-close worker `NativeClient::drop` joins internally) have no timeout of their own — an
@@ -876,6 +884,7 @@ fn video_pump(
     let mut last_dropped_seen = client.frames_dropped();
     let mut frames_received: u64 = 0;
     let mut last_heartbeat = Instant::now();
+    let mut last_video_log = Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
         match client.next_frame(Duration::from_millis(500)) {
@@ -889,20 +898,20 @@ fn video_pump(
                     stats.render_backlog.store(backlog.unwrap_or(-1), Ordering::Relaxed);
                     // `backlog` separates "the decoder is behind" from "frames are
                     // arriving late" — indistinguishable before this, since play()
-                    // decodes and presents in one opaque call.
+                    // decodes and presents in one opaque call. Logged on its own slower
+                    // cadence: the overlay wants a fresh depth, the log does not.
                     //
-                    // INFO, not debug: the on-device file sink is INFO-only
-                    // (`logger::resolved_level`), so at debug this line — the one that
-                    // says whether NDL is draining what it is fed — was invisible in
-                    // exactly the situation it exists for, a freeze reported off a
-                    // plain sideloaded run with no telemetry listener. Half a line per
-                    // second is affordable; a second round trip to reproduce is not.
-                    tracing::info!(
-                        "video: {frames_received} frames, holding={}, dropped={}, backlog={}",
-                        sink.holding(),
-                        client.frames_dropped(),
-                        backlog.map_or_else(|| "n/a".to_string(), |b| b.to_string()),
-                    );
+                    // DEBUG, so it costs a telemetry listener or `TELEMETRY_LEVEL=debug` to
+                    // see — the on-device file sink is INFO-only (`logger::resolved_level`).
+                    if last_video_log.elapsed() >= VIDEO_HEARTBEAT_LOG {
+                        last_video_log = Instant::now();
+                        tracing::debug!(
+                            "video: {frames_received} frames, holding={}, dropped={}, backlog={}",
+                            sink.holding(),
+                            client.frames_dropped(),
+                            backlog.map_or_else(|| "n/a".to_string(), |b| b.to_string()),
+                        );
+                    }
                 }
 
                 // From core v0.28 this returns the gap WIDTH (0 = contiguous) where it used to
@@ -1045,14 +1054,13 @@ fn audio_feed_pump(client: &NativeClient, feed: &mut crate::platform::webos::aud
     // cadence in the session. Best-effort, like every renice here.
     // SAFETY: plain syscall — tid 0 (self) and priority value only, no pointers.
     let _ = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -10) };
-    // Logged roughly once/sec (200 packets @ 5ms/frame).
     let mut packets: u32 = 0;
     while !stop.load(Ordering::Relaxed) {
         match client.next_audio(Duration::from_millis(100)) {
             Ok(packet) => match feed.play(packet.seq, packet.pts_ns, &packet.data) {
                 Ok(peak) => {
                     packets = packets.wrapping_add(1);
-                    if packets % 200 == 0 {
+                    if packets % AUDIO_PEAK_LOG_PACKETS == 0 {
                         tracing::debug!("audio peak: {peak:.4}");
                     }
                 }
