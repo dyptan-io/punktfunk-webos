@@ -99,14 +99,6 @@ pub fn clock_ticks_per_sec() -> u64 {
     (unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64).max(1) // SAFETY: no pointers
 }
 
-/// How often the video pump prints its heartbeat. Well past the 2 s stats cadence it rides on —
-/// the line is a trend ("still draining, still not holding"), and one every couple of seconds
-/// buried the rest of the log without saying anything new.
-const VIDEO_HEARTBEAT_LOG: Duration = Duration::from_secs(15);
-/// Audio packets between peak lines in [`audio_feed_pump`] — 5 ms each, so ~15 s to match
-/// [`VIDEO_HEARTBEAT_LOG`].
-const AUDIO_PEAK_LOG_PACKETS: u32 = 3_000;
-
 /// Ceiling on each teardown join below. The video/audio pumps re-check `stop` on a bounded
 /// cadence, but the FFI calls they make between checks (NDL `play`/`play_audio`, and the
 /// QUIC-close worker `NativeClient::drop` joins internally) have no timeout of their own — an
@@ -903,7 +895,9 @@ fn video_pump(
                     //
                     // DEBUG, so it costs a telemetry listener or `TELEMETRY_LEVEL=debug` to
                     // see — the on-device file sink is INFO-only (`logger::resolved_level`).
-                    if last_video_log.elapsed() >= VIDEO_HEARTBEAT_LOG {
+                    // 15s: the line is a trend ("still draining, still not holding"), and one
+                    // every couple of seconds buried the rest of the log saying nothing new.
+                    if last_video_log.elapsed() >= Duration::from_secs(15) {
                         last_video_log = Instant::now();
                         tracing::debug!(
                             "video: {frames_received} frames, holding={}, dropped={}, backlog={}",
@@ -1060,7 +1054,8 @@ fn audio_feed_pump(client: &NativeClient, feed: &mut crate::platform::webos::aud
             Ok(packet) => match feed.play(packet.seq, packet.pts_ns, &packet.data) {
                 Ok(peak) => {
                     packets = packets.wrapping_add(1);
-                    if packets % AUDIO_PEAK_LOG_PACKETS == 0 {
+                    // ~15s, matching the video heartbeat (packets are 5ms each).
+                    if packets % 3_000 == 0 {
                         tracing::debug!("audio peak: {peak:.4}");
                     }
                 }
