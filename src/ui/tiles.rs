@@ -146,6 +146,11 @@ pub fn render_wrapped_text_tile(
 /// Worst-case stat line used to lock overlay width.
 pub const STATS_OVERLAY_REF_LINE: &str = "3840x2160@120 HEVC HDR";
 
+/// Extra width past [`STATS_OVERLAY_REF_LINE`], as digits of the stat font. The reference line is
+/// no longer the widest one — the audio line carries a layout name and two figures — and a line
+/// that overruns the tile is clipped, not wrapped.
+const STATS_OVERLAY_SLACK: &str = "00000";
+
 /// In-stream stats overlay with fixed width and centered hint.
 /// `lines[0]` is highlighted; remaining lines are muted.
 pub fn render_stats_overlay_tile(fonts: &Fonts, lines: &[String], hint: &str) -> Result<Painter> {
@@ -157,7 +162,8 @@ pub fn render_stats_overlay_tile(fonts: &Fonts, lines: &[String], hint: &str) ->
     let hint_h = caption_h + 8;
     let line_count = lines.len() as i32;
 
-    let inner_w = raster.measure(font, STATS_OVERLAY_REF_LINE).0 + content_safety;
+    let inner_w =
+        raster.measure(font, STATS_OVERLAY_REF_LINE).0 + raster.measure(font, STATS_OVERLAY_SLACK).0 + content_safety;
     let w = inner_w + 2 * pad as u32;
     let h = (line_count * line_h + hint_h + 2 * pad) as u32;
     let content_w_i32 = w as i32 - 2 * pad;
