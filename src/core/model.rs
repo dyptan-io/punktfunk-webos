@@ -222,9 +222,6 @@ pub struct Settings {
     /// from the Yellow-button overlay cycle (`runtime`'s log-overlay state), which
     /// stays ephemeral and never writes here.
     pub show_logs: bool,
-    /// Experimental PTS smoothing for the video pump (see `session::PtsPacer`). Off
-    /// by default — untested on real hardware; takes effect on the next stream.
-    pub video_pacing: bool,
     /// Which controller the host presents to the game — see [`GamepadType`]. Defaults to
     /// `Auto`, which mirrors the attached pad (so a `DualSense` gets adaptive triggers without
     /// anyone having to find this setting); pick a kind explicitly to override that. Takes
@@ -280,7 +277,6 @@ impl Default for Settings {
             audio_channels: 2,
             log_level_override: LogLevelOverride::Info,
             show_logs: false,
-            video_pacing: false,
             gamepad_type: GamepadType::Auto,
             cursor_capture: true,
             game_mode: false,

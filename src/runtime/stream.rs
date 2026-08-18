@@ -1,7 +1,7 @@
 use super::*;
 use crate::platform::webos::input::{
-    webos_scancode_down as key_down, WEBOS_BLUE_SCANCODE, WEBOS_EXIT_SCANCODE, WEBOS_GREEN_SCANCODE,
-    WEBOS_HOME_SCANCODE, WEBOS_YELLOW_SCANCODE,
+    webos_scancode_down as key_down, WEBOS_EXIT_SCANCODE, WEBOS_GREEN_SCANCODE, WEBOS_HOME_SCANCODE,
+    WEBOS_YELLOW_SCANCODE,
 };
 
 /// How long the finished launch frame is held waiting for the first frame to reach the decoder
@@ -262,8 +262,6 @@ pub(super) fn run_inner() -> Result<()> {
         let mut green_held = key_down(WEBOS_GREEN_SCANCODE);
         let mut yellow_held = key_down(WEBOS_YELLOW_SCANCODE);
         let mut home_held = key_down(WEBOS_HOME_SCANCODE);
-        // Blue button flips pacing live via `stats.pacing_enabled` (pure PTS math, safe mid-stream).
-        let mut blue_held = key_down(WEBOS_BLUE_SCANCODE);
         // Transient toasts. `overlay_was_active` catches the fade-out edge so the canvas gets
         // wiped once; `stats_dst`/`log_dst` recomposite each frame at their own slower cadence.
         let mut notif = crate::ui::widgets::Notification::new();
@@ -565,23 +563,6 @@ pub(super) fn run_inner() -> Result<()> {
                 }
             }
             yellow_held = yellow_down;
-            // Blue button: live frame-pacing toggle, same edge-detect (Red is OS-intercepted).
-            let blue_down = !disconnect.is_open()
-                && crate::platform::webos::input::webos_scancode_down(
-                    crate::platform::webos::input::WEBOS_BLUE_SCANCODE,
-                );
-            if blue_down && !blue_held {
-                let now_on = !connected.stats().pacing_enabled.load(Ordering::Relaxed);
-                connected.stats().pacing_enabled.store(now_on, Ordering::Relaxed);
-                tracing::info!("frame pacing {} (Blue button)", if now_on { "on" } else { "off" });
-                notif.show(if now_on {
-                    "Frame pacing enabled"
-                } else {
-                    "Frame pacing disabled"
-                });
-                overlay_last = None;
-            }
-            blue_held = blue_down;
             // Connection-issue toast: fires on the rising edge of a freeze-until-reanchor hold
             // (dropped/gapped frames — see `session::video_pump`), which is the same "network
             // trouble" signal the stats overlay's "Beat" line reads, just edge-triggered here so
@@ -767,10 +748,6 @@ pub(super) fn run_inner() -> Result<()> {
                     }
                     if let Some(line) = cpu_mem_line {
                         lines.push(line);
-                    }
-                    if connected.stats().pacing_enabled.load(Ordering::Relaxed) {
-                        let delta_ms = connected.stats().pacing_delta_ns.load(Ordering::Relaxed) as f32 / 1_000_000.0;
-                        lines.push(format!("Pace {delta_ms:+.1} ms"));
                     }
                     match crate::ui::tiles::render_stats_overlay_tile(
                         &fonts,

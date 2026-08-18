@@ -1,15 +1,15 @@
 //! Connects to a punktfunk host and drives the video/audio hardware pipelines.
 //!
 //! Video runs on a dedicated thread ([`video_pump`]), which pulls access units off the
-//! transport and hands them to a [`sink::NdlSink`] — everything from PTS pacing down to
+//! transport and hands them to a [`sink::NdlSink`] — everything from PTS anchoring down to
 //! the NDL `DirectMedia` backend (the sole video backend) lives behind that seam.
 //!
 //! Audio takes one of two paths, and each has a thread of its own: software-decoded audio is
 //! decoded by [`audio_feed_pump`] into the playback ring SDL's audio callback drains
 //! (`platform::webos::audio`), and the NDL-offloaded path hands raw Opus straight to NDL from
 //! [`ndl_audio_pump`]. Neither shares the main loop, which carries the UI's software rasterizer.
-pub mod pacing;
 pub mod sink;
+pub mod timeline;
 
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,12 +62,6 @@ pub struct StreamStats {
     pub feed_us: std::sync::atomic::AtomicU32,
     /// NDL render-buffer backlog or -1 if unavailable.
     pub render_backlog: std::sync::atomic::AtomicI32,
-    /// Latency `PtsPacer` added vs. the unpaced reference (ns); 0 when pacing is off.
-    pub pacing_delta_ns: std::sync::atomic::AtomicI64,
-    /// Frame pacing active. Seeded from the setting at connect, then flipped live by the
-    /// Blue button (main writes, `video_pump` reads per frame). Pure PTS math, no decoder
-    /// state — safe to toggle mid-stream.
-    pub pacing_enabled: AtomicBool,
 }
 
 /// Short display name for a resolved wire codec id (the stats overlay's header).
@@ -252,7 +246,6 @@ pub fn connect(
     timeout: Duration,
     codec_pref: CodecPref,
     video_backend: VideoBackend,
-    video_pacing: bool,
     gamepad_type: crate::services::store::GamepadType,
     cursor_capture: bool,
     ndl_audio_offload: bool,
@@ -440,8 +433,6 @@ pub fn connect(
 
     let stop = Arc::new(AtomicBool::new(false));
     let stats = Arc::new(StreamStats::default());
-    // Seed the live pacing flag from the setting; the Blue button flips it from here on.
-    stats.pacing_enabled.store(video_pacing, Ordering::Relaxed);
     let video_client = client.clone();
     let video_stop = stop.clone();
     let sink_cfg = SinkConfig {
@@ -454,7 +445,7 @@ pub fn connect(
     let video_thread = std::thread::Builder::new()
         .name("punktfunk-webos-video".into())
         .spawn(move || {
-            // Built here, not on the caller's thread: the pacer queries the panel refresh
+            // Built here, not on the caller's thread: the sink queries the panel refresh
             // rate through SDL on construction, and that stayed on the video thread before.
             let sink = NdlSink::new(player, video_stats.clone(), sink_cfg);
             video_pump(video_client, sink, video_stop, video_stats, is_hdr)

@@ -7,7 +7,7 @@
 //!   refused *before* the handshake (`core::caps` → `session::connect`); [`NdlV1Video::load`]
 //!   refuses again as defence in depth.
 //! - **No PTS input** — `PlayWithCallback` takes `(data, size, userdata)` and frames present as
-//!   fed, so `session`'s pacing and A/V-offset machinery is inert here.
+//!   fed, so `session`'s PTS-anchoring and A/V-offset machinery is inert here.
 //! - **No render-buffer query, no flush, no HDR call.** The sink tolerates all three.
 //! - **Fixed 1920x1080 display rect**, placed once via `SetArea` (see [`fit_video`]) in webOS's
 //!   panel-independent app coordinate space, since v1 has no native punch-through sizing. Video
@@ -113,7 +113,7 @@ impl NdlV1Video {
     }
 
     /// Feed one access unit. No PTS: v1 presents frames as they are fed (see the module docs),
-    /// so the caller's paced timestamp has nowhere to go.
+    /// so the caller's timestamp has nowhere to go.
     pub fn play(&self, au: &[u8]) -> Result<()> {
         let frame = self.frames_fed.fetch_add(1, Ordering::Relaxed);
         let _ffi = lock_ffi();

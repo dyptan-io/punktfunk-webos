@@ -297,7 +297,7 @@ impl NdlVideo {
     }
 
     /// Drop the latched offset — the two timelines just decoupled (the sink reset its anchor
-    /// after a freeze-until-reanchor hold, or on the pacing off→on edge).
+    /// after a freeze-until-reanchor hold).
     /// [`play_audio`](Self::play_audio) holds packets until the video plane latches a fresh one.
     pub(crate) fn clear_pts_offset(&self) {
         self.pts_offset_ns.store(NO_PTS_OFFSET, Ordering::Relaxed);
@@ -379,7 +379,8 @@ impl NdlVideo {
         tracing::info!("NDL clock plane ending at {pts_ms}ms");
     }
 
-    /// Nanoseconds since `load()` (NDL PTS domain). `video_pump`'s pacer clamps its accumulator around this.
+    /// Nanoseconds since `load()` (NDL PTS domain). The sink anchors the host PTS onto this
+    /// (`session::timeline::HostPtsAnchor`) — NDL has no PTS clock of its own.
     pub(crate) fn elapsed_ns(&self) -> u64 {
         self.load_instant.elapsed().as_nanos() as u64
     }
@@ -454,7 +455,8 @@ impl NdlVideo {
     }
 
     /// Feed one access unit at `pts_ns` (ns since `load()`), truncated to ms for NDL.
-    /// Pass a paced value, not raw `elapsed_ns()`, to preserve inter-frame spacing.
+    /// Pass the host-anchored base (`session::timeline::HostPtsAnchor`), not raw `elapsed_ns()`,
+    /// so video and offloaded audio share one timeline.
     pub fn play(&self, au: &[u8], pts_ns: u64) -> Result<()> {
         self.ensure_loaded()?;
         let pts_ms = (pts_ns / 1_000_000) as c_longlong;

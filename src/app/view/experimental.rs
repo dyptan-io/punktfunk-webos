@@ -15,36 +15,23 @@ use anyhow::Result;
 pub const TITLE: &str = "Experimental";
 pub const SUBTITLE: &str = "Unstable, off by default.";
 
-/// The frame pacer toggle (`session::PtsPacer`, live-toggleable mid-stream with the Blue
-/// button), the software-audio override, and Game mode on rooted sets. All off by default.
+/// The software-audio override, and Game mode on rooted sets. All off by default.
 /// Order must match `menu::EXP_ROW_*`.
 pub fn rows(settings: &Settings, rooted: bool) -> Vec<FocusRow> {
-    let mut rows = vec![FocusRow::toggle(
-        crate::app::view::icons::ICON_SCHEDULE,
-        "Frame pacer",
-        settings.video_pacing,
-    )
-    .with_subtext(ui::widgets::RowSubtext::hint(if settings.video_pacing {
-        "Toggles live with the Blue button"
-    } else {
-        "May improve framerate smoothness, adds latency"
-    }))];
     // Opt-in, not the default: the audio-enabled load is rejected on at least some webOS 5+ sets
     // and takes the video plane down with it (black picture, sound fine — see
     // `Settings::ndl_audio_offload`). Software Opus is the path that always exists, so it stays
     // the default and this offers the offload to anyone whose TV can take it.
-    rows.push(
-        FocusRow::toggle(
-            crate::app::view::icons::ICON_MEMORY,
-            "Audio offload",
-            settings.ndl_audio_offload,
-        )
-        .with_subtext(ui::widgets::RowSubtext::hint(if settings.ndl_audio_offload {
-            "Turn off for decoding Opus in software"
-        } else {
-            "Offload Opus decode to NDL"
-        })),
-    );
+    let mut rows = vec![FocusRow::toggle(
+        crate::app::view::icons::ICON_MEMORY,
+        "Audio offload",
+        settings.ndl_audio_offload,
+    )
+    .with_subtext(ui::widgets::RowSubtext::hint(if settings.ndl_audio_offload {
+        "Turn off for decoding Opus in software"
+    } else {
+        "Offload Opus decode to NDL"
+    }))];
     // Driving the TV's Game picture/sound modes needs the Homebrew Channel's root helper — the
     // public bus is denied `settingsservice` outright (see `platform::webos::game_mode`). So the
     // row only exists on a rooted set, where it's known to work.
@@ -60,7 +47,7 @@ pub fn rows(settings: &Settings, rooted: bool) -> Vec<FocusRow> {
 /// Row count without building the `FocusRow` vec — for card sizing and hit-testing. The
 /// Game mode row is only offered on a rooted TV, so the screen is one row shorter otherwise.
 pub fn row_count(rooted: bool) -> usize {
-    2 + usize::from(rooted)
+    1 + usize::from(rooted)
 }
 
 pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, rooted: bool) -> Rect {

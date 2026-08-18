@@ -98,7 +98,6 @@ fn spawn_connect(
                 crate::services::budget::HANDSHAKE,
                 settings.codec,
                 settings.video_backend,
-                settings.video_pacing,
                 settings.gamepad_type,
                 settings.cursor_capture,
                 settings.ndl_audio_offload,

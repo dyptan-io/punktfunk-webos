@@ -67,7 +67,7 @@ pub(super) fn run_ui_flow(
         app.home_status = initial_status;
         app.home_status_sticky = true;
     }
-    // Same toast widget as the streaming loop's frame-pacer toggle (`ui::widgets::Notification`);
+    // Same toast widget as the streaming loop's (`ui::widgets::Notification`);
     // shown once, right as the Home screen re-appears.
     let mut notif = crate::ui::widgets::Notification::new();
     // Last (text, w, h) uploaded for the toast tile — see `push_notification_cmd`.
@@ -190,7 +190,7 @@ pub(super) fn run_ui_flow(
             dirty = true;
             if let Some(target) = app.take_ready_launch() {
                 // In-memory settings, not `store::load_settings()`: a just-flipped
-                // toggle (e.g. video pacing) is persisted asynchronously by
+                // toggle (e.g. audio offload) is persisted asynchronously by
                 // `StateWriter`, so re-reading disk here could race the write and
                 // connect with the stale value. `app.settings` is updated synchronously.
                 let settings = resolve_gamepad_type(app.settings, game_controller);

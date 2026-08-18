@@ -497,7 +497,6 @@ impl App {
                 hover_close: self.hover_close,
             }),
             Screen::Experimental => Some(ModalShellKey::Experimental {
-                video_pacing: self.settings.video_pacing,
                 ndl_audio_offload: self.settings.ndl_audio_offload,
                 game_mode: self.settings.game_mode,
                 hover_close: self.hover_close,
@@ -579,7 +578,6 @@ impl App {
             )),
             Screen::Experimental => Some(ModalFocusKey::ExperimentalRow(
                 self.experimental_focused,
-                self.settings.video_pacing,
                 self.settings.ndl_audio_offload,
                 self.settings.game_mode,
             )),

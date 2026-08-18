@@ -71,8 +71,8 @@ pub const ROW_GAMEPAD: usize = 7;
 /// sets more than once, and pairing them makes the gesture toggle discoverable next to the
 /// capture mode it interacts with.
 pub const ROW_CURSOR: usize = 8;
-/// Not a setting — a link to `Screen::Experimental` (unstable toggles, currently the
-/// frame pacer). Grouped off the main list so an untested option isn't one keystroke away.
+/// Not a setting — a link to `Screen::Experimental` (unstable toggles: NDL audio offload,
+/// and Game mode on rooted sets). Grouped off the main list so an untested option isn't one keystroke away.
 pub const ROW_EXPERIMENTAL: usize = 9;
 /// Not a setting — a link to `Screen::Diagnostics` (log level + stats overlay).
 /// A debug aid, not something a normal user needs to find quickly.
@@ -84,10 +84,9 @@ pub const ROW_ABOUT: usize = 11;
 pub const SETTINGS_ROW_COUNT: usize = 12;
 
 /// Experimental modal row indices (see `app::view::experimental::rows`).
-pub const EXP_ROW_FRAME_PACER: usize = 0;
-pub const EXP_ROW_HW_AUDIO: usize = 1;
+pub const EXP_ROW_HW_AUDIO: usize = 0;
 /// Only present on rooted TVs, so it's the last row when shown.
-pub const EXP_ROW_GAME_MODE: usize = 2;
+pub const EXP_ROW_GAME_MODE: usize = 1;
 
 /// Cursor modal row indices (see `app::view::cursorsettings::rows`).
 pub const CURSOR_ROW_CAPTURE: usize = 0;

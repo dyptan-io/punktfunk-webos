@@ -1,7 +1,7 @@
 //! The single place that talks to the video decoder.
 //!
 //! Everything between "an access unit arrived" and "NDL has been fed" lives here: host-PTS
-//! anchoring, the refresh-rate-reconciled [`PtsPacer`], backpressure metering,
+//! anchoring on the refresh-rate-reconciled frame interval, backpressure metering,
 //! freeze-until-reanchor, and keyframe-request throttling. The video pump keeps only the
 //! parts that are wire-shaped — pulling frames, and *how* a keyframe is asked for, which it
 //! answers to [`SinkResult::NeedKeyframe`] with `NativeClient::request_keyframe`.
@@ -15,7 +15,7 @@ use punktfunk_core::quic;
 use crate::platform::webos::ndl::v1::NdlV1Video;
 use crate::platform::webos::ndl::{NdlVideo, NotLoadedYet};
 use crate::platform::webos::smp::SmpVideo;
-use crate::session::pacing::{reconciled_pace_interval_ns, HostPtsAnchor, PtsPacer};
+use crate::session::timeline::{reconciled_frame_interval_ns, HostPtsAnchor};
 use crate::session::StreamStats;
 
 /// Freeze duration after which we resume even without a clean re-anchor.
@@ -155,7 +155,7 @@ pub enum VideoPlayer {
 
 impl VideoPlayer {
     /// Feed access unit; return (result, `feed_duration`) for ABR latency reporting.
-    /// `pts_ns` must already be in NDL's PTS clock domain (see [`Self::pace_base_ns`]).
+    /// `pts_ns` must already be in NDL's PTS clock domain (see [`Self::pts_base_ns`]).
     fn play(&self, au: &[u8], pts_ns: u64) -> (anyhow::Result<()>, Duration) {
         let t = Instant::now();
         let result = match self {
@@ -167,44 +167,29 @@ impl VideoPlayer {
         (result, t.elapsed())
     }
 
-    /// Unpaced PTS reference for `frame` in NDL's clock domain, smoothed by [`PtsPacer`]
-    /// before it reaches [`Self::play`]. NDL has no PTS clock of its own (see
+    /// PTS reference for `frame` in NDL's clock domain. NDL has no PTS clock of its own (see
     /// `NdlVideo::elapsed_ns`), so the host PTS is mapped onto NDL's player clock
-    /// ([`HostPtsAnchor`]) and the reference tracks host frame cadence instead of feed-time
-    /// wall-clock, keeping delivery jitter out of the pacer's drift-clamp anchor.
-    ///
-    /// **V2 anchors whether or not pacing is on.** It used to fall back to raw player time with
-    /// pacing off, which stamps video in *feed* time while offloaded audio is stamped in *host*
-    /// time (`NdlVideo::play_audio`) — two clocks that agree only by luck, and stop agreeing the
-    /// moment a receive-backlog flush jumps the client to live. Anchoring unconditionally is what
-    /// makes the two planes share one mapping by construction. Pacing off now means only that
-    /// [`PtsPacer`]'s smoothing is skipped.
+    /// ([`HostPtsAnchor`]), keeping video in the same *host* timeline that offloaded audio is
+    /// stamped in (`NdlVideo::play_audio`) — two clocks that would otherwise agree only by luck,
+    /// and stop agreeing the moment a receive-backlog flush jumps the client to live.
     ///
     /// SMP is mapped the same way as V2 — its PTS domain is nanoseconds since *its own* load
     /// (`now - openTime`), not the host's clock, so an unmapped host PTS would sit an
-    /// arbitrary epoch away and `pauseAtDecodeTime` would hold every frame. V1 has nothing to pace
-    /// against at all (no PTS input, no player clock), so the host PTS returns untouched there and
-    /// the pacer's output is discarded at the feed.
-    fn pace_base_ns(&self, frame_pts_ns: u64, anchor: &mut HostPtsAnchor, pacing_on: bool) -> u64 {
+    /// arbitrary epoch away and `pauseAtDecodeTime` would hold every frame. V1 has no PTS input
+    /// and no player clock, so the host PTS returns untouched there and is discarded at the feed.
+    fn pts_base_ns(&self, frame_pts_ns: u64, anchor: &mut HostPtsAnchor) -> u64 {
         let player_clock_ns = match self {
             Self::V2(ndl) => ndl.elapsed_ns(),
             Self::Smp(sf) => sf.elapsed_ns(),
             Self::V1(_) => return frame_pts_ns,
         };
-        if pacing_on || matches!(self, Self::V2(_)) {
-            anchor.map(frame_pts_ns, player_clock_ns)
-        } else {
-            player_clock_ns
-        }
+        anchor.map(frame_pts_ns, player_clock_ns)
     }
 
     /// Hand the audio plane the host-PTS → player-clock offset this frame was stamped with, so
     /// offloaded Opus lands in the same timeline as the picture (`NdlVideo::play_audio`). Only
     /// the first frame after an anchor reset is taken (see `NdlVideo::latch_pts_offset`) — this
     /// is called per frame so that re-latch happens promptly, not so the offset tracks.
-    /// `base_ns` is the *unpaced* reference — the pacer's ±half-frame smoothing is video-only
-    /// jitter compensation and must not be projected onto the audio timeline.
-    ///
     /// V2 only, and only when the load has an audio plane; no other backend feeds audio through
     /// NDL. Harmless on a clock-plane session — nothing reads the offset there, since
     /// `run_clock_plane` stamps in the player clock directly.
@@ -280,7 +265,7 @@ impl VideoPlayer {
 
 /// Everything the sink needs to know up front.
 pub struct SinkConfig {
-    /// The host's frame cadence. Drives both the pacing grid and the backlog→latency fold.
+    /// The host's frame cadence. Drives both the frame-interval grid and the backlog→latency fold.
     pub stream_hz: u32,
     /// Whether the host asked for decode-latency reports (its ABR controller).
     pub report_decode_latency: bool,
@@ -296,24 +281,18 @@ pub struct SinkConfig {
 /// QUIC control stream, so a tight interval costs nothing but the request itself.
 const KEYFRAME_REQUEST_MIN_INTERVAL: Duration = Duration::from_millis(100);
 
-/// The NDL implementation: [`VideoPlayer`] + [`PtsPacer`] + [`StreamStats`].
+/// The NDL implementation: [`VideoPlayer`] + [`StreamStats`].
 pub struct NdlSink {
     player: VideoPlayer,
     stats: Arc<StreamStats>,
     cfg: SinkConfig,
-    /// The panel's actual drain cadence, reconciled against the stream rate — the same interval
-    /// the pacer runs on. NDL drains at panel cadence whether or not pacing is enabled, so this,
-    /// not the stream rate, is what converts a render-queue depth into time — for BOTH consumers of
+    /// The panel's actual drain cadence, reconciled against the stream rate. NDL drains at panel
+    /// cadence, so this, not the stream rate, is what converts a render-queue depth into time — for BOTH consumers of
     /// that conversion ([`video_e2e_ns`] and [`NdlSink::decode_us`]), so one depth cannot mean two
     /// different latencies.
     frame_interval_ns: u64,
-    /// Always instantiated — the Blue button can flip pacing on mid-stream, so the state
-    /// must exist even when it starts off.
-    pacer: PtsPacer,
-    /// NDL host-PTS→player-clock mapping, reset in lockstep with the pacer.
+    /// NDL host-PTS→player-clock mapping.
     host_anchor: HostPtsAnchor,
-    /// Previous-frame pacing state, so an off→on flip can re-anchor cleanly.
-    pacing_was_on: bool,
     /// Last polled depth, `None` if that query failed — which must not read as an empty queue.
     backlog_cached: Option<u64>,
     /// Recent poll depths, newest last — their minimum is the cushion the decode figure excludes
@@ -334,15 +313,12 @@ pub struct NdlSink {
 impl NdlSink {
     pub fn new(player: VideoPlayer, stats: Arc<StreamStats>, cfg: SinkConfig) -> Self {
         let stream_hz = cfg.stream_hz.max(1);
-        let pacing_was_on = stats.pacing_enabled.load(Ordering::Relaxed);
-        let frame_interval_ns = reconciled_pace_interval_ns(stream_hz);
+        let frame_interval_ns = reconciled_frame_interval_ns(stream_hz);
         Self {
             player,
             stats,
             frame_interval_ns,
-            pacer: PtsPacer::new(frame_interval_ns),
             host_anchor: HostPtsAnchor::new(),
-            pacing_was_on,
             cfg,
             backlog_cached: None,
             backlog_recent: std::collections::VecDeque::with_capacity(CUSHION_MIN_POLLS),
@@ -368,11 +344,10 @@ impl NdlSink {
         ready
     }
 
-    /// Drop everything derived from a mapping that no longer holds: the pacer's accumulator, the
-    /// host anchor, and the audio plane's copy of that anchor. The three move in lockstep or the
-    /// planes end up on timelines that disagree.
+    /// Drop everything derived from a mapping that no longer holds: the host anchor and the audio
+    /// plane's copy of it. The two move in lockstep or the planes end up on timelines that
+    /// disagree.
     fn reset_timeline(&mut self) {
-        self.pacer.reset();
         self.host_anchor.reset();
         self.player.clear_pts_offset();
     }
@@ -487,32 +462,14 @@ impl NdlSink {
         self.stats.holding.store(false, Ordering::Relaxed);
         self.hold_started = None;
 
-        // Live pacing toggle (Blue button): re-anchor on the off→on edge so the pacer picks
-        // up from the current frame rather than a stale grid.
-        let pacing_on = self.stats.pacing_enabled.load(Ordering::Relaxed);
-        if pacing_on && !self.pacing_was_on {
-            self.reset_timeline();
-        }
-        self.pacing_was_on = pacing_on;
-
-        let base_ns = self.player.pace_base_ns(pts_ns, &mut self.host_anchor, pacing_on);
-        let paced_ns = if pacing_on {
-            let paced = self.pacer.next(base_ns);
-            self.stats
-                .pacing_delta_ns
-                .store(paced as i64 - base_ns as i64, Ordering::Relaxed);
-            paced
-        } else {
-            self.stats.pacing_delta_ns.store(0, Ordering::Relaxed);
-            base_ns
-        };
+        let base_ns = self.player.pts_base_ns(pts_ns, &mut self.host_anchor);
 
         // The submit instant, on CLOCK_REALTIME — the same basis the host stamps `pts_ns` with and
         // the skew handshake compares, so the two are directly subtractable. Taken BEFORE the feed
         // call: `play` blocks for its submission time, and the frame enters NDL's pipeline behind
         // exactly the frames the backlog below counts.
         let submit_realtime_ns = punktfunk_core::client::now_realtime_ns();
-        let (play_result, feed_elapsed) = self.player.play(au, paced_ns);
+        let (play_result, feed_elapsed) = self.player.play(au, base_ns);
         self.stats.feed_us.store(
             u32::try_from(feed_elapsed.as_micros()).unwrap_or(u32::MAX),
             Ordering::Relaxed,
@@ -522,7 +479,7 @@ impl NdlSink {
                 "NDL slow: {:.1}ms (frame {}, pts {:.2}ms)",
                 feed_elapsed.as_secs_f32() * 1000.0,
                 flags.index,
-                paced_ns as f64 / 1_000_000.0,
+                base_ns as f64 / 1_000_000.0,
             );
         }
 
@@ -546,7 +503,7 @@ impl NdlSink {
             tracing::warn!(
                 "NDL error (frame {}, pts {:.2}ms): {e:#}",
                 flags.index,
-                paced_ns as f64 / 1_000_000.0,
+                base_ns as f64 / 1_000_000.0,
             );
             // A frame refused because the pipeline hasn't finished loading is NOT a decode
             // error, and gets neither loss response.
@@ -585,7 +542,7 @@ mod tests {
 
     use super::{cushion_frames, decode_report_us, video_e2e_ns, CUSHION_MAX_FRAMES, STANDING_CUSHION_FRAMES};
 
-    /// 60 Hz, the cadence the pacing grid reconciles to on most panels.
+    /// 60 Hz, the cadence the frame interval reconciles to on most panels.
     const HZ60_NS: u64 = 16_666_666;
     /// A frame submitted 30 ms after the host captured it, with clocks aligned and nothing queued.
     const SUBMIT: i128 = 2_000_000_000;

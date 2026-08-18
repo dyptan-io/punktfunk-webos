@@ -17,7 +17,7 @@ const LIB_NAME: &CStr = c"libSDL2-2.0.so.0";
 pub struct Fns {
     /// `SDL_FALSE` self-gates on TVs without `wl_webos_input_manager`.
     pub cursor_visibility: unsafe extern "C" fn(SDL_bool) -> SDL_bool,
-    /// Read-only panel-refresh query, for the pacing grid.
+    /// Read-only panel-refresh query (`session::timeline::reconciled_frame_interval_ns`).
     pub get_refresh_rate: unsafe extern "C" fn(*mut c_int) -> c_int,
     pub create_exported_window: unsafe extern "C" fn(c_int) -> *const c_char,
     pub set_exported_window: unsafe extern "C" fn(*const c_char, *const SDL_Rect, *const SDL_Rect) -> c_int,
