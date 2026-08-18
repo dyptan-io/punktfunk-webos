@@ -25,7 +25,7 @@ pub const FOCUS_GROWTH: f32 = 0.02;
 pub struct Press(Option<Instant>);
 
 impl Press {
-    /// Starts the dip. The owner decides whether to wait for it before acting.
+    /// Starts the dip. Purely visual — the action runs the moment the press arrives.
     pub fn arm(&mut self) {
         self.0 = Some(Instant::now());
     }

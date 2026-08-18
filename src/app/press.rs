@@ -1,9 +1,10 @@
 //! Activating the focused widget: the press dip, and the one table that routes a
 //! `MenuEvent` to whichever screen is up.
 //!
-//! Every button presses the same way — its focus tile dips while its action runs — so
-//! nothing here asks which modal is open, only whether what is focused is a button
-//! (`pressable`).
+//! The dip is kept only for a press that stays on its screen — "request access", the
+//! speed test's retry, picking a host. Anything that opens or closes a modal drops it:
+//! the modal fade (75ms, full-screen scrim) darkens the pressed row and replaces the
+//! tile that was dipping, so the 5px dip underneath is never seen. One motion per press.
 use crate::app::*;
 
 impl App {
@@ -17,8 +18,8 @@ impl App {
         screen_h: u32,
         fonts: &ui::text::Fonts,
     ) -> Option<ConnectTarget> {
-        // Anything but a confirm cancels an in-flight dip: focus (or the screen) has moved,
-        // so the tile it rides is no longer the pressed widget.
+        // Anything but a confirm moves focus or closes the screen, so a dip still running
+        // from an earlier press belongs to a widget that is no longer under the cursor.
         if ev != MenuEvent::Confirm {
             self.press.take();
         }
@@ -43,25 +44,29 @@ impl App {
         None
     }
 
-    /// Confirms the focused widget, dipping it if it is pressable.
+    /// Confirms the focused widget, dipping it if it is a button whose action stays put.
     ///
-    /// The action runs on the same frame the dip is armed, not after it: waiting put the
-    /// dip's whole 120ms in front of every screen transition. A closing modal's dip is then
-    /// never seen (its focus tile is already baked into the closing snapshot), which costs
-    /// nothing — there is nothing left on screen to push in.
+    /// The action runs immediately; the dip is retired afterwards rather than gated
+    /// beforehand, because whether a button opens anything is the screen handler's
+    /// business and a list of which ones do would be one more thing to keep in step.
     pub(crate) fn press(&mut self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<ConnectTarget> {
+        let before = self.screen;
         if self.pressable() {
             self.press.arm();
-            self.press_screen = self.screen;
         }
-        self.handle_menu_event(MenuEvent::Confirm, screen_w, screen_h, fonts)
+        let launched = self.handle_menu_event(MenuEvent::Confirm, screen_w, screen_h, fonts);
+        if self.screen != before || launched.is_some() {
+            self.press.take();
+        }
+        launched
     }
 
-    /// The dip, but only for the screen whose button armed it. Every focus tile composites
-    /// through `App::press`, so a modal's confirm would otherwise dip the sidebar row behind
-    /// its card too.
+    /// The dip, but only for the screen that armed it — which, since a press leaving its
+    /// screen drops the dip, is simply the one that is up. Every focus tile on screen
+    /// composites through `App::press`, so without this an open modal's confirm would push
+    /// the sidebar row behind its card in alongside the button actually pressed.
     pub(crate) fn press_dip(&self, owner: Screen) -> ui::animation::Press {
-        if self.press_screen == owner {
+        if self.screen == owner {
             self.press
         } else {
             ui::animation::Press::default()
@@ -98,8 +103,8 @@ impl App {
         }
     }
 
-    /// Retires a dip that has played all the way out; called every frame. `true` on the
-    /// frame that must be redrawn without it.
+    /// Retires a dip that has played out; called every frame. `true` means the tile moved
+    /// back, so the frame is dirty.
     pub(crate) fn poll_press(&mut self) -> bool {
         self.press.landed() && self.press.take()
     }

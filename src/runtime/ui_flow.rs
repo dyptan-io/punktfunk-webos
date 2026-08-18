@@ -329,6 +329,7 @@ pub(super) fn run_ui_flow(
         // Polled every tick like the streaming loop's toast, not gated behind
         // `content_dirty` — its own fade needs frames regardless of anything else.
         let notif_frame = notif.frame();
+        // The dip has played out (see `App::press`) — the tile springs back.
         if app.poll_press() {
             dirty = true;
         }
