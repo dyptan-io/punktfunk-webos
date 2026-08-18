@@ -928,7 +928,7 @@ impl App {
             }
             animating = true;
         }
-        // Disarmed by `poll_press` (the render loop runs the deferred action), not here.
+        // Retired by `poll_press` once the dip has played out, not here.
         if self.press.armed() {
             animating = true;
         }

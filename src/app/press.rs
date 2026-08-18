@@ -1,9 +1,9 @@
 //! Activating the focused widget: the press dip, and the one table that routes a
 //! `MenuEvent` to whichever screen is up.
 //!
-//! Every button presses the same way — its focus tile dips, the action runs when the dip
-//! lands — so nothing here asks which modal is open, only whether what is focused is a
-//! button (`pressable`).
+//! Every button presses the same way — its focus tile dips while its action runs — so
+//! nothing here asks which modal is open, only whether what is focused is a button
+//! (`pressable`).
 use crate::app::*;
 
 impl App {
@@ -17,8 +17,8 @@ impl App {
         screen_h: u32,
         fonts: &ui::text::Fonts,
     ) -> Option<ConnectTarget> {
-        // Anything but a confirm cancels an in-flight dip: it moves focus (or closes the
-        // screen), so landing the deferred action would confirm a widget nobody pressed.
+        // Anything but a confirm cancels an in-flight dip: focus (or the screen) has moved,
+        // so the tile it rides is no longer the pressed widget.
         if ev != MenuEvent::Confirm {
             self.press.take();
         }
@@ -43,27 +43,23 @@ impl App {
         None
     }
 
-    /// Confirms the focused widget, dipping it first if it is pressable.
+    /// Confirms the focused widget, dipping it if it is pressable.
     ///
-    /// The action waits for the dip to land (`poll_press`) because most of them close the
-    /// modal: acting now would swap the focus tile for the closing snapshot before a
-    /// single frame of the dip was drawn.
+    /// The action runs on the same frame the dip is armed, not after it: waiting put the
+    /// dip's whole 120ms in front of every screen transition. A closing modal's dip is then
+    /// never seen (its focus tile is already baked into the closing snapshot), which costs
+    /// nothing — there is nothing left on screen to push in.
     pub(crate) fn press(&mut self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<ConnectTarget> {
-        // A press landing mid-dip runs that one now rather than dropping it.
-        if let Some(target) = self.run_press(screen_w, screen_h, fonts) {
-            return Some(target);
+        if self.pressable() {
+            self.press.arm();
+            self.press_screen = self.screen;
         }
-        if !self.pressable() {
-            return self.handle_menu_event(MenuEvent::Confirm, screen_w, screen_h, fonts);
-        }
-        self.press.arm();
-        self.press_screen = self.screen;
-        None
+        self.handle_menu_event(MenuEvent::Confirm, screen_w, screen_h, fonts)
     }
 
-    /// The dip, but only for the screen whose button armed it. Every focus tile on screen
-    /// composites through `App::press`, so an open modal's confirm would otherwise push the
-    /// sidebar row behind its card in alongside the button actually pressed.
+    /// The dip, but only for the screen whose button armed it. Every focus tile composites
+    /// through `App::press`, so a modal's confirm would otherwise dip the sidebar row behind
+    /// its card too.
     pub(crate) fn press_dip(&self, owner: Screen) -> ui::animation::Press {
         if self.press_screen == owner {
             self.press
@@ -102,21 +98,9 @@ impl App {
         }
     }
 
-    /// Runs a deferred press whose dip has landed; called every frame. The outer `Some`
-    /// means one fired (so the frame is dirty), the inner whatever its action produced.
-    pub(crate) fn poll_press(
-        &mut self,
-        screen_w: u32,
-        screen_h: u32,
-        fonts: &ui::text::Fonts,
-    ) -> Option<Option<ConnectTarget>> {
-        self.press.landed().then(|| self.run_press(screen_w, screen_h, fonts))
-    }
-
-    /// Runs the deferred press now, however far its dip has got.
-    fn run_press(&mut self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<ConnectTarget> {
-        self.press
-            .take()
-            .then(|| self.handle_menu_event(MenuEvent::Confirm, screen_w, screen_h, fonts))?
+    /// Retires a dip that has played all the way out; called every frame. `true` on the
+    /// frame that must be redrawn without it.
+    pub(crate) fn poll_press(&mut self) -> bool {
+        self.press.landed() && self.press.take()
     }
 }
