@@ -261,6 +261,8 @@ fn audio_drain(client: &NativeClient, stop: &AtomicBool, what: &str, mut play: i
 /// process-global NDL unload in `NdlVideo::drop` cannot run until this thread has
 /// exited — `NDL_DirectAudioPlay` can never race the unload, whichever thread
 /// `Connected::shutdown` happens to join first.
+/// A gap starves NDL's pacing clock, but `run_clock_plane` watches the same plane and fills in —
+/// see its `yields_to_real`.
 pub(super) fn ndl_audio_pump(client: &NativeClient, ndl: &NdlVideo, stop: &AtomicBool) {
     audio_drain(client, stop, "audio pump", |packet| {
         if let Err(e) = ndl.play_audio(&packet.data, packet.pts_ns) {

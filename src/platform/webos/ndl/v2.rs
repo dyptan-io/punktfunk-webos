@@ -44,6 +44,12 @@ const PRIME_LEAD: i64 = 8;
 /// and this is launch-path time, i.e. black screen.
 const PRIME_RETRY: Duration = Duration::from_millis(20);
 
+/// How long the clock plane waits for the real stream before feeding the plane itself.
+///
+/// The test is "no packets at all", never amplitude: a silent game still streams, since the host
+/// encodes silence into the same continuous 5 ms datagrams. Only a dead host capture gaps this wide.
+const REAL_FEED_GRACE_MS: i64 = 300;
+
 /// [`NdlVideo::play`] refusing a frame because `LOADCOMPLETED` hasn't landed. A distinct type
 /// because the caller must NOT respond to it the way it responds to a decode error: the usual
 /// answer is `NDL_DirectVideoFlushRenderBuffer`, and issuing that against a pipeline NDL has not
@@ -96,7 +102,7 @@ pub struct NdlVideo {
     /// domain stays on `load_instant`.
     load_requested: Instant,
     /// Whether the load asked for — and confirmed — an audio plane. What RIDES that plane (the
-    /// real Opus stream, or [`Self::play_silence`]'s metronome) is the caller's choice.
+    /// real Opus stream, or [`Self::run_clock_plane`]'s metronome) is the caller's choice.
     has_audio_plane: bool,
     /// Host-PTS → NDL-player-clock offset in ns, republished by the video plane on every fed
     /// frame (`session::sink`) and read by [`Self::play_audio`] so both planes land in ONE
@@ -106,6 +112,14 @@ pub struct NdlVideo {
     /// timestamp going backwards. Never reset — the ceiling has to survive a re-latch, which is
     /// exactly the case that would otherwise rewind it.
     last_audio_pts_ms: AtomicI64,
+    /// Player-clock ms at the last REAL packet fed by [`Self::play_audio`].
+    /// [`Self::run_clock_plane`] reads it to stay off the plane while the real stream carries it.
+    ///
+    /// Starts at 0 (the load instant), NOT a sentinel: the grace then runs from session start, so
+    /// an offloaded session whose audio arrives normally never feeds a single silent packet. The
+    /// sentinel made every such session open by bursting silence to a ceiling a whole prime ahead
+    /// of the real timeline, and the real packets that followed were all floored onto it.
+    last_real_feed_ms: AtomicI64,
     /// `false` while `LOADCOMPLETED` still hasn't been seen for this load. Latched once, so the
     /// steady-state feed path costs one relaxed load.
     ///
@@ -201,6 +215,7 @@ impl NdlVideo {
             has_audio_plane: with_audio,
             pts_offset_ns: AtomicI64::new(NO_PTS_OFFSET),
             last_audio_pts_ms: AtomicI64::new(primed_pts_ms),
+            last_real_feed_ms: AtomicI64::new(0),
             load_confirmed: AtomicBool::new(confirmed),
             pending_hdr: Mutex::new(None),
             applied_hdr: Mutex::new(None),
@@ -268,7 +283,7 @@ impl NdlVideo {
     }
 
     /// Whether this load has an audio plane. It always does when the load confirmed, since NDL
-    /// only paces the picture against a fed audio plane — see [`Self::play_silence`]. False means
+    /// only paces the picture against a fed audio plane — see [`Self::run_clock_plane`]. False means
     /// the audio-enabled load was rejected and `load()` fell back to video-only.
     pub fn has_audio_plane(&self) -> bool {
         self.has_audio_plane
@@ -325,49 +340,105 @@ impl NdlVideo {
             return Ok(());
         }
         let raw_ms = (host_pts_ns as i64).saturating_add(offset_ns).max(0) / 1_000_000;
-        self.feed_audio(packet, raw_ms)
-    }
-
-    /// The audio plane's only feed point. The monotonic floor is load-bearing: NDL reads a
-    /// backwards stamp as a rewind and mutes for the rest of the session, and both callers can
-    /// produce one (a receive-backlog jump; the prime's ceiling).
-    fn feed_audio(&self, data: &[u8], pts_ms: i64) -> Result<()> {
-        let pts_ms = self.last_audio_pts_ms.fetch_max(pts_ms, Ordering::Relaxed).max(pts_ms) as c_longlong;
-        let _ffi = lock_ffi();
-        // SAFETY: NDL reads `size` bytes synchronously and does not retain the pointer.
-        let ret = unsafe { (self.fns.audio_play)(data.as_ptr() as *mut c_void, data.len() as c_uint, pts_ms) };
+        // Floor under the guard, never before it: flooring first lets a packet measured against an
+        // older ceiling block here while `burst_silence` feeds higher, then hand NDL the stale
+        // stamp — a rewind, which mutes the session for good.
+        let ret = {
+            let _ffi = lock_ffi();
+            let pts_ms = self.last_audio_pts_ms.fetch_max(raw_ms, Ordering::Relaxed).max(raw_ms);
+            // SAFETY: NDL reads `size` bytes synchronously and does not retain the pointer.
+            unsafe {
+                (self.fns.audio_play)(
+                    packet.as_ptr() as *mut c_void,
+                    packet.len() as c_uint,
+                    pts_ms as c_longlong,
+                )
+            }
+        };
         if ret != 0 {
             bail!("NDL_DirectAudioPlay failed: ret={ret} error={}", ffi::last_error());
         }
+        // Player clock, not the packet's domain: the reader asks "how long since a packet ARRIVED".
+        self.last_real_feed_ms
+            .store((self.elapsed_ns() / 1_000_000) as i64, Ordering::Relaxed);
         Ok(())
     }
 
-    /// One silent frame for the clock plane. Stamped in the player-clock domain and not through
-    /// `pts_offset_ns`: this plane is a metronome, not content, so it has no host timeline to
-    /// join. Why it exists at all: docs/NOTES.md § "NDL's audio plane".
-    fn play_silence(&self, pts_ms: i64) -> Result<()> {
-        self.feed_audio(&OPUS_SILENCE, pts_ms)
+    /// Feed silence from `from_ms` up to `target_ms`, returning the last stamp fed.
+    ///
+    /// One `lock_ffi` for the whole burst, like [`prime_audio`](Self::prime_audio) — the video feed
+    /// shares that guard, so per-packet acquires would be up to 60 of them in the picture's way.
+    ///
+    /// The floor is read under the guard, which is also the whole race story: `lock_ffi` is the
+    /// audio plane's only feed path, so no real packet can land mid-burst and read a stale ceiling
+    /// — it either precedes this and is picked up by the floor, or follows the final publish.
+    fn burst_silence(&self, from_ms: i64, target_ms: i64) -> Result<i64> {
+        let _ffi = lock_ffi();
+        let mut pts_ms = from_ms.max(self.last_audio_pts_ms.load(Ordering::Relaxed));
+        while pts_ms < target_ms {
+            pts_ms += PRIME_PACKET_MS;
+            // SAFETY: NDL reads `size` bytes synchronously and does not retain the pointer.
+            let ret = unsafe {
+                (self.fns.audio_play)(
+                    OPUS_SILENCE.as_ptr() as *mut c_void,
+                    OPUS_SILENCE.len() as c_uint,
+                    pts_ms as c_longlong,
+                )
+            };
+            if ret != 0 {
+                // Publish before unwinding: this burst has already handed NDL stamps above the old
+                // ceiling, and leaving it stale lets the next real packet floor below them — a
+                // rewind, which mutes the session for good.
+                self.last_audio_pts_ms.fetch_max(pts_ms, Ordering::Relaxed);
+                bail!("NDL_DirectAudioPlay failed: ret={ret} error={}", ffi::last_error());
+            }
+        }
+        self.last_audio_pts_ms.fetch_max(pts_ms, Ordering::Relaxed);
+        Ok(pts_ms)
     }
 
-    /// Run the clock plane until `stop`, for a session whose real audio is decoded in software.
-    /// Blocks, so the caller gives it a thread.
+    /// Keep the audio plane fed until `stop`. Blocks, so the caller gives it a thread.
     ///
-    /// Same burst shape as [`Self::prime_audio`], topped up to `PRIME_LEAD` packets ahead so the
-    /// plane stays fed. Bursting keeps it to ~50 wakeups/s instead of 200, on a `SoC` whose video
-    /// feed shares `lock_ffi` with it.
-    pub fn run_clock_plane(&self, stop: &std::sync::atomic::AtomicBool) {
+    /// **A fed audio plane is what makes NDL pace the picture at all** (docs/NOTES.md § "NDL's
+    /// audio plane"), so every V2 load with a plane runs this — the invariant is the decoder's, not
+    /// whichever session-layer pump happens to exist.
+    ///
+    /// `yields_to_real` is the whole difference between the two audio paths. Off (software decode):
+    /// a pure metronome, the only feed. On (NDL offload): the real stream is the metronome, and
+    /// this fills in only after [`REAL_FEED_GRACE_MS`] without a packet — a dead host capture,
+    /// which would otherwise starve the plane and freeze the picture.
+    pub fn run_clock_plane(&self, stop: &std::sync::atomic::AtomicBool, yields_to_real: bool) {
         // Continue the prime's stamps instead of restarting from the player clock: the prime runs
         // BEFORE `load_instant`, so its ceiling already sits a whole prime ahead, and targeting the
         // raw clock would feed nothing until it caught up — dead exactly at session start. The
         // resulting constant offset from the video timeline costs a metronome nothing.
-        let base_ms = self.last_audio_pts_ms.load(Ordering::Relaxed);
+        let mut base_ms = self.last_audio_pts_ms.load(Ordering::Relaxed);
         let mut pts_ms = base_ms;
+        let mut filling = false;
         while !stop.load(Ordering::Relaxed) {
-            let elapsed_ms = (self.elapsed_ns() / 1_000_000) as i64;
-            let target_ms = base_ms + elapsed_ms + PRIME_LEAD * PRIME_PACKET_MS;
-            while pts_ms < target_ms {
-                pts_ms += PRIME_PACKET_MS;
-                if let Err(e) = self.play_silence(pts_ms) {
+            let now_ms = (self.elapsed_ns() / 1_000_000) as i64;
+            if yields_to_real && now_ms - self.last_real_feed_ms.load(Ordering::Relaxed) < REAL_FEED_GRACE_MS {
+                if filling {
+                    tracing::info!("NDL clock plane: host audio resumed at {now_ms}ms — yielding");
+                    filling = false;
+                }
+                std::thread::sleep(PRIME_RETRY);
+                continue;
+            }
+            if yields_to_real && !filling {
+                // Rebase onto where the real stream left the ceiling: the start-of-session base
+                // would re-add the prime's whole lead on top of it, and recovered audio then floors
+                // to that jumped ceiling — pinned to one stamp for the length of the jump.
+                base_ms = self.last_audio_pts_ms.load(Ordering::Relaxed) - now_ms;
+                tracing::warn!(
+                    "NDL clock plane: no host audio for {REAL_FEED_GRACE_MS}ms — filling silence \
+                     to keep the picture paced (host capture is likely dead)"
+                );
+                filling = true;
+            }
+            match self.burst_silence(pts_ms, base_ms + now_ms + PRIME_LEAD * PRIME_PACKET_MS) {
+                Ok(fed_to) => pts_ms = fed_to,
+                Err(e) => {
                     // Dead for the session; the picture keeps running unpaced, as it did before
                     // the clock plane existed.
                     tracing::warn!("NDL clock plane stopping at {pts_ms}ms: {e:#}");

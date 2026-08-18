@@ -28,10 +28,11 @@ pub struct Connected {
     pub stats: Arc<StreamStats>,
     /// Kept alive so `shutdown()` can join and ensure QUIC close frame is sent before exit.
     video_thread: std::thread::JoinHandle<()>,
-    /// The NDL audio plane's pump, on every V2 load that got a plane: `ndl_audio_pump` when the
-    /// real stream rides it (`audio_offloaded`), `NdlVideo::run_clock_plane`'s metronome otherwise.
-    /// `None` only when the load has no audio plane at all (V1, SMP, or a rejected audio load).
+    /// Forwards the real Opus stream onto NDL's audio plane. `Some` only on the offloaded path.
     audio_thread: Option<std::thread::JoinHandle<()>>,
+    /// `NdlVideo::run_clock_plane`, on every V2 load that got a plane. `None` only when the load
+    /// has no audio plane at all (V1, SMP, or a rejected audio load).
+    clock_thread: Option<std::thread::JoinHandle<()>>,
     /// True when the REAL Opus stream rides NDL's audio plane; prevents opening the SDL2 audio
     /// device. False on a clock-plane session, which still has a plane but decodes in software.
     pub audio_offloaded: bool,
@@ -46,14 +47,17 @@ impl Connected {
     /// graceful shutdown. Returns `false` if any step didn't finish within
     /// `SHUTDOWN_JOIN_TIMEOUT` — the caller must then skip `ndl::quit()`, since the thread
     /// still running may still be inside an NDL FFI call that a concurrent unload would race. A
-    /// wedged video/audio join additionally refuses new loads until it finishes — those two are the
-    /// threads that touch NDL.
+    /// wedged video/audio/clock join additionally refuses new loads until it finishes — those three
+    /// are the threads that touch NDL.
     pub fn shutdown(self) -> bool {
         use crate::platform::webos::ndl::poison;
         self.stop.store(true, Ordering::Relaxed);
         let mut clean = join_with_timeout(self.video_thread, SHUTDOWN_JOIN_TIMEOUT, "video", poison);
         if let Some(audio) = self.audio_thread {
             clean &= join_with_timeout(audio, SHUTDOWN_JOIN_TIMEOUT, "audio", poison);
+        }
+        if let Some(clock) = self.clock_thread {
+            clean &= join_with_timeout(clock, SHUTDOWN_JOIN_TIMEOUT, "clock", poison);
         }
         // `NativeClient::drop` joins its own QUIC-close worker thread internally — bound
         // that the same way, on its own thread, rather than blocking here directly. Doesn't
@@ -313,7 +317,7 @@ fn load_player(params: &ConnectParams, client: &NativeClient) -> Result<(VideoPl
 /// this the first debugging question has no answer in the log.
 fn audio_path_label(player: &VideoPlayer, has_plane: bool, offload_opt_in: bool, offloaded: bool) -> &'static str {
     match (has_plane, player) {
-        _ if offloaded => "NDL hardware Opus decode",
+        _ if offloaded => "NDL hardware Opus decode (+ clock plane standing by)",
         // A plane the real stream is not using is the pacing metronome — see
         // `NdlVideo::run_clock_plane`.
         (true, _) if !offload_opt_in => "software Opus decode -> SDL2 + NDL clock plane (offload not opted in)",
@@ -356,8 +360,8 @@ pub fn connect(params: ConnectParams) -> Result<Connected> {
     // Failing here after the video thread is already up would otherwise detach it: `Connected` is
     // never built, so nothing ever sets `stop`, and a thread still feeding NDL outlives the error
     // the caller sees — which then races the `ndl::quit()` the failed connect leads to.
-    let audio_thread = match spawn_audio_thread(&client, ndl_audio, &stop, audio_offloaded) {
-        Ok(handle) => handle,
+    let (audio_thread, clock_thread) = match spawn_plane_threads(&client, ndl_audio, &stop, audio_offloaded) {
+        Ok(handles) => handles,
         Err(e) => {
             stop.store(true, Ordering::Relaxed);
             join_with_timeout(
@@ -376,6 +380,7 @@ pub fn connect(params: ConnectParams) -> Result<Connected> {
         stats,
         video_thread,
         audio_thread,
+        clock_thread,
         audio_offloaded,
         hdr: is_hdr,
     })
@@ -406,30 +411,53 @@ fn spawn_video_thread(
         .context("spawn video thread")
 }
 
-/// The thread on NDL's audio plane, if this load got one: the real Opus stream when it is
-/// offloaded, the pacing metronome otherwise.
-fn spawn_audio_thread(
+/// `(audio pump, clock plane)`.
+type PlaneThreads = (Option<std::thread::JoinHandle<()>>, Option<std::thread::JoinHandle<()>>);
+
+/// The threads on NDL's audio plane, if this load got one: the clock plane always, plus the real
+/// Opus stream's pump when it is offloaded.
+///
+/// The clock plane runs on EVERY session with a plane — NDL paces the picture against a fed plane
+/// regardless of which pump the audio path uses. Offloaded, it yields to the real stream and only
+/// fills in once the host stops sending.
+fn spawn_plane_threads(
     client: &Arc<NativeClient>,
     ndl_audio: Option<Arc<NdlVideo>>,
     stop: &Arc<AtomicBool>,
     audio_offloaded: bool,
-) -> Result<Option<std::thread::JoinHandle<()>>> {
+) -> Result<PlaneThreads> {
     let Some(ndl) = ndl_audio else {
-        return Ok(None);
+        return Ok((None, None));
     };
-    let stop = stop.clone();
-    let handle = if audio_offloaded {
-        let client = client.clone();
+    let clock_thread = {
+        let (ndl, stop) = (ndl.clone(), stop.clone());
+        std::thread::Builder::new()
+            .name("punktfunk-webos-clock".into())
+            .spawn(move || ndl.run_clock_plane(&stop, audio_offloaded))
+            .context("spawn clock plane thread")?
+    };
+    if !audio_offloaded {
+        return Ok((None, Some(clock_thread)));
+    }
+    let audio_thread = {
+        let (client, stop) = (client.clone(), stop.clone());
         std::thread::Builder::new()
             .name("punktfunk-webos-audio".into())
             .spawn(move || ndl_audio_pump(&client, &ndl, &stop))
-    } else {
-        // Software decode owns the speakers, so this plane is a metronome. Nothing is consumed
-        // twice: the real packets still go to the audio feed pump, and this one generates its
-        // own cadence off the player clock.
-        std::thread::Builder::new()
-            .name("punktfunk-webos-clock".into())
-            .spawn(move || ndl.run_clock_plane(&stop))
     };
-    handle.map(Some).context("spawn audio plane thread")
+    match audio_thread {
+        Ok(handle) => Ok((Some(handle), Some(clock_thread))),
+        // Same reason `connect` unwinds its video thread on failure: a detached thread still
+        // feeding NDL would outlive the error and race the `ndl::quit()` that follows it.
+        Err(e) => {
+            stop.store(true, Ordering::Relaxed);
+            join_with_timeout(
+                clock_thread,
+                SHUTDOWN_JOIN_TIMEOUT,
+                "clock",
+                crate::platform::webos::ndl::poison,
+            );
+            Err(e).context("spawn audio pump thread")
+        }
+    }
 }

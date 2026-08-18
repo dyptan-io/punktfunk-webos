@@ -144,6 +144,10 @@ question:
   feeds a silent Opus metronome stamped in NDL's own player-clock domain, while
   `platform::webos::audio` decodes the real audio to SDL as before. Confirmed at 4K120 5.1.
 
+`run_clock_plane` runs on **both** routes (`session::connect::spawn_plane_threads`): under offload
+it yields to the real stream and only fills in after 300 ms with no packet, since a host that stops
+sending would otherwise starve the plane and freeze the picture.
+
 A set that refuses the audio-enabled load falls back to video-only inside `NdlVideo::load` and
 gives up pacing with it; the session log names which of the routes it took. **NDL v1 and SMP have
 no Opus audio type at all**, so webOS 4 has no pacing reference — the lever there would be gating
@@ -180,8 +184,10 @@ anyway, so the flush was never doing work. `NDL_DirectAudioPlay` returns 0 eithe
 no error to find on the audio side, so do not go looking for one.
 
 ⚠ **Audio stamps must never go backwards — NDL reads a rewind as a mute for the rest of the
-session**, and does not resync. `NdlVideo::feed_audio` is the single feed point for both riders
-and floors every stamp at the previous one. For hardware decode the offset is additionally
+session**, and does not resync. `NdlVideo::play_audio` and `NdlVideo::burst_silence` are the only
+feed points, both serialised under `lock_ffi` and both flooring at `last_audio_pts_ms` — the floor
+must be read under that guard, or a packet measured against an older ceiling blocks on the lock and
+then hands NDL the stale stamp. For hardware decode the offset is additionally
 **latched, not recomputed per frame**: a receive-backlog flush jumps host PTS forward while the
 player clock does not, and a re-derived offset would drag the audio stamp backwards by the size of
 the jump. `latch_pts_offset` takes only the first value after each `clear_pts_offset` (hold
