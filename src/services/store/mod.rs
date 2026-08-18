@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 pub use crate::core::model::{
-    pinned_only, upsert_known_host, CodecPref, GamepadType, KnownHost, LogLevelOverride, Persisted, Settings,
+    new_host_games, upsert_known_host, CodecPref, GamepadType, KnownHost, LogLevelOverride, Persisted, Settings,
     SettingsOverride, VideoBackend, DESKTOP_PIN_ID,
 };
 pub use crate::services::paths::app_dir;
@@ -68,11 +68,13 @@ pub fn persisted_video_backend() -> VideoBackend {
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Stamps [`Persisted::version`] the first time a document is read without one, and takes the
-/// one chance that gives us to seed a demo per-game override — an upgrade from a pre-versioning
-/// build has no overrides at all, so the feature is invisible until someone finds the card menu.
+/// one chance that gives us to move a pre-versioning document onto the new cursor-capture
+/// default: off globally, on for the Desktop card of each host that has one.
 ///
-/// Only the Desktop card is seeded, only where it exists (is pinned), and only with cursor
-/// capture off: harmless if left alone, and the row it lights up explains itself.
+/// Only the Desktop card is touched, only where it exists (is pinned), and only on hosts with
+/// no overrides at all — matching what a host added on this build gets from
+/// `model::new_host_games`. Doubles as the shipped demo of per-game overrides, which an
+/// upgraded install would otherwise never see.
 ///
 /// Written synchronously so it happens once — `StateWriter`'s baseline is taken after this,
 /// and an unstamped document that never gets saved would seed again on every launch.
@@ -81,10 +83,12 @@ fn stamp_version(state: &mut Persisted) {
         return;
     }
     state.version = Some(VERSION.to_string());
-    // Nothing to demo on a fresh install (no hosts), and nothing to demo *with* if the global
-    // value already is off — the override would equal the global and read as noise.
+    // A pre-versioning document was written when capture was the global default, so its stored
+    // `true` says nothing about intent. Move it to the new default and hand the behaviour back
+    // to the card that wants it — the desktop — rather than leaving every game captured.
     if !state.known_hosts.is_empty() && state.settings.cursor_capture {
-        seed_demo_overrides(state);
+        state.settings.cursor_capture = false;
+        seed_desktop_capture(state);
     }
     if let Err(e) = save(state) {
         tracing::warn!("could not stamp document version: {e:#}");
@@ -94,16 +98,16 @@ fn stamp_version(state: &mut Persisted) {
 }
 
 /// Gives every host whose Desktop card is pinned, and which carries no overrides yet, a
-/// cursor-capture-off override on that card. A host that already overrides something is left
+/// cursor-capture-on override on that card. A host that already overrides something is left
 /// alone — the user has found the feature.
-fn seed_demo_overrides(state: &mut Persisted) {
+fn seed_desktop_capture(state: &mut Persisted) {
     for host in &mut state.known_hosts {
         let untouched = host.games.values().all(|g| g.over.is_empty());
         if !untouched || !host.is_pinned(DESKTOP_PIN_ID) {
             continue;
         }
-        host.edit_overrides(DESKTOP_PIN_ID, |over| over.cursor_capture = Some(false));
-        tracing::info!("seeded demo Desktop override on {}", host.name);
+        host.edit_overrides(DESKTOP_PIN_ID, |over| over.cursor_capture = Some(true));
+        tracing::info!("seeded Desktop cursor-capture override on {}", host.name);
     }
 }
 

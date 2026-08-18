@@ -252,6 +252,19 @@ pub fn pinned_only(id: &str) -> BTreeMap<String, GamePrefs> {
     )])
 }
 
+/// The `games` map a genuinely new host starts with: Desktop pinned, and cursor capture turned
+/// back *on* for that card — capture is off globally because games are the common case, and the
+/// desktop is the one card where a captured pointer is what you want. Doubles as the shipped
+/// demo of per-game overrides. Skipped when the global value is already on, since an override
+/// equal to the global reads as noise (matching `SettingsOverride::drop_matching`).
+pub fn new_host_games(global: &Settings) -> BTreeMap<String, GamePrefs> {
+    let mut games = pinned_only(DESKTOP_PIN_ID);
+    if !global.cursor_capture {
+        games.entry(DESKTOP_PIN_ID.to_string()).or_default().over.cursor_capture = Some(true);
+    }
+    games
+}
+
 /// Upserts by `(host, port)`, keeping the existing fingerprint if the new record is unpaired
 /// (a fresh mDNS discovery shouldn't clobber a paired host) — same reasoning for `mac`,
 /// learned separately (see `App::drain_discovery`) and not necessarily known again at the
@@ -415,7 +428,11 @@ pub struct Settings {
     /// anyone having to find this setting); pick a kind explicitly to override that. Takes
     /// effect on the next stream, since it rides the handshake.
     pub gamepad_type: GamepadType,
-    /// Let the TV capture the pointer for the host in-stream. On (default): local cursor
+    /// Let the TV capture the pointer for the host in-stream. Off (default, since most cards
+    /// are games launched with a pad): absolute `MouseMoveAbs`, and `CLIENT_CAP_CURSOR` tells a
+    /// capable host to stop compositing its own so the local pointer stays visible. The Desktop
+    /// card overrides it back on per host (see [`new_host_games`]), which is where a captured
+    /// pointer is actually wanted. On: local cursor
     /// hidden, relative `MouseMove` deltas sent (absolute coords stop at the panel edge), host
     /// draws the only cursor. Off: absolute `MouseMoveAbs`, and `CLIENT_CAP_CURSOR` tells a
     /// capable host to stop compositing its own so the local pointer stays visible — otherwise
@@ -466,7 +483,7 @@ impl Default for Settings {
             log_level_override: LogLevelOverride::Info,
             show_logs: false,
             gamepad_type: GamepadType::Auto,
-            cursor_capture: true,
+            cursor_capture: false,
             game_mode: false,
             ndl_audio_offload: false,
             cursor_gestures: false,

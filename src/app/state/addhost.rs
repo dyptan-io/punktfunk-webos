@@ -44,7 +44,7 @@ impl App {
                 // Only reaches a genuinely new host: `upsert_known_host` keeps an existing
                 // record's pins, wol_auto and fingerprint, so re-adding a paired host neither
                 // unpairs it nor resets its preferences.
-                games: store::pinned_only(store::DESKTOP_PIN_ID),
+                games: store::new_host_games(&self.settings),
                 ..KnownHost::default()
             },
         );
