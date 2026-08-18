@@ -325,7 +325,28 @@ impl App {
                         })? {
                             updated.push(tile::CARD_MENU_TITLE);
                         }
+                        // The selection band's rounded-bottom variant, for the row that ends
+                        // on the card's bottom edge. Keyed by width alone: it is one flat
+                        // colour, so nothing else about the card changes it.
+                        if tiles.ensure(tile::CARD_MENU_BAND, cache::version(&card_w), || {
+                            Ok(ui::tiles::render_card_menu_band_tile(card_w))
+                        })? {
+                            updated.push(tile::CARD_MENU_BAND);
+                        }
                     }
+                }
+            }
+
+            // The grid's section headings. Built unconditionally like the pin badge: two
+            // lines of text, and whether they are *drawn* is the compose path's call.
+            for (id, label) in [
+                (tile::SECTION_PINNED, crate::app::view::home::SECTION_PINNED_LABEL),
+                (tile::SECTION_LIBRARY, crate::app::view::home::SECTION_LIBRARY_LABEL),
+            ] {
+                if tiles.ensure_static(id, || {
+                    ui::tiles::render_text_tile(text_cache, fonts, fonts.title, label, ui::style::theme().muted)
+                })? {
+                    updated.push(id);
                 }
             }
 

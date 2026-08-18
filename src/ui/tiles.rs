@@ -143,7 +143,8 @@ pub fn render_card_menu_tile(text_cache: &mut TextCache, fonts: &Fonts, card: Ca
 /// over, the name does not shift by a pixel.
 ///
 /// No override dot here, unlike the collapsed strip: with the panel open the mark moves down
-/// onto the Settings row that owns it (see [`Canvas::poster_menu_rows`]).
+/// its own right-hand column onto the Settings row that owns it (see
+/// [`Canvas::poster_menu_rows`]).
 pub fn render_card_menu_title_tile(
     text_cache: &mut TextCache,
     fonts: &Fonts,
@@ -181,6 +182,27 @@ pub fn render_card_menu_rows_tile(
     let mut c = Canvas::tile(&mut p, text_cache, fonts);
     c.poster_menu_rows(Rect::new(0, 0, card_w, rows_h), rows, marked)?;
     Ok(p)
+}
+
+/// The submenu's selection band, on its own tile the width of the card and *two* rows tall:
+/// a square-cornered row on top, a bottom-rounded one under it.
+///
+/// A tile rather than a plain fill because the bottom row's band reaches the card's bottom
+/// edge, where square corners jut out past the card's rounded art ([`bottom_rounded`]). Both
+/// shapes on one tile so the compose path draws either from a single command — picking which
+/// half to crop, rather than branching between a texture and a fill that would have to keep
+/// their alpha in step (see `app::render::compose`).
+pub fn render_card_menu_band_tile(card_w: u32) -> Painter {
+    let w = card_w.max(1);
+    let row = Rect::new(0, 0, w, CARD_MENU_ROW_H);
+    let mut p = Painter::new(w, 2 * CARD_MENU_ROW_H);
+    p.fill_rect(row, CARD_MENU_ROW_FOCUS);
+    p.fill_rounded_rect(
+        bottom_rounded(row.offset(0, CARD_MENU_ROW_H as i32)),
+        CARD_RADIUS,
+        CARD_MENU_ROW_FOCUS,
+    );
+    p
 }
 
 /// Transparent padding around the focus-ring tile — must clear

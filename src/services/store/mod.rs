@@ -13,8 +13,8 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 pub use crate::core::model::{
-    new_host_games, upsert_known_host, CodecPref, GamepadType, KnownHost, LogLevelOverride, Persisted, Settings,
-    SettingsOverride, VideoBackend, DESKTOP_PIN_ID,
+    desktop_capture_override, new_host_games, upsert_known_host, CodecPref, GamepadType, KnownHost, LogLevelOverride,
+    Persisted, Settings, SettingsOverride, VideoBackend, DESKTOP_PIN_ID,
 };
 pub use crate::services::paths::app_dir;
 pub use identity::load_or_create_identity;
@@ -33,7 +33,14 @@ fn read_document() -> Option<Value> {
 /// defaults — a torn file must not take the app down (`services::atomic` is what prevents one).
 ///
 /// Migrates the pre-consolidation layout in place, so callers never see the old shape.
-pub fn load() -> Persisted {
+/// [`load`]'s result: the document, plus whether this build is the first to write its version
+/// into it — the one-shot signal the UI uses to introduce what the release added.
+pub struct Loaded {
+    pub state: Persisted,
+    pub new_build: bool,
+}
+
+pub fn load() -> Loaded {
     // A nested `settings` key means the current shape. Otherwise the fields sit at the top level
     // — or the file is missing entirely, which still needs migrating, since pairing a host wrote
     // `known-hosts.json` without ever writing settings.
@@ -43,11 +50,11 @@ pub fn load() -> Persisted {
         None => legacy::migrate(Settings::default()),
     };
     apply_launch_overrides(&mut state);
-    stamp_version(&mut state);
+    let new_build = stamp_version(&mut state);
     // A document written on a more capable TV can hold HEVC, HDR and 7.1 on a device with none
     // of them — leaving a *set* value whose row the UI hides.
     state.settings.clamp_to_caps();
-    state
+    Loaded { state, new_build }
 }
 
 /// Just the persisted backend pick, for `core::caps` at startup. Not [`load`]: that clamps
@@ -67,46 +74,44 @@ pub fn persisted_video_backend() -> VideoBackend {
 /// The version this build writes into the document.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Stamps [`Persisted::version`] the first time a document is read without one, and takes the
-/// one chance that gives us to move a pre-versioning document onto the new cursor-capture
-/// default: off globally, on for the Desktop card of each host that has one.
+/// Brings [`Persisted::version`] up to this build's, and returns whether it had to — which is
+/// how the UI knows this release is running here for the first time.
 ///
-/// Only the Desktop card is touched, only where it exists (is pinned), and only on hosts with
-/// no overrides at all — matching what a host added on this build gets from
-/// `model::new_host_games`. Doubles as the shipped demo of per-game overrides, which an
-/// upgraded install would otherwise never see.
+/// A document with *no* version predates the field, so it also gets
+/// [`desktop_capture_override`] bootstrapped onto its hosts; one that carries any version was
+/// written by a build that applied that default when each host was added.
 ///
-/// Written synchronously so it happens once — `StateWriter`'s baseline is taken after this,
-/// and an unstamped document that never gets saved would seed again on every launch.
-fn stamp_version(state: &mut Persisted) {
-    if state.version.is_some() {
-        return;
+/// Written synchronously so it happens once — `StateWriter`'s baseline is taken after this, and
+/// an unstamped document that never gets saved would seed again on every launch.
+fn stamp_version(state: &mut Persisted) -> bool {
+    if state.version.as_deref() == Some(VERSION) {
+        return false;
     }
-    state.version = Some(VERSION.to_string());
-    // A pre-versioning document was written when capture was the global default, so its stored
-    // `true` says nothing about intent. Move it to the new default and hand the behaviour back
-    // to the card that wants it — the desktop — rather than leaving every game captured.
-    if !state.known_hosts.is_empty() && state.settings.cursor_capture {
-        state.settings.cursor_capture = false;
+    if state.version.is_none() {
         seed_desktop_capture(state);
     }
+    state.version = Some(VERSION.to_string());
     if let Err(e) = save(state) {
         tracing::warn!("could not stamp document version: {e:#}");
-        return;
+        return true;
     }
     tracing::info!("stamped settings.json with version {VERSION}");
+    true
 }
 
-/// Gives every host whose Desktop card is pinned, and which carries no overrides yet, a
-/// cursor-capture-on override on that card. A host that already overrides something is left
-/// alone — the user has found the feature.
+/// Puts [`desktop_capture_override`] on every host whose Desktop card is pinned and
+/// which carries no overrides yet. A host that already overrides something is left alone — the
+/// user has found the feature and this must not talk over them.
 fn seed_desktop_capture(state: &mut Persisted) {
+    let Some(capture) = desktop_capture_override(&state.settings) else {
+        return;
+    };
     for host in &mut state.known_hosts {
         let untouched = host.games.values().all(|g| g.over.is_empty());
         if !untouched || !host.is_pinned(DESKTOP_PIN_ID) {
             continue;
         }
-        host.edit_overrides(DESKTOP_PIN_ID, |over| over.cursor_capture = Some(true));
+        host.edit_overrides(DESKTOP_PIN_ID, |over| over.cursor_capture = Some(capture));
         tracing::info!("seeded Desktop cursor-capture override on {}", host.name);
     }
 }

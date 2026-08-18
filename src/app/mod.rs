@@ -123,6 +123,17 @@ pub(crate) struct GridLayout {
 }
 
 impl GridLayout {
+    /// The vertical section shape this layout implies: the pinned block's row count, and one
+    /// heading per section that actually has cards — so neither names an empty block, and the
+    /// gap between them only exists when both do.
+    pub(crate) fn sections(&self, games: usize) -> view::home::GridSections {
+        view::home::GridSections {
+            pinned_rows: self.pinned_rows,
+            pinned_heading: self.pinned_rows > 0,
+            library_heading: self.len(games) > self.unpinned_start,
+        }
+    }
+
     pub(crate) fn len(&self, games: usize) -> usize {
         self.unpinned_start + usize::from(self.desktop_in_rest) + games.saturating_sub(self.pinned_count)
     }
@@ -204,6 +215,13 @@ pub struct App {
     pub games: Vec<GameEntry>,
     /// Leading pinned-game entries; kept in pin order.
     pub(crate) pinned_count: usize,
+    /// Whether the selected host has its Desktop card pinned. Maintained next to
+    /// `pinned_count` by [`App::reorder_games_by_pin`] rather than read back out of the host's
+    /// pin map on demand: `grid_layout` is asked for a card rect on every frame and every
+    /// pointer motion, and deriving this meant scanning `known_hosts` and a map lookup each
+    /// time. Every path that changes a pin, the selected host, or the library goes through that
+    /// one function (or clears the grid via [`App::clear_grid_pins`]).
+    pub(crate) desktop_pin: bool,
     /// Host answered library fetch (gates Desktop card).
     pub(crate) games_loaded: bool,
     pub(crate) games_rx: Option<std::sync::mpsc::Receiver<crate::services::library::GamesLoaded>>,
@@ -228,6 +246,11 @@ pub struct App {
     /// The submenu raised over a held grid card's title strip (Pin/Unpin + Settings), and
     /// the only way to `Screen::GameSettings`. `None` when no card is held open.
     pub card_menu: Option<state::cardmenu::CardMenu>,
+    /// Whether the card submenu's introduction (`state::cardmenu::INTRO_HINT`) is still owed —
+    /// set on the first launch of a build that stamped a new version into the document, spent
+    /// on the status line as soon as a library has actually landed to hold the cards it talks
+    /// about.
+    pub(crate) intro_hint_owed: bool,
     /// Persists settings off UI thread to avoid blocking.
     pub(crate) state_writer: store::StateWriter,
     /// The attached pad's type per `gamepad::detect_type`, refreshed on hotplug in
@@ -481,7 +504,10 @@ fn known_entries(known_hosts: &[store::KnownHost]) -> Vec<HostEntry> {
 
 impl App {
     pub fn new(identity: (String, String)) -> Self {
-        let loaded = store::load();
+        let store::Loaded {
+            state: loaded,
+            new_build,
+        } = store::load();
         // The writer's baseline is the document as loaded, so an unchanged launch never writes.
         let state_writer = store::StateWriter::spawn(loaded.clone());
         let store::Persisted {
@@ -510,6 +536,7 @@ impl App {
             selected_host: None,
             games: Vec::new(),
             pinned_count: 0,
+            desktop_pin: false,
             games_loaded: false,
             games_rx: None,
             home_status: None,
@@ -523,6 +550,7 @@ impl App {
             settings,
             game_settings: None,
             card_menu: None,
+            intro_hint_owed: new_build,
             state_writer,
             detected_gamepad_type: None,
             settings_focused: 0,
@@ -710,9 +738,9 @@ impl App {
     }
 
     /// Grid geometry bridges — `view::home` is pure geometry, so these supply the two
-    /// pieces of live state (the pinned block's row count and the scroll offset) it takes.
+    /// pieces of live state (the section shape and the scroll offset) it takes.
     pub(crate) fn unscrolled_card_rect(&self, idx: usize, columns: usize, grid_x: i32, available_w: u32) -> Rect {
-        view::home::unscrolled_card_rect(idx, columns, grid_x, available_w, self.pinned_rows(columns))
+        view::home::unscrolled_card_rect(idx, columns, grid_x, available_w, self.grid_sections(columns))
     }
 
     pub(crate) fn scrolled_card_rect(&self, idx: usize, columns: usize, grid_x: i32, available_w: u32) -> Rect {
@@ -721,20 +749,24 @@ impl App {
             columns,
             grid_x,
             available_w,
-            self.pinned_rows(columns),
+            self.grid_sections(columns),
             self.grid_scroll,
         )
     }
 
-    pub(crate) fn pinned_separator_rect(&self, columns: usize, grid_x: i32, available_w: u32) -> Option<Rect> {
-        self.has_pinned_divider(columns).then(|| {
-            view::home::pinned_separator_rect(
-                columns,
-                grid_x,
-                available_w,
-                self.pinned_rows(columns),
-                self.grid_scroll,
-            )
+    /// The grid card under the pointer, if any. Tests against `unscrolled_card_rect`, so the
+    /// section headings and the gap that push the library block down on screen are honoured —
+    /// a test against the bare grid rect picked the row above. One `GridSections` for the whole
+    /// sweep: it rescans the host's pin list, and a pointer motion would pay that per card.
+    pub(crate) fn hit_test_grid_card(&self, x: i32, y: i32, columns: usize, available_w: u32) -> Option<usize> {
+        let grid_x = ui::widgets::SIDEBAR_W as i32;
+        if x < grid_x {
+            return None;
+        }
+        let sections = self.grid_sections(columns);
+        (0..self.grid_len(columns)).find(|&i| {
+            view::home::unscrolled_card_rect(i, columns, grid_x, available_w, sections)
+                .contains_point((x, y + self.grid_scroll))
         })
     }
 

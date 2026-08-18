@@ -75,6 +75,9 @@ impl App {
     /// being left to the row arriving, so the selection reads as a single object travelling
     /// the list rather than two darkenings trading places.
     ///
+    /// The band is square-cornered as a rect; the compose path rounds its bottom corners when
+    /// it ends on the card's edge (see `ui::tiles::render_card_menu_band_tile`).
+    ///
     /// `panel_h` is the panel tile's own height and `shown` how many of its bottom rows are
     /// on screen, so the panel's local y maps to `card.bottom() - (panel_h - y)`. `rows_top`
     /// is the rows overlay's current panel-local top — passed in rather than recomputed

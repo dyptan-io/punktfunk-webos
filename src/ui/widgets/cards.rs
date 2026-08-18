@@ -120,14 +120,17 @@ pub fn title_strip_h(raster: &dyn TextRaster, font: FontId, card_h: u32) -> u32 
 /// Height of one row of the submenu a held card raises over its title strip.
 pub const CARD_MENU_ROW_H: u32 = 46;
 
-/// Gap between the title strip's "this game has settings overrides" dot and the title. The
-/// dot itself is [`super::rows::MARK_DOT_R`] — the same mark the settings rows wear.
+/// Gap kept between the "this game has settings overrides" dot and the label that would
+/// otherwise run into it. The dot itself is [`super::rows::MARK_DOT_R`] — the same mark the
+/// settings rows wear.
 const TITLE_DOT_GAP: i32 = 8;
 
 /// The focused submenu row's band: a darkening of the frost rather than a fill over it, and
-/// edge to edge with square corners so it reads as a band across the panel rather than a pill
-/// floating on the card's art. Composited by `app::render::compose`, not baked — see
-/// [`Canvas::poster_menu_rows`].
+/// edge to edge so it reads as a band across the panel rather than a pill floating on the
+/// card's art. Composited by `app::render::compose`, not baked — see
+/// [`Canvas::poster_menu_rows`]. Square-cornered except on the bottom row, which ends on the
+/// card's own rounded edge — both shapes come off
+/// [`super::super::tiles::render_card_menu_band_tile`].
 pub const CARD_MENU_ROW_FOCUS: Color = Color::RGBA(0x00, 0x00, 0x00, 0x9a);
 
 /// Height of the whole frosted panel when `rows` submenu entries sit under the title.
@@ -143,12 +146,50 @@ pub fn card_menu_strip_h(raster: &dyn TextRaster, font: FontId, card_h: u32, row
 const TITLE_STRIP_PAD: i32 = 16;
 /// Left/right inset of the strip's label, doubled when measuring the space it has.
 const TITLE_STRIP_INSET: i32 = 8;
+/// Inset of the override dot from the panel's right edge — deeper than the label's own, so
+/// the mark reads as sitting inside the frosted window rather than against its corner.
+const MARK_DOT_INSET: i32 = 22;
 /// Blur radius of the frost under the strip.
 const TITLE_STRIP_BLUR: usize = 6;
+/// Gap between a submenu row's icon and its label.
+const ICON_LABEL_GAP: i32 = 10;
 /// Inset of the generated placeholder poster's title block.
 const PLACEHOLDER_PAD: i32 = 18;
 /// Gap between wrapped lines of that title.
 const PLACEHOLDER_LINE_GAP: i32 = 4;
+
+/// `rect` reshaped so that filling it at [`CARD_RADIUS`] rounds its bottom corners only —
+/// how anything laid over a card's bottom edge (the frost, the submenu's selection band) sits
+/// inside the card's own corners rather than jutting out square past the art. One rounded rect
+/// grown upward by its radius does it: the top pair of corners then falls above `rect`, off
+/// the tile canvas entirely, where tiny-skia clips it.
+pub fn bottom_rounded(rect: Rect) -> Rect {
+    Rect::new(
+        rect.x(),
+        rect.y() - CARD_RADIUS,
+        rect.width(),
+        rect.height() + CARD_RADIUS as u32,
+    )
+}
+
+/// Left of the override dot within `band`: against the band's right edge, one inset in.
+///
+/// On the right rather than in front of the label so every line down the card — the title,
+/// then Pin and Settings once the panel is up — keeps one left edge whether the mark is
+/// there or not, and so raising the panel never shifts the title sideways.
+fn mark_dot_x(band: Rect) -> i32 {
+    band.right() - MARK_DOT_INSET - 2 * super::rows::MARK_DOT_R
+}
+
+/// Right-hand room a label must leave inside a strip or row: the plain inset, plus the
+/// override dot's column when one is drawn.
+fn label_right_pad(marked: bool) -> i32 {
+    if marked {
+        MARK_DOT_INSET + 2 * super::rows::MARK_DOT_R + TITLE_DOT_GAP
+    } else {
+        TITLE_STRIP_INSET
+    }
+}
 
 impl Canvas<'_, '_> {
     /// Draws one game/Desktop card's art. `art`, when `Some` (a decoded cover, already
@@ -216,16 +257,7 @@ impl Canvas<'_, '_> {
     /// occupies, and both must end on the same rounded edge as the card's art.
     pub fn poster_frost_panel(&mut self, strip: Rect) {
         self.painter.blur_rect(strip, TITLE_STRIP_BLUR);
-        // Rounded at the bottom only, to sit inside the card's own rounded corners rather
-        // than jutting out square past the art. One rounded rect grown upward by its
-        // radius does it: the top pair of corners then falls above the strip (off the
-        // tile canvas entirely, where tiny-skia clips it), leaving only the bottom pair.
-        let shaped = Rect::new(
-            strip.x(),
-            strip.y() - CARD_RADIUS,
-            strip.width(),
-            strip.height() + CARD_RADIUS as u32,
-        );
+        let shaped = bottom_rounded(strip);
         self.painter
             .fill_rounded_rect(shaped, CARD_RADIUS, Color::RGBA(0x00, 0x00, 0x00, 0x68));
         // The art under the tint was rounded to the same shape, but the blur above smeared
@@ -236,20 +268,23 @@ impl Canvas<'_, '_> {
 
     /// The title line itself, centred in `band`.
     ///
-    /// `overridden` puts an amber dot in front of the name — the same mark an overridden
-    /// settings row wears, so "this game does not use the global settings" reads the same
-    /// on the grid as it does inside the screen that made it true.
+    /// `overridden` puts an amber dot at the band's right edge ([`mark_dot_x`]) — the same
+    /// mark an overridden settings row wears, so "this game does not use the global settings"
+    /// reads the same on the grid as inside the screen that made it true.
     pub fn poster_strip_label(&mut self, band: Rect, title: &str, overridden: bool) -> Result<()> {
         let font = self.fonts.value;
-        let mut x = band.x() + TITLE_STRIP_INSET;
+        let x = band.x() + TITLE_STRIP_INSET;
         let y = band.y() + (band.height() as i32 - self.fonts.raster.height(font)) / 2;
         if overridden {
-            self.mark_dot(x, y + self.fonts.raster.height(font) / 2, theme().warning);
-            x += 2 * super::rows::MARK_DOT_R + TITLE_DOT_GAP;
+            self.mark_dot(
+                mark_dot_x(band),
+                y + self.fonts.raster.height(font) / 2,
+                theme().warning,
+            );
         }
         let avail = band
             .width()
-            .saturating_sub((x - band.x()) as u32 + TITLE_STRIP_INSET as u32);
+            .saturating_sub((TITLE_STRIP_INSET + label_right_pad(overridden)) as u32);
         let label = ellipsize(self.fonts.raster, font, title, avail);
         self.text(font, &label, x, y, theme().text)?;
         Ok(())
@@ -260,14 +295,13 @@ impl Canvas<'_, '_> {
     /// its own background).
     ///
     /// Deliberately focus-free: every row is drawn identically, and the selection is a
-    /// translucent [`crate::ui::render::DrawCmd::Fill`] the compose path lays over this tile
-    /// (see [`CARD_MENU_ROW_FOCUS`]). Baking it in instead would put this whole panel — a
+    /// translucent darkening the compose path lays under this tile (see
+    /// [`CARD_MENU_ROW_FOCUS`]). Baking it in instead would put this whole panel — a
     /// full-card art rescale plus a blur of it — on the rebuild path of every row move,
     /// which is exactly the work the tile cache exists to avoid repeating.
-    /// `marked` is the row that wears the override dot. It sits at the same x the collapsed
-    /// title's dot does ([`Canvas::poster_strip_label`]), so raising the panel moves the mark
-    /// straight down its own column onto the Settings row that owns it — the title is left
-    /// carrying only the name.
+    /// `marked` is the row that wears the override dot, in the same column the collapsed
+    /// title's sits in ([`mark_dot_x`]), so raising the panel moves the mark straight down onto
+    /// the Settings row that owns it.
     pub fn poster_menu_rows(&mut self, band: Rect, rows: &[(&str, &str)], marked: Option<usize>) -> Result<()> {
         let font = self.fonts.value;
         let icon = 22u32;
@@ -279,25 +313,22 @@ impl Canvas<'_, '_> {
                 CARD_MENU_ROW_H,
             );
             let fg = theme().text;
-            // Clear of the mark's column (`marked`, at one inset in): the rows start past
-            // where a dot can be, so a marked and an unmarked panel read the same.
-            let icon_x = row.x() + 4 * TITLE_STRIP_INSET;
+            // One left edge with the title above (`poster_strip_label`'s inset): the mark now
+            // lives on the right, so nothing has to be held clear of it.
+            let icon_x = row.x() + TITLE_STRIP_INSET;
             self.icon(
                 Rect::new(icon_x, row.y() + (row.height() as i32 - icon as i32) / 2, icon, icon),
                 glyph,
                 fg,
             )?;
-            let text_x = icon_x + icon as i32 + 10;
-            let avail = row.right().saturating_sub(text_x + 2 * TITLE_STRIP_INSET).max(0) as u32;
+            let text_x = icon_x + icon as i32 + ICON_LABEL_GAP;
+            let marked = marked == Some(i);
+            let avail = row.right().saturating_sub(text_x + label_right_pad(marked)).max(0) as u32;
             let label = ellipsize(self.fonts.raster, font, label, avail);
             let y = row.y() + (row.height() as i32 - self.fonts.raster.height(font)) / 2;
             self.text(font, &label, text_x, y, fg)?;
-            if marked == Some(i) {
-                self.mark_dot(
-                    row.x() + TITLE_STRIP_INSET,
-                    row.y() + row.height() as i32 / 2,
-                    theme().warning,
-                );
+            if marked {
+                self.mark_dot(mark_dot_x(row), row.y() + row.height() as i32 / 2, theme().warning);
             }
         }
         Ok(())

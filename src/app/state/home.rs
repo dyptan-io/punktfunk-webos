@@ -24,12 +24,10 @@ impl App {
         self.entries.len() + 2
     }
 
-    /// Grid shape at `columns` columns; scans for pinned pins, so build once and reuse.
+    /// Grid shape at `columns` columns — plain field reads (see [`App::desktop_pin`]), so a
+    /// caller in a loop may still prefer to hoist it.
     pub(crate) fn grid_layout(&self, columns: usize) -> GridLayout {
-        let desktop_pinned = self.games_loaded
-            && self
-                .selected_known_host()
-                .is_some_and(|h| h.is_pinned(store::DESKTOP_PIN_ID));
+        let desktop_pinned = self.games_loaded && self.desktop_pin;
         let front_count = self.pinned_count + usize::from(desktop_pinned);
         let pinned_rows = if front_count == 0 {
             0
@@ -55,8 +53,11 @@ impl App {
         self.grid_layout(columns).len(self.games.len())
     }
 
-    pub(crate) fn pinned_rows(&self, columns: usize) -> usize {
-        self.grid_layout(columns).pinned_rows
+    /// The grid's vertical section shape at `columns` columns — what every card rect and the
+    /// scroll extent are offset by (see `GridLayout::sections`). Callers already holding a
+    /// `GridLayout` should ask it directly rather than rebuild one through here.
+    pub(crate) fn grid_sections(&self, columns: usize) -> view::home::GridSections {
+        self.grid_layout(columns).sections(self.games.len())
     }
 
     /// The card at grid index `idx`, or `None` for the padding after a partial
@@ -137,6 +138,7 @@ impl App {
         // One layout for the whole sweep: `is_grid_card`/`unscrolled_card_rect` would
         // each rebuild it — and rescan the host's pin list — for every card.
         let layout = self.grid_layout(columns);
+        let sections = layout.sections(self.games.len());
         let grid_len = if self.selected_host.is_some() {
             layout.len(self.games.len())
         } else {
@@ -146,13 +148,8 @@ impl App {
             if layout.card_at(&self.games, idx).is_none() {
                 continue;
             }
-            let r = view::home::unscrolled_card_rect(
-                idx,
-                columns,
-                ui::widgets::SIDEBAR_W as i32,
-                available_w,
-                layout.pinned_rows,
-            );
+            let r =
+                view::home::unscrolled_card_rect(idx, columns, ui::widgets::SIDEBAR_W as i32, available_w, sections);
             // Screen space, at the scroll the grid is easing *toward* — so that a move
             // crossing into the sidebar compares against its rows on equal terms.
             map.item(HomeFocus::Grid(idx), r.offset(0, -self.grid_scroll_target), GROUP_GRID);
@@ -304,9 +301,10 @@ impl App {
     /// `self.games`. Dropping is [`App::prune_stale_game_prefs`]'s job.
     pub(crate) fn reorder_games_by_pin(&mut self) {
         let Some(known_idx) = self.selected_known_host_idx() else {
-            self.pinned_count = 0;
+            self.clear_grid_pins();
             return;
         };
+        self.desktop_pin = self.known_hosts[known_idx].is_pinned(store::DESKTOP_PIN_ID);
         let pinned_ids: Vec<String> = self.known_hosts[known_idx]
             .pinned_ids()
             .into_iter()
@@ -322,6 +320,13 @@ impl App {
         self.pinned_count = pinned.len();
         pinned.append(&mut self.games);
         self.games = pinned;
+    }
+
+    /// Forgets the pin state the grid is drawn from — for the paths that drop the library
+    /// itself, where there is no host left to recompute it from.
+    fn clear_grid_pins(&mut self) {
+        self.pinned_count = 0;
+        self.desktop_pin = false;
     }
 
     /// Drops per-game state (pins *and* settings overrides) for games the host no longer
@@ -353,23 +358,11 @@ impl App {
         ui::animation::anim_frac(self.card_pop.get(id).copied(), crate::app::CARD_POP)
     }
 
-    /// Whether the pinned front block is followed by anything — false when
-    /// nothing's pinned, and when *everything* is, which would otherwise leave
-    /// the divider and its gap hanging under the last row.
-    pub(crate) fn has_pinned_divider(&self, columns: usize) -> bool {
-        let layout = self.grid_layout(columns);
-        layout.pinned_rows > 0 && layout.len(self.games.len()) > layout.unpinned_start
-    }
-
     /// The largest useful `grid_scroll` for the current library/layout — 0 when
     /// everything already fits on screen.
     pub(crate) fn max_grid_scroll(&self, columns: usize, available_w: u32, screen_h: u32) -> i32 {
         let viewport_h = screen_h as i32 - view::home::GRID_PAD - view::home::GRID_TOP_Y;
-        let extra = if self.has_pinned_divider(columns) {
-            view::home::PINNED_SECTION_GAP
-        } else {
-            0
-        };
+        let extra = self.grid_sections(columns).total_extra();
         (view::home::grid_layer_height(self.grid_len(columns), columns, available_w) as i32 + extra
             - 2 * view::home::GRID_LAYER_PAD
             - viewport_h)
@@ -431,7 +424,7 @@ impl App {
         self.selected_host = None;
         self.games = Vec::new();
         self.games_loaded = false;
-        self.pinned_count = 0;
+        self.clear_grid_pins();
         self.art.clear();
         self.art_loader = None;
         self.games_rx = None;
@@ -457,7 +450,7 @@ impl App {
         // `home_status_sticky` is ever set.
         self.home_status_sticky = false;
         self.games = Vec::new();
-        self.pinned_count = 0;
+        self.clear_grid_pins();
         self.games_loaded = false;
         self.art.clear();
         // Dropping the loader stops its worker (its request channel closes), so a host
@@ -535,6 +528,11 @@ impl App {
                 }
                 if !self.home_status_sticky {
                     self.home_status = None;
+                }
+                // Held until now rather than shown at startup: the hint points at the cards,
+                // so it waits for a library to exist. Spent on sight, whatever happens next.
+                if std::mem::take(&mut self.intro_hint_owed) {
+                    self.home_status = Some(crate::app::state::cardmenu::INTRO_HINT.to_string());
                 }
                 self.prune_stale_game_prefs();
                 self.reorder_games_by_pin();

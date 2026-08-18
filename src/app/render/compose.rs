@@ -297,6 +297,11 @@ impl App {
         };
         let pad = ui::tiles::CARD_SHADOW_PAD;
         let layout = self.grid_layout(columns);
+        // One layout and one section shape for the whole frame: both rescan the host's pin
+        // list, and every card rect below would otherwise rebuild them (see `home_focus_map`).
+        let sections = layout.sections(self.games.len());
+        let card_rect =
+            |idx| view::home::scrolled_card_rect(idx, columns, grid_x, available_w, sections, self.grid_scroll);
         for idx in 0..count {
             if Some(idx) == focused {
                 continue; // drawn last, on top of its neighbors
@@ -305,7 +310,7 @@ impl App {
             let Some(pin_id) = layout.pin_id_at(&self.games, idx) else {
                 continue;
             };
-            let r = self.scrolled_card_rect(idx, columns, grid_x, available_w);
+            let r = card_rect(idx);
             if r.bottom() + pad < 0 || r.y() - pad > screen_h as i32 {
                 continue; // culled — fully off-screen at this scroll offset
             }
@@ -326,16 +331,38 @@ impl App {
                 alpha,
             });
         }
-        // The divider between pinned games and the rest — scrolled with
-        // everything else (there's no separate fixed region), so it's just
-        // another rect at its own scrolled position, culled the same way.
-        if let Some(sep) = self.pinned_separator_rect(columns, grid_x, available_w) {
-            if sep.y() >= 0 && sep.y() <= screen_h as i32 {
-                cmds.push(DrawCmd::Fill {
-                    rect: sep,
-                    color: crate::ui::render::Color::RGBA(0xff, 0xff, 0xff, 0x20),
-                });
+        // The two section headings, in place of the hairline that used to divide the blocks —
+        // scrolled with everything else (there's no separate fixed region), so they are just
+        // tiles at their own scrolled positions, culled the same way. Bottom-aligned in their
+        // band, sitting on the block they name.
+        for (shown, first_idx, id) in [
+            (sections.pinned_heading, 0, tile::SECTION_PINNED),
+            (
+                sections.library_heading,
+                sections.pinned_rows * columns.max(1),
+                tile::SECTION_LIBRARY,
+            ),
+        ] {
+            if !shown {
+                continue;
             }
+            let band =
+                view::home::section_heading_rect(first_idx, columns, grid_x, available_w, sections, self.grid_scroll);
+            if band.bottom() < 0 || band.y() > screen_h as i32 {
+                continue;
+            }
+            let Some(tile) = tiles.get(id) else { continue };
+            let (w, h) = (tile.width(), tile.height());
+            cmds.push(DrawCmd::Tex {
+                tile: id,
+                dst: Rect::new(
+                    band.x(),
+                    band.bottom() - h as i32 - view::home::SECTION_HEADING_PAD,
+                    w,
+                    h,
+                ),
+                alpha: 0xff,
+            });
         }
         if let Some(idx) = focused {
             if let Some(pin_id) = layout.pin_id_at(&self.games, idx) {
@@ -343,7 +370,7 @@ impl App {
                 // around its center as the pop progresses, with the shared glow
                 // tile fading in behind it at the same scale.
                 let f = ui::animation::anim_frac_smooth(self.focus_anim, ui::animation::CARD_FOCUS_POP);
-                let r = self.scrolled_card_rect(idx, columns, grid_x, available_w);
+                let r = card_rect(idx);
                 let Some(card) = self.card_ids.get(pin_id) else {
                     return; // not rasterized yet
                 };
@@ -448,10 +475,27 @@ impl App {
                         // The selection sits under the row text, not over it: the band is a
                         // darkening, so a label drawn beneath it would dim with the frost.
                         // It rides `rows_top` too, staying on its row for the whole rise.
-                        if let Some(band) = self.card_menu_band(r, panel_h, shown, rows_top) {
-                            cmds.push(DrawCmd::Fill {
-                                rect: ui::animation::scale_about(band, r, card_scale),
-                                color: ui::widgets::CARD_MENU_ROW_FOCUS,
+                        if let Some((band, tile)) = self
+                            .card_menu_band(r, panel_h, shown, rows_top)
+                            .zip(tiles.get(tile::CARD_MENU_BAND))
+                        {
+                            // The bottom row's band ends on the card's own rounded edge, so it
+                            // comes from the band tile's rounded half; any higher row is square
+                            // all round and comes from its square half (see
+                            // `render_card_menu_band_tile`). Cropped from the bottom of
+                            // whichever half, since the rise clips the band's *top*.
+                            let half = tile.height() / 2;
+                            let src_bottom = if band.bottom() >= r.bottom() { 2 * half } else { half };
+                            cmds.push(DrawCmd::TexCropped {
+                                tile: tile::CARD_MENU_BAND,
+                                src: Rect::new(
+                                    0,
+                                    src_bottom.saturating_sub(band.height()) as i32,
+                                    tile.width(),
+                                    band.height(),
+                                ),
+                                dst: ui::animation::scale_about(band, r, card_scale),
+                                alpha: (255.0 * pop) as u8,
                             });
                         }
                         let vis_bottom = (rows_top + rows_h as i32).min(panel_h as i32);

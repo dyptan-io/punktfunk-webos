@@ -127,15 +127,7 @@ impl App {
                 }
                 let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
                 let columns = view::home::grid_columns(available_w);
-                if let Some(idx) = view::home::hit_test_grid_card(
-                    x,
-                    y,
-                    columns,
-                    self.grid_len(columns),
-                    ui::widgets::SIDEBAR_W as i32,
-                    available_w,
-                    self.grid_scroll,
-                ) {
+                if let Some(idx) = self.hit_test_grid_card(x, y, columns, available_w) {
                     // Padding after a partial pinned row isn't a real card — nothing to land on.
                     if self.is_grid_card(idx, columns) {
                         return self.set_home_focus(HomeFocus::Grid(idx));
@@ -451,15 +443,7 @@ impl App {
                     let columns = view::home::grid_columns(available_w);
                     // Clicked empty space — either between cards (`?`'s early
                     // `None`) or the padding after a partial pinned row.
-                    let idx = view::home::hit_test_grid_card(
-                        x,
-                        y,
-                        columns,
-                        self.grid_len(columns),
-                        ui::widgets::SIDEBAR_W as i32,
-                        available_w,
-                        self.grid_scroll,
-                    )?;
+                    let idx = self.hit_test_grid_card(x, y, columns, available_w)?;
                     if !self.is_grid_card(idx, columns) {
                         return None;
                     }

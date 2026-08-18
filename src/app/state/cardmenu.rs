@@ -22,6 +22,13 @@ pub(crate) const ROW_PIN: usize = 0;
 pub(crate) const ROW_SETTINGS: usize = 1;
 pub(crate) const ROW_COUNT: usize = 2;
 
+/// The line shown once, on the release that added this menu, when the first library lands: the
+/// feature is behind a hold, which nothing on screen would otherwise reveal. Phrased as what it
+/// buys the user, not as a keypress.
+pub(crate) const INTRO_HINT: &str =
+    "New: hold OK on a card to give that game its own settings — some run smoother with a codec, \
+     bitrate or resolution of their own.";
+
 /// The open card submenu. `Some` exactly while it is up.
 pub struct CardMenu {
     /// The card it belongs to (a `GameEntry::id`, or `store::DESKTOP_PIN_ID`).

@@ -75,6 +75,13 @@ pub const CARD_MENU_ROWS: TileId = TileId(26);
 /// That panel's title line, likewise on its own transparent tile — it rides the top edge of
 /// the opening window, continuing up from where [`CARD_TITLE`] already had it.
 pub const CARD_MENU_TITLE: TileId = TileId(27);
+/// That panel's selection band, one row tall with the card's rounded bottom corners — used
+/// for the bottom row, whose band ends on that edge; higher rows are a plain square fill.
+pub const CARD_MENU_BAND: TileId = TileId(28);
+/// The grid's two section headings — "Pinned" over the front block, "Library" over the rest.
+/// Static text, so one tile each for the life of the process.
+pub const SECTION_PINNED: TileId = TileId(29);
+pub const SECTION_LIBRARY: TileId = TileId(30);
 
 /// First id of the spinner band. One per frame, so animation is a swap not an upload.
 const SPINNER_BASE: u32 = 64;

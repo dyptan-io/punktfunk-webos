@@ -252,15 +252,23 @@ pub fn pinned_only(id: &str) -> BTreeMap<String, GamePrefs> {
     )])
 }
 
-/// The `games` map a genuinely new host starts with: Desktop pinned, and cursor capture turned
-/// back *on* for that card — capture is off globally because games are the common case, and the
-/// desktop is the one card where a captured pointer is what you want. Doubles as the shipped
-/// demo of per-game overrides. Skipped when the global value is already on, since an override
-/// equal to the global reads as noise (matching `SettingsOverride::drop_matching`).
+/// The cursor-capture override the Desktop card carries: *off*, since capture is on globally
+/// for the games that are the common case and the desktop is the one card where the host's own
+/// pointer should stay visible. Doubles as the shipped demo of per-game overrides.
+///
+/// `None` when the global value is already off — an override equal to the global reads as noise
+/// (matching [`SettingsOverride::drop_matching`]). The one place this default lives: new hosts
+/// get it from [`new_host_games`], existing ones from `store`'s version bootstrap.
+pub fn desktop_capture_override(global: &Settings) -> Option<bool> {
+    global.cursor_capture.then_some(false)
+}
+
+/// The `games` map a genuinely new host starts with: Desktop pinned, wearing
+/// [`desktop_capture_override`].
 pub fn new_host_games(global: &Settings) -> BTreeMap<String, GamePrefs> {
     let mut games = pinned_only(DESKTOP_PIN_ID);
-    if !global.cursor_capture {
-        games.entry(DESKTOP_PIN_ID.to_string()).or_default().over.cursor_capture = Some(true);
+    if let Some(prefs) = games.get_mut(DESKTOP_PIN_ID) {
+        prefs.over.cursor_capture = desktop_capture_override(global);
     }
     games
 }
@@ -428,13 +436,12 @@ pub struct Settings {
     /// anyone having to find this setting); pick a kind explicitly to override that. Takes
     /// effect on the next stream, since it rides the handshake.
     pub gamepad_type: GamepadType,
-    /// Let the TV capture the pointer for the host in-stream. Off (default, since most cards
-    /// are games launched with a pad): absolute `MouseMoveAbs`, and `CLIENT_CAP_CURSOR` tells a
-    /// capable host to stop compositing its own so the local pointer stays visible. The Desktop
-    /// card overrides it back on per host (see [`new_host_games`]), which is where a captured
-    /// pointer is actually wanted. On: local cursor
-    /// hidden, relative `MouseMove` deltas sent (absolute coords stop at the panel edge), host
-    /// draws the only cursor. Off: absolute `MouseMoveAbs`, and `CLIENT_CAP_CURSOR` tells a
+    /// Let the TV capture the pointer for the host in-stream. On by default — most cards are
+    /// games, where a relative pointer is what the game expects; each host's Desktop card
+    /// overrides it back off (see [`desktop_capture_override`]).
+    ///
+    /// On: local cursor hidden, relative `MouseMove` deltas sent (absolute coords stop at the
+    /// panel edge), host draws the only cursor. Off: absolute `MouseMoveAbs`, and `CLIENT_CAP_CURSOR` tells a
     /// capable host to stop compositing its own so the local pointer stays visible — otherwise
     /// two cursors or none. Only the mouse follows this flag — a USB keyboard is grabbed either
     /// way, or the compositor sees modifiers and fights the host pointer. Takes effect next stream.
@@ -483,7 +490,7 @@ impl Default for Settings {
             log_level_override: LogLevelOverride::Info,
             show_logs: false,
             gamepad_type: GamepadType::Auto,
-            cursor_capture: false,
+            cursor_capture: true,
             game_mode: false,
             ndl_audio_offload: false,
             cursor_gestures: false,
