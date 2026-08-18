@@ -425,6 +425,11 @@ pub struct App {
     /// The focused button's press dip, if one is in flight — the widget's action runs when
     /// it lands (see `App::press`).
     pub(crate) press: ui::animation::Press,
+    /// Which screen's button armed `press`. The clock is App-wide but the button that owns
+    /// it isn't, and a modal's focus tile and the sidebar row behind the card both composite
+    /// the dip — without this, confirming a dialog pushes the sidebar row in with it.
+    /// Only meaningful while `press` is armed, so nothing has to clear it.
+    pub(crate) press_screen: Screen,
     /// In-flight `Toggle` row flip: `(when it started, the value it flipped
     /// from, the focused row it flipped)` — lets `modal_focus_tile`'s render
     /// slide the switch knob from its old state to its new one over
@@ -579,6 +584,7 @@ impl App {
             modal_fade: ui::fade::ModalFade::new(),
             modal_focus_anim: None,
             press: ui::animation::Press::default(),
+            press_screen: Screen::Home,
             switch_anim: None,
             last_screen: Screen::Home,
             pairing_rx: None,

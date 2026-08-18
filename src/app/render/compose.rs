@@ -25,7 +25,7 @@ impl App {
             host_selected: self.selected_host.is_some(),
             has_status: self.home_status.is_some(),
             grid_reveal_ready: self.grid_reveal_ready,
-            press: self.press,
+            press: self.press_dip(Screen::Home),
         }
     }
 
@@ -155,7 +155,7 @@ impl App {
                 // rasterized once at its literal size, never re-rendered for
                 // this (except while `switch_anim` animates its content, see
                 // `prepare_tiles`).
-                let dst = ui::animation::focus_tile_rect(base, self.modal_focus_anim, self.press);
+                let dst = ui::animation::focus_tile_rect(base, self.modal_focus_anim, self.press_dip(screen));
                 let alpha = (255.0 * m) as u8;
                 // In a scrolling modal the focused row can hang past the viewport's bottom
                 // edge mid-glide (the crop lags the row offset by up to one stride), so it is

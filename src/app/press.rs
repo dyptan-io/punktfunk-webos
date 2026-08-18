@@ -57,7 +57,19 @@ impl App {
             return self.handle_menu_event(MenuEvent::Confirm, screen_w, screen_h, fonts);
         }
         self.press.arm();
+        self.press_screen = self.screen;
         None
+    }
+
+    /// The dip, but only for the screen whose button armed it. Every focus tile on screen
+    /// composites through `App::press`, so an open modal's confirm would otherwise push the
+    /// sidebar row behind its card in alongside the button actually pressed.
+    pub(crate) fn press_dip(&self, owner: Screen) -> ui::animation::Press {
+        if self.press_screen == owner {
+            self.press
+        } else {
+            ui::animation::Press::default()
+        }
     }
 
     /// Whether the focused widget is a button — the only thing that dips. A row carries a
