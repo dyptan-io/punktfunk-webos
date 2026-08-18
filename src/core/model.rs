@@ -243,15 +243,16 @@ pub struct Settings {
     /// stream start (SDR "game" / HDR "hdrGame" per the negotiated colour path) and reverted
     /// on stream exit.
     pub game_mode: bool,
-    /// Ask NDL to decode Opus itself instead of running the software decoder
-    /// (`session::ndl_audio_config`). Takes effect on the next stream.
+    /// Whether the real Opus stream rides NDL's audio plane (hardware decode) instead of the
+    /// software decoder. Takes effect on the next stream.
     ///
-    /// **Off by default, and opt-in for now.** The audio-enabled load is rejected on at least
-    /// some webOS 5+ sets (an OLED65CX): `NDL_DirectMediaLoad` returns 0 but the pipeline never
-    /// reports `LOADCOMPLETED`, and while the audio plane does play, the video plane never
-    /// starts — an entire session of black picture with sound. Until that is understood, the
-    /// software path is the one that always works, so it is the default and this row is the
-    /// escape hatch rather than the other way round.
+    /// **This does not decide whether the plane exists** — every accepted V2 load has one, since
+    /// NDL only paces the picture against a fed plane. Off, it carries `run_clock_plane`'s silent
+    /// metronome and software decode serves the speakers.
+    ///
+    /// Off by default: the audio-enabled load is rejected on some webOS 5+ sets, and a set that
+    /// accepts it can still play nothing, which no runtime probe detects. 5.1/7.1 stay on the
+    /// software decoder regardless — NDL's Opus struct has no multistream mapping field.
     pub ndl_audio_offload: bool,
     /// Resolve the Magic Remote's OK button into left click / right click / drag by how long
     /// it's held (see `platform::webos::mouse::RemoteButtons`). Off by default — with it

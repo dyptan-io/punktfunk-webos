@@ -216,9 +216,14 @@ impl AudioFeed {
         // empty input) interpolates a frame; the alternative is a hard gap, i.e. a click.
         for _ in 0..self.gaps.missing_before(seq) {
             let mut pcm = [0f32; SAMPLES_PER_FRAME * MAX_CHANNELS];
+            // One frame, not the whole scratch buffer: with no packet to describe it, libopus
+            // takes `out.len() / channels` as the frame size and rejects one that isn't legal —
+            // 5.1 gives 1920/6 = 320. A decode WITH a packet tolerates the oversized buffer,
+            // which is why only concealment failed.
+            let out = &mut pcm[..SAMPLES_PER_FRAME * self.channels];
             let n = self
                 .decoder
-                .decode_float(&[], &mut pcm, false)
+                .decode_float(&[], out, false)
                 .map_err(|e| anyhow::anyhow!("opus PLC decode: {e}"))?;
             self.push(&pcm[..n * self.channels]);
         }

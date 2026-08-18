@@ -95,7 +95,9 @@ pub struct NdlVideo {
     /// `wait_load_completed` blocked. Only [`FEED_ANYWAY_AFTER`] is measured from it; the PTS
     /// domain stays on `load_instant`.
     load_requested: Instant,
-    audio_offloaded: bool,
+    /// Whether the load asked for — and confirmed — an audio plane. What RIDES that plane (the
+    /// real Opus stream, or [`Self::play_silence`]'s metronome) is the caller's choice.
+    has_audio_plane: bool,
     /// Host-PTS → NDL-player-clock offset in ns, republished by the video plane on every fed
     /// frame (`session::sink`) and read by [`Self::play_audio`] so both planes land in ONE
     /// timeline. [`NO_PTS_OFFSET`] until the first frame is fed.
@@ -174,7 +176,7 @@ impl NdlVideo {
         fns: &'static ffi::V2,
         video: ffi::VideoInfo,
         audio: ffi::AudioUnion,
-        audio_offloaded: bool,
+        with_audio: bool,
     ) -> Result<Self> {
         let mut info = ffi::DataInfo { video, audio };
         arm_load();
@@ -187,7 +189,7 @@ impl NdlVideo {
         // `ret == 0` is "request accepted", not "pipeline ready" — the first feed still needs
         // LOADCOMPLETED, and an audio-enabled load will not report it until its audio plane has
         // seen a packet, which is what the prime supplies.
-        let (primed_pts_ms, confirmed) = if audio_offloaded {
+        let (primed_pts_ms, confirmed) = if with_audio {
             Self::prime_audio(fns)
         } else {
             (0, wait_load_completed())
@@ -196,7 +198,7 @@ impl NdlVideo {
             fns,
             load_instant: Instant::now(),
             load_requested,
-            audio_offloaded,
+            has_audio_plane: with_audio,
             pts_offset_ns: AtomicI64::new(NO_PTS_OFFSET),
             last_audio_pts_ms: AtomicI64::new(primed_pts_ms),
             load_confirmed: AtomicBool::new(confirmed),
@@ -231,8 +233,9 @@ impl NdlVideo {
                 );
                 return (pts_ms, false);
             }
-            // Stamps track wall-clock, PRIME_LEAD packets ahead. A fixed count per gap advances
-            // them at ~2x real time, and this ceiling is the floor real audio is pinned to.
+            // Stamps track wall-clock, topped up to PRIME_LEAD packets ahead of it — so the burst
+            // per gap is however many 5 ms packets that gap consumed, and the ceiling stays a
+            // fixed lead over real time. That ceiling is the floor real audio is pinned to.
             let target_ms = start.elapsed().as_millis() as i64 + PRIME_LEAD * PRIME_PACKET_MS;
             {
                 let _ffi = lock_ffi();
@@ -264,10 +267,11 @@ impl NdlVideo {
         (pts_ms, true)
     }
 
-    /// Whether NDL accepted the Opus config and is decoding audio itself — if false the
-    /// caller must run the software Opus path.
-    pub fn audio_offloaded(&self) -> bool {
-        self.audio_offloaded
+    /// Whether this load has an audio plane. It always does when the load confirmed, since NDL
+    /// only paces the picture against a fed audio plane — see [`Self::play_silence`]. False means
+    /// the audio-enabled load was rejected and `load()` fell back to video-only.
+    pub fn has_audio_plane(&self) -> bool {
+        self.has_audio_plane
     }
 
     /// Latch the video plane's host-PTS → player-clock offset so [`play_audio`](Self::play_audio)
@@ -299,13 +303,13 @@ impl NdlVideo {
         self.pts_offset_ns.store(NO_PTS_OFFSET, Ordering::Relaxed);
     }
 
-    /// Feed one Opus packet to NDL (only when `audio_offloaded`). `host_pts_ns` is the packet's
-    /// own host capture timestamp, NOT arrival time.
+    /// Feed one Opus packet to NDL (only when the real stream rides the plane). `host_pts_ns` is
+    /// the packet's own host capture timestamp, NOT arrival time.
     ///
     /// **Both planes must be stamped in one time base** — NDL runs its own A/V synchronisation
     /// against these values, and regulating a video plane on host-capture cadence against an audio
-    /// plane on arrival wall-clock is what froze the picture on webOS 10.3 (docs/NOTES.md § "Opus
-    /// offload to NDL"). So the host PTS goes through the video plane's own offset
+    /// plane on arrival wall-clock is what froze the picture on webOS 10.3 (docs/NOTES.md § "NDL's
+    /// audio plane"). So the host PTS goes through the video plane's own offset
     /// ([`latch_pts_offset`](Self::latch_pts_offset)).
     ///
     /// Returns `Ok(())` having fed nothing while no offset is latched: audio before the first
@@ -321,14 +325,58 @@ impl NdlVideo {
             return Ok(());
         }
         let raw_ms = (host_pts_ns as i64).saturating_add(offset_ns).max(0) / 1_000_000;
-        let pts_ms = self.last_audio_pts_ms.fetch_max(raw_ms, Ordering::Relaxed).max(raw_ms) as c_longlong;
+        self.feed_audio(packet, raw_ms)
+    }
+
+    /// The audio plane's only feed point. The monotonic floor is load-bearing: NDL reads a
+    /// backwards stamp as a rewind and mutes for the rest of the session, and both callers can
+    /// produce one (a receive-backlog jump; the prime's ceiling).
+    fn feed_audio(&self, data: &[u8], pts_ms: i64) -> Result<()> {
+        let pts_ms = self.last_audio_pts_ms.fetch_max(pts_ms, Ordering::Relaxed).max(pts_ms) as c_longlong;
         let _ffi = lock_ffi();
         // SAFETY: NDL reads `size` bytes synchronously and does not retain the pointer.
-        let ret = unsafe { (self.fns.audio_play)(packet.as_ptr() as *mut c_void, packet.len() as c_uint, pts_ms) };
+        let ret = unsafe { (self.fns.audio_play)(data.as_ptr() as *mut c_void, data.len() as c_uint, pts_ms) };
         if ret != 0 {
             bail!("NDL_DirectAudioPlay failed: ret={ret} error={}", ffi::last_error());
         }
         Ok(())
+    }
+
+    /// One silent frame for the clock plane. Stamped in the player-clock domain and not through
+    /// `pts_offset_ns`: this plane is a metronome, not content, so it has no host timeline to
+    /// join. Why it exists at all: docs/NOTES.md § "NDL's audio plane".
+    fn play_silence(&self, pts_ms: i64) -> Result<()> {
+        self.feed_audio(&OPUS_SILENCE, pts_ms)
+    }
+
+    /// Run the clock plane until `stop`, for a session whose real audio is decoded in software.
+    /// Blocks, so the caller gives it a thread.
+    ///
+    /// Same burst shape as [`Self::prime_audio`], topped up to `PRIME_LEAD` packets ahead so the
+    /// plane stays fed. Bursting keeps it to ~50 wakeups/s instead of 200, on a `SoC` whose video
+    /// feed shares `lock_ffi` with it.
+    pub fn run_clock_plane(&self, stop: &std::sync::atomic::AtomicBool) {
+        // Continue the prime's stamps instead of restarting from the player clock: the prime runs
+        // BEFORE `load_instant`, so its ceiling already sits a whole prime ahead, and targeting the
+        // raw clock would feed nothing until it caught up — dead exactly at session start. The
+        // resulting constant offset from the video timeline costs a metronome nothing.
+        let base_ms = self.last_audio_pts_ms.load(Ordering::Relaxed);
+        let mut pts_ms = base_ms;
+        while !stop.load(Ordering::Relaxed) {
+            let elapsed_ms = (self.elapsed_ns() / 1_000_000) as i64;
+            let target_ms = base_ms + elapsed_ms + PRIME_LEAD * PRIME_PACKET_MS;
+            while pts_ms < target_ms {
+                pts_ms += PRIME_PACKET_MS;
+                if let Err(e) = self.play_silence(pts_ms) {
+                    // Dead for the session; the picture keeps running unpaced, as it did before
+                    // the clock plane existed.
+                    tracing::warn!("NDL clock plane stopping at {pts_ms}ms: {e:#}");
+                    return;
+                }
+            }
+            std::thread::sleep(PRIME_RETRY);
+        }
+        tracing::info!("NDL clock plane ending at {pts_ms}ms");
     }
 
     /// Nanoseconds since `load()` (NDL PTS domain). `video_pump`'s pacer clamps its accumulator around this.

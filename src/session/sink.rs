@@ -205,9 +205,11 @@ impl VideoPlayer {
     /// `base_ns` is the *unpaced* reference — the pacer's ±half-frame smoothing is video-only
     /// jitter compensation and must not be projected onto the audio timeline.
     ///
-    /// V2 only, and only when audio is offloaded; no other backend feeds audio through NDL.
+    /// V2 only, and only when the load has an audio plane; no other backend feeds audio through
+    /// NDL. Harmless on a clock-plane session — nothing reads the offset there, since
+    /// `run_clock_plane` stamps in the player clock directly.
     fn latch_pts_offset(&self, frame_pts_ns: u64, base_ns: u64) {
-        if let Some(ndl) = self.offloaded_ndl() {
+        if let Some(ndl) = self.audio_plane_ndl() {
             ndl.latch_pts_offset(base_ns as i64 - frame_pts_ns as i64);
         }
     }
@@ -215,16 +217,16 @@ impl VideoPlayer {
     /// Decouple the audio plane from a timeline that no longer holds — the anchor it was
     /// derived from is being reset. Audio holds until the next fed frame republishes.
     fn clear_pts_offset(&self) {
-        if let Some(ndl) = self.offloaded_ndl() {
+        if let Some(ndl) = self.audio_plane_ndl() {
             ndl.clear_pts_offset();
         }
     }
 
-    /// The NDL handle the audio plane shares, or `None` on every backend/load that decodes Opus
-    /// in software — the gate both offset calls above answer to.
-    fn offloaded_ndl(&self) -> Option<&NdlVideo> {
+    /// The NDL handle the audio plane shares, or `None` on every backend/load without one — the
+    /// gate both offset calls above answer to.
+    fn audio_plane_ndl(&self) -> Option<&NdlVideo> {
         match self {
-            Self::V2(ndl) => ndl.audio_offloaded().then(|| ndl.as_ref()),
+            Self::V2(ndl) => ndl.has_audio_plane().then(|| ndl.as_ref()),
             Self::V1(_) | Self::Smp(_) => None,
         }
     }
@@ -247,11 +249,12 @@ impl VideoPlayer {
         }
     }
 
-    /// Shared NDL handle when audio-offloaded; None on a video-only load or any other backend.
+    /// Shared NDL handle when the load has an audio plane; None on a video-only load (the
+    /// audio-enabled one was rejected) or any other backend.
     /// V2 only: V1's `NDL_DirectAudio*` has no Opus source type, and SMP loads `needAudio: false`.
     pub fn ndl_audio_handle(&self) -> Option<Arc<NdlVideo>> {
         match self {
-            Self::V2(ndl) => ndl.audio_offloaded().then(|| ndl.clone()),
+            Self::V2(ndl) => ndl.has_audio_plane().then(|| ndl.clone()),
             Self::V1(_) | Self::Smp(_) => None,
         }
     }

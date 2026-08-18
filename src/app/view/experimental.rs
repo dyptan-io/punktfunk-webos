@@ -36,13 +36,13 @@ pub fn rows(settings: &Settings, rooted: bool) -> Vec<FocusRow> {
     rows.push(
         FocusRow::toggle(
             crate::app::view::icons::ICON_MEMORY,
-            "Hardware audio decode",
+            "Audio offload",
             settings.ndl_audio_offload,
         )
         .with_subtext(ui::widgets::RowSubtext::hint(if settings.ndl_audio_offload {
-            "Opus decoded by NDL"
+            "Turn off for decoding Opus in software"
         } else {
-            "Opus on the CPU — turn on to let NDL decode it"
+            "Offload Opus decode to NDL"
         })),
     );
     // Driving the TV's Game picture/sound modes needs the Homebrew Channel's root helper — the
