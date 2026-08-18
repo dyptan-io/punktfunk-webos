@@ -29,6 +29,7 @@ use crate::core::event::MenuEvent;
 pub use crate::core::model::ConnectTarget;
 use crate::core::model::GameEntry;
 pub use crate::core::screen::{HomeFocus, PairingFocus, Screen};
+use crate::services::discovery::Discovery;
 use crate::services::store::{self, KnownHost, Settings};
 use crate::ui;
 use crate::ui::render::TileId;
@@ -191,9 +192,8 @@ pub struct DropdownState {
 pub struct App {
     pub screen: Screen,
     pub known_hosts: Vec<KnownHost>,
-    pub discovered: std::sync::mpsc::Receiver<crate::services::discovery::DiscoveredHost>,
-    /// `None` if mDNS daemon didn't start. `Some` lets Drop shut it down explicitly.
-    pub(crate) discovery_daemon: Option<mdns_sd::ServiceDaemon>,
+    /// `None` if the mDNS daemon didn't start. Owned here so it stops with the menu.
+    pub(crate) discovery: Option<crate::services::discovery::Discovery>,
     pub entries: Vec<HostEntry>,
     pub home_focus: HomeFocus,
     /// Where the grid is re-entered from the sidebar. Only ever consulted through the
@@ -460,14 +460,6 @@ pub(crate) struct PairingOutcome {
     pub(crate) result: Result<[u8; 32], String>,
 }
 
-impl Drop for App {
-    fn drop(&mut self) {
-        if let Some(daemon) = &self.discovery_daemon {
-            let _ = daemon.shutdown();
-        }
-    }
-}
-
 /// The sidebar's saved-host rows.
 fn known_entries(known_hosts: &[store::KnownHost]) -> Vec<HostEntry> {
     known_hosts.iter().cloned().map(HostEntry::Known).collect()
@@ -488,15 +480,11 @@ impl App {
         // Catches hosts that left the list while the app was closed (migration, torn document);
         // in-session removals reconcile at their own sites.
         crate::services::art::reconcile_host_caches(&known_hosts);
-        let (discovered, discovery_daemon) = match crate::services::discovery::browse() {
-            Some((rx, daemon)) => (rx, Some(daemon)),
-            None => (std::sync::mpsc::channel().1, None),
-        };
+        let discovery = crate::services::discovery::Discovery::start();
         let mut app = Self {
             screen: Screen::Home,
             known_hosts,
-            discovered,
-            discovery_daemon,
+            discovery,
             entries,
             home_focus: HomeFocus::Sidebar(0),
             grid_focus_last: 0,
@@ -746,7 +734,8 @@ impl App {
         // `found.addr` throughout this loop is deliberate, not a typo for a nonexistent
         // `found.host` — `DiscoveredHost` (discovery.rs) only has `addr`, `WakeState`/
         // `KnownHost` only have `host`; both hold the same kind of value (network address).
-        while let Ok(found) = self.discovered.try_recv() {
+        let polled = self.discovery.as_mut().map(Discovery::poll).unwrap_or_default();
+        for found in polled {
             #[allow(clippy::suspicious_operation_groupings)]
             if let Some(w) = &self.wake {
                 if found.addr == w.host && found.port == w.port {
