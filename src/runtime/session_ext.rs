@@ -19,6 +19,14 @@ impl InputSender {
     pub(crate) fn send(&self, ev: &InputEvent) {
         let _ = session::send_input(&self.0, ev);
     }
+
+    /// One pad touchpad contact, on the rich-input plane the host applies to its virtual
+    /// `DualSense` — the only route a swipe has, since a touch surface has no `InputEvent`
+    /// shape. Best-effort like every datagram, and a no-op toward a host running a different
+    /// gamepad backend.
+    pub(crate) fn send_touch(&self, touch: punktfunk_core::quic::RichInput) {
+        let _ = self.0.send_rich_input(touch);
+    }
 }
 
 impl Connected {

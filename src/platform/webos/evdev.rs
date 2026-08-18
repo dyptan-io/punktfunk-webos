@@ -1,5 +1,9 @@
 //! Raw HID mouse **and keyboard** input straight from `/dev/input/event*`, bypassing SDL.
 //!
+//! **Also a pad's touchpad.** A `DualSense`'s touchpad is a third evdev node the compositor would
+//! otherwise turn into a cursor (see [`is_pad_touchpad`]); it's claimed here and decoded into
+//! rich-input contacts for the host's virtual pad, the only route a game's touchpad swipes have.
+//!
 //! **Why.** SDL mouse events on webOS come from the compositor's pointer, smoothed/resampled
 //! for a wrist-waved remote rather than a 125–1000 Hz mouse — jittery deltas no matter what the
 //! client does with them. evdev is the same bypass aurora-tv ships as "Use Hardware Mouse".
@@ -39,16 +43,28 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use punktfunk_core::input::InputEvent;
+use punktfunk_core::quic::RichInput;
 
 use super::keyboard;
 use super::mouse;
 
+const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
 const EV_REL: u16 = 0x02;
 const EV_ABS: u16 = 0x03;
 
+/// End of one report — every `EV_ABS` since the last one describes the same instant, so touch
+/// contacts are only sent here (see [`read_touch`]).
+const SYN_REPORT: u16 = 0x00;
+
 const ABS_X: u16 = 0x00;
 const ABS_Y: u16 = 0x01;
+/// Multitouch protocol B: which contact the following `ABS_MT_*` values belong to.
+const ABS_MT_SLOT: u16 = 0x2f;
+const ABS_MT_POSITION_X: u16 = 0x35;
+const ABS_MT_POSITION_Y: u16 = 0x36;
+/// `-1` lifts the slot's contact; anything else is a new or continuing one.
+const ABS_MT_TRACKING_ID: u16 = 0x39;
 const REL_X: u16 = 0x00;
 const REL_Y: u16 = 0x01;
 const REL_HWHEEL: u16 = 0x06;
@@ -129,6 +145,14 @@ const REPEAT_PERIOD_MS: u32 = 33;
 /// within a burst of typing, short enough that reaching for the remote still feels immediate.
 const IN_USE_WINDOW: Duration = Duration::from_millis(250);
 
+/// One report off a claimed node. Two variants because the two go to different wire planes: a
+/// mouse/keyboard event is an `InputEvent` datagram, a pad touchpad contact is a rich-input one
+/// applied to the host's virtual `DualSense`.
+pub enum HidReport<'a> {
+    Input(&'a InputEvent),
+    Touch(RichInput),
+}
+
 /// A HID reader: one thread polling every mouse- or keyboard-shaped evdev node, handing each
 /// wire event straight to `sink`. Dropping it stops and joins the thread.
 pub struct HidInput {
@@ -188,13 +212,14 @@ impl HidInput {
     ///
     /// `sink` runs **on the reader thread**, once per input frame, only while active (see the
     /// module docs), and must not block: queueing for the main loop would re-quantize motion to
-    /// tick rate, the resampling this escapes.
+    /// tick rate, the resampling this escapes. It takes a [`HidReport`] because a claimed pad
+    /// touchpad reports contacts, not `InputEvent`s.
     ///
     /// `active` is the initial [`set_active`](Self::set_active) state — passed here instead of
     /// left to a follow-up call so a caller that always wants "started active" can't forget it.
     /// `grab_mouse` is cursor capture: false leaves pointer-only nodes with the compositor
     /// (desktop/absolute), keyboards are taken either way.
-    pub fn start(active: bool, grab_mouse: bool, sink: impl Fn(&InputEvent) + Send + 'static) -> Option<Self> {
+    pub fn start(active: bool, grab_mouse: bool, sink: impl Fn(HidReport) + Send + 'static) -> Option<Self> {
         let shared = Arc::new(Shared {
             stop: AtomicBool::new(false),
             has_mouse: AtomicBool::new(false),
@@ -207,9 +232,9 @@ impl HidInput {
             .name("pf-evdev".into())
             .spawn(move || {
                 let gate = Arc::clone(&thread_shared);
-                let gated_sink = move |ev: &InputEvent| {
+                let gated_sink = move |report: HidReport| {
                     if gate.grab.load(Ordering::Relaxed) {
-                        sink(ev);
+                        sink(report);
                     }
                 };
                 reader_loop(&gated_sink, &thread_shared)
@@ -277,9 +302,34 @@ struct Device {
     mouse: bool,
     /// Alphanumeric/modifier keys. Magic Remote nodes are excluded by [`open_hid`].
     keyboard: bool,
-    /// Claimed purely to keep it away from the compositor — nothing is forwarded (neither
-    /// `mouse` nor `keyboard`, so [`read_device`] drains and drops it). See [`is_pad_touchpad`].
-    silent: bool,
+    /// A pad's touchpad ([`is_pad_touchpad`]), claimed so the compositor can't make a cursor of
+    /// it and decoded into [`RichInput::Touchpad`] contacts instead. `None` on every other node.
+    touchpad: Option<Touchpad>,
+}
+
+/// Multitouch decode state for a claimed pad touchpad, plus the axis ranges its coordinates are
+/// normalized against.
+///
+/// Protocol B (`ABS_MT_SLOT` + `ABS_MT_TRACKING_ID`), which is what `hid-playstation` reports and
+/// all the wire has room for: two contacts, matching the `finger` field's `0`/`1`.
+struct Touchpad {
+    /// The slot `ABS_MT_*` values currently apply to. Out-of-range slots are parked on the last
+    /// finger rather than dropped, so a driver reporting more contacts than the wire carries
+    /// can't silently write past the array.
+    slot: usize,
+    fingers: [Finger; 2],
+    /// `(min, max)` of `ABS_MT_POSITION_X` / `_Y`, for the 0..=65535 normalization.
+    x_range: (i32, i32),
+    y_range: (i32, i32),
+}
+
+#[derive(Clone, Copy, Default)]
+struct Finger {
+    active: bool,
+    x: i32,
+    y: i32,
+    /// Something in this report changed the contact — sent at the next `SYN_REPORT` and cleared.
+    dirty: bool,
 }
 
 impl Drop for Device {
@@ -363,7 +413,7 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
         grab_warned_for: None,
         mouse: false,
         keyboard: false,
-        silent: false,
+        touchpad: None,
     };
     let rel = event_bits(fd, EV_REL);
     let abs = event_bits(fd, EV_ABS);
@@ -384,8 +434,10 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
     dev.mouse = pointer && (grab_mouse || dev.keyboard);
     // Claimed in both cursor modes, unlike a mouse node: leaving it to the compositor is what
     // produces the stuck left button, which desktop mode wants gone just as much.
-    dev.silent = is_pad_touchpad(absolute_pointer, bit(&key, BTN_TOUCH), || device_vendor(fd));
-    if !dev.mouse && !dev.keyboard && !dev.silent {
+    if is_pad_touchpad(absolute_pointer, bit(&key, BTN_TOUCH), || device_vendor(fd)) {
+        dev.touchpad = Some(Touchpad::new(fd));
+    }
+    if !dev.mouse && !dev.keyboard && dev.touchpad.is_none() {
         // Not ours, or a pointer-only node in desktop mode — left with the compositor so the
         // TV cursor is still the one you aim.
         return Probe::Skip;
@@ -395,8 +447,8 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
     }
     tracing::info!(
         "HID {}: {} ({})",
-        match (dev.mouse, dev.keyboard, dev.silent) {
-            (_, _, true) => "pad touchpad (claimed, dropped)",
+        match (dev.mouse, dev.keyboard, dev.touchpad.is_some()) {
+            (_, _, true) => "pad touchpad",
             (true, true, _) => "mouse+keyboard",
             (true, false, _) => "mouse",
             _ => "keyboard",
@@ -422,15 +474,60 @@ fn set_repeat(fd: RawFd) {
 /// A `PlayStation` pad's touchpad, which the kernel publishes as its own absolute/multitouch node
 /// alongside the pad itself — the source of the stuck left button [`mouse::is_touch_emulated`]
 /// describes, since the compositor drives the TV cursor from it. Claiming it takes it away from
-/// the compositor entirely; the events go nowhere, as the wire has no controller-touch kind to
-/// forward them on. The pad's own *click* is unaffected — that arrives on the pad node as
-/// `BTN_TOUCHPAD` through SDL's controller layer, not here.
+/// the compositor entirely and gives [`read_touch`] the contacts to forward as
+/// [`RichInput::Touchpad`], which is what makes a game's touchpad swipes work. The pad's own
+/// *click* doesn't come through here at all — that arrives on the pad node as `BTN_TOUCHPAD`
+/// through SDL's controller layer.
 ///
 /// Matched on ids and capability bits, not the device name, which varies by driver and firmware:
 /// `BTN_TOUCH` on an absolute pointer (the pad's own node reports face buttons instead), from a
 /// Sony vendor id. `vendor` is lazy because it costs an ioctl the bit tests don't.
 fn is_pad_touchpad(absolute_pointer: bool, has_btn_touch: bool, vendor: impl FnOnce() -> u16) -> bool {
     absolute_pointer && has_btn_touch && vendor() == VENDOR_SONY
+}
+
+impl Touchpad {
+    /// Reads the node's axis ranges once, at open. A node whose `ABS_MT_POSITION_*` ranges are
+    /// unusable is still worth claiming (the compositor must not have it) — it just reports no
+    /// contacts, which [`Self::normalize`] enforces.
+    fn new(fd: RawFd) -> Self {
+        Self {
+            slot: 0,
+            fingers: [Finger::default(); 2],
+            x_range: abs_range(fd, ABS_MT_POSITION_X),
+            y_range: abs_range(fd, ABS_MT_POSITION_Y),
+        }
+    }
+
+    /// Device units → the wire's `0..=65535` across the pad. `None` when the driver gave no
+    /// range to scale against, since a bogus coordinate is worse than no contact at all.
+    fn normalize(&self, x: i32, y: i32) -> Option<(u16, u16)> {
+        let scale = |v: i32, (min, max): (i32, i32)| {
+            let span = i64::from(max) - i64::from(min);
+            (span > 0).then(|| ((i64::from(v.clamp(min, max)) - i64::from(min)) * 65535 / span) as u16)
+        };
+        // evdev's +y is already down, the direction the wire and the host's virtual pad expect.
+        Some((scale(x, self.x_range)?, scale(y, self.y_range)?))
+    }
+}
+
+/// `EVIOCGABS(code)`'s `(minimum, maximum)` out of `struct input_absinfo`
+/// (`value, minimum, maximum, fuzz, flat, resolution`). Falls back to `(0, 0)` when the ioctl
+/// fails, which [`Touchpad::normalize`] reads as "no usable range".
+fn abs_range(fd: RawFd, code: u16) -> (i32, i32) {
+    let mut info = [0i32; 6];
+    // SAFETY: as `event_bits` — length-encoding request, buffer of exactly that length.
+    let rc = unsafe {
+        libc::ioctl(
+            fd,
+            eviocg(0x40 + u32::from(code), std::mem::size_of_val(&info) as u32),
+            info.as_mut_ptr(),
+        )
+    };
+    if rc < 0 {
+        return (0, 0);
+    }
+    (info[1], info[2])
 }
 
 /// The vendor id out of `EVIOCGID`'s `struct input_id` (`bustype, vendor, product, version`) —
@@ -503,7 +600,7 @@ fn device_name(fd: RawFd) -> Option<String> {
     Some(String::from_utf8_lossy(&buf[..len]).into_owned())
 }
 
-fn reader_loop(sink: &impl Fn(&InputEvent), shared: &Shared) {
+fn reader_loop(sink: &impl Fn(HidReport), shared: &Shared) {
     // Scan at the default niceness: `open`/`ioctl` cost here is the driver's, not scheduling
     // delay, so boosting priority wouldn't speed it up — it would just pull CPU from the video
     // pump during exactly the busiest window (stream connect) for no benefit.
@@ -598,7 +695,7 @@ fn pollfds(devices: &[Device]) -> Vec<libc::pollfd> {
 /// Drains one device's pending events, emitting the summed motion once at the end — a burst is
 /// reports the kernel already queued, so summing costs no latency and beats a datagram per event
 /// at 1kHz (the host's own injector coalesces the same way).
-fn read_device(dev: &mut Device, sink: &impl Fn(&InputEvent), keys: &KeyActivity) {
+fn read_device(dev: &mut Device, sink: &impl Fn(HidReport), keys: &KeyActivity) {
     let size = std::mem::size_of::<InputEventRaw>();
     let mut buf = [0u8; 1024];
     loop {
@@ -608,10 +705,10 @@ fn read_device(dev: &mut Device, sink: &impl Fn(&InputEvent), keys: &KeyActivity
             return; // EAGAIN on an empty non-blocking node, or the node went away
         }
         let n = n as usize;
-        // A claimed touchpad reports multitouch continuously for as long as a thumb rests on it,
-        // and every one of those events decodes to nothing — drain it without looking. Draining
-        // is still required: an unread node keeps polling ready and spins this thread.
-        if dev.silent {
+        // A claimed touchpad shares none of the mouse/keyboard decode below — different axes,
+        // different wire plane — so it takes the whole burst on its own path.
+        if let Some(pad) = dev.touchpad.as_mut() {
+            read_touch(pad, &buf[..n], size, sink);
             if n < buf.len() {
                 return;
             }
@@ -636,7 +733,7 @@ fn read_device(dev: &mut Device, sink: &impl Fn(&InputEvent), keys: &KeyActivity
                     REL_WHEEL | REL_HWHEEL => {
                         flush_motion(dev, sink);
                         if let Some(e) = dev.scroll.scroll_event(ev.value, ev.code == REL_HWHEEL) {
-                            sink(&e);
+                            sink(HidReport::Input(&e));
                         }
                     }
                     _ => {}
@@ -649,12 +746,12 @@ fn read_device(dev: &mut Device, sink: &impl Fn(&InputEvent), keys: &KeyActivity
                     if let Some(button) = (dev.mouse && ev.value != 2).then(|| button_code(ev.code)).flatten() {
                         // Motion first: the click must land where the pointer already is.
                         flush_motion(dev, sink);
-                        sink(&mouse::raw_button_event(button, ev.value == 1));
+                        sink(HidReport::Input(&mouse::raw_button_event(button, ev.value == 1)));
                     } else if let Some(vk) = dev.keyboard.then(|| keyboard::vk_from_evdev(ev.code)).flatten() {
                         keys.touch();
                         // Autorepeat rides as a repeated KeyDown — the host has no repeat timer of
                         // its own, so dropping these kills held-key repeat.
-                        sink(&keyboard::raw_key_event(vk, ev.value != 0));
+                        sink(HidReport::Input(&keyboard::raw_key_event(vk, ev.value != 0)));
                     }
                 }
                 _ => {}
@@ -667,13 +764,67 @@ fn read_device(dev: &mut Device, sink: &impl Fn(&InputEvent), keys: &KeyActivity
     flush_motion(dev, sink);
 }
 
+/// Decodes one read burst off a claimed pad touchpad into [`RichInput::Touchpad`] contacts.
+///
+/// Contacts are sent at `SYN_REPORT`, not per axis event: a moving finger reports x and y as two
+/// events, and sending between them would put half the samples on a stale axis. Only contacts a
+/// report actually touched are sent, so a resting finger costs one burst of decode and no
+/// datagrams at all.
+fn read_touch(pad: &mut Touchpad, buf: &[u8], size: usize, sink: &impl Fn(HidReport)) {
+    for chunk in buf.chunks_exact(size) {
+        // SAFETY: as `read_device` — exact-size chunk of plain `repr(C)` integers, read unaligned.
+        let ev = unsafe { chunk.as_ptr().cast::<InputEventRaw>().read_unaligned() };
+        match (ev.kind, ev.code) {
+            // A slot the wire can't carry is parked on the last finger, where its coordinates are
+            // simply overwritten by a contact that does fit — the pad only ever reports two.
+            (EV_ABS, ABS_MT_SLOT) => pad.slot = (ev.value.max(0) as usize).min(pad.fingers.len() - 1),
+            (EV_ABS, ABS_MT_TRACKING_ID) => {
+                let finger = &mut pad.fingers[pad.slot];
+                finger.active = ev.value >= 0;
+                finger.dirty = true;
+            }
+            (EV_ABS, ABS_MT_POSITION_X | ABS_MT_POSITION_Y) => {
+                let finger = &mut pad.fingers[pad.slot];
+                if ev.code == ABS_MT_POSITION_X {
+                    finger.x = ev.value;
+                } else {
+                    finger.y = ev.value;
+                }
+                finger.dirty = true;
+            }
+            (EV_SYN, SYN_REPORT) => {
+                for i in 0..pad.fingers.len() {
+                    let finger = pad.fingers[i];
+                    if !finger.dirty {
+                        continue;
+                    }
+                    pad.fingers[i].dirty = false;
+                    // A lift's coordinates are whatever the contact last had, which is what the
+                    // host wants — the release still has to land where the finger was.
+                    let Some((x, y)) = pad.normalize(finger.x, finger.y) else {
+                        continue;
+                    };
+                    sink(HidReport::Touch(RichInput::Touchpad {
+                        pad: 0,
+                        finger: i as u8,
+                        active: finger.active,
+                        x,
+                        y,
+                    }));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Sends the accumulated deltas as one `MouseMove`, undamped — damping is for the remote's
 /// coarse deltas and would make a real mouse sluggish.
-fn flush_motion(dev: &mut Device, sink: &impl Fn(&InputEvent)) {
+fn flush_motion(dev: &mut Device, sink: &impl Fn(HidReport)) {
     if dev.dx == 0 && dev.dy == 0 {
         return;
     }
-    sink(&mouse::move_relative_event(dev.dx, dev.dy));
+    sink(HidReport::Input(&mouse::move_relative_event(dev.dx, dev.dy)));
     dev.dx = 0;
     dev.dy = 0;
 }

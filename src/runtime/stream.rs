@@ -241,8 +241,13 @@ pub(super) fn run_inner() -> Result<()> {
         // the compositor sees Ctrl/Alt/Shift and warps its pointer mid-click; mouse nodes follow
         // Capture: on = exclusive relative grab, off = compositor keeps the pointer to aim with.
         let input = connected.input();
-        let hid =
-            crate::platform::webos::evdev::HidInput::start(true, settings.cursor_capture, move |ev| input.send(ev));
+        let hid = crate::platform::webos::evdev::HidInput::start(true, settings.cursor_capture, move |report| {
+            use crate::platform::webos::evdev::HidReport;
+            match report {
+                HidReport::Input(ev) => input.send(ev),
+                HidReport::Touch(touch) => input.send_touch(touch),
+            }
+        });
         // Flips once a HID mouse is found — `HidInput::start` no longer scans before returning
         // (that blocked every stream connect on the node-open cost), so presence is only known
         // once the reader thread's own scan catches up; checked each tick below.
