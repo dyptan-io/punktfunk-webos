@@ -1,8 +1,8 @@
 //! Experimental: unstable features, off by default. Logic lives in `app::state::experimental`.
 //!
 //! `rooted` reaches every entry point rather than being read here, so this module stays
-//! platform-neutral — the Game mode row only exists on a rooted TV, which changes the row
-//! count and so the card's height.
+//! platform-neutral.
+use crate::app::menu::{self, ExpRowLock, EXP_ROW_COUNT};
 use crate::services::store::Settings;
 use crate::ui;
 use crate::ui::render::Rect;
@@ -15,9 +15,9 @@ use anyhow::Result;
 pub const TITLE: &str = "Experimental";
 pub const SUBTITLE: &str = "Unstable, off by default.";
 
-/// The software-audio override, and Game mode on rooted sets. All off by default.
-/// Order must match `menu::EXP_ROW_*`.
-pub fn rows(settings: &Settings, rooted: bool) -> Vec<FocusRow> {
+/// The software-audio override, and Game mode. All off by default. `rooted` is the root-probe
+/// verdict, `None` while it is still running.
+pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
     // Opt-in, not the default: the audio-enabled load is rejected on at least some webOS 5+ sets
     // and takes the video plane down with it (black picture, sound fine — see
     // `Settings::ndl_audio_offload`). Software Opus is the path that always exists, so it stays
@@ -33,36 +33,39 @@ pub fn rows(settings: &Settings, rooted: bool) -> Vec<FocusRow> {
         "Offload Opus decode to NDL"
     }))];
     // Driving the TV's Game picture/sound modes needs the Homebrew Channel's root helper — the
-    // public bus is denied `settingsservice` outright (see `platform::webos::game_mode`). So the
-    // row only exists on a rooted set, where it's known to work.
-    if rooted {
-        rows.push(
-            FocusRow::toggle(crate::app::view::icons::ICON_GAMEPAD, "Game mode", settings.game_mode)
-                .with_subtext(ui::widgets::RowSubtext::hint("Your TV is rooted, you can use ALLM")),
-        );
-    }
+    // public bus is denied `settingsservice` outright (see `platform::webos::game_mode`). The row
+    // is always listed, but stays locked until the probe finds that helper actually reachable.
+    let game_mode = FocusRow::toggle(crate::app::view::icons::ICON_GAMEPAD, "Game mode", settings.game_mode)
+        .with_subtext(ui::widgets::RowSubtext::hint("Your TV is rooted, you can use ALLM"));
+    rows.push(match menu::exp_row_lock(menu::EXP_ROW_GAME_MODE, rooted) {
+        // The lock's caption replaces the row's own: a row the user can't change has nothing
+        // more useful to say than why.
+        Some(lock) => game_mode.locked(true).with_subtext(lock_caption(lock)),
+        None => game_mode,
+    });
     rows
 }
 
-/// Row count without building the `FocusRow` vec — for card sizing and hit-testing. The
-/// Game mode row is only offered on a rooted TV, so the screen is one row shorter otherwise.
-pub fn row_count(rooted: bool) -> usize {
-    1 + usize::from(rooted)
+fn lock_caption(lock: ExpRowLock) -> ui::widgets::RowSubtext {
+    match lock {
+        ExpRowLock::RootUnknown => ui::widgets::RowSubtext::hint("Checking whether your TV is rooted..."),
+        ExpRowLock::NotRooted => ui::widgets::RowSubtext::caution("Your TV is not rooted, Game mode is unavailable"),
+    }
 }
 
-pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, rooted: bool) -> Rect {
-    ui::widgets::list_modal_card_rect(screen_w, screen_h, fonts, SUBTITLE, row_count(rooted))
+pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
+    ui::widgets::list_modal_card_rect(screen_w, screen_h, fonts, SUBTITLE, EXP_ROW_COUNT)
 }
 
 /// The experimental-features list as a [`ModalScreen`].
 pub(crate) struct Modal<'a> {
     pub settings: &'a Settings,
-    pub rooted: bool,
+    pub rooted: Option<bool>,
 }
 
 impl ModalScreen for Modal<'_> {
     fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
-        card_rect(screen_w, screen_h, fonts, self.rooted)
+        card_rect(screen_w, screen_h, fonts)
     }
 
     fn content_rect(&self, card: Rect, fonts: &Fonts) -> Option<Rect> {
@@ -70,7 +73,7 @@ impl ModalScreen for Modal<'_> {
             card,
             fonts,
             SUBTITLE,
-            rows(self.settings, self.rooted).len(),
+            EXP_ROW_COUNT,
         ))
     }
 

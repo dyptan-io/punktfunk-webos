@@ -417,7 +417,7 @@ impl App {
             }),
             Screen::Experimental => f(&view::experimental::Modal {
                 settings: &self.settings,
-                rooted: Self::rooted(),
+                rooted: self.rooted,
             }),
             Screen::CursorSettings => f(&view::cursorsettings::Modal {
                 settings: self.settings_target(),

@@ -573,6 +573,7 @@ impl App {
             Screen::Experimental => Some(ModalShellKey::Experimental {
                 ndl_audio_offload: self.settings.ndl_audio_offload,
                 game_mode: self.settings.game_mode,
+                rooted: self.rooted,
                 hover_close: self.hover_close,
             }),
             Screen::CursorSettings => Some(ModalShellKey::CursorSettings {
@@ -656,6 +657,7 @@ impl App {
                 self.experimental_focused,
                 self.settings.ndl_audio_offload,
                 self.settings.game_mode,
+                self.rooted,
             )),
             Screen::CursorSettings => Some(ModalFocusKey::CursorSettingsRow(
                 self.cursor_settings_focused,
@@ -761,7 +763,7 @@ impl App {
                                 view::wakesettings::rows(self.wake_settings_host().is_some_and(|h| h.wol_auto))
                             }
                             Screen::Diagnostics => view::diagnostics::rows(&self.settings),
-                            Screen::Experimental => view::experimental::rows(&self.settings, Self::rooted()),
+                            Screen::Experimental => view::experimental::rows(&self.settings, self.rooted),
                             _ => view::cursorsettings::rows(self.settings_target(), &self.editing_override()),
                         };
                         let focused = self

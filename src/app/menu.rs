@@ -118,8 +118,10 @@ const GAME_ROWS: [usize; 9] = [
 
 /// Experimental modal row indices (see `app::view::experimental::rows`).
 pub const EXP_ROW_HW_AUDIO: usize = 0;
-/// Only present on rooted TVs, so it's the last row when shown.
+/// Locked whenever [`exp_row_lock`] returns a reason.
 pub const EXP_ROW_GAME_MODE: usize = 1;
+/// Fixed: the Game mode row is always listed, locked rather than hidden when it can't be used.
+pub const EXP_ROW_COUNT: usize = 2;
 
 /// Cursor modal row indices (see `app::view::cursorsettings::rows`).
 pub const CURSOR_ROW_CAPTURE: usize = 0;
@@ -185,6 +187,24 @@ pub(crate) enum RowLock {
     StereoOnly,
     /// Nothing is plugged into the TV, so there is no controller to describe to the host.
     NoGamepad,
+}
+
+/// Why an Experimental row can't be changed. Same contract as [`RowLock`]: the predicate that
+/// greys the row is the one that rejects the keypress, so the two can't disagree.
+pub(crate) enum ExpRowLock {
+    /// The root probe hasn't answered yet.
+    RootUnknown,
+    /// Not a rooted TV, so Game mode has no way to reach `settingsservice`.
+    NotRooted,
+}
+
+/// `rooted` is the root-probe verdict, `None` while it is still running.
+pub(crate) fn exp_row_lock(row: usize, rooted: Option<bool>) -> Option<ExpRowLock> {
+    match (row, rooted) {
+        (EXP_ROW_GAME_MODE, None) => Some(ExpRowLock::RootUnknown),
+        (EXP_ROW_GAME_MODE, Some(false)) => Some(ExpRowLock::NotRooted),
+        _ => None,
+    }
 }
 
 /// `detected` is the attached pad per `gamepad::detect_type` — `None` with nothing attached

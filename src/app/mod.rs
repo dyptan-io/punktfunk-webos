@@ -207,6 +207,9 @@ pub struct App {
     pub(crate) discovery: Option<crate::services::discovery::Discovery>,
     pub entries: Vec<HostEntry>,
     pub home_focus: HomeFocus,
+    /// Whether this TV is webosbrew-rooted — `None` until [`App::start_root_probe`] answers.
+    pub(crate) rooted: Option<bool>,
+    pub(crate) rooted_rx: Option<std::sync::mpsc::Receiver<bool>>,
     /// Where the grid is re-entered from the sidebar. Only ever consulted through the
     /// focus map, which drops it when it no longer names a real card, so reorders and
     /// library reloads need no invalidation of their own.
@@ -520,6 +523,8 @@ impl App {
             discovery,
             entries,
             home_focus: HomeFocus::Sidebar(0),
+            rooted: None,
+            rooted_rx: None,
             grid_focus_last: 0,
             selected_host: None,
             games: Vec::new(),
@@ -627,12 +632,6 @@ impl App {
         }
         std::thread::spawn(crate::assets::spinner_frames);
         app
-    }
-
-    /// Whether this TV is rooted — gates the Experimental screen's Game mode row, and so
-    /// that screen's row count and card height.
-    pub(crate) fn rooted() -> bool {
-        crate::platform::webos::game_mode::is_rooted()
     }
 
     /// Name of the host whichever host-scoped modal (Forget, Wake settings) is acting on.

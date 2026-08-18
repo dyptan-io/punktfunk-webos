@@ -183,6 +183,7 @@ pub(super) fn run_ui_flow(
         dirty |= app.drain_art();
         dirty |= app.drain_games();
         dirty |= app.drain_pairing();
+        dirty |= app.drain_rooted();
         dirty |= app.drain_speed_test();
         dirty |= app.drain_send_logs();
         app.tick_reachability();
