@@ -1078,7 +1078,7 @@ pub fn send_input(client: &NativeClient, ev: &InputEvent) -> Result<()> {
     client.send_input(ev).context("send_input")
 }
 
-/// Sends one rich-input report (pad touchpad contacts) to the host.
+/// Sends one rich-input report (pad touchpad contacts, motion samples) to the host.
 pub fn send_rich_input(client: &NativeClient, input: quic::RichInput) -> Result<()> {
     client.send_rich_input(input).context("send_rich_input")
 }

@@ -61,6 +61,11 @@ const SYN_REPORT: u16 = 0x00;
 
 const ABS_X: u16 = 0x00;
 const ABS_Y: u16 = 0x01;
+/// The motion node's six axes, contiguous and in the `DualSense` report's own order: `ABS_X`..`_Z`
+/// accelerometer, `ABS_RX`..`_RZ` gyro (pitch/yaw/roll).
+const ABS_Z: u16 = 0x02;
+const ABS_RX: u16 = 0x03;
+const ABS_RZ: u16 = 0x05;
 /// Multitouch protocol B: which contact the following `ABS_MT_*` values belong to.
 const ABS_MT_SLOT: u16 = 0x2f;
 const ABS_MT_POSITION_X: u16 = 0x35;
@@ -80,6 +85,10 @@ const BTN_EXTRA: u16 = 0x114;
 /// Finger-on-surface, which only touch-class nodes carry — the pad's own node reports
 /// `BTN_SOUTH`/`BTN_EAST` and never this. See [`is_pad_touchpad`].
 const BTN_TOUCH: u16 = 0x14a;
+
+/// The pad's own south face button — what parts the gamepad node from the motion node, which
+/// advertises the same six absolute axes but no buttons at all. See [`is_pad_motion`].
+const BTN_SOUTH: u16 = 0x130;
 
 /// Sony's USB/BT vendor id. `hid-playstation` binds only Sony pads, and it's the split-node
 /// layout that creates the touchpad node this identifies.
@@ -148,11 +157,11 @@ const REPEAT_PERIOD_MS: u32 = 33;
 const IN_USE_WINDOW: Duration = Duration::from_millis(250);
 
 /// One report off a claimed node. Two variants because the two go to different wire planes: a
-/// mouse/keyboard event is an `InputEvent` datagram, a pad touchpad contact is a rich-input one
-/// applied to the host's virtual `DualSense`.
+/// mouse/keyboard event is an `InputEvent` datagram, a pad's touch contacts and motion samples
+/// are rich-input ones applied to the host's virtual `DualSense`.
 pub enum HidReport<'a> {
     Input(&'a InputEvent),
-    Touch(RichInput),
+    Rich(RichInput),
 }
 
 /// A HID reader: one thread polling every mouse- or keyboard-shaped evdev node, handing each
@@ -235,10 +244,11 @@ impl HidInput {
             .spawn(move || {
                 let gate = Arc::clone(&thread_shared);
                 let gated_sink = move |report: HidReport| {
-                    // Touch is exempt from the gate: a contact is a level, not an edge, so a
-                    // dropped lift is a finger the host holds down forever (see
-                    // `release_touches`). Keys and clicks self-clear on the next report.
-                    if gate.grab.load(Ordering::Relaxed) || matches!(report, HidReport::Touch(_)) {
+                    // Rich reports are exempt from the gate: both are levels, not edges, so a
+                    // dropped contact is a finger the host holds down forever (see
+                    // `release_touches`) and a dropped motion sample is an attitude it keeps.
+                    // Keys and clicks self-clear on the next report.
+                    if gate.grab.load(Ordering::Relaxed) || matches!(report, HidReport::Rich(_)) {
                         sink(report);
                     }
                 };
@@ -310,6 +320,23 @@ struct Device {
     /// A pad's touchpad ([`is_pad_touchpad`]), claimed so the compositor can't make a cursor of
     /// it and decoded into [`RichInput::Touchpad`] contacts instead. `None` on every other node.
     touchpad: Option<Touchpad>,
+    /// A pad's motion sensors ([`is_pad_motion`]), on their own node — never set together with
+    /// [`Self::touchpad`]. `None` on every other node.
+    sensors: Option<Sensors>,
+}
+
+/// Motion decode state. Sensor readings are levels, not deltas, so a read burst collapses to its
+/// newest sample and an unchanged sample is worth no datagram at all — a resting pad reports at
+/// its full rate forever.
+#[derive(Default)]
+struct Sensors {
+    /// Pitch/yaw/roll then accelerometer, in the pad's own units (`hid-playstation` keeps the
+    /// report's scale), as the wire orders them.
+    axes: [i32; 6],
+    /// A `SYN_REPORT` completed a sample since the last send.
+    dirty: bool,
+    /// Last sample actually sent, for the unchanged-sample skip.
+    sent: Option<[i16; 6]>,
 }
 
 /// Multitouch decode state for a claimed pad touchpad, plus the axis ranges its coordinates are
@@ -423,6 +450,7 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
         mouse: false,
         keyboard: false,
         touchpad: None,
+        sensors: None,
     };
     let rel = event_bits(fd, EV_REL);
     let abs = event_bits(fd, EV_ABS);
@@ -445,8 +473,10 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
     // produces the stuck left button, which desktop mode wants gone just as much.
     if is_pad_touchpad(absolute_pointer, bit(&key, BTN_TOUCH), || device_vendor(fd)) {
         dev.touchpad = Some(Touchpad::new(fd));
+    } else if is_pad_motion(&abs, bit(&key, BTN_TOUCH) || bit(&key, BTN_SOUTH), || device_vendor(fd)) {
+        dev.sensors = Some(Sensors::default());
     }
-    if !dev.mouse && !dev.keyboard && dev.touchpad.is_none() {
+    if !dev.mouse && !dev.keyboard && dev.touchpad.is_none() && dev.sensors.is_none() {
         // Not ours, or a pointer-only node in desktop mode — left with the compositor so the
         // TV cursor is still the one you aim.
         return Probe::Skip;
@@ -454,17 +484,18 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
     if dev.keyboard {
         set_repeat(fd);
     }
-    tracing::info!(
-        "HID {}: {} ({})",
-        match (dev.mouse, dev.keyboard, dev.touchpad.is_some()) {
-            (_, _, true) => "pad touchpad",
-            (true, true, _) => "mouse+keyboard",
-            (true, false, _) => "mouse",
-            _ => "keyboard",
-        },
-        name,
-        path.display()
-    );
+    let kind = if dev.touchpad.is_some() {
+        "pad touchpad"
+    } else if dev.sensors.is_some() {
+        "pad motion"
+    } else if dev.mouse && dev.keyboard {
+        "mouse+keyboard"
+    } else if dev.mouse {
+        "mouse"
+    } else {
+        "keyboard"
+    };
+    tracing::info!("HID {kind}: {} ({})", name, path.display());
     Probe::Hid(dev)
 }
 
@@ -493,6 +524,18 @@ fn set_repeat(fd: RawFd) {
 /// Sony vendor id. `vendor` is lazy because it costs an ioctl the bit tests don't.
 fn is_pad_touchpad(absolute_pointer: bool, has_btn_touch: bool, vendor: impl FnOnce() -> u16) -> bool {
     absolute_pointer && has_btn_touch && vendor() == VENDOR_SONY
+}
+
+/// A `PlayStation` pad's motion sensors, published as a third node beside the pad and its
+/// touchpad. SDL2 never reads it, so gyro aiming reaches the host only if this reader forwards it
+/// as [`RichInput::Motion`].
+///
+/// Matched on capability bits and vendor, like [`is_pad_touchpad`]: all six sensor axes and no
+/// buttons. Both other nodes carry those same axes — the pad node's are its sticks and triggers,
+/// the touchpad's are the contact — so the buttons (`BTN_SOUTH`, `BTN_TOUCH`) are what part them.
+/// Matching the pad node here would grab the gamepad away from SDL entirely.
+fn is_pad_motion(abs: &[u8; 128], has_buttons: bool, vendor: impl FnOnce() -> u16) -> bool {
+    (ABS_X..=ABS_RZ).all(|c| bit(abs, c)) && !has_buttons && vendor() == VENDOR_SONY
 }
 
 impl Touchpad {
@@ -579,7 +622,9 @@ fn apply_grab(devices: &mut [Device], want: bool) {
         // A pad touchpad is claimed whether the reader is active or not: ungrabbing it hands the
         // compositor back a node it turns into a cursor with a stuck left button, which is the
         // whole reason it's claimed (see `is_pad_touchpad`).
-        let want = want || dev.touchpad.is_some();
+        // Same for the motion node: it too advertises absolute axes the compositor would
+        // otherwise turn into a cursor, and its samples are only useful forwarded.
+        let want = want || dev.touchpad.is_some() || dev.sensors.is_some();
         if dev.grabbed == want {
             continue;
         }
@@ -727,6 +772,8 @@ fn read_device(dev: &mut Device, sink: &impl Fn(HidReport), keys: &KeyActivity) 
         // different wire plane — so it takes the whole burst on its own path.
         if let Some(pad) = dev.touchpad.as_mut() {
             read_touch(pad, &buf[..n], size, sink);
+        } else if let Some(sensors) = dev.sensors.as_mut() {
+            read_sensors(sensors, &buf[..n], size);
         } else {
             decode_hid(dev, &buf[..n], size, sink, keys);
         }
@@ -735,6 +782,9 @@ fn read_device(dev: &mut Device, sink: &impl Fn(HidReport), keys: &KeyActivity) 
         }
     }
     flush_motion(dev, sink);
+    if let Some(sensors) = dev.sensors.as_mut() {
+        flush_sensors(sensors, sink);
+    }
 }
 
 /// Decodes one read burst off a mouse/keyboard node — see [`read_device`] for the drain.
@@ -826,7 +876,7 @@ fn read_touch(pad: &mut Touchpad, buf: &[u8], size: usize, sink: &impl Fn(HidRep
                         continue;
                     };
                     finger.sent = finger.active;
-                    sink(HidReport::Touch(contact));
+                    sink(HidReport::Rich(contact));
                 }
             }
             _ => {}
@@ -849,7 +899,7 @@ fn release_touches(dev: &mut Device, sink: &impl Fn(HidReport)) {
         finger.active = false;
         finger.dirty = false;
         if let Some(contact) = contact(i, finger, x_range, y_range) {
-            sink(HidReport::Touch(contact));
+            sink(HidReport::Rich(contact));
         }
     }
 }
@@ -868,6 +918,47 @@ fn contact(finger_idx: usize, finger: &Finger, x_range: (i32, i32), y_range: (i3
         x,
         y,
     })
+}
+
+/// Decodes one read burst off a claimed motion node into the newest complete sample.
+fn read_sensors(sensors: &mut Sensors, buf: &[u8], size: usize) {
+    for chunk in buf.chunks_exact(size) {
+        // SAFETY: as `read_device` — exact-size chunk of plain `repr(C)` integers, read unaligned.
+        let ev = unsafe { chunk.as_ptr().cast::<InputEventRaw>().read_unaligned() };
+        match (ev.kind, ev.code) {
+            // Gyro first, then accelerometer: the wire's order, so no shuffling at send.
+            (EV_ABS, ABS_RX..=ABS_RZ) => sensors.axes[(ev.code - ABS_RX) as usize] = ev.value,
+            (EV_ABS, ABS_X..=ABS_Z) => sensors.axes[(ev.code - ABS_X) as usize + 3] = ev.value,
+            // Only a completed report is a sample: sending mid-report would mix axes from two.
+            (EV_SYN, SYN_REPORT) => sensors.dirty = true,
+            _ => {}
+        }
+    }
+}
+
+/// Sends the newest sample once per read burst, and only when it moved — a pad lying still
+/// reports forever, and re-sending its resting attitude at 500 Hz would cost a datagram per
+/// sample to tell the host nothing.
+///
+/// Clamped to `i16`: the wire carries the `DualSense` report's own signed-16 units, and
+/// `hid-playstation`'s calibration can push a sample a little past that at the extremes.
+fn flush_sensors(sensors: &mut Sensors, sink: &impl Fn(HidReport)) {
+    if !std::mem::take(&mut sensors.dirty) {
+        return;
+    }
+    let axes = sensors
+        .axes
+        .map(|v| v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16);
+    if sensors.sent == Some(axes) {
+        return;
+    }
+    sensors.sent = Some(axes);
+    let [gx, gy, gz, ax, ay, az] = axes;
+    sink(HidReport::Rich(RichInput::Motion {
+        pad: 0,
+        gyro: [gx, gy, gz],
+        accel: [ax, ay, az],
+    }));
 }
 
 /// Sends the accumulated deltas as one `MouseMove`, undamped — damping is for the remote's
@@ -896,7 +987,7 @@ fn button_code(code: u16) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_pad_touchpad, is_tv_builtin};
+    use super::{is_pad_motion, is_pad_touchpad, is_tv_builtin, ABS_RZ, ABS_X};
 
     #[test]
     fn tv_builtins_are_skipped_by_name() {
@@ -920,5 +1011,19 @@ mod tests {
         assert!(!is_pad_touchpad(false, false, sony));
         // A touchscreen from anyone else stays the compositor's.
         assert!(!is_pad_touchpad(true, true, || 0x046d));
+    }
+
+    #[test]
+    fn pad_motion_matches_only_the_sensor_node() {
+        let sony = || 0x054c;
+        let mut sensors = [0u8; 128];
+        for c in ABS_X..=ABS_RZ {
+            sensors[(c / 8) as usize] |= 1 << (c % 8);
+        }
+        assert!(is_pad_motion(&sensors, false, sony));
+        // The touchpad node (BTN_TOUCH) and the pad node (BTN_SOUTH, sticks and triggers) cover
+        // the same six axes — the buttons are the only thing that parts them from the sensors.
+        assert!(!is_pad_motion(&sensors, true, sony));
+        assert!(!is_pad_motion(&sensors, false, || 0x046d));
     }
 }

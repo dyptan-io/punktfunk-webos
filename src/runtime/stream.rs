@@ -245,7 +245,7 @@ pub(super) fn run_inner() -> Result<()> {
             use crate::platform::webos::evdev::HidReport;
             match report {
                 HidReport::Input(ev) => input.send(ev),
-                HidReport::Touch(touch) => input.send_touch(touch),
+                HidReport::Rich(rich) => input.send_rich(rich),
             }
         });
         // Flips once a HID mouse is found — `HidInput::start` no longer scans before returning
