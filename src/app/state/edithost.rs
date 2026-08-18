@@ -62,7 +62,7 @@ impl App {
                 mgmt_port: old.mgmt_port,
                 mac: old.mac.clone(),
                 wol_auto: old.wol_auto,
-                pinned: old.pinned.clone(),
+                games: old.games.clone(),
             },
         );
         // The address is the cache key, so the old one's art is now orphaned.

@@ -26,7 +26,7 @@ impl App {
         match self.screen {
             Screen::Home => return self.handle_home_event(ev, screen_w, screen_h),
             Screen::Pairing => self.handle_pairing_event(ev),
-            Screen::Settings => self.handle_settings_event(ev, screen_h),
+            Screen::Settings(_) => self.handle_settings_event(ev, screen_h),
             Screen::AddHost => self.handle_add_host_event(ev),
             Screen::Wake => self.handle_wake_event(ev),
             Screen::ForgetHost => self.handle_forget_host_event(ev),
@@ -90,7 +90,7 @@ impl App {
             Screen::Pairing => matches!(self.pairing_focus, PairingFocus::RequestAccess),
             Screen::Wake | Screen::ForgetHost | Screen::SpeedTest | Screen::SendLogs => true,
             // Rows, not buttons.
-            Screen::Settings
+            Screen::Settings(_)
             | Screen::AddHost
             | Screen::EditHost
             | Screen::About

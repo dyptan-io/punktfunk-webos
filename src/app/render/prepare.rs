@@ -268,11 +268,63 @@ impl App {
                     let (title, art) = self.grid_card_content(idx, columns);
                     // Keyed by card identity like the card tiles themselves (`CardIds`),
                     // not by title — two games can share one.
-                    let version = cache::version(&(pin_id, card_w, card_h, art.is_some()));
+                    let overridden = self.game_has_overrides(pin_id);
+                    let version = cache::version(&(pin_id, card_w, card_h, art.is_some(), overridden));
                     if tiles.ensure(tile::CARD_TITLE, version, || {
-                        ui::tiles::render_card_title_tile(text_cache, fonts, card_w, card_h, title, art)
+                        ui::tiles::render_card_title_tile(text_cache, fonts, card_w, card_h, title, art, overridden)
                     })? {
                         updated.push(tile::CARD_TITLE);
+                    }
+
+                    // The submenu panel a hold raises: the same strip grown to carry the
+                    // rows (see `render_card_menu_tile`), on the same wipe.
+                    //
+                    // Built when the card takes focus, not when the menu opens — it costs a
+                    // full-card art rescale plus a radius-6 blur, and paying that on the
+                    // frame the rise starts is what made the panel appear to wait for the
+                    // button to come back up. Held off until the grid has settled so a fast
+                    // scroll doesn't pay it per card, unless a menu is already up (which
+                    // can only happen on a settled grid anyway).
+                    let menu_open = self.card_menu.as_ref().is_some_and(|m| m.pin_id == pin_id);
+                    if menu_open || (self.grid_reveal_ready && !pending) {
+                        let rows = self.card_menu_rows(pin_id);
+                        // No focused row in the key: the selection is a `DrawCmd::Fill` laid
+                        // over this tile, so moving between the menu's rows rebuilds nothing.
+                        let version = cache::version(&(pin_id, card_w, card_h, art.is_some(), &rows, overridden));
+                        if tiles.ensure(tile::CARD_MENU, version, || {
+                            ui::tiles::render_card_menu_tile(
+                                text_cache,
+                                fonts,
+                                ui::tiles::CardMenuTile {
+                                    card_w,
+                                    card_h,
+                                    title,
+                                    art,
+                                    rows: &rows,
+                                },
+                            )
+                        })? {
+                            updated.push(tile::CARD_MENU);
+                        }
+                        if tiles.ensure(tile::CARD_MENU_ROWS, version, || {
+                            ui::tiles::render_card_menu_rows_tile(
+                                text_cache,
+                                fonts,
+                                card_w,
+                                card_h,
+                                &rows,
+                                // The dot follows what owns it: the title while the strip is
+                                // collapsed, the Settings row once the panel is up.
+                                overridden.then_some(crate::app::state::cardmenu::ROW_SETTINGS),
+                            )
+                        })? {
+                            updated.push(tile::CARD_MENU_ROWS);
+                        }
+                        if tiles.ensure(tile::CARD_MENU_TITLE, version, || {
+                            ui::tiles::render_card_menu_title_tile(text_cache, fonts, card_w, card_h, title)
+                        })? {
+                            updated.push(tile::CARD_MENU_TITLE);
+                        }
                     }
                 }
             }
@@ -448,7 +500,8 @@ impl App {
         // (no split focus tile to protect) and just redraws on any
         // `content_dirty` tick, same as every modal did before this split.
         let modal_shell_key = match self.screen {
-            Screen::Settings => Some(ModalShellKey::Settings {
+            Screen::Settings(_) => Some(ModalShellKey::Settings {
+                game: self.game_settings.as_ref().map(|gs| gs.title.clone()),
                 hover_close: self.hover_close,
             }),
             Screen::Wake => self.wake.as_ref().map(|w| ModalShellKey::Wake {
@@ -502,8 +555,9 @@ impl App {
                 hover_close: self.hover_close,
             }),
             Screen::CursorSettings => Some(ModalShellKey::CursorSettings {
-                cursor_capture: self.settings.cursor_capture,
-                cursor_gestures: self.settings.cursor_gestures,
+                cursor_capture: self.settings_target().cursor_capture,
+                cursor_gestures: self.settings_target().cursor_gestures,
+                over: self.editing_override(),
                 hover_close: self.hover_close,
             }),
             Screen::SendLogs => Some(ModalShellKey::SendLogs {
@@ -540,9 +594,10 @@ impl App {
         // (Home, AddHost) or when Wake has nothing to focus (no MAC on record,
         // see `handle_wake_event`'s matching guard).
         let focus_key = match self.screen {
-            Screen::Settings => Some(ModalFocusKey::SettingsRow(
+            Screen::Settings(_) => Some(ModalFocusKey::SettingsRow(
                 self.settings_focused,
-                self.settings,
+                *self.settings_target(),
+                self.editing_override(),
                 self.detected_gamepad_type,
             )),
             Screen::Wake => self
@@ -583,8 +638,9 @@ impl App {
             )),
             Screen::CursorSettings => Some(ModalFocusKey::CursorSettingsRow(
                 self.cursor_settings_focused,
-                self.settings.cursor_capture,
-                self.settings.cursor_gestures,
+                self.settings_target().cursor_capture,
+                self.settings_target().cursor_gestures,
+                self.editing_override(),
             )),
             Screen::SendLogs => Some(ModalFocusKey::SendLogsButton(self.send_logs_focused)),
             // Neither has a single focused widget: the address form is one always-active
@@ -599,8 +655,8 @@ impl App {
             let stale = self.switch_anim.is_some() || !tiles.is_fresh(tile::MODAL_FOCUS, cache::version(&key));
             if stale {
                 let tile = match self.screen {
-                    Screen::Settings => {
-                        let (_, content) = view::settings::layout(screen_w, screen_h);
+                    Screen::Settings(_) => {
+                        let (_, content) = view::settings::layout(self.row_set(), screen_w, screen_h);
                         let rows = self.settings_rows();
                         let dropdown_open = self.dropdown.as_ref().is_some_and(|dd| dd.row == self.settings_focused);
                         let target_on = rows.get(self.settings_focused).is_some_and(|r| r.value == "On");
@@ -685,7 +741,7 @@ impl App {
                             }
                             Screen::Diagnostics => view::diagnostics::rows(&self.settings),
                             Screen::Experimental => view::experimental::rows(&self.settings, Self::rooted()),
-                            _ => view::cursorsettings::rows(&self.settings),
+                            _ => view::cursorsettings::rows(self.settings_target(), &self.editing_override()),
                         };
                         let focused = self
                             .list_modal_focused()
@@ -733,8 +789,8 @@ impl App {
                     (menu::log_level_dropdown_options(), content.width())
                 }
                 _ => {
-                    let (_, content) = view::settings::layout(screen_w, screen_h);
-                    let logical = menu::settings_logical_row(dd.row);
+                    let (_, content) = view::settings::layout(self.row_set(), screen_w, screen_h);
+                    let logical = menu::settings_logical_row(self.row_set(), dd.row);
                     (
                         menu::dropdown_options(logical, self.detected_gamepad_type),
                         content.width(),
@@ -823,11 +879,16 @@ impl App {
             self.sync_modal_scroll(self.screen, total, visible, content.height(), stride);
 
             match self.screen {
-                Screen::Settings => {
+                Screen::Settings(_) => {
                     let dropdown_row = self.dropdown.as_ref().map(|dd| dd.row);
                     let key = cache::version(&(
-                        Screen::Settings,
-                        ScrollContentKey::Settings(self.settings, dropdown_row, self.detected_gamepad_type),
+                        self.screen,
+                        ScrollContentKey::Settings(
+                            *self.settings_target(),
+                            self.editing_override(),
+                            dropdown_row,
+                            self.detected_gamepad_type,
+                        ),
                     ));
                     if !tiles.is_fresh(tile::SCROLL_CONTENT, key) {
                         let rows = self.settings_rows();
@@ -842,7 +903,7 @@ impl App {
                         // Settings' whole row list always fits one tile — no windowing.
                         self.content_window = ui::scroll::ContentWindow {
                             start: 0,
-                            len: menu::settings_row_count(),
+                            len: menu::settings_row_count(self.row_set()),
                         };
                         updated.push(tile::SCROLL_CONTENT);
                     }
@@ -893,9 +954,11 @@ impl App {
         let mut scratch = Painter::new(screen_w, screen_h);
         view::settings::render(
             &mut ui::Canvas::new(&mut scratch, text_cache, fonts, screen_w, screen_h),
+            menu::SettingsScope::Global,
+            None,
             self.hover_close,
         )?;
-        let (_, content) = view::settings::layout(screen_w, screen_h);
+        let (_, content) = view::settings::layout(menu::SettingsScope::Global, screen_w, screen_h);
         let rows = self.settings_rows();
         let _ = ui::widgets::render_focus_rows_tile(text_cache, fonts, &rows, content.width(), None)?;
         let _ = ui::widgets::render_focus_row_tile(text_cache, fonts, &rows, content.width(), 0, false, 0.0)?;

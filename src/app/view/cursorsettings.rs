@@ -1,6 +1,6 @@
 //! Cursor: how the pointer behaves in a stream. Logic lives in `app::state::cursorsettings`.
 use crate::app::menu;
-use crate::services::store::Settings;
+use crate::services::store::{Settings, SettingsOverride};
 use crate::ui;
 use crate::ui::render::Rect;
 use crate::ui::text::Fonts;
@@ -13,8 +13,11 @@ pub const TITLE: &str = "Cursor";
 pub const SUBTITLE: &str = "How the pointer behaves in a stream.";
 
 /// Order must match `menu::CURSOR_ROW_*`.
-pub fn rows(settings: &Settings) -> Vec<FocusRow> {
-    vec![
+///
+/// `over` is the per-game override this screen is editing (empty on the global one) — a row
+/// it sets wears the same dot the per-game row list gives its own rows.
+pub fn rows(settings: &Settings, over: &SettingsOverride) -> Vec<FocusRow> {
+    let mut rows = vec![
         FocusRow::toggle(crate::app::view::icons::ICON_MOUSE, "Capture", settings.cursor_capture).with_subtext(
             ui::widgets::RowSubtext::hint(if settings.cursor_capture {
                 "Capture (games)"
@@ -30,7 +33,11 @@ pub fn rows(settings: &Settings) -> Vec<FocusRow> {
         .with_subtext(ui::widgets::RowSubtext::hint(
             "Hold OK to right-click or red remote button",
         )),
-    ]
+    ];
+    for (cursor_row, row) in rows.iter_mut().enumerate() {
+        row.mark = menu::override_mark(over, menu::cursor_logical_row(cursor_row));
+    }
+    rows
 }
 
 pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
@@ -40,6 +47,7 @@ pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
 /// The cursor settings list as a [`ModalScreen`].
 pub(crate) struct Modal<'a> {
     pub settings: &'a Settings,
+    pub over: &'a SettingsOverride,
 }
 
 impl ModalScreen for Modal<'_> {
@@ -52,12 +60,12 @@ impl ModalScreen for Modal<'_> {
             card,
             fonts,
             SUBTITLE,
-            rows(self.settings).len(),
+            rows(self.settings, self.over).len(),
         ))
     }
 
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
         let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
-        c.list_modal_screen(card, TITLE, SUBTITLE, &rows(self.settings), hover_close)
+        c.list_modal_screen(card, TITLE, SUBTITLE, &rows(self.settings, self.over), hover_close)
     }
 }

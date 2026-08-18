@@ -1,4 +1,6 @@
 //! Plain domain data. No I/O — persistence lives in `crate::services`.
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Stream connection target.
@@ -29,14 +31,139 @@ pub struct KnownHost {
     pub mac: Vec<String>,
     /// Auto-wake on unreachable (per-host, off by default; lives in Wake settings).
     pub wol_auto: bool,
-    /// Pinned game IDs (up to `MAX_PINNED_GAMES`).
-    pub pinned: Vec<String>,
+    /// Per-game state for this host, keyed by `GameEntry::id` (or [`DESKTOP_PIN_ID`]) — pins
+    /// and settings overrides together, so one prune drops both when a game leaves the library.
+    /// A `BTreeMap` so the file's key order is stable and diffable.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub games: BTreeMap<String, GamePrefs>,
+}
+
+/// What one game carries on one host. Absent from `KnownHost::games` entirely when it holds
+/// nothing — an untouched game costs no bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GamePrefs {
+    /// Pin slot — the ordering key of the pinned block. `None` = not pinned. Values are
+    /// monotonic per host, not dense: unpinning leaves a hole rather than renumbering.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin: Option<u32>,
+    /// Settings this game overrides; every unset field falls through to the global [`Settings`].
+    #[serde(skip_serializing_if = "SettingsOverride::is_empty")]
+    pub over: SettingsOverride,
+}
+
+impl GamePrefs {
+    /// Nothing worth persisting — the prune drops these.
+    fn is_empty(&self) -> bool {
+        self.pin.is_none() && self.over.is_empty()
+    }
+}
+
+/// A sparse [`Settings`] diff: `Some` overrides the global value for one game, `None` inherits it.
+///
+/// Deliberately *not* every field. The experimental and diagnostics toggles are device-wide
+/// and stay global-only, as does `video_backend` — it is a process-global
+/// (`core::caps::set_backend`, which both `session::connect`'s clamp and the caps-derived row
+/// locks read), so a per-game value would need an apply/restore around every launch.
+///
+/// `Copy + Hash + Eq` because it rides the render cache keys next to `Settings`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SettingsOverride {
+    /// Width and height move together — they are one Resolution row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<(u32, u32)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_hz: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bitrate_kbps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hdr_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codec: Option<CodecPref>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_channels: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gamepad_type: Option<GamepadType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_capture: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_gestures: Option<bool>,
+}
+
+impl SettingsOverride {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// `base` with every set field applied. The result still needs
+    /// [`Settings::clamp_to_caps`] before it reaches the wire, exactly like a global value.
+    /// Clears every field that already equals `global` — a value the user has just set back
+    /// to what the global screen says is not an override, and must not linger in the
+    /// document. Run after every edit, so the record stays minimal (and disappears
+    /// entirely, via [`KnownHost::edit_overrides`], once nothing differs).
+    pub fn drop_matching(&mut self, global: &Settings) {
+        // Field by field against the global, not against the merge: a field is an override
+        // exactly when it is set *and* differs, and an unset one has nothing to drop.
+        macro_rules! drop_if_global {
+            ($($field:ident => $global:expr),* $(,)?) => {
+                $(if self.$field == Some($global) {
+                    self.$field = None;
+                })*
+            };
+        }
+        drop_if_global! {
+            mode => (global.width, global.height),
+            refresh_hz => global.refresh_hz,
+            bitrate_kbps => global.bitrate_kbps,
+            hdr_enabled => global.hdr_enabled,
+            codec => global.codec,
+            audio_channels => global.audio_channels,
+            gamepad_type => global.gamepad_type,
+            cursor_capture => global.cursor_capture,
+            cursor_gestures => global.cursor_gestures,
+        }
+    }
+
+    #[must_use]
+    pub fn merge_into(&self, mut base: Settings) -> Settings {
+        if let Some((w, h)) = self.mode {
+            base.width = w;
+            base.height = h;
+        }
+        if let Some(v) = self.refresh_hz {
+            base.refresh_hz = v;
+        }
+        if let Some(v) = self.bitrate_kbps {
+            base.bitrate_kbps = v;
+        }
+        if let Some(v) = self.hdr_enabled {
+            base.hdr_enabled = v;
+        }
+        if let Some(v) = self.codec {
+            base.codec = v;
+        }
+        if let Some(v) = self.audio_channels {
+            base.audio_channels = v;
+        }
+        if let Some(v) = self.gamepad_type {
+            base.gamepad_type = v;
+        }
+        if let Some(v) = self.cursor_capture {
+            base.cursor_capture = v;
+        }
+        if let Some(v) = self.cursor_gestures {
+            base.cursor_gestures = v;
+        }
+        base
+    }
 }
 
 /// Max games pinned to one host's always-visible grid row at once.
 pub const MAX_PINNED_GAMES: usize = 5;
 
-/// Pin ID for "Desktop" card (stored in pinned like games; counts toward `MAX_PINNED_GAMES`).
+/// Pin ID for the "Desktop" card — a `games` key like any other, and it counts toward
+/// `MAX_PINNED_GAMES`. Never pruned, since no library listing contains it.
 pub const DESKTOP_PIN_ID: &str = "__desktop__";
 
 impl KnownHost {
@@ -45,31 +172,92 @@ impl KnownHost {
     }
 
     pub fn is_pinned(&self, id: &str) -> bool {
-        self.pinned.iter().any(|p| p == id)
+        self.games.get(id).is_some_and(|g| g.pin.is_some())
+    }
+
+    /// Pinned ids, in pin order.
+    pub fn pinned_ids(&self) -> Vec<&str> {
+        let mut pinned: Vec<(u32, &str)> = self
+            .games
+            .iter()
+            .filter_map(|(id, g)| g.pin.map(|p| (p, id.as_str())))
+            .collect();
+        pinned.sort_unstable();
+        pinned.into_iter().map(|(_, id)| id).collect()
+    }
+
+    pub fn pinned_count(&self) -> usize {
+        self.games.values().filter(|g| g.pin.is_some()).count()
     }
 
     /// Whether toggling id would do anything (unpin always ok, pin only if under `MAX_PINNED_GAMES`).
     pub fn can_toggle_pin(&self, id: &str) -> bool {
-        self.is_pinned(id) || self.pinned.len() < MAX_PINNED_GAMES
+        self.is_pinned(id) || self.pinned_count() < MAX_PINNED_GAMES
     }
 
     /// Toggles `id`'s pinned state (a `GameEntry::id`, or `DESKTOP_PIN_ID`) —
     /// a no-op when `can_toggle_pin` is false.
     pub fn toggle_pin(&mut self, id: &str) {
-        match self.pinned.iter().position(|p| p == id) {
-            Some(i) => drop(self.pinned.remove(i)),
-            None if self.can_toggle_pin(id) => self.pinned.push(id.to_string()),
-            None => {}
+        if self.is_pinned(id) {
+            if let Some(g) = self.games.get_mut(id) {
+                g.pin = None;
+            }
+            self.drop_if_empty(id);
+        } else if self.can_toggle_pin(id) {
+            // Monotonic, never renumbered: a re-pin lands at the end of the block, which is
+            // where someone who just pinned it expects to find it.
+            let next = self.games.values().filter_map(|g| g.pin).max().map_or(0, |m| m + 1);
+            self.games.entry(id.to_string()).or_default().pin = Some(next);
         }
     }
+
+    /// This game's overrides, or the empty set — reading never creates an entry.
+    pub fn overrides(&self, id: &str) -> SettingsOverride {
+        self.games.get(id).map_or_else(SettingsOverride::default, |g| g.over)
+    }
+
+    /// Runs `edit` against this game's overrides, creating the entry only if needed and
+    /// dropping it again when the edit leaves nothing behind.
+    pub fn edit_overrides(&mut self, id: &str, edit: impl FnOnce(&mut SettingsOverride)) {
+        edit(&mut self.games.entry(id.to_string()).or_default().over);
+        self.drop_if_empty(id);
+    }
+
+    fn drop_if_empty(&mut self, id: &str) {
+        if self.games.get(id).is_some_and(GamePrefs::is_empty) {
+            self.games.remove(id);
+        }
+    }
+
+    /// Drops per-game state for ids the host no longer lists. `live` must come from a
+    /// *successful* library fetch — an error or an offline host would otherwise wipe
+    /// everything. [`DESKTOP_PIN_ID`] is always kept: it is never in a library listing.
+    /// Returns whether anything was removed.
+    pub fn prune_games(&mut self, live: impl Fn(&str) -> bool) -> bool {
+        let before = self.games.len();
+        self.games.retain(|id, _| id == DESKTOP_PIN_ID || live(id));
+        self.games.len() != before
+    }
+}
+
+/// A fresh host's per-game map: just `id` pinned. What every add/pair flow seeds
+/// [`KnownHost::games`] with, so the Desktop card starts in the pinned block.
+pub fn pinned_only(id: &str) -> BTreeMap<String, GamePrefs> {
+    BTreeMap::from([(
+        id.to_string(),
+        GamePrefs {
+            pin: Some(0),
+            ..GamePrefs::default()
+        },
+    )])
 }
 
 /// Upserts by `(host, port)`, keeping the existing fingerprint if the new record is unpaired
 /// (a fresh mDNS discovery shouldn't clobber a paired host) — same reasoning for `mac`,
 /// learned separately (see `App::drain_discovery`) and not necessarily known again at the
-/// point something else re-upserts this host. `pinned` and `wol_auto` are *always* kept from the
-/// existing record: only [`KnownHost::toggle_pin`] and the Wake screen change them, so no
-/// add/edit/re-pair flow may clobber either.
+/// point something else re-upserts this host. `games` and `wol_auto` are *always* kept from the
+/// existing record: only [`KnownHost::toggle_pin`], the per-game settings screen and the Wake
+/// screen change them, so no add/edit/re-pair flow may clobber any of it.
 pub fn upsert_known_host(hosts: &mut Vec<KnownHost>, mut new: KnownHost) {
     let Some(existing) = hosts.iter_mut().find(|h| h.host == new.host && h.port == new.port) else {
         hosts.push(new);
@@ -81,7 +269,7 @@ pub fn upsert_known_host(hosts: &mut Vec<KnownHost>, mut new: KnownHost) {
     if new.mac.is_empty() {
         new.mac.clone_from(&existing.mac);
     }
-    new.pinned.clone_from(&existing.pinned);
+    new.games.clone_from(&existing.games);
     new.wol_auto = existing.wol_auto;
     *existing = new;
 }
@@ -340,6 +528,11 @@ pub struct Persisted {
     /// grid instead of an unfocused sidebar. `(host, port)`, not an index: `known_hosts` order
     /// isn't stable across a forget/re-add.
     pub selected_host: Option<(String, u16)>,
+    /// The app version that last wrote this document (`CARGO_PKG_VERSION`). `None` means it
+    /// was written before versioning existed — the only signal a future migration gets about
+    /// which shape it is reading. `store::load` stamps it on first sight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// Cover-art paths for a title (host-relative, fetched via mTLS). Cards prefer
@@ -360,4 +553,101 @@ pub struct GameEntry {
     pub title: String,
     #[serde(default)]
     pub art: Artwork,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn host() -> KnownHost {
+        KnownHost {
+            games: pinned_only(DESKTOP_PIN_ID),
+            ..KnownHost::default()
+        }
+    }
+
+    #[test]
+    fn merge_leaves_unset_fields_at_the_global_value() {
+        let global = Settings {
+            width: 1920,
+            height: 1080,
+            bitrate_kbps: 20_000,
+            ..Settings::default()
+        };
+        let over = SettingsOverride {
+            bitrate_kbps: Some(50_000),
+            ..SettingsOverride::default()
+        };
+        let merged = over.merge_into(global);
+        assert_eq!(merged.bitrate_kbps, 50_000);
+        assert_eq!((merged.width, merged.height), (1920, 1080));
+        assert_eq!(merged.refresh_hz, global.refresh_hz);
+    }
+
+    #[test]
+    fn a_value_set_back_to_the_global_stops_being_an_override() {
+        let global = Settings::default();
+        let mut over = SettingsOverride {
+            refresh_hz: Some(120),
+            bitrate_kbps: Some(50_000),
+            ..SettingsOverride::default()
+        };
+        over.drop_matching(&global);
+        assert_eq!(over.refresh_hz, Some(120), "still differs");
+        assert_eq!(over.bitrate_kbps, Some(50_000));
+        // The user picks the global's own value back.
+        over.refresh_hz = Some(global.refresh_hz);
+        over.drop_matching(&global);
+        assert_eq!(over.refresh_hz, None, "matching the global is not an override");
+        over.bitrate_kbps = Some(global.bitrate_kbps);
+        over.drop_matching(&global);
+        assert!(over.is_empty(), "nothing differs, so nothing is persisted");
+    }
+
+    #[test]
+    fn an_edit_that_undoes_itself_leaves_no_entry_behind() {
+        let mut h = host();
+        h.edit_overrides("steam:1", |o| o.refresh_hz = Some(120));
+        assert!(h.games.contains_key("steam:1"));
+        h.edit_overrides("steam:1", |o| o.refresh_hz = None);
+        assert!(!h.games.contains_key("steam:1"), "an empty record is dropped");
+    }
+
+    #[test]
+    fn pins_keep_their_order_and_respect_the_limit() {
+        let mut h = host();
+        for i in 0..MAX_PINNED_GAMES {
+            h.toggle_pin(&format!("g{i}"));
+        }
+        // Desktop was already pinned, so the last one had no slot left.
+        assert_eq!(h.pinned_count(), MAX_PINNED_GAMES);
+        assert_eq!(h.pinned_ids()[0], DESKTOP_PIN_ID);
+        assert!(!h.is_pinned(&format!("g{}", MAX_PINNED_GAMES - 1)));
+        // Unpinning frees a slot, and a re-pin lands at the end of the block.
+        h.toggle_pin("g0");
+        assert!(!h.is_pinned("g0"));
+        h.toggle_pin("g0");
+        assert_eq!(*h.pinned_ids().last().expect("just pinned"), "g0");
+    }
+
+    #[test]
+    fn pruning_drops_vanished_games_but_never_desktop() {
+        let mut h = host();
+        h.toggle_pin("steam:gone");
+        h.edit_overrides("steam:here", |o| o.hdr_enabled = Some(false));
+        assert!(h.prune_games(|id| id == "steam:here"));
+        assert!(h.games.contains_key(DESKTOP_PIN_ID));
+        assert!(h.games.contains_key("steam:here"));
+        assert!(!h.games.contains_key("steam:gone"));
+        assert!(!h.prune_games(|id| id == "steam:here"), "a second pass is a no-op");
+    }
+
+    #[test]
+    fn upsert_keeps_per_game_state() {
+        let mut hosts = vec![host()];
+        hosts[0].edit_overrides("steam:1", |o| o.codec = Some(CodecPref::Hevc));
+        upsert_known_host(&mut hosts, KnownHost::default());
+        assert_eq!(hosts[0].overrides("steam:1").codec, Some(CodecPref::Hevc));
+        assert!(hosts[0].is_pinned(DESKTOP_PIN_ID));
+    }
 }

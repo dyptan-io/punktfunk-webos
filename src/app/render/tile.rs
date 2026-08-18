@@ -63,6 +63,18 @@ pub const MODAL_PREV: TileId = TileId(23);
 /// That snapshot's scrolled content, for a leaving modal whose body lives in
 /// [`SCROLL_CONTENT`] rather than in its shell (Settings, About).
 pub const MODAL_PREV_CONTENT: TileId = TileId(24);
+/// The focused card's submenu panel — [`CARD_TITLE`] grown to carry the Pin/Settings rows.
+/// Its own slot rather than a second shape for `CARD_TITLE`, so it can be baked *ahead* of
+/// the hold that shows it: it costs a full-card art rescale plus a blur, and paying that at
+/// the moment the panel starts rising is what made the rise stutter.
+pub const CARD_MENU: TileId = TileId(25);
+/// That panel's row icons and labels, on their own transparent tile. Composited *after* the
+/// selection band, which is a translucent darkening: baked into [`CARD_MENU`] the text would
+/// be dimmed along with the frost, and the band is meant to slide under it.
+pub const CARD_MENU_ROWS: TileId = TileId(26);
+/// That panel's title line, likewise on its own transparent tile — it rides the top edge of
+/// the opening window, continuing up from where [`CARD_TITLE`] already had it.
+pub const CARD_MENU_TITLE: TileId = TileId(27);
 
 /// First id of the spinner band. One per frame, so animation is a swap not an upload.
 const SPINNER_BASE: u32 = 64;

@@ -13,8 +13,8 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 pub use crate::core::model::{
-    upsert_known_host, CodecPref, GamepadType, KnownHost, LogLevelOverride, Persisted, Settings, VideoBackend,
-    DESKTOP_PIN_ID,
+    pinned_only, upsert_known_host, CodecPref, GamepadType, KnownHost, LogLevelOverride, Persisted, Settings,
+    SettingsOverride, VideoBackend, DESKTOP_PIN_ID,
 };
 pub use crate::services::paths::app_dir;
 pub use identity::load_or_create_identity;
@@ -43,6 +43,7 @@ pub fn load() -> Persisted {
         None => legacy::migrate(Settings::default()),
     };
     apply_launch_overrides(&mut state);
+    stamp_version(&mut state);
     // A document written on a more capable TV can hold HEVC, HDR and 7.1 on a device with none
     // of them — leaving a *set* value whose row the UI hides.
     state.settings.clamp_to_caps();
@@ -61,6 +62,49 @@ pub fn persisted_video_backend() -> VideoBackend {
         .get("video_backend")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default()
+}
+
+/// The version this build writes into the document.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Stamps [`Persisted::version`] the first time a document is read without one, and takes the
+/// one chance that gives us to seed a demo per-game override — an upgrade from a pre-versioning
+/// build has no overrides at all, so the feature is invisible until someone finds the card menu.
+///
+/// Only the Desktop card is seeded, only where it exists (is pinned), and only with cursor
+/// capture off: harmless if left alone, and the row it lights up explains itself.
+///
+/// Written synchronously so it happens once — `StateWriter`'s baseline is taken after this,
+/// and an unstamped document that never gets saved would seed again on every launch.
+fn stamp_version(state: &mut Persisted) {
+    if state.version.is_some() {
+        return;
+    }
+    state.version = Some(VERSION.to_string());
+    // Nothing to demo on a fresh install (no hosts), and nothing to demo *with* if the global
+    // value already is off — the override would equal the global and read as noise.
+    if !state.known_hosts.is_empty() && state.settings.cursor_capture {
+        seed_demo_overrides(state);
+    }
+    if let Err(e) = save(state) {
+        tracing::warn!("could not stamp document version: {e:#}");
+        return;
+    }
+    tracing::info!("stamped settings.json with version {VERSION}");
+}
+
+/// Gives every host whose Desktop card is pinned, and which carries no overrides yet, a
+/// cursor-capture-off override on that card. A host that already overrides something is left
+/// alone — the user has found the feature.
+fn seed_demo_overrides(state: &mut Persisted) {
+    for host in &mut state.known_hosts {
+        let untouched = host.games.values().all(|g| g.over.is_empty());
+        if !untouched || !host.is_pinned(DESKTOP_PIN_ID) {
+            continue;
+        }
+        host.edit_overrides(DESKTOP_PIN_ID, |over| over.cursor_capture = Some(false));
+        tracing::info!("seeded demo Desktop override on {}", host.name);
+    }
 }
 
 pub fn save(state: &Persisted) -> Result<()> {

@@ -20,6 +20,7 @@ pub(super) fn migrate(settings: Settings) -> Persisted {
         settings,
         known_hosts,
         selected_host: None,
+        version: None,
     };
     if present.is_empty() {
         return state;

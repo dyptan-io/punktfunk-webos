@@ -2,7 +2,7 @@
 use crate::app::view;
 use crate::app::App;
 use crate::core::event::MenuEvent;
-use crate::core::screen::Screen;
+use crate::core::screen::{Screen, SettingsScope};
 use crate::ui;
 
 impl App {
@@ -36,7 +36,7 @@ impl App {
             }
             // Return to Settings (not Home) to preserve settings context
             MenuEvent::Back | MenuEvent::Confirm => {
-                self.screen = Screen::Settings;
+                self.screen = Screen::Settings(SettingsScope::Global);
                 self.scroll = self.settings_scroll;
             }
             MenuEvent::Secondary => {}

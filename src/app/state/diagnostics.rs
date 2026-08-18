@@ -3,7 +3,7 @@ use crate::app::menu;
 use crate::app::App;
 use crate::app::DropdownState;
 use crate::core::event::MenuEvent;
-use crate::core::screen::Screen;
+use crate::core::screen::{Screen, SettingsScope};
 use crate::services::store;
 use crate::ui;
 use std::time::Instant;
@@ -74,7 +74,7 @@ impl App {
             }
             (_, MenuEvent::Back) => {
                 self.persist();
-                self.screen = Screen::Settings;
+                self.screen = Screen::Settings(SettingsScope::Global);
             }
             _ => {}
         }

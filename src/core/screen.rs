@@ -1,8 +1,22 @@
+/// Which settings document a settings-shaped screen edits. The per-game scope shows the
+/// overridable rows only (see `app::menu::settings_visible_logical_rows`) and edits a scratch
+/// copy of the global document; both share every row mutator, so a row behaves identically
+/// wherever it appears.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum SettingsScope {
+    Global,
+    Game,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Screen {
     Home,
     Pairing,
-    Settings,
+    /// The settings list, in one of two scopes: the global document, or one game's
+    /// overrides of it (`SettingsScope::Game`, reached only by holding that game's card —
+    /// there is no path to it from the global screen). One variant, because the two are the
+    /// same screen with a different row list: every dispatch site treats them alike.
+    Settings(SettingsScope),
     AddHost,
     Wake,
     ForgetHost,

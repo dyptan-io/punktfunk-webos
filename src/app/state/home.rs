@@ -6,7 +6,7 @@ use crate::app::view;
 use crate::app::App;
 use crate::app::{ConnectTarget, GridCard, GridLayout};
 use crate::core::event::MenuEvent;
-use crate::core::screen::{HomeFocus, Screen};
+use crate::core::screen::{HomeFocus, Screen, SettingsScope};
 use crate::services::store::{self};
 use crate::ui;
 use std::time::Instant;
@@ -185,6 +185,11 @@ impl App {
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
 
+        // The held card's submenu owns every key while it is up — it sits over one card,
+        // so moving Home's focus underneath it would leave it pointing at another game.
+        if self.handle_card_menu_event(ev, screen_w, screen_h) {
+            return None;
+        }
         if let Some(dir) = crate::app::menu::nav_dir(ev) {
             self.navigate_home(dir, screen_w, screen_h);
             return None;
@@ -199,7 +204,7 @@ impl App {
                     self.screen = Screen::AddHost;
                 }
                 HomeFocus::Sidebar(_) => {
-                    self.screen = Screen::Settings;
+                    self.screen = Screen::Settings(SettingsScope::Global);
                     self.dropdown = None;
                     self.settings_focused = 0;
                     self.scroll = ui::scroll::ScrollWindow::new();
@@ -293,38 +298,53 @@ impl App {
         }
     }
 
-    /// Re-sorts games: pinned first (in pin order), rest untouched. Also prunes
-    /// `known_hosts`' persisted pins for games the host no longer lists — otherwise
-    /// a removed game keeps counting toward `MAX_PINNED_GAMES` forever.
+    /// Re-sorts games: pinned first (in pin order), rest untouched. A pin for a game
+    /// not currently listed just doesn't sort — it is *not* dropped here, because this
+    /// runs on every pin toggle and a host that failed to answer has an empty
+    /// `self.games`. Dropping is [`App::prune_stale_game_prefs`]'s job.
     pub(crate) fn reorder_games_by_pin(&mut self) {
-        let Some(known_idx) = self
-            .selected_host
-            .as_ref()
-            .and_then(|(h, p)| self.known_hosts.iter().position(|k| k.host == *h && k.port == *p))
-        else {
+        let Some(known_idx) = self.selected_known_host_idx() else {
             self.pinned_count = 0;
             return;
         };
-        let pinned_ids = self.known_hosts[known_idx].pinned.clone();
+        let pinned_ids: Vec<String> = self.known_hosts[known_idx]
+            .pinned_ids()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
         let mut pinned = Vec::new();
-        let mut still_pinned = Vec::new();
         for id in &pinned_ids {
-            if id == store::DESKTOP_PIN_ID {
-                // Desktop isn't in `self.games`, so it's never "missing".
-                still_pinned.push(id.clone());
-            } else if let Some(pos) = self.games.iter().position(|g| &g.id == id) {
+            // Desktop isn't in `self.games`, so it never sorts here.
+            if let Some(pos) = self.games.iter().position(|g| &g.id == id) {
                 pinned.push(self.games.remove(pos));
-                still_pinned.push(id.clone());
             }
         }
         self.pinned_count = pinned.len();
         pinned.append(&mut self.games);
         self.games = pinned;
+    }
 
-        if still_pinned != pinned_ids {
-            self.known_hosts[known_idx].pinned = still_pinned;
+    /// Drops per-game state (pins *and* settings overrides) for games the host no longer
+    /// lists — otherwise a removed game keeps counting toward `MAX_PINNED_GAMES` and its
+    /// overrides linger forever.
+    ///
+    /// Call only from the success arm of [`App::drain_games`]: `self.games` is empty
+    /// whenever a fetch failed or a host is unreachable, and pruning against that would
+    /// wipe everything the user configured the moment their host went to sleep.
+    pub(crate) fn prune_stale_game_prefs(&mut self) {
+        let Some(known_idx) = self.selected_known_host_idx() else {
+            return;
+        };
+        let live: std::collections::HashSet<&str> = self.games.iter().map(|g| g.id.as_str()).collect();
+        if self.known_hosts[known_idx].prune_games(|id| live.contains(id)) {
             self.persist();
         }
+    }
+
+    fn selected_known_host_idx(&self) -> Option<usize> {
+        self.selected_host
+            .as_ref()
+            .and_then(|(h, p)| self.known_hosts.iter().position(|k| k.host == *h && k.port == *p))
     }
 
     /// Eased 0..=1 progress of pin id `id`'s zoom-in (see `card_pop`)
@@ -516,6 +536,7 @@ impl App {
                 if !self.home_status_sticky {
                     self.home_status = None;
                 }
+                self.prune_stale_game_prefs();
                 self.reorder_games_by_pin();
             }
             Err(e) => {

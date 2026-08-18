@@ -8,6 +8,7 @@
 //! carries no dependency on the app state machine.
 pub(crate) mod about;
 pub(crate) mod addhost;
+pub(crate) mod cardmenu;
 pub(crate) mod cursorsettings;
 pub(crate) mod diagnostics;
 pub(crate) mod experimental;

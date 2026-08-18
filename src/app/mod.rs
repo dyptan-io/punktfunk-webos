@@ -222,6 +222,12 @@ pub struct App {
     pub(crate) launch_anim: Option<Instant>,
     pub(crate) launch_anim_idx: Option<usize>,
     pub settings: Settings,
+    /// What `Screen::GameSettings` is editing, `None` when it isn't up — see
+    /// `app::state::gamesettings`.
+    pub(crate) game_settings: Option<state::gamesettings::GameSettingsState>,
+    /// The submenu raised over a held grid card's title strip (Pin/Unpin + Settings), and
+    /// the only way to `Screen::GameSettings`. `None` when no card is held open.
+    pub card_menu: Option<state::cardmenu::CardMenu>,
     /// Persists settings off UI thread to avoid blocking.
     pub(crate) state_writer: store::StateWriter,
     /// The attached pad's type per `gamepad::detect_type`, refreshed on hotplug in
@@ -482,6 +488,7 @@ impl App {
             settings,
             known_hosts,
             selected_host,
+            version: _,
         } = loaded;
         let entries = known_entries(&known_hosts);
 
@@ -514,6 +521,8 @@ impl App {
             launch_anim: None,
             launch_anim_idx: None,
             settings,
+            game_settings: None,
+            card_menu: None,
             state_writer,
             detected_gamepad_type: None,
             settings_focused: 0,
@@ -617,28 +626,76 @@ impl App {
             .map(HostEntry::name)
     }
 
-    /// The settings rows, with the platform/hardware facts the view can't reach folded in.
+    /// Which row list the settings screen that is up shows — its own scope, and off it the
+    /// scope of the flow that is running. The Cursor sub-screen is reachable from either, so
+    /// there it comes from the scratch copy: `game_settings` is `Some` for exactly the
+    /// per-game flow, for as long as it lasts (`persist_game_settings` takes it on the way
+    /// out). `Global` is the answer everywhere else, where nothing reads it.
+    pub(crate) fn row_set(&self) -> menu::SettingsScope {
+        match self.screen {
+            Screen::Settings(set) => set,
+            _ if self.game_settings.is_some() => menu::SettingsScope::Game,
+            _ => menu::SettingsScope::Global,
+        }
+    }
+
+    /// The `Settings` the open settings screen is editing: the global document, or the
+    /// per-game scratch copy. One accessor so every mutator, lock check and dropdown lookup
+    /// in `menu` sees the same value the rows were built from.
+    pub(crate) fn settings_target(&self) -> &Settings {
+        match &self.game_settings {
+            Some(gs) => &gs.merged,
+            None => &self.settings,
+        }
+    }
+
+    pub(crate) fn settings_target_mut(&mut self) -> &mut Settings {
+        match &mut self.game_settings {
+            Some(gs) => &mut gs.merged,
+            None => &mut self.settings,
+        }
+    }
+
+    /// This game's overrides while the per-game screen is up — what decides which rows wear
+    /// a "use global" button. Empty everywhere else, so the global screen shows none.
+    pub(crate) fn editing_override(&self) -> store::SettingsOverride {
+        self.game_settings
+            .as_ref()
+            .map_or_else(store::SettingsOverride::default, |gs| gs.over)
+    }
+
+    /// The settings rows, with the platform/hardware facts the view can't reach folded in,
+    /// plus the override dot on every row this game differs from the global on.
     pub(crate) fn settings_rows(&self) -> Vec<ui::widgets::FocusRow> {
-        let effective = if self.settings.gamepad_type == store::GamepadType::Auto {
+        let set = self.row_set();
+        let settings = self.settings_target();
+        let effective = if settings.gamepad_type == store::GamepadType::Auto {
             self.detected_gamepad_type.unwrap_or_default()
         } else {
-            self.settings.gamepad_type
+            settings.gamepad_type
         };
         let dualsense_limited = effective.is_dualsense() && !crate::platform::webos::dualsense::hid_playstation_bound();
         let webos_major = crate::platform::webos::device::sdk_version().map(|(major, _)| major);
-        view::settings::rows(
-            &self.settings,
+        let mut rows = view::settings::rows(
+            set,
+            settings,
             self.detected_gamepad_type,
             dualsense_limited,
             webos_major,
-        )
+        );
+        let over = self.editing_override();
+        for (row, logical) in rows.iter_mut().zip(menu::settings_visible_logical_rows(set)) {
+            row.mark = menu::override_mark(&over, logical);
+        }
+        rows
     }
 
     /// Scrolls `settings_focused` into view.
     pub(crate) fn scroll_settings_into_view(&mut self, screen_h: u32) {
-        let visible = view::settings::visible_rows(screen_h);
+        let set = self.row_set();
+        let visible = view::settings::visible_rows(set, screen_h);
         self.scroll
-            .scroll_into_view(self.settings_focused, menu::settings_row_count(), visible);
+            .scroll_into_view(self.settings_focused, menu::settings_row_count(set), visible);
     }
 
     /// `(row, focused, alpha)` for the open dropdown or its close-fade; `None` if neither.
@@ -842,6 +899,11 @@ impl App {
         // host sidebar first. Only a Back from the sidebar itself is a no-op here
         // — the menu loop turns that into the quit dialog.
         if matches!(self.screen, Screen::Home) {
+            // A held card's submenu is up: Back dismisses it rather than stepping focus
+            // out from under it.
+            if self.card_menu.take().is_some() {
+                return None;
+            }
             match self.home_focus {
                 HomeFocus::Grid(_) => {
                     self.home_focus = HomeFocus::Sidebar(self.sidebar_index_for_selected());
@@ -860,42 +922,10 @@ impl App {
     /// loop keeps rendering while true). Expired animations report one final
     /// `true` so their end state gets drawn.
     pub fn tick_animations(&mut self) -> bool {
-        let mut animating = false;
-        let d = self.grid_scroll_target - self.grid_scroll;
-        if d != 0 {
-            // Exponential ease-out: cover ~35% of the remaining distance per
-            // tick, snapping when close so it terminates.
-            let step = if d.abs() <= 3 {
-                d
-            } else {
-                let s = (f64::from(d) * 0.35) as i32;
-                if s == 0 {
-                    d.signum()
-                } else {
-                    s
-                }
-            };
-            self.grid_scroll += step;
-            animating = true;
-        }
-        // The scrolling modal's viewport, on the same ease-out as the grid above so both
-        // lists feel identical. `scroll.offset` has already jumped to its new row; this is
-        // only the rendered crop catching up.
-        let d = self.modal_scroll_target_px - self.modal_scroll_px;
-        if d != 0 {
-            let step = if d.abs() <= 3 {
-                d
-            } else {
-                let s = (f64::from(d) * 0.35) as i32;
-                if s == 0 {
-                    d.signum()
-                } else {
-                    s
-                }
-            };
-            self.modal_scroll_px += step;
-            animating = true;
-        }
+        let mut animating = ui::animation::ease_scroll(&mut self.grid_scroll, self.grid_scroll_target);
+        // The scrolling modal's viewport, on the same ease-out as the grid. `scroll.offset`
+        // has already jumped to its new row; this is only the rendered crop catching up.
+        animating |= ui::animation::ease_scroll(&mut self.modal_scroll_px, self.modal_scroll_target_px);
         if let Some(t) = self.focus_anim {
             if t.elapsed() >= ui::animation::CARD_FOCUS_POP {
                 self.focus_anim = None;
@@ -938,6 +968,13 @@ impl App {
             }
             animating = true;
         }
+        // The held card's submenu: its rise, and the selection band's slide between rows.
+        // Both run off clocks on `CardMenu`, not off `focus_anim` — without reporting them
+        // here the loop parks in `wait_for_event` mid-rise (the auto-repeat KeyDowns the
+        // hold swallows set no `dirty`), and the panel finishes only when OK is released.
+        if self.card_menu.as_mut().is_some_and(state::cardmenu::CardMenu::tick) {
+            animating = true;
+        }
         // A scan, not one clock: every card zooms on its own (see `card_pop`).
         if self.card_pop.values().any(|t| t.elapsed() < CARD_POP) {
             animating = true;
@@ -952,14 +989,22 @@ impl App {
             settings: self.settings,
             known_hosts: self.known_hosts.clone(),
             selected_host: self.selected_host.clone(),
+            // Always this build's version: whatever wrote the document last is what a future
+            // migration needs to know, and that is now us.
+            version: Some(store::VERSION.to_string()),
         });
+    }
+
+    /// The known-host record for an address — the one place `(host, port)` is matched.
+    pub(crate) fn known_host(&self, host: &str, port: u16) -> Option<&KnownHost> {
+        self.known_hosts.iter().find(|h| h.host == host && h.port == port)
     }
 
     /// The `KnownHost` record backing `selected_host`, if any — shared by every
     /// pin-related lookup (the focused card's badge, `toggle_focused_pin`).
     pub(crate) fn selected_known_host(&self) -> Option<&KnownHost> {
         let (host, port) = self.selected_host.as_ref()?;
-        self.known_hosts.iter().find(|h| h.host == *host && h.port == *port)
+        self.known_host(host, *port)
     }
 
     pub(crate) fn selected_known_host_mut(&mut self) -> Option<&mut KnownHost> {

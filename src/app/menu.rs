@@ -4,7 +4,7 @@
 //! *widgets*, not this app's menus.
 use crate::core::caps::video_caps;
 use crate::core::event::MenuEvent;
-use crate::services::store::{CodecPref, GamepadType, LogLevelOverride, Settings, VideoBackend};
+use crate::services::store::{CodecPref, GamepadType, LogLevelOverride, Settings, SettingsOverride, VideoBackend};
 use crate::ui::focus::Dir;
 
 /// This app's input vocabulary mapped onto `ui`'s spatial one. `ui` navigates by
@@ -82,6 +82,39 @@ pub const ROW_DIAGNOSTICS: usize = 10;
 /// `RowKind::Action` row costs nothing extra to render.
 pub const ROW_ABOUT: usize = 11;
 pub const SETTINGS_ROW_COUNT: usize = 12;
+/// The two Cursor toggles, as logical ids for [`override_is_set`] and friends. They are on no
+/// row list — both screens reach them through [`ROW_CURSOR`]'s sub-screen, which has its own
+/// `CURSOR_ROW_*` indices. Past [`SETTINGS_ROW_COUNT`] on purpose: these key dropdown and row
+/// tiles, so they must never shift the ones above them.
+pub const ROW_CURSOR_CAPTURE: usize = 12;
+pub const ROW_CURSOR_GESTURES: usize = 13;
+/// Not a setting — the action row at the foot of the *per-game* list only. It drops every
+/// override, putting the game back to what its screen inherits. The global list has no
+/// counterpart: there is nothing above it to fall back to.
+pub const ROW_RESET: usize = 14;
+
+/// Which rows a settings-shaped screen shows — the scope its screen carries (see
+/// [`crate::core::screen::Screen::Settings`]). Both scopes share every `ROW_*` index and
+/// therefore every mutator, dropdown list and lock in this module.
+pub use crate::core::screen::SettingsScope;
+
+/// The per-game list. No `ROW_VIDEO_BACKEND` (`caps::set_backend` is a process-global, so a
+/// per-game backend would need an apply/restore around every launch) and no links out — the
+/// Experimental and Diagnostics are device-wide, so neither they nor anything behind them
+/// appears. Cursor keeps its link row and its sub-screen, exactly as on the global list — it holds two
+/// toggles either way, and duplicating that layout only for this screen would make the same
+/// settings look like two different things. See `store::SettingsOverride`.
+const GAME_ROWS: [usize; 9] = [
+    ROW_RESOLUTION,
+    ROW_FRAMERATE,
+    ROW_BITRATE,
+    ROW_CODEC,
+    ROW_HDR,
+    ROW_AUDIO,
+    ROW_GAMEPAD,
+    ROW_CURSOR,
+    ROW_RESET,
+];
 
 /// Experimental modal row indices (see `app::view::experimental::rows`).
 pub const EXP_ROW_HW_AUDIO: usize = 0;
@@ -92,6 +125,16 @@ pub const EXP_ROW_GAME_MODE: usize = 1;
 pub const CURSOR_ROW_CAPTURE: usize = 0;
 pub const CURSOR_ROW_GESTURES: usize = 1;
 pub const CURSOR_ROW_COUNT: usize = 2;
+
+/// A Cursor sub-screen row's logical `ROW_*` id — what the per-game override table is keyed
+/// by. The sub-screen has its own dense indices, so this is the one place the two spaces meet.
+pub fn cursor_logical_row(cursor_row: usize) -> usize {
+    debug_assert!((CURSOR_ROW_CAPTURE..CURSOR_ROW_COUNT).contains(&cursor_row));
+    match cursor_row {
+        CURSOR_ROW_GESTURES => ROW_CURSOR_GESTURES,
+        _ => ROW_CURSOR_CAPTURE,
+    }
+}
 
 /// Diagnostics modal row indices (see `app::view::diagnostics::rows`). Log level keeps
 /// index 0 so its dropdown's `(Screen, row)` tile key stays stable.
@@ -161,18 +204,97 @@ pub(crate) fn row_lock(row: usize, settings: &Settings, detected: Option<Gamepad
 /// Logical `ROW_*` indices currently visible, in display order — the single source of truth
 /// every visibility-aware helper derives from. Settings-independent (see [`row_shown`]), so
 /// this mapping is fixed for the run.
-pub fn settings_visible_logical_rows() -> impl Iterator<Item = usize> {
-    (0..SETTINGS_ROW_COUNT).filter(|&row| row_shown(row))
+pub fn settings_visible_logical_rows(set: SettingsScope) -> impl Iterator<Item = usize> {
+    const GLOBAL_ROWS: [usize; SETTINGS_ROW_COUNT] = {
+        let mut rows = [0; SETTINGS_ROW_COUNT];
+        let mut i = 0;
+        while i < SETTINGS_ROW_COUNT {
+            rows[i] = i;
+            i += 1;
+        }
+        rows
+    };
+    let rows: &'static [usize] = match set {
+        SettingsScope::Global => &GLOBAL_ROWS,
+        SettingsScope::Game => &GAME_ROWS,
+    };
+    rows.iter().copied().filter(|&row| row_shown(row))
 }
 
 /// Live row count (vs. `SETTINGS_ROW_COUNT`, the maximum).
-pub fn settings_row_count() -> usize {
-    settings_visible_logical_rows().count()
+pub fn settings_row_count(set: SettingsScope) -> usize {
+    settings_visible_logical_rows(set).count()
 }
 
 /// On-screen row position -> logical `ROW_*` index, skipping past any hidden rows.
-pub fn settings_logical_row(display: usize) -> usize {
-    settings_visible_logical_rows().nth(display).unwrap_or(display)
+pub fn settings_logical_row(set: SettingsScope, display: usize) -> usize {
+    settings_visible_logical_rows(set).nth(display).unwrap_or(display)
+}
+
+/// Current value of `row` if it is a toggle — the start point the switch slide animates
+/// from. `None` for every other row kind.
+pub fn toggle_value(settings: &Settings, row: usize) -> Option<bool> {
+    match row {
+        ROW_HDR => Some(settings.hdr_enabled),
+        ROW_CURSOR_CAPTURE => Some(settings.cursor_capture),
+        ROW_CURSOR_GESTURES => Some(settings.cursor_gestures),
+        _ => None,
+    }
+}
+
+/// Whether `row` currently overrides the global value — what decides that the row gets a
+/// "use global" delete affordance.
+pub fn override_is_set(over: &SettingsOverride, row: usize) -> bool {
+    match row {
+        ROW_RESOLUTION => over.mode.is_some(),
+        ROW_FRAMERATE => over.refresh_hz.is_some(),
+        ROW_BITRATE => over.bitrate_kbps.is_some(),
+        ROW_HDR => over.hdr_enabled.is_some(),
+        ROW_CODEC => over.codec.is_some(),
+        ROW_AUDIO => over.audio_channels.is_some(),
+        ROW_GAMEPAD => over.gamepad_type.is_some(),
+        ROW_CURSOR_CAPTURE => over.cursor_capture.is_some(),
+        ROW_CURSOR_GESTURES => over.cursor_gestures.is_some(),
+        // The link row stands in for the two toggles behind it — without this a game whose
+        // only override is a cursor one shows a dot on its card and nothing on the list that
+        // says where it came from.
+        ROW_CURSOR => over.cursor_capture.is_some() || over.cursor_gestures.is_some(),
+        _ => false,
+    }
+}
+
+/// The row's override mark, for [`ui::widgets::FocusRow::mark`] — amber when this row
+/// differs from the global, nothing when it doesn't. The colour lives here rather than in
+/// `ui`, which knows only that some rows carry a mark.
+pub fn override_mark(over: &SettingsOverride, row: usize) -> Option<crate::ui::render::Color> {
+    override_is_set(over, row).then(|| crate::ui::style::theme().warning)
+}
+
+/// Records `row`'s value from `edited` — a scratch `Settings` one of the mutators above has
+/// just been run against. Only the edited row is captured, so touching Bitrate never silently
+/// pins Resolution to whatever the global happened to be.
+///
+/// `ROW_CODEC` is the one row that writes two fields: an H.264 pick forces HDR off (see
+/// [`apply_dropdown_choice`]), and that consequence has to be recorded or the merge would put
+/// the global's HDR back on top of a codec that can't carry it.
+pub fn override_capture(over: &mut SettingsOverride, row: usize, edited: &Settings) {
+    match row {
+        ROW_RESOLUTION => over.mode = Some((edited.width, edited.height)),
+        ROW_FRAMERATE => over.refresh_hz = Some(edited.refresh_hz),
+        ROW_BITRATE => over.bitrate_kbps = Some(edited.bitrate_kbps),
+        ROW_HDR => over.hdr_enabled = Some(edited.hdr_enabled),
+        ROW_CODEC => {
+            over.codec = Some(edited.codec);
+            if edited.codec == CodecPref::H264 {
+                over.hdr_enabled = Some(false);
+            }
+        }
+        ROW_AUDIO => over.audio_channels = Some(edited.audio_channels),
+        ROW_GAMEPAD => over.gamepad_type = Some(edited.gamepad_type),
+        ROW_CURSOR_CAPTURE => over.cursor_capture = Some(edited.cursor_capture),
+        ROW_CURSOR_GESTURES => over.cursor_gestures = Some(edited.cursor_gestures),
+        _ => {}
+    }
 }
 
 pub fn cycle_index(current: usize, len: usize, forward: bool) -> usize {
@@ -466,6 +588,14 @@ pub fn adjust_setting(settings: &mut Settings, row_index: usize, forward: bool, 
         }
         ROW_HDR => {
             settings.hdr_enabled = !settings.hdr_enabled;
+            true
+        }
+        ROW_CURSOR_CAPTURE => {
+            settings.cursor_capture = !settings.cursor_capture;
+            true
+        }
+        ROW_CURSOR_GESTURES => {
+            settings.cursor_gestures = !settings.cursor_gestures;
             true
         }
         row => {

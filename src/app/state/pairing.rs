@@ -146,7 +146,7 @@ impl App {
                         mac: outcome.mac,
                         // Only reaches a genuinely new host — `upsert_known_host` keeps an
                         // existing record's pins and wol_auto.
-                        pinned: vec![store::DESKTOP_PIN_ID.to_string()],
+                        games: store::pinned_only(store::DESKTOP_PIN_ID),
                         ..KnownHost::default()
                     },
                 );

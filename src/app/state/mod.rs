@@ -3,11 +3,13 @@
 //! Rendering counterparts live in `app::view`.
 mod about;
 pub(crate) mod addhost;
+pub(crate) mod cardmenu;
 mod cursorsettings;
 pub(crate) mod diagnostics;
 mod edithost;
 mod experimental;
 mod forget;
+pub(crate) mod gamesettings;
 mod home;
 pub(crate) mod hostmenu;
 mod pairing;

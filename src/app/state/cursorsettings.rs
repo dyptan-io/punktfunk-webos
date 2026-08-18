@@ -14,7 +14,9 @@ impl App {
         self.screen = Screen::CursorSettings;
     }
 
-    /// All rows are plain Left/Right/Confirm toggles. Back saves and returns to Settings.
+    /// All rows are plain Left/Right/Confirm toggles. Back saves and returns to whichever
+    /// settings screen opened it — the per-game one keeps editing its own copy while here
+    /// (see `App::settings_target`), so this handler needs no branch of its own for it.
     pub(crate) fn handle_cursor_settings_event(&mut self, ev: MenuEvent) {
         if ui::widgets::list_nav(
             &mut self.cursor_settings_focused,
@@ -24,20 +26,32 @@ impl App {
             self.modal_focus_anim = Some(Instant::now());
             return;
         }
-        match (self.cursor_settings_focused, ev) {
-            (menu::CURSOR_ROW_CAPTURE, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
-                let from = self.settings.cursor_capture;
-                self.settings.cursor_capture = !from;
-                self.switch_anim = Some((Instant::now(), from, self.cursor_settings_focused));
-            }
-            (menu::CURSOR_ROW_GESTURES, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
-                let from = self.settings.cursor_gestures;
-                self.settings.cursor_gestures = !from;
-                self.switch_anim = Some((Instant::now(), from, self.cursor_settings_focused));
+        let row = self.cursor_settings_focused;
+        match (row, ev) {
+            // Both rows are plain toggles, so they go through the same mutator every
+            // settings row uses — `cursor_logical_row` is where the dense `CURSOR_ROW_*`
+            // indices meet the logical `ROW_*` ids the override table is keyed by.
+            (_, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
+                let logical = menu::cursor_logical_row(row);
+                let from = menu::toggle_value(self.settings_target(), logical);
+                let detected = self.detected_gamepad_type;
+                if menu::adjust_setting(self.settings_target_mut(), logical, true, detected) {
+                    self.capture_game_override(logical);
+                    if let Some(from) = from {
+                        self.switch_anim = Some((Instant::now(), from, row));
+                    }
+                }
             }
             (_, MenuEvent::Back) => {
-                self.persist();
-                self.screen = Screen::Settings;
+                match self.game_settings {
+                    // The per-game copy is saved once, on the way out of its own screen —
+                    // this is a step back into it, not out of the flow.
+                    Some(_) => self.screen = Screen::Settings(menu::SettingsScope::Game),
+                    None => {
+                        self.persist();
+                        self.screen = Screen::Settings(menu::SettingsScope::Global);
+                    }
+                }
             }
             _ => {}
         }

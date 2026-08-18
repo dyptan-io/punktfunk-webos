@@ -38,10 +38,11 @@ impl App {
         fonts: &ui::text::Fonts,
     ) -> Option<(usize, usize, Rect, Rect)> {
         match screen {
-            Screen::Settings => {
-                let (card, content) = view::settings::layout(screen_w, screen_h);
-                let visible = view::settings::visible_rows(screen_h);
-                Some((menu::settings_row_count(), visible, card, content))
+            Screen::Settings(_) => {
+                let set = self.row_set();
+                let (card, content) = view::settings::layout(set, screen_w, screen_h);
+                let visible = view::settings::visible_rows(set, screen_h);
+                Some((menu::settings_row_count(set), visible, card, content))
             }
             Screen::About => {
                 let card = view::about::card_rect(screen_w, screen_h);
@@ -143,7 +144,7 @@ impl App {
         // (see `view::settings::PEEK`). The clamps then pin the first and last positions flush,
         // where there is genuinely nothing beyond the edge to hint at.
         let bias = match screen {
-            Screen::Settings => view::settings::PEEK as i32,
+            Screen::Settings(_) => view::settings::PEEK as i32,
             _ => 0,
         };
         let target = (offset as i32 * stride - bias)
@@ -166,7 +167,7 @@ impl App {
     /// Same as `scroll_stride`, but for an explicit screen — see `scroll_geometry_for`.
     pub(crate) fn scroll_stride_for(&self, screen: Screen, fonts: &ui::text::Fonts) -> i32 {
         match screen {
-            Screen::Settings => ui::widgets::FOCUS_ROW_H as i32 + ui::widgets::FOCUS_ROW_GAP,
+            Screen::Settings(_) => ui::widgets::FOCUS_ROW_H as i32 + ui::widgets::FOCUS_ROW_GAP,
             Screen::About => view::about::line_stride(fonts.raster, fonts.value),
             _ => 1,
         }
@@ -276,7 +277,7 @@ impl App {
         fonts: &ui::text::Fonts,
     ) -> Option<Rect> {
         match screen {
-            Screen::Settings => {
+            Screen::Settings(_) => {
                 let (total, _, _, content) = self.scroll_geometry_for(screen, screen_w, screen_h, fonts)?;
                 // Positioned from the animated pixel offset, not the row index: the baked
                 // list is cropped at that offset, and the focus tile *is* the focused row
@@ -354,7 +355,7 @@ impl App {
     pub(crate) fn dropdown_options_len(&self, row: usize) -> usize {
         match self.screen {
             Screen::Diagnostics => menu::LOG_LEVEL_OPTIONS.len(),
-            _ => menu::dropdown_option_count(menu::settings_logical_row(row)),
+            _ => menu::dropdown_option_count(menu::settings_logical_row(self.row_set(), row)),
         }
     }
 
@@ -368,7 +369,12 @@ impl App {
     pub(crate) fn with_modal_screen<R>(&self, f: impl FnOnce(&dyn ui::ModalScreen) -> R) -> Option<R> {
         Some(match self.screen {
             Screen::Home => return None,
-            Screen::Settings => f(&view::settings::Modal),
+            // One screen, two scopes: the dim title suffix is the only thing the per-game
+            // one adds, and it comes from the scratch copy that scope implies.
+            Screen::Settings(set) => f(&view::settings::Modal {
+                set,
+                game: self.game_settings.as_ref().map(|gs| gs.title.as_str()),
+            }),
             Screen::Pairing => f(&view::pairing::Modal {
                 pin_digits: &self.pin_digits,
                 status: self.pairing_status.as_ref(),
@@ -414,7 +420,8 @@ impl App {
                 rooted: Self::rooted(),
             }),
             Screen::CursorSettings => f(&view::cursorsettings::Modal {
-                settings: &self.settings,
+                settings: self.settings_target(),
+                over: &self.editing_override(),
             }),
             Screen::SendLogs => f(&view::sendlogs::Modal),
         })

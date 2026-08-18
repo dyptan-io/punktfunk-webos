@@ -117,6 +117,28 @@ pub fn title_strip_h(raster: &dyn TextRaster, font: FontId, card_h: u32) -> u32 
     (raster.height(font) + TITLE_STRIP_PAD).min(card_h as i32 / 3).max(1) as u32
 }
 
+/// Height of one row of the submenu a held card raises over its title strip.
+pub const CARD_MENU_ROW_H: u32 = 46;
+
+/// Gap between the title strip's "this game has settings overrides" dot and the title. The
+/// dot itself is [`super::rows::MARK_DOT_R`] — the same mark the settings rows wear.
+const TITLE_DOT_GAP: i32 = 8;
+
+/// The focused submenu row's band: a darkening of the frost rather than a fill over it, and
+/// edge to edge with square corners so it reads as a band across the panel rather than a pill
+/// floating on the card's art. Composited by `app::render::compose`, not baked — see
+/// [`Canvas::poster_menu_rows`].
+pub const CARD_MENU_ROW_FOCUS: Color = Color::RGBA(0x00, 0x00, 0x00, 0x9a);
+
+/// Height of the whole frosted panel when `rows` submenu entries sit under the title.
+/// Shared by the tile builder and the compose geometry, like [`title_strip_h`] — and it
+/// deliberately ignores that function's third-of-a-card cap: the panel is meant to climb
+/// the card, which is what says the menu belongs to it.
+pub fn card_menu_strip_h(raster: &dyn TextRaster, font: FontId, card_h: u32, rows: usize) -> u32 {
+    let panel = title_strip_h(raster, font, card_h) + rows as u32 * CARD_MENU_ROW_H;
+    panel.min(card_h.max(1))
+}
+
 /// Vertical breathing room around the title strip's single line.
 const TITLE_STRIP_PAD: i32 = 16;
 /// Left/right inset of the strip's label, doubled when measuring the space it has.
@@ -184,7 +206,15 @@ impl Canvas<'_, '_> {
 
     /// The frosted title strip overlaying a focused card's bottom edge, drawn over a copy
     /// of the art beneath it so the blur is real frost rather than a flat scrim.
-    pub fn poster_title_strip(&mut self, strip: Rect, title: &str) -> Result<()> {
+    pub fn poster_title_strip(&mut self, strip: Rect, title: &str, overridden: bool) -> Result<()> {
+        self.poster_frost_panel(strip);
+        self.poster_strip_label(strip, title, overridden)
+    }
+
+    /// The frosted glass alone: blur, tint, and the bottom-rounded clip. Split out because
+    /// the held-card submenu frosts a much taller panel than the one line its title
+    /// occupies, and both must end on the same rounded edge as the card's art.
+    pub fn poster_frost_panel(&mut self, strip: Rect) {
         self.painter.blur_rect(strip, TITLE_STRIP_BLUR);
         // Rounded at the bottom only, to sit inside the card's own rounded corners rather
         // than jutting out square past the art. One rounded rect grown upward by its
@@ -202,11 +232,74 @@ impl Canvas<'_, '_> {
         // it back out into those corners — trim everything to the shape once, so art and
         // frost end on the same rounded edge.
         self.painter.clip_to_rounded_rect(shaped, CARD_RADIUS);
+    }
+
+    /// The title line itself, centred in `band`.
+    ///
+    /// `overridden` puts an amber dot in front of the name — the same mark an overridden
+    /// settings row wears, so "this game does not use the global settings" reads the same
+    /// on the grid as it does inside the screen that made it true.
+    pub fn poster_strip_label(&mut self, band: Rect, title: &str, overridden: bool) -> Result<()> {
         let font = self.fonts.value;
-        let avail = strip.width().saturating_sub(2 * TITLE_STRIP_INSET as u32);
+        let mut x = band.x() + TITLE_STRIP_INSET;
+        let y = band.y() + (band.height() as i32 - self.fonts.raster.height(font)) / 2;
+        if overridden {
+            self.mark_dot(x, y + self.fonts.raster.height(font) / 2, theme().warning);
+            x += 2 * super::rows::MARK_DOT_R + TITLE_DOT_GAP;
+        }
+        let avail = band
+            .width()
+            .saturating_sub((x - band.x()) as u32 + TITLE_STRIP_INSET as u32);
         let label = ellipsize(self.fonts.raster, font, title, avail);
-        let y = strip.y() + (strip.height() as i32 - self.fonts.raster.height(font)) / 2;
-        self.text(font, &label, strip.x() + TITLE_STRIP_INSET, y, theme().text)?;
+        self.text(font, &label, x, y, theme().text)?;
+        Ok(())
+    }
+
+    /// The submenu rows under a held card's title, inside the frost [`poster_title_strip`]
+    /// has already laid down (which is why this takes the rows' band rather than drawing
+    /// its own background).
+    ///
+    /// Deliberately focus-free: every row is drawn identically, and the selection is a
+    /// translucent [`crate::ui::render::DrawCmd::Fill`] the compose path lays over this tile
+    /// (see [`CARD_MENU_ROW_FOCUS`]). Baking it in instead would put this whole panel — a
+    /// full-card art rescale plus a blur of it — on the rebuild path of every row move,
+    /// which is exactly the work the tile cache exists to avoid repeating.
+    /// `marked` is the row that wears the override dot. It sits at the same x the collapsed
+    /// title's dot does ([`Canvas::poster_strip_label`]), so raising the panel moves the mark
+    /// straight down its own column onto the Settings row that owns it — the title is left
+    /// carrying only the name.
+    pub fn poster_menu_rows(&mut self, band: Rect, rows: &[(&str, &str)], marked: Option<usize>) -> Result<()> {
+        let font = self.fonts.value;
+        let icon = 22u32;
+        for (i, (glyph, label)) in rows.iter().enumerate() {
+            let row = Rect::new(
+                band.x(),
+                band.y() + i as i32 * CARD_MENU_ROW_H as i32,
+                band.width(),
+                CARD_MENU_ROW_H,
+            );
+            let fg = theme().text;
+            // Clear of the mark's column (`marked`, at one inset in): the rows start past
+            // where a dot can be, so a marked and an unmarked panel read the same.
+            let icon_x = row.x() + 4 * TITLE_STRIP_INSET;
+            self.icon(
+                Rect::new(icon_x, row.y() + (row.height() as i32 - icon as i32) / 2, icon, icon),
+                glyph,
+                fg,
+            )?;
+            let text_x = icon_x + icon as i32 + 10;
+            let avail = row.right().saturating_sub(text_x + 2 * TITLE_STRIP_INSET).max(0) as u32;
+            let label = ellipsize(self.fonts.raster, font, label, avail);
+            let y = row.y() + (row.height() as i32 - self.fonts.raster.height(font)) / 2;
+            self.text(font, &label, text_x, y, fg)?;
+            if marked == Some(i) {
+                self.mark_dot(
+                    row.x() + TITLE_STRIP_INSET,
+                    row.y() + row.height() as i32 / 2,
+                    theme().warning,
+                );
+            }
+        }
         Ok(())
     }
 }

@@ -1,5 +1,5 @@
-/// How long a button must be held to take a gesture's long-press branch: pin/unpin
-/// instead of launch on a Home card (`runtime::input::PIN_HOLD`), right-click instead
+/// How long a button must be held to take a gesture's long-press branch: the card's own
+/// menu instead of launch on a Home card (`runtime::input::CARD_HOLD`), right-click instead
 /// of left on the Magic Remote's OK during a stream
 /// (`platform::webos::mouse::OkPress`). One value so a hold feels the same
 /// wherever the user learns it.

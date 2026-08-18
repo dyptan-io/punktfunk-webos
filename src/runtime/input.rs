@@ -16,14 +16,14 @@ use super::*;
 pub(super) const EXIT_HOLD: Duration = Duration::from_millis(1000);
 
 /// How long OK must be held on a focused Home game card to pin/unpin it instead
-/// of launching it — see `pin_hold_gate`.
-pub(super) const PIN_HOLD: Duration = crate::core::event::LONG_PRESS;
+/// of launching it — see `card_hold_gate`.
+pub(super) const CARD_HOLD: Duration = crate::core::event::LONG_PRESS;
 
 /// An in-flight hold-to-pin gesture: OK is down on a pinnable Home card. The
-/// toggle fires the moment `PIN_HOLD` elapses (so the pin visibly lands under
+/// toggle fires the moment `CARD_HOLD` elapses (so the pin visibly lands under
 /// the still-held button), and `fired` then makes the release a no-op instead
 /// of the launch a quick tap would have dispatched.
-pub(super) struct PinHold {
+pub(super) struct CardHold {
     pub(super) since: Instant,
     pub(super) focus: HomeFocus,
     pub(super) fired: bool,
@@ -382,8 +382,8 @@ pub(super) struct UiInput {
     /// dispatches Back exactly once no matter how SDL reports (or misreports)
     /// repeats for it.
     menu_back_down: bool,
-    /// Hold-to-pin on Home (see `PIN_HOLD`), while OK is held on a pinnable card.
-    pub(super) pin_held: Option<PinHold>,
+    /// Hold-to-pin on Home (see `CARD_HOLD`), while OK is held on a pinnable card.
+    pub(super) card_held: Option<CardHold>,
     stick_nav: crate::platform::webos::input::StickMenuNav,
 }
 
@@ -395,12 +395,28 @@ pub(super) enum EventAction {
     Launch,
 }
 
-/// Hold-to-pin arbitration (see `PIN_HOLD`). `MenuEvent` has no press/release
+/// Hold-to-pin arbitration (see `CARD_HOLD`). `MenuEvent` has no press/release
 /// notion, so the gesture works off raw SDL events: OK down on a pinnable Home
 /// card starts the hold and is swallowed, and the launch can only ever come
 /// from the release. `Some` means the event was the gesture's and goes no
 /// further.
-fn pin_hold_gate(
+/// Starts a hold on the focused grid card, if the focus is on one. Both the pointer press
+/// and the OK press arm through here so the two gestures can never disagree about what a
+/// hold is; `screen_w` is the full screen width, the sidebar taken off inside.
+fn arm_card_hold(input: &mut UiInput, app: &App, screen_w: u32) -> bool {
+    let columns = crate::app::view::home::grid_columns(screen_w.saturating_sub(crate::ui::widgets::SIDEBAR_W));
+    if app.focused_pin_id(columns).is_none() {
+        return false;
+    }
+    input.card_held = Some(CardHold {
+        since: Instant::now(),
+        focus: app.home_focus,
+        fired: false,
+    });
+    true
+}
+
+fn card_hold_gate(
     app: &mut App,
     event: &sdl2::event::Event,
     input: &mut UiInput,
@@ -410,12 +426,11 @@ fn pin_hold_gate(
 ) -> Option<EventAction> {
     use sdl2::event::Event;
     let (w, h) = (display_mode.w as u32, display_mode.h as u32);
-    // The Magic Remote's pointer delivers OK as a left mouse button, so give it
-    // the same hold-to-pin gesture the D-pad's Confirm has: a press on a hovered
-    // pinnable Home card starts the hold and is swallowed (the pin fires on the
-    // hold-elapsed tick, same as `PIN_HOLD` above), and the tap/launch comes only
-    // from the release. A press on anything else falls through to the normal
-    // click path.
+    // The Magic Remote's pointer delivers OK as a left mouse button, so give it the same
+    // hold gesture the D-pad's Confirm has: a press on a hovered Home card starts the hold
+    // and is swallowed (the card's menu opens on the hold-elapsed tick, same as `CARD_HOLD`
+    // above), and the tap/launch comes only from the release. A press on anything else falls
+    // through to the normal click path.
     if let Event::MouseButtonDown {
         mouse_btn: sdl2::mouse::MouseButton::Left,
         x,
@@ -423,28 +438,25 @@ fn pin_hold_gate(
         ..
     } = *event
     {
-        if !matches!(app.screen, Screen::Home) {
+        // A press while the menu is up belongs to the menu, not to a fresh gesture — the
+        // hold fires on elapsed (see `ui_flow`'s `CARD_HOLD` check), so the panel is already
+        // open with OK still down, and re-arming here would re-open it from row 0.
+        if !matches!(app.screen, Screen::Home) || app.card_menu.is_some() {
             return None;
         }
         // Land hover focus on the press point first — a button press can jostle the
         // remote off the last motion position.
         *dirty |= app.handle_mouse_motion(x, y, w, h, fonts);
-        if input.pin_held.is_some() {
+        if input.card_held.is_some() {
             return Some(EventAction::Next);
         }
-        let columns = crate::app::view::home::grid_columns(w.saturating_sub(crate::ui::widgets::SIDEBAR_W));
-        if app.focused_pin_id(columns).is_some() {
-            input.pin_held = Some(PinHold {
-                since: Instant::now(),
-                focus: app.home_focus,
-                fired: false,
-            });
+        if arm_card_hold(input, app, w) {
             return Some(EventAction::Next);
         }
         return None;
     }
-    // Release of a pointer OK: resolve whatever the matching press started. A fired
-    // hold already pinned (swallow); a quick tap confirms whatever's under the
+    // Release of a pointer OK: resolve whatever the matching press started. A fired hold has
+    // already opened the card's menu (swallow); a quick tap confirms whatever's under the
     // pointer now, exactly as an immediate click would have.
     if let Event::MouseButtonUp {
         mouse_btn: sdl2::mouse::MouseButton::Left,
@@ -453,7 +465,7 @@ fn pin_hold_gate(
         ..
     } = *event
     {
-        let hold = input.pin_held.take()?;
+        let hold = input.card_held.take()?;
         *dirty = true;
         if hold.fired {
             return Some(EventAction::Next);
@@ -476,21 +488,16 @@ fn pin_hold_gate(
             if crate::platform::webos::input::menu_event_for_button(button) == Some(MenuEvent::Confirm)
     );
     if confirm_down {
-        // OK stays the gesture's until released, whatever the toggle put on
-        // screen: a hold that hit the pin limit opens the `PinLimit` alert
-        // *under the still-held button*, and the next auto-repeat KeyDown would
-        // otherwise dispatch Confirm to it and dismiss it instantly.
-        if input.pin_held.is_some() {
+        // OK stays the gesture's until released, whatever the hold put on screen: the
+        // card menu opens *under the still-held button*, and the next auto-repeat KeyDown
+        // would otherwise dispatch Confirm straight into it.
+        if input.card_held.is_some() {
             return Some(EventAction::Next);
         }
-        let columns =
-            crate::app::view::home::grid_columns((display_mode.w as u32).saturating_sub(crate::ui::widgets::SIDEBAR_W));
-        if matches!(app.screen, Screen::Home) && app.focused_pin_id(columns).is_some() {
-            input.pin_held = Some(PinHold {
-                since: Instant::now(),
-                focus: app.home_focus,
-                fired: false,
-            });
+        if matches!(app.screen, Screen::Home)
+            && app.card_menu.is_none()
+            && arm_card_hold(input, app, display_mode.w as u32)
+        {
             return Some(EventAction::Next);
         }
         return None;
@@ -505,11 +512,10 @@ fn pin_hold_gate(
             if crate::platform::webos::input::menu_event_for_button(button) == Some(MenuEvent::Confirm)
     );
     // This press was ours (tap or hold) — swallow the release.
-    let hold = ends_hold.then(|| input.pin_held.take()).flatten()?;
+    let hold = ends_hold.then(|| input.card_held.take()).flatten()?;
     *dirty = true;
-    // A quick tap: the press never dispatched, so do it now. A hold that already
-    // toggled, or one whose screen/focus moved out from under it, resolves to
-    // nothing.
+    // A quick tap: the press never dispatched, so do it now. A hold that already opened its
+    // menu, or one whose screen/focus moved out from under it, resolves to nothing.
     let tapped = !hold.fired && matches!(app.screen, Screen::Home) && hold.focus == app.home_focus;
     let launched = tapped && app.press(display_mode.w as u32, display_mode.h as u32, fonts).is_some();
     Some(if launched {
@@ -587,7 +593,7 @@ pub(super) fn handle_ui_event(
             }
             // List-modal screens (row-per-page, not pixel scroll): one detent
             // moves focus exactly one row, same as an Up/Down key press.
-            Screen::Settings
+            Screen::Settings(_)
             | Screen::HostMenu
             | Screen::WakeSettings
             | Screen::Diagnostics
@@ -602,7 +608,7 @@ pub(super) fn handle_ui_event(
         }
         return EventAction::Next;
     }
-    if let Some(action) = pin_hold_gate(app, &event, input, display_mode, fonts, dirty) {
+    if let Some(action) = card_hold_gate(app, &event, input, display_mode, fonts, dirty) {
         return action;
     }
     // Any other event might change what's on screen (focus/hover, a typed

@@ -103,6 +103,17 @@ impl App {
             return false;
         }
         match self.screen {
+            // The held card's submenu takes hover whole, like an open dropdown does — the
+            // grid behind it must not steal focus out from under an open menu.
+            Screen::Home if self.card_menu.is_some() => {
+                let Some(row) = self.card_menu_row_at(x, y, screen_w, fonts) else {
+                    return false;
+                };
+                let menu = self.card_menu.as_mut().expect("guarded by the arm");
+                let changed = menu.focused != row;
+                menu.focus(row);
+                changed
+            }
             Screen::Home => {
                 // The ⋯ button sits inside its row, so it's tested first — same order
                 // as `handle_mouse_click`, so hover previews exactly what a click hits.
@@ -133,7 +144,7 @@ impl App {
                 false
             }
             // Dropdown case already handled above.
-            Screen::Settings => {
+            Screen::Settings(_) => {
                 let Some(row) = self.settings_row_at(x, y, screen_w, screen_h) else {
                     return false;
                 };
@@ -155,10 +166,10 @@ impl App {
                 let Some(row) = self.modal_list_row_at(x, y, screen_w, screen_h, fonts) else {
                     return false;
                 };
-                let focused = match self.screen {
-                    Screen::Diagnostics => &mut self.diagnostics_focused,
-                    Screen::CursorSettings => &mut self.cursor_settings_focused,
-                    _ => &mut self.experimental_focused,
+                // Same per-screen field table the keyboard path indexes, so hover and
+                // D-pad focus can never name different fields.
+                let Some(focused) = self.list_modal_focused_mut() else {
+                    return false;
                 };
                 let changed = *focused != row;
                 *focused = row;
@@ -214,17 +225,9 @@ impl App {
     /// exactly where options are drawn. `None` for a screen with no dropdown.
     pub(crate) fn dropdown_geom(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<(Rect, i32)> {
         match self.screen {
-            Screen::Settings => {
-                let (_, content) = view::settings::layout(screen_w, screen_h);
-                let stride = ui::widgets::focus_row_stride() as i32;
-                let total = menu::settings_row_count();
-                // Anchor to the animated offset so an open dropdown stays attached to
-                // its row while the list is still settling.
-                let px = self
-                    .modal_scroll_px
-                    .clamp(0, Self::max_scroll_px(total, stride, content.height()));
-                Some((content, px))
-            }
+            // Anchored to the animated offset (`settings_content_scroll`) so an open
+            // dropdown stays attached to its row while the list is still settling.
+            Screen::Settings(_) => Some(self.settings_content_scroll(screen_w, screen_h)),
             // Diagnostics doesn't scroll, so 0.
             Screen::Diagnostics => Some((self.modal_list_geometry(screen_w, screen_h, fonts)?.1, 0)),
             _ => None,
@@ -239,7 +242,7 @@ impl App {
         if !content.contains_point((x, y)) {
             return None;
         }
-        let total = menu::settings_row_count();
+        let total = menu::settings_row_count(self.row_set());
         (0..total).find(|&r| {
             let rect = ui::widgets::focus_row_rect_at_px(content, r, scroll_px);
             // Clipped edge rows aren't hoverable: a focused row composites on its own
@@ -252,9 +255,10 @@ impl App {
     /// geometry `settings_row_at`'s hit test and `settings_row_rect`'s lookup both index
     /// into, so a scrolled list can't put them at odds.
     fn settings_content_scroll(&self, screen_w: u32, screen_h: u32) -> (Rect, i32) {
-        let (_, content) = view::settings::layout(screen_w, screen_h);
+        let set = self.row_set();
+        let (_, content) = view::settings::layout(set, screen_w, screen_h);
         let stride = ui::widgets::focus_row_stride() as i32;
-        let total = menu::settings_row_count();
+        let total = menu::settings_row_count(set);
         let scroll_px = self
             .modal_scroll_px
             .clamp(0, Self::max_scroll_px(total, stride, content.height()));
@@ -273,7 +277,10 @@ impl App {
     /// click and every later drag motion need.
     fn bitrate_row_and_track(&self, screen_w: u32, screen_h: u32) -> (Rect, Rect) {
         let row_rect = self.settings_row_rect(self.settings_focused, screen_w, screen_h);
-        (row_rect, ui::widgets::slider_track_rect(row_rect))
+        // A marked row's track shifts left (see `row_layout`), so the drag reads the same
+        // geometry the draw did rather than deriving its own.
+        let marked = menu::override_is_set(&self.editing_override(), menu::ROW_BITRATE);
+        (row_rect, ui::widgets::row_layout(row_rect, marked).track)
     }
 
     /// Sets the Bitrate row from the pointer's current x against its track — shared by the
@@ -281,7 +288,8 @@ impl App {
     /// all) and every drag motion after it.
     fn set_bitrate_from_x(&mut self, x: i32, track: Rect) {
         let fraction = (x - track.x()) as f32 / track.width() as f32;
-        menu::set_bitrate_fraction(&mut self.settings, fraction);
+        menu::set_bitrate_fraction(self.settings_target_mut(), fraction);
+        self.capture_game_override(menu::ROW_BITRATE);
     }
 
     /// Drags the Bitrate slider to `x`.
@@ -415,6 +423,17 @@ impl App {
         // *places* focus (or bails on a click that landed on nothing); the shared
         // `press` below is what confirms it, so a click and an OK press act alike.
         match self.screen {
+            Screen::Home if self.card_menu.is_some() => {
+                // The held card's submenu is over the grid: a click either picks one of its
+                // rows or dismisses it. Nothing underneath is reachable while it is up.
+                let Some(row) = self.card_menu_row_at(x, y, screen_w, fonts) else {
+                    self.close_card_menu();
+                    return None;
+                };
+                if let Some(menu) = self.card_menu.as_mut() {
+                    menu.focus(row);
+                }
+            }
             Screen::Home => {
                 // The ⋯ button sits inside its row, so it has to be tested first or the
                 // click just reads as a click on the host.
@@ -447,7 +466,7 @@ impl App {
                     self.home_focus = HomeFocus::Grid(idx);
                 }
             }
-            Screen::Settings => {
+            Screen::Settings(_) => {
                 // `?` bails if the click hit the gap between rows or outside the
                 // viewport — nothing to focus or confirm.
                 self.settings_focused = self.settings_row_at(x, y, screen_w, screen_h)?;
@@ -455,8 +474,8 @@ impl App {
                 // arms the drag (see `handle_mouse_motion`) instead of nudging one notch the
                 // way `Confirm` below would — a slider is for landing on a value, not stepping
                 // to it one click at a time.
-                if menu::settings_logical_row(self.settings_focused) == menu::ROW_BITRATE
-                    && menu::row_lock(menu::ROW_BITRATE, &self.settings, self.detected_gamepad_type).is_none()
+                if menu::settings_logical_row(self.row_set(), self.settings_focused) == menu::ROW_BITRATE
+                    && menu::row_lock(menu::ROW_BITRATE, self.settings_target(), self.detected_gamepad_type).is_none()
                 {
                     let (row_rect, track) = self.bitrate_row_and_track(screen_w, screen_h);
                     // Full row height, not just the thin track — vertical precision on a

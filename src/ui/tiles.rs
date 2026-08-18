@@ -79,13 +79,107 @@ pub fn render_card_title_tile(
     card_h: u32,
     title: &str,
     art: Option<&Pixmap>,
+    overridden: bool,
 ) -> Result<Painter> {
     let strip_h = title_strip_h(fonts.raster, fonts.value, card_h);
     let mut p = Painter::new(card_w.max(1), strip_h);
     let mut c = Canvas::tile(&mut p, text_cache, fonts);
     let strip = Rect::new(0, 0, card_w, strip_h);
     c.poster_art(Rect::new(0, -((card_h - strip_h) as i32), card_w, card_h), title, art);
-    c.poster_title_strip(strip, title)?;
+    c.poster_title_strip(strip, title, overridden)?;
+    Ok(p)
+}
+
+/// One held card's frost panel, as [`render_card_menu_tile`] takes it. `title` and `rows` are
+/// here for the *sizing* they imply (the placeholder poster's text, the panel's height), not
+/// to be drawn — both have their own tiles.
+pub struct CardMenuTile<'a> {
+    pub card_w: u32,
+    pub card_h: u32,
+    pub title: &'a str,
+    pub art: Option<&'a Pixmap>,
+    /// `(icon glyph, label)` per row.
+    pub rows: &'a [(&'a str, &'a str)],
+}
+
+/// The frosted glass a held card raises, and nothing else — no title, no row text.
+///
+/// The panel is composited from four pieces (this, [`render_card_menu_title_tile`], the
+/// selection band, [`render_card_menu_rows_tile`]) rather than baked whole, because each has
+/// to move differently while it opens:
+///
+/// - the frost can only *wipe*: it carries a fragment of the card's cover baked in for the
+///   blur to work on, and translating that reads as the card sliding under the glass;
+/// - the title and the rows have to *travel*, riding the top edge of the growing window —
+///   the title is already on screen at the card's bottom before the menu opens, so it
+///   continues upward from there rather than restarting;
+/// - the band is a translucent darkening, so text baked under it would dim with the frost.
+///
+/// See `app::render::compose`, which is the one place those four motions are reconciled.
+pub fn render_card_menu_tile(text_cache: &mut TextCache, fonts: &Fonts, card: CardMenuTile<'_>) -> Result<Painter> {
+    let CardMenuTile {
+        card_w,
+        card_h,
+        title,
+        art,
+        rows,
+    } = card;
+    let panel_h = card_menu_strip_h(fonts.raster, fonts.value, card_h, rows.len());
+    let mut p = Painter::new(card_w.max(1), panel_h);
+    let mut c = Canvas::tile(&mut p, text_cache, fonts);
+    // Same trick as the title strip: the card's art re-drawn translated up by everything
+    // above the panel, so the frost blurs the cover it actually sits on.
+    c.poster_art(
+        Rect::new(0, -((card_h.saturating_sub(panel_h)) as i32), card_w, card_h),
+        title,
+        art,
+    );
+    c.poster_frost_panel(Rect::new(0, 0, card_w, panel_h));
+    Ok(p)
+}
+
+/// The panel's title line alone, on a transparent tile — drawn at the same inset and
+/// baseline [`render_card_title_tile`] uses, so the moment the menu opens and this takes
+/// over, the name does not shift by a pixel.
+///
+/// No override dot here, unlike the collapsed strip: with the panel open the mark moves down
+/// onto the Settings row that owns it (see [`Canvas::poster_menu_rows`]).
+pub fn render_card_menu_title_tile(
+    text_cache: &mut TextCache,
+    fonts: &Fonts,
+    card_w: u32,
+    card_h: u32,
+    title: &str,
+) -> Result<Painter> {
+    let title_h = title_strip_h(fonts.raster, fonts.value, card_h);
+    let mut p = Painter::new(card_w.max(1), title_h.max(1));
+    let mut c = Canvas::tile(&mut p, text_cache, fonts);
+    c.poster_strip_label(Rect::new(0, 0, card_w, title_h), title, false)?;
+    Ok(p)
+}
+
+/// Height of [`render_card_menu_rows_tile`]'s output — the panel's rows band, i.e. what is
+/// left of it under the title line.
+fn card_menu_rows_h(raster: &dyn TextRaster, font: FontId, card_h: u32, rows: usize) -> u32 {
+    card_menu_strip_h(raster, font, card_h, rows).saturating_sub(title_strip_h(raster, font, card_h))
+}
+
+/// The submenu's icons and labels alone, on a transparent tile the width of the card — laid
+/// over the selection band so the band darkens the frost and nothing else. Every row draws
+/// identically (see [`Canvas::poster_menu_rows`]), so which row is focused is in no tile's
+/// cache key and moving between them rebuilds nothing.
+pub fn render_card_menu_rows_tile(
+    text_cache: &mut TextCache,
+    fonts: &Fonts,
+    card_w: u32,
+    card_h: u32,
+    rows: &[(&str, &str)],
+    marked: Option<usize>,
+) -> Result<Painter> {
+    let rows_h = card_menu_rows_h(fonts.raster, fonts.value, card_h, rows.len());
+    let mut p = Painter::new(card_w.max(1), rows_h.max(1));
+    let mut c = Canvas::tile(&mut p, text_cache, fonts);
+    c.poster_menu_rows(Rect::new(0, 0, card_w, rows_h), rows, marked)?;
     Ok(p)
 }
 

@@ -6,7 +6,7 @@
 //!
 //! App-side on purpose: they name this app's screens and its `Settings`, which is exactly
 //! what a widget library must not know.
-use crate::core::model::{GamepadType, LogLevelOverride, Settings};
+use crate::core::model::{GamepadType, LogLevelOverride, Settings, SettingsOverride};
 
 /// Focused widget in the open modal. Each variant carries its content,
 /// so value changes (not just focus moves) invalidate the tile.
@@ -14,7 +14,9 @@ use crate::core::model::{GamepadType, LogLevelOverride, Settings};
 pub enum ModalFocusKey {
     /// The detected pad type rides along because the Controller row's "Automatic (...)" value
     /// depends on it, not just on `Settings` — a hotplug alone doesn't touch `Settings` at all.
-    SettingsRow(usize, Settings, Option<GamepadType>),
+    /// The override rides along because it decides which rows wear a "use global" button —
+    /// a change there moves no value in `Settings` at all.
+    SettingsRow(usize, Settings, SettingsOverride, Option<GamepadType>),
     WakeToggle(bool),
     WakeButton(usize),
     PairingDigit(usize, u8),
@@ -27,8 +29,9 @@ pub enum ModalFocusKey {
     /// (focused row, log level, stats-overlay on, show-logs on) — any change invalidates the tile.
     DiagnosticsRow(usize, LogLevelOverride, bool, bool),
     ExperimentalRow(usize, bool, bool),
-    /// (focused row, cursor-capture on, cursor-gestures on) — any change invalidates the tile.
-    CursorSettingsRow(usize, bool, bool),
+    /// (focused row, cursor-capture on, cursor-gestures on, which rows are overridden) — any
+    /// change invalidates the tile.
+    CursorSettingsRow(usize, bool, bool, SettingsOverride),
     /// Which `Screen::SendLogs` button is focused (0 = Cancel, 1 = Send).
     SendLogsButton(usize),
 }
@@ -37,7 +40,7 @@ pub enum ModalFocusKey {
 #[derive(PartialEq, Eq, Hash)]
 pub enum ScrollContentKey {
     /// Settings row list + open dropdown row + detected pad type (see `ModalFocusKey::SettingsRow`).
-    Settings(Settings, Option<usize>, Option<GamepadType>),
+    Settings(Settings, SettingsOverride, Option<usize>, Option<GamepadType>),
     /// About window's start line.
     About(usize),
 }
@@ -52,6 +55,9 @@ pub enum ModalShellKey {
     // row content, not even the Bitrate caution — that's the focus tile's job),
     // so the only thing that can actually change it is the close-button hover.
     Settings {
+        /// The per-game screen's dim title suffix — `None` on the global one. The only thing
+        /// separating the two shells.
+        game: Option<String>,
         hover_close: bool,
     },
     Wake {
@@ -102,6 +108,7 @@ pub enum ModalShellKey {
     CursorSettings {
         cursor_capture: bool,
         cursor_gestures: bool,
+        over: SettingsOverride,
         hover_close: bool,
     },
     /// Fixed warning copy + two buttons; only the close (X) hover varies.

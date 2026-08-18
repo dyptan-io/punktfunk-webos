@@ -1,6 +1,8 @@
-//! The generic focusable-row list: `FocusRow`/`RowKind` plus every control
-//! (dropdown pill, slider, switch, confirm button) a row can carry.
-//!
+//! The generic focusable-row list: `FocusRow`/`RowKind`, the row geometry both the draw and
+//! the pointer index by ([`row_layout`]), and the controls a row itself draws — the dropdown
+//! pill, the slider and the switch. What sits *around* a row list lives beside it:
+//! [`super::dropdown`] (the expanded option overlay), [`super::scroll`] (scrollbar and edge
+//! fades) and [`super::confirm`] (the two-button modal's buttons).
 use crate::ui::prelude::*;
 use anyhow::Result;
 
@@ -22,6 +24,7 @@ pub enum RowKind {
 /// One focusable icon + label (+ dropdown pill / slider / switch) row, drawn by
 /// [`FocusRows`]/[`Canvas::focus_row`]. The lists themselves are built per screen in
 /// `app::view`.
+#[derive(Clone)]
 pub struct FocusRow {
     pub icon: &'static str,
     pub label: String,
@@ -45,6 +48,12 @@ pub struct FocusRow {
     /// Confirm can mean, reached with Right, so the row's own action stays a single
     /// press. `None` (the default) draws no button at all.
     pub menu: Option<bool>,
+    /// A small dot in the row's right gutter, in this colour — what marks a row as differing
+    /// from whatever it inherits (a per-game settings override, say). Purely an indicator:
+    /// not focusable, not clickable, carrying no action; what it means, and how it goes away,
+    /// is the caller's business. `None` (the default) draws nothing and leaves the row's
+    /// control the width the dot would have taken.
+    pub mark: Option<Color>,
     /// A small secondary line drawn under the row's label *only while the row is focused*
     /// (e.g. the high-bitrate "may be unstable on Wi-Fi" caution on the Bitrate row).
     /// Unfocused, the label stays vertically centred and nothing is drawn; on focus the
@@ -55,6 +64,7 @@ pub struct FocusRow {
 /// A small caption drawn under a row's label. The color is carried with the text so the
 /// drawing code stays generic — a neutral hint and a caution differ only by which
 /// constructor built them, not by any special-casing in [`Canvas::focus_row`].
+#[derive(Clone)]
 pub struct RowSubtext {
     pub text: String,
     pub color: Color,
@@ -104,6 +114,7 @@ impl FocusRow {
             danger: false,
             locked: false,
             menu: None,
+            mark: None,
             subtext: None,
         }
     }
@@ -200,19 +211,50 @@ pub const SLIDER_VALUE_SLOT_W: i32 = 150;
 /// Extra gap between the track's right edge and the value slot.
 const SLIDER_TRACK_GAP: i32 = 16;
 
-/// A slider row's track rect within `row_rect` — shared by [`Canvas::focus_row`]'s draw and
-/// the pointer path's click/drag hit-testing, so a dragged thumb always lands under the
-/// cursor exactly where the track was drawn.
-pub fn slider_track_rect(row_rect: Rect) -> Rect {
-    let control_pad = 28;
-    let slot_right = row_rect.right() - control_pad;
+/// Radius of a [`FocusRow::mark`] dot. A card's title strip wears the same mark.
+pub const MARK_DOT_R: i32 = 5;
+/// Gap between a row's right edge and whatever sits closest to it — the control on an
+/// unmarked row, the mark on a marked one, so both end on the same line.
+const CONTROL_PAD: i32 = 28;
+/// Gap between the mark and the control it displaces. Tighter than [`CONTROL_PAD`]: the dot
+/// belongs to the row's value, so it reads as part of that group rather than as a third
+/// column of its own.
+const MARK_GAP: i32 = 22;
+
+/// Where a focus row's pieces go: the right edge its control is laid out from, the slider
+/// track, and the mark's dot.
+///
+/// One function for all three, so [`Canvas::focus_row`]'s draw and the pointer path's
+/// click/drag hit-testing can't disagree — a dragged thumb lands under the cursor exactly
+/// where the track was drawn, marked row or not. A marked row gives the dot's width up off
+/// its right edge and every control shifts left by it, so the dot never lands on a dropdown
+/// pill, a slider's value slot or a toggle switch.
+pub struct RowGeom {
+    pub control_right: i32,
+    pub track: Rect,
+    pub mark: Rect,
+}
+
+pub fn row_layout(row_rect: Rect, marked: bool) -> RowGeom {
+    let reserve = if marked { 2 * MARK_DOT_R + MARK_GAP } else { 0 };
+    let control_right = row_rect.right() - CONTROL_PAD - reserve;
     let track_w = 220u32.min(row_rect.width() / 3);
-    Rect::new(
-        slot_right - SLIDER_VALUE_SLOT_W - SLIDER_TRACK_GAP - track_w as i32,
-        row_rect.y() + (row_rect.height() as i32 - 10) / 2,
-        track_w,
-        10,
-    )
+    let cy = row_rect.y() + row_rect.height() as i32 / 2;
+    RowGeom {
+        control_right,
+        track: Rect::new(
+            control_right - SLIDER_VALUE_SLOT_W - SLIDER_TRACK_GAP - track_w as i32,
+            cy - 5,
+            track_w,
+            10,
+        ),
+        mark: Rect::new(
+            row_rect.right() - CONTROL_PAD - 2 * MARK_DOT_R,
+            cy - MARK_DOT_R,
+            2 * MARK_DOT_R as u32,
+            2 * MARK_DOT_R as u32,
+        ),
+    }
 }
 
 /// A modal's focus-row list: icon + label left, control right, one row per
@@ -320,6 +362,16 @@ pub fn render_focus_rows_tile(
 }
 
 impl Canvas<'_, '_> {
+    /// A [`FocusRow::mark`]-sized dot, from its left edge and vertical centre — for callers
+    /// placing one outside a row (the card title strip), so the two marks can't drift apart.
+    pub fn mark_dot(&mut self, left: i32, cy: i32, color: Color) {
+        self.painter.fill_rounded_rect(
+            Rect::new(left, cy - MARK_DOT_R, 2 * MARK_DOT_R as u32, 2 * MARK_DOT_R as u32),
+            MARK_DOT_R,
+            color,
+        );
+    }
+
     /// Draws one focus row (icon + label + control per `RowKind`) at normal size.
     /// `dropdown_open` is independent of `focused` — a dropdown row's pill brightens while
     /// its overlay is expanded too, not only on row focus.
@@ -332,6 +384,12 @@ impl Canvas<'_, '_> {
         row_rect: Rect,
     ) -> Result<()> {
         self.painter.selectable_fixed(row_rect, focused);
+
+        // Past the row's control, on the right edge — the width `row_layout` took off it.
+        let geom = row_layout(row_rect, row.mark.is_some());
+        if let Some(color) = row.mark {
+            self.painter.fill_rounded_rect(geom.mark, MARK_DOT_R, color);
+        }
 
         let icon_pad = 24;
         let icon_rect = Rect::new(
@@ -367,31 +425,27 @@ impl Canvas<'_, '_> {
         };
         self.text(label_font, &row.label, label_x, label_y, fg)?;
 
-        let control_pad = 28;
         let value_y = row_rect.y() + (row_rect.height() as i32 - self.fonts.raster.height(value_font)) / 2;
         match row.kind {
             RowKind::Dropdown => {
-                let right_edge = row_rect.right() - control_pad;
                 let value_fg = locked_fg(row.locked, focused || dropdown_open, theme().text, theme().muted);
-                self.dropdown_value(row_rect, right_edge, &row.value, value_fg)?;
+                self.dropdown_value(row_rect, geom.control_right, &row.value, value_fg)?;
             }
             RowKind::Slider => {
                 let value_w = self.fonts.raster.measure(value_font, &row.value).0;
-                let slot_right = row_rect.right() - control_pad;
                 self.text(
                     value_font,
                     &row.value,
-                    slot_right - value_w as i32,
+                    geom.control_right - value_w as i32,
                     value_y,
                     locked_fg(row.locked, focused, theme().text, theme().muted),
                 )?;
-                let track = slider_track_rect(row_rect);
                 self.painter
-                    .slider_with_thumb(track, row.fraction, focused, !row.locked);
+                    .slider_with_thumb(geom.track, row.fraction, focused, !row.locked);
             }
             RowKind::Toggle => {
                 let switch = Rect::new(
-                    row_rect.right() - control_pad - 64,
+                    geom.control_right - 64,
                     row_rect.y() + (row_rect.height() as i32 - 34) / 2,
                     64,
                     34,
@@ -406,7 +460,7 @@ impl Canvas<'_, '_> {
                     self.text(
                         value_font,
                         &row.value,
-                        row_rect.right() - control_pad - menu_w - value_w as i32,
+                        geom.control_right - menu_w - value_w as i32,
                         value_y,
                         theme().muted,
                     )?;
@@ -507,290 +561,10 @@ impl Painter {
     }
 }
 
-/// Row height of one dropdown option — also `render_dropdown_option_tile`'s tile size.
-pub const DROPDOWN_OPTION_H: u32 = 56;
-
-/// Scrollbar track+thumb. Rendered as own tile so fade-in/out is alpha
-/// composite, not re-rasterization.
-const SCROLLBAR_TRACK_W: u32 = 6;
-
-pub fn render_list_scrollbar_tile(tile_w: u32, tile_h: u32, total: usize, visible: usize, scroll: usize) -> Painter {
-    let mut painter = Painter::new(tile_w, tile_h.max(1));
-    if total <= visible {
-        return painter;
-    }
-    let track_w = SCROLLBAR_TRACK_W.min(tile_w);
-    let track = Rect::new(tile_w as i32 - track_w as i32, 0, track_w, tile_h);
-    painter.fill_rounded_rect(track, track_w as i32 / 2, Color::RGBA(0xff, 0xff, 0xff, 0x14));
-
-    let thumb_h = ((visible as f32 / total as f32) * track.height() as f32).round() as u32;
-    let thumb_h = thumb_h.clamp(24, track.height());
-    let max_thumb_y = track.height().saturating_sub(thumb_h) as f32;
-    let max_scroll = (total - visible).max(1) as f32;
-    let thumb_y = track.y() + ((scroll as f32 / max_scroll) * max_thumb_y).round() as i32;
-    let thumb = Rect::new(track.x(), thumb_y, track_w, thumb_h);
-    painter.fill_rounded_rect(thumb, track_w as i32 / 2, Color::RGBA(0xff, 0xff, 0xff, 0x50));
-    painter
-}
-
 /// A settings row's on-screen rect at a pixel scroll offset — the smooth-scroll counterpart
 /// of [`focus_row_rect`], which indexes rows within the viewport instead. Can land partly (or
 /// wholly) outside `content_rect` while the viewport is gliding; callers clip.
 pub fn focus_row_rect_at_px(content_rect: Rect, index: usize, scroll_px: i32) -> Rect {
     let y = content_rect.y() + index as i32 * focus_row_stride() as i32 - scroll_px;
     Rect::new(content_rect.x(), y, content_rect.width(), FOCUS_ROW_H)
-}
-
-/// How tall an edge fade is: exactly one row.
-///
-/// Deliberately taller than the peek strip it dissolves (`view::settings::PEEK`), so the band
-/// reaches past the partial row and into the full row beyond it. Sized to the peek instead,
-/// the ramp only reached ~35% alpha by the time it crossed the partial row's text — enough to
-/// render, not enough to read as a fade. Being taller also means the dense end lands on the
-/// partial row while the row above it takes only the ramp's first, near-clear pixels.
-pub const SCROLL_FADE_H: u32 = FOCUS_ROW_H;
-
-/// Tile width for the scroll fade. The ramp is uniform horizontally, so the GPU stretches
-/// this to whatever the list's width is — a fixed narrow tile means one static texture for
-/// every modal instead of one per content width. Not 1px: under linear filtering a
-/// single-column texture has no interior samples to stretch from.
-const SCROLL_FADE_TILE_W: u32 = 8;
-
-/// Which edge of the viewport a fade tile dissolves into.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum FadeEdge {
-    /// Dense at the top, clear at the bottom — shown while content is scrolled off above.
-    Top,
-    /// Clear at the top, dense at the bottom — shown while content remains below.
-    Bottom,
-}
-
-/// An edge fade that signals "the list continues this way".
-///
-/// Exists because the scrollbar alone doesn't answer the question on arrival: it's
-/// hold-then-fade (see `SCROLL_INDICATOR_HOLD`), so a list that opens already overflowing
-/// shows nothing at all once the hold lapses, and the last row looks like the final row.
-///
-/// Fades to the modal card's own background (`theme().panel`), not to black: the band has to
-/// look like the card surface swallowing the row, and any other colour reads as a shadow
-/// sitting on top of the list.
-pub fn render_scroll_fade_tile(edge: FadeEdge) -> Painter {
-    let mut painter = Painter::new(SCROLL_FADE_TILE_W, SCROLL_FADE_H);
-    match edge {
-        FadeEdge::Top => painter.fill_vertical_fade(theme().panel, 0xff, 0x00),
-        FadeEdge::Bottom => painter.fill_vertical_fade(theme().panel, 0x00, 0xff),
-    }
-    painter
-}
-
-/// The expanded dropdown: its options as an overlay list anchored below the opener row.
-/// One panel background+shadow instead of per-row cards, to avoid shadow smearing.
-/// Renders every option unfocused, like the row lists: the focused one composites over it
-/// from [`render_dropdown_option_tile`].
-pub struct DropdownOverlay<'a> {
-    options: &'a [String],
-}
-
-impl<'a> DropdownOverlay<'a> {
-    pub fn new(options: &'a [String]) -> Self {
-        Self { options }
-    }
-}
-
-impl Widget for DropdownOverlay<'_> {
-    fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
-        let bg_rect = Rect::new(
-            area.x(),
-            area.y(),
-            area.width(),
-            self.options.len() as u32 * DROPDOWN_OPTION_H,
-        );
-        c.painter.popup_panel(bg_rect, Color::RGBA(0xff, 0xff, 0xff, 0x20));
-        for (i, opt) in self.options.iter().enumerate() {
-            c.dropdown_option(opt, false, dropdown_option_rect(area, i))?;
-        }
-        Ok(())
-    }
-}
-
-/// Option `index`'s rect within a dropdown overlay.
-pub fn dropdown_option_rect(rect: Rect, index: usize) -> Rect {
-    Rect::new(
-        rect.x(),
-        rect.y() + index as i32 * DROPDOWN_OPTION_H as i32,
-        rect.width(),
-        DROPDOWN_OPTION_H,
-    )
-}
-
-/// Renders one focused dropdown option as a tile, composited over the overlay.
-/// Moving focus recomposites just this tile instead of re-rasterizing.
-pub fn render_dropdown_option_tile(
-    text_cache: &mut TextCache,
-    fonts: &Fonts,
-    option: &str,
-    width: u32,
-) -> Result<Painter> {
-    let mut p = Painter::new(width, DROPDOWN_OPTION_H);
-    let mut c = Canvas::tile(&mut p, text_cache, fonts);
-    c.dropdown_option(option, true, Rect::new(0, 0, width, DROPDOWN_OPTION_H))?;
-    Ok(p)
-}
-
-impl Canvas<'_, '_> {
-    /// Draws one dropdown option (highlighted if focused) at normal size.
-    pub fn dropdown_option(&mut self, option: &str, focused: bool, row_rect: Rect) -> Result<()> {
-        if focused {
-            let highlight = Rect::new(
-                row_rect.x() + 6,
-                row_rect.y() + 4,
-                row_rect.width().saturating_sub(12),
-                row_rect.height().saturating_sub(8),
-            );
-            self.painter.fill_rounded_rect(
-                highlight,
-                8,
-                Color::RGBA(theme().accent.r, theme().accent.g, theme().accent.b, 0x50),
-            );
-        }
-        let font = self.fonts.value;
-        let y = row_rect.y() + (row_rect.height() as i32 - self.fonts.raster.height(font)) / 2;
-        self.text(
-            font,
-            option,
-            row_rect.x() + 20,
-            y,
-            if focused { theme().text } else { theme().muted },
-        )?;
-        Ok(())
-    }
-}
-
-impl Painter {
-    /// Common popup panel chrome: shadowed dark background with colored border.
-    pub fn popup_panel(&mut self, rect: Rect, border_color: Color) {
-        self.card_shadow(rect, CARD_RADIUS);
-        self.fill_rounded_rect(rect, CARD_RADIUS, Color::RGBA(0x17, 0x11, 0x28, 0xf6));
-        self.stroke_rounded_rect(rect, CARD_RADIUS, border_color, 1.5);
-    }
-}
-
-/// Confirm button with identity color (full when focused, dimmed when not).
-pub struct ConfirmButton<'a> {
-    pub icon: Option<&'a str>,
-    pub label: &'a str,
-    pub color: Color,
-}
-
-/// A primary action button plus a Cancel — the pair every confirm modal shares
-/// (forget host, send logs, stop streaming, quit app), so their `ConfirmButton`
-/// data can't drift apart. Index 0 is the action, index 1 is Cancel (the safe
-/// default focus).
-pub fn confirm_buttons(icon: Option<&'static str>, label: &'static str, color: Color) -> [ConfirmButton<'static>; 2] {
-    [
-        ConfirmButton { icon, label, color },
-        ConfirmButton {
-            icon: None,
-            label: "Cancel",
-            color: theme().text,
-        },
-    ]
-}
-
-/// Gap between the two buttons in a [`ConfirmButtons`] row.
-const CONFIRM_BUTTON_GAP: i32 = 20;
-
-/// Confirm button metrics derived from label font height — keeps sizing consistent
-/// between drawing and measurement.
-fn confirm_button_metrics(raster: &dyn TextRaster, font: FontId) -> (u32, i32, i32) {
-    let line_h = raster.height(font).max(1);
-    ((line_h * 2 / 3).max(1) as u32, (line_h / 3).max(1), (line_h / 2).max(1))
-}
-
-/// Button `index`'s rect within a confirm button row: two equal halves, one gap between.
-pub fn confirm_button_rect(content: Rect, index: usize) -> Rect {
-    Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)])
-        .gap(CONFIRM_BUTTON_GAP)
-        .split(content)[index.min(1)]
-}
-
-/// The pair of buttons every confirm modal ends with — see [`confirm_buttons`] for the
-/// pair itself. Renders both unfocused: the focused one composites over this from
-/// [`render_confirm_button_tile`], zoom-animated in `app::App`.
-pub struct ConfirmButtons<'a> {
-    buttons: &'a [ConfirmButton<'a>; 2],
-}
-
-impl<'a> ConfirmButtons<'a> {
-    pub fn new(buttons: &'a [ConfirmButton<'a>; 2]) -> Self {
-        Self { buttons }
-    }
-}
-
-impl Widget for ConfirmButtons<'_> {
-    fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
-        for (i, button) in self.buttons.iter().enumerate() {
-            c.confirm_button(button, false, confirm_button_rect(area, i))?;
-        }
-        Ok(())
-    }
-}
-
-/// Renders one focused button as a tile, composited over the shell.
-pub fn render_confirm_button_tile(
-    text_cache: &mut TextCache,
-    fonts: &Fonts,
-    button: &ConfirmButton<'_>,
-    w: u32,
-    h: u32,
-) -> Result<Painter> {
-    crate::ui::tiles::padded_widget_tile(text_cache, fonts, w, h, |c, rect| c.confirm_button(button, true, rect))
-}
-
-impl Canvas<'_, '_> {
-    /// Draws one confirm button at normal size, focused or not.
-    pub fn confirm_button(&mut self, button: &ConfirmButton<'_>, focused: bool, rect: Rect) -> Result<()> {
-        self.painter.selectable_fixed(rect, focused);
-        let color = if focused { button.color } else { theme().muted };
-
-        // Every inset here is derived from the label font's own line height, which
-        // `load_font` already scales by the panel's height — the button's width scales with
-        // the screen too, so a hardcoded icon inset does not stay in proportion to either.
-        // It used to be a fixed `20 + 26 + 12`, which left "Stop streaming" more label than
-        // button below 4K (~117px of room for ~154px of text at 720p) and ran it past the
-        // right edge, because nothing clamped the label either.
-        let font = self.fonts.label;
-        let line_h = self.fonts.raster.height(font).max(1);
-        let (icon_size, icon_gap, side_pad) = confirm_button_metrics(self.fonts.raster, font);
-
-        // Icon and label are centred as one group, the same way a label without an icon
-        // was already centred on its own — and the label is ellipsized to whatever the icon
-        // leaves, so no label can overflow the button regardless of resolution.
-        let leading = match button.icon {
-            Some(_) => icon_size + icon_gap as u32,
-            None => 0,
-        };
-        let budget = rect.width().saturating_sub(2 * side_pad as u32).saturating_sub(leading);
-        let label = ellipsize(self.fonts.raster, font, button.label, budget);
-        let label_w = self.fonts.raster.measure(font, &label).0;
-        let start_x = rect.x() + (rect.width() as i32 - (leading + label_w) as i32) / 2;
-
-        if let Some(icon) = button.icon {
-            let icon_rect = Rect::new(
-                start_x,
-                rect.y() + (rect.height() as i32 - icon_size as i32) / 2,
-                icon_size,
-                icon_size,
-            );
-            self.icon(icon_rect, icon, color)?;
-        }
-        self.text(
-            font,
-            &label,
-            start_x + leading as i32,
-            rect.y() + (rect.height() as i32 - line_h) / 2,
-            color,
-        )?;
-        Ok(())
-    }
 }

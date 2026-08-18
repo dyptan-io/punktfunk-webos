@@ -1,5 +1,11 @@
 //! The settings modal's logic: row navigation, dropdown, persistence. Rendering
 //! (row list layout, dropdown overlay geometry) lives in `app::view::settings`.
+//!
+//! Shared by both settings screens. `Screen::Settings` edits the global document;
+//! `Screen::GameSettings` edits a scratch copy for one game and records each touched row
+//! into that game's sparse override (`app::state::gamesettings`). Which rows exist is
+//! `menu::SettingsScope`'s answer, and every mutator below is indexed by logical `ROW_*`, so the
+//! two screens can't drift apart.
 use crate::app::menu;
 use crate::app::{App, DropdownState};
 use crate::core::event::MenuEvent;
@@ -10,36 +16,39 @@ impl App {
     /// Handles one menu event on the settings modal. `screen_h` is only used by
     /// `Up`/`Down` to keep `self.scroll` following `settings_focused`.
     pub fn handle_settings_event(&mut self, ev: MenuEvent, screen_h: u32) {
+        let set = self.row_set();
         // An open Resolution/Frame rate dropdown intercepts all input until it's
         // closed (by picking an option or backing out) — it's a modal overlay on
         // top of the settings row list.
         if let Some(dd) = self.dropdown.as_mut() {
             // `dd.row` is the display position; setting lookups need the logical row.
             let row = dd.row;
-            let logical = menu::settings_logical_row(row);
+            let logical = menu::settings_logical_row(set, row);
             let len = menu::dropdown_option_count(logical).max(1);
             match ev {
                 MenuEvent::Up | MenuEvent::Down => {
                     crate::ui::widgets::list_nav(&mut dd.focused, len, menu::nav_dir(ev));
                 }
-                MenuEvent::Confirm => {
-                    let choice = dd.focused;
-                    // Not persisted here — `MenuEvent::Back` below (leaving the
-                    // whole Settings screen) saves once for every change made
-                    // during this visit, not per-row.
-                    menu::apply_dropdown_choice(&mut self.settings, logical, choice, self.detected_gamepad_type);
+                // Applied after the borrow ends: the pick has to reach `self` beyond
+                // `self.dropdown`, and the fade needs `dd.focused` either way.
+                MenuEvent::Confirm | MenuEvent::Back => {
+                    let choice = (ev == MenuEvent::Confirm).then_some(dd.focused);
                     self.dropdown_fade.close((row, dd.focused));
                     self.dropdown = None;
-                }
-                MenuEvent::Back => {
-                    self.dropdown_fade.close((row, dd.focused));
-                    self.dropdown = None;
+                    if let Some(choice) = choice {
+                        let detected = self.detected_gamepad_type;
+                        // Not persisted here — `MenuEvent::Back` on the row list (leaving
+                        // the whole screen) saves once for every change made during this
+                        // visit, not per-row.
+                        menu::apply_dropdown_choice(self.settings_target_mut(), logical, choice, detected);
+                        self.capture_game_override(logical);
+                    }
                 }
                 MenuEvent::Left | MenuEvent::Right | MenuEvent::Secondary => {}
             }
             return;
         }
-        let total = menu::settings_row_count();
+        let total = menu::settings_row_count(set);
         match ev {
             // No wraparound here (unlike most other row lists) — wrapping a scrolled
             // list would silently jump the scroll position across the whole card.
@@ -59,7 +68,7 @@ impl App {
             }
             MenuEvent::Left => self.apply_setting_adjust(self.settings_focused, false),
             MenuEvent::Right => self.apply_setting_adjust(self.settings_focused, true),
-            MenuEvent::Confirm => match menu::settings_logical_row(self.settings_focused) {
+            MenuEvent::Confirm => match menu::settings_logical_row(set, self.settings_focused) {
                 // Not a setting — a link out to the About screen (see `menu::ROW_ABOUT`).
                 // Settings are saved on the way out so the visit's changes aren't lost
                 // behind the navigation.
@@ -67,8 +76,12 @@ impl App {
                     self.persist();
                     self.open_about();
                 }
+                // No save on the way in for the per-game flow: its copy is written once,
+                // when its own screen is left (see `persist_game_settings`).
                 menu::ROW_CURSOR => {
-                    self.persist();
+                    if set == menu::SettingsScope::Global {
+                        self.persist();
+                    }
                     self.open_cursor_settings();
                 }
                 menu::ROW_EXPERIMENTAL => {
@@ -79,6 +92,10 @@ impl App {
                     self.persist();
                     self.open_diagnostics();
                 }
+                // Puts the whole screen back: defaults on the global one, "inherit
+                // everything" on the per-game one. Both keep the row list and the focus
+                // where they are — nothing is shown or hidden by this (see `row_shown`).
+                menu::ROW_RESET => self.reset_settings(),
                 // A locked row (see `menu::row_lock`) never opens its dropdown — there is
                 // nothing to pick, which is exactly what the greyed row already says.
                 logical @ (menu::ROW_RESOLUTION
@@ -87,9 +104,9 @@ impl App {
                 | menu::ROW_CODEC
                 | menu::ROW_AUDIO
                 | menu::ROW_GAMEPAD)
-                    if menu::row_lock(logical, &self.settings, self.detected_gamepad_type).is_none() =>
+                    if menu::row_lock(logical, self.settings_target(), self.detected_gamepad_type).is_none() =>
                 {
-                    let focused = menu::dropdown_current_index(&self.settings, logical);
+                    let focused = menu::dropdown_current_index(self.settings_target(), logical);
                     // `row` is the display position (what the overlay is drawn against);
                     // the logical row is recovered on lookup via `settings_logical_row`.
                     self.dropdown = Some(DropdownState {
@@ -107,10 +124,28 @@ impl App {
             // its docs), but there's no reason to touch disk at all more than
             // once per Settings visit.
             MenuEvent::Back => {
-                self.persist();
+                match set {
+                    // One save per visit, not one per keystroke — `StateWriter` queues the
+                    // write off-thread either way, but there's no reason to touch disk more
+                    // often than that.
+                    menu::SettingsScope::Global => self.persist(),
+                    menu::SettingsScope::Game => self.persist_game_settings(),
+                }
                 self.screen = Screen::Home;
             }
             MenuEvent::Secondary => {}
+        }
+    }
+
+    /// The foot-of-the-list reset row (`menu::ROW_RESET`). Not persisted here — like every
+    /// other edit on these screens, it lands on the way out.
+    ///
+    /// Per-game only: the row appears on `SettingsScope::Game` alone (see
+    /// `menu::settings_visible_logical_rows`), so a global screen can never reach here.
+    fn reset_settings(&mut self) {
+        if let Some(gs) = self.game_settings.as_mut() {
+            gs.over = crate::services::store::SettingsOverride::default();
+            gs.merged = self.settings;
         }
     }
 
@@ -120,12 +155,11 @@ impl App {
     /// No focus re-anchoring afterwards: which rows are shown depends on the environment only
     /// (see `menu::row_shown`), so no adjustment can renumber the list under the cursor.
     pub(crate) fn apply_setting_adjust(&mut self, display_row: usize, forward: bool) {
-        let row = menu::settings_logical_row(display_row);
-        let toggled_from = match row {
-            menu::ROW_HDR => Some(self.settings.hdr_enabled),
-            _ => None,
-        };
-        if menu::adjust_setting(&mut self.settings, row, forward, self.detected_gamepad_type) {
+        let row = menu::settings_logical_row(self.row_set(), display_row);
+        let toggled_from = menu::toggle_value(self.settings_target(), row);
+        let detected = self.detected_gamepad_type;
+        if menu::adjust_setting(self.settings_target_mut(), row, forward, detected) {
+            self.capture_game_override(row);
             if let Some(from) = toggled_from {
                 // Scope the slide to the display row being rendered (see `toggle_frac`).
                 self.switch_anim = Some((Instant::now(), from, display_row));

@@ -9,6 +9,33 @@ pub const FOCUS_POP: Duration = Duration::from_millis(140);
 /// driving them (`App::focus_anim`) is cleared on it, so nothing may outlast it.
 pub const CARD_FOCUS_POP: Duration = Duration::from_millis(160);
 
+/// How long a held card's submenu panel takes to climb the card. Named separately from
+/// [`CARD_FOCUS_POP`] (which it currently matches) because it answers a different question:
+/// the panel covers several times the title strip's travel, so if the rise ever needs its
+/// own timing this is the knob. Eased at both ends ([`anim_frac_smooth`]) so the long travel
+/// reads as one motion.
+pub const CARD_MENU_RISE: Duration = CARD_FOCUS_POP;
+
+/// Advances an eased scroll one tick: cover ~35% of the remaining distance, snapping when
+/// close so it terminates. Returns whether anything moved. Shared by the card grid and the
+/// scrolling modals' viewports so both lists feel identical.
+pub fn ease_scroll(current: &mut i32, target: i32) -> bool {
+    let d = target - *current;
+    if d == 0 {
+        return false;
+    }
+    let step = if d.abs() <= 3 {
+        d
+    } else {
+        match (f64::from(d) * 0.35) as i32 {
+            0 => d.signum(),
+            s => s,
+        }
+    };
+    *current += step;
+    true
+}
+
 /// How long a pressed button takes to spring back out of its dip.
 pub const PRESS_POP: Duration = Duration::from_millis(120);
 

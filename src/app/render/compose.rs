@@ -351,8 +351,9 @@ impl App {
                 let popped = |base: Rect| ui::animation::pop_in_rect(base, pop, CARD_POP_SHRINK);
                 // The card's total scale, for anything composited on top of it that has to
                 // fold in the same transform about the card's centre rather than its own.
-                let card_scale =
-                    ui::animation::zoom_scale(f, CARD_GROWTH) * ui::animation::pop_in_scale(pop, CARD_POP_SHRINK);
+                // Shared with the pointer path (`card_menu_rows_rect`), so a click can't land
+                // on a row other than the one drawn under it.
+                let card_scale = self.focused_card_scale(pin_id);
                 // Glow first — a halo behind the card, not an outline on top of it. Its
                 // alpha rides the same eased `f` as the zoom, so it blooms over the whole
                 // travel instead of snapping on ahead of it. No fade-out to match: focus
@@ -385,18 +386,108 @@ impl App {
                 // Sliding the whole tile dragged that baked cover fragment up with it,
                 // reading as the card shifting under the glass. `r` is the pivot: a band
                 // scaled about its own center drifts off the edge it sits flush to.
-                if let Some(strip_h) = tiles.get(tile::CARD_TITLE).map(ui::Painter::height) {
-                    let wipe = ui::animation::anim_frac(self.focus_anim, ui::animation::CARD_FOCUS_POP);
-                    let shown = (strip_h as f32 * wipe) as u32;
-                    if shown > 0 {
-                        let visible = Rect::new(r.x(), r.bottom() - shown as i32, r.width(), shown);
+                // A held card's submenu grows the same frost into a taller panel, and its
+                // title and rows are separate transparent tiles (see `render_card_menu_tile`)
+                // so they can ride the growing window's top edge. Falls back to the plain
+                // strip until all three are built, which is what the first frames after
+                // launch see.
+                let menu = self.card_menu.as_ref().and_then(|_| {
+                    tiles.get(tile::CARD_MENU_TITLE)?;
+                    Some((
+                        tiles.get(tile::CARD_MENU).map(ui::Painter::height)?,
+                        tiles.get(tile::CARD_MENU_ROWS).map(ui::Painter::height)?,
+                    ))
+                });
+                let title_h = tiles.get(tile::CARD_TITLE).map(ui::Painter::height);
+                match (menu, title_h) {
+                    // Menu open: the window grows from the title strip's height — already on
+                    // screen and already focused — up to the full panel, rather than
+                    // restarting from the card's bottom edge.
+                    (Some((panel_h, rows_h)), Some(title_h)) if panel_h > title_h => {
+                        // On its own clock: `focus_anim` is re-armed by every focus move, so
+                        // the panel would pop open the instant the menu is dismissed by
+                        // moving off the card.
+                        let clock = self.card_menu.as_ref().map_or(self.focus_anim, |m| Some(m.since));
+                        // Smoothstep, not the cubic ease-out the plain strip's short wipe
+                        // uses: over a whole panel's travel `1-(1-t)³` is 87% done at the
+                        // halfway point, so the tail reads as a small late move after the
+                        // panel has apparently stopped. Same reason `CARD_FOCUS_POP`'s zoom
+                        // is on `anim_frac_smooth` (see `ui::animation`).
+                        let wipe = ui::animation::anim_frac_smooth(clock, ui::animation::CARD_MENU_RISE);
+                        let shown = title_h + ((panel_h - title_h) as f32 * wipe) as u32;
+                        // Panel-local coordinates throughout: local y maps to
+                        // `r.bottom() - (panel_h - y)`, and the revealed window is
+                        // `[panel_h - shown, panel_h]`.
+                        let window_top = (panel_h - shown) as i32;
+                        // The frost can only wipe — it carries a fragment of the card's cover
+                        // baked in for the blur, and translating that reads as the card
+                        // sliding under the glass.
                         cmds.push(DrawCmd::TexCropped {
-                            tile: tile::CARD_TITLE,
-                            src: Rect::new(0, (strip_h - shown) as i32, r.width(), shown),
-                            dst: ui::animation::scale_about(visible, r, card_scale),
+                            tile: tile::CARD_MENU,
+                            src: Rect::new(0, window_top, r.width(), shown),
+                            dst: ui::animation::scale_about(
+                                Rect::new(r.x(), r.bottom() - shown as i32, r.width(), shown),
+                                r,
+                                card_scale,
+                            ),
                             alpha: (255.0 * pop) as u8,
                         });
+                        // Title and rows both hang off the window's top edge, so the title
+                        // continues upward from exactly where the plain strip had it and the
+                        // rows follow it in. Nothing restarts from the bottom.
+                        cmds.push(DrawCmd::Tex {
+                            tile: tile::CARD_MENU_TITLE,
+                            dst: ui::animation::scale_about(
+                                Rect::new(r.x(), r.bottom() - shown as i32, r.width(), title_h),
+                                r,
+                                card_scale,
+                            ),
+                            alpha: (255.0 * pop) as u8,
+                        });
+                        let rows_top = window_top + title_h as i32;
+                        // The selection sits under the row text, not over it: the band is a
+                        // darkening, so a label drawn beneath it would dim with the frost.
+                        // It rides `rows_top` too, staying on its row for the whole rise.
+                        if let Some(band) = self.card_menu_band(r, panel_h, shown, rows_top) {
+                            cmds.push(DrawCmd::Fill {
+                                rect: ui::animation::scale_about(band, r, card_scale),
+                                color: ui::widgets::CARD_MENU_ROW_FOCUS,
+                            });
+                        }
+                        let vis_bottom = (rows_top + rows_h as i32).min(panel_h as i32);
+                        if vis_bottom > rows_top {
+                            let visible_h = (vis_bottom - rows_top) as u32;
+                            cmds.push(DrawCmd::TexCropped {
+                                tile: tile::CARD_MENU_ROWS,
+                                src: Rect::new(0, 0, r.width(), visible_h),
+                                dst: ui::animation::scale_about(
+                                    Rect::new(r.x(), r.bottom() - (panel_h as i32 - rows_top), r.width(), visible_h),
+                                    r,
+                                    card_scale,
+                                ),
+                                alpha: (255.0 * pop) as u8,
+                            });
+                        }
                     }
+                    // No menu: the plain title strip, wiping up from the card's bottom edge
+                    // on the card's own focus clock.
+                    (_, Some(strip_h)) => {
+                        let wipe = ui::animation::anim_frac(self.focus_anim, ui::animation::CARD_FOCUS_POP);
+                        let shown = (strip_h as f32 * wipe) as u32;
+                        if shown > 0 {
+                            cmds.push(DrawCmd::TexCropped {
+                                tile: tile::CARD_TITLE,
+                                src: Rect::new(0, (strip_h - shown) as i32, r.width(), shown),
+                                dst: ui::animation::scale_about(
+                                    Rect::new(r.x(), r.bottom() - shown as i32, r.width(), shown),
+                                    r,
+                                    card_scale,
+                                ),
+                                alpha: (255.0 * pop) as u8,
+                            });
+                        }
+                    }
+                    (_, None) => {}
                 }
                 // The lit edge last, over the art *and* the strip, so the card ends on one
                 // unbroken line. It gives the glow behind a hard boundary to end on, so

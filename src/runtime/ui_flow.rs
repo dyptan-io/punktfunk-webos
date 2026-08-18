@@ -16,6 +16,23 @@ fn upload_spinner(
     Ok(())
 }
 
+/// The settings one launch runs with: the global document with `target`'s per-game
+/// overrides applied. The single merge point — everything downstream (`spawn_connect`,
+/// `session::connect`, the stream loop) reads this one copy.
+///
+/// Clamped to caps afterwards exactly like a global value, so an override a TV can't
+/// satisfy degrades instead of reaching the wire.
+fn launch_settings(app: &App, target: &crate::core::model::ConnectTarget) -> crate::services::store::Settings {
+    use crate::services::store::{SettingsOverride, DESKTOP_PIN_ID};
+    let id = target.launch.as_deref().unwrap_or(DESKTOP_PIN_ID);
+    let over = app
+        .known_host(&target.host, target.port)
+        .map_or_else(SettingsOverride::default, |h| h.overrides(id));
+    let mut settings = over.merge_into(app.settings);
+    settings.clamp_to_caps();
+    settings
+}
+
 /// Runs the UI (host list -> pairing -> settings) until the user confirms a
 /// connect target or the system asks the app to close (`None`). A plain
 /// function, not a closure — a closure capturing `canvas`/`events` by
@@ -173,14 +190,16 @@ pub(super) fn run_ui_flow(
         dirty |= app.tick_wake();
         // Fire on hold elapsed, not release, so user sees it before letting go.
         if let Some(hold) = input
-            .pin_held
+            .card_held
             .as_mut()
-            .filter(|h| !h.fired && h.since.elapsed() >= PIN_HOLD)
+            .filter(|h| !h.fired && h.since.elapsed() >= CARD_HOLD)
         {
             hold.fired = true;
             let still_there = matches!(app.screen, Screen::Home) && hold.focus == app.home_focus;
             if still_there {
-                app.toggle_focused_pin(display_mode.w as u32, display_mode.h as u32);
+                // The hold's whole effect. It no longer pins — pinning is one of the two
+                // rows the menu it raises offers, and the only way to reach it.
+                app.open_card_menu(display_mode.w as u32);
             }
             dirty = true;
         }
@@ -193,7 +212,11 @@ pub(super) fn run_ui_flow(
                 // toggle (e.g. audio offload) is persisted asynchronously by
                 // `StateWriter`, so re-reading disk here could race the write and
                 // connect with the stale value. `app.settings` is updated synchronously.
-                let settings = resolve_gamepad_type(app.settings, game_controller);
+                // Per-game overrides merge over the global document here — the single
+                // point where the game being launched is known and the settings copy that
+                // rides the whole session is made. Clamped to caps like any global value.
+                let mut settings = launch_settings(&app, &target);
+                settings = resolve_gamepad_type(settings, game_controller);
                 let handle = spawn_connect(identity.clone(), target, settings)?;
                 connect_handle = Some((handle, settings));
             }
