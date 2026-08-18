@@ -1078,6 +1078,11 @@ pub fn send_input(client: &NativeClient, ev: &InputEvent) -> Result<()> {
     client.send_input(ev).context("send_input")
 }
 
+/// Sends one rich-input report (pad touchpad contacts) to the host.
+pub fn send_rich_input(client: &NativeClient, input: quic::RichInput) -> Result<()> {
+    client.send_rich_input(input).context("send_rich_input")
+}
+
 /// Ceiling on feedback events handled per tick.
 ///
 /// Both planes are human-paced (a rumble change, a weapon swap), so this is never reached in

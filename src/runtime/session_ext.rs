@@ -25,7 +25,7 @@ impl InputSender {
     /// shape. Best-effort like every datagram, and a no-op toward a host running a different
     /// gamepad backend.
     pub(crate) fn send_touch(&self, touch: punktfunk_core::quic::RichInput) {
-        let _ = self.0.send_rich_input(touch);
+        let _ = session::send_rich_input(&self.0, touch);
     }
 }
 

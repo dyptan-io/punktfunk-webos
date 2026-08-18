@@ -34,7 +34,9 @@
 //! construction, not two atomics a caller has to keep in sync: [`HidInput::set_active`]`(false)`
 //! both releases the node and stops calling `sink`, in one store — needed for the disconnect
 //! dialog, which hands the pointer back to the Magic Remote and needs a HID mouse to go quiet for
-//! the same window.
+//! the same window. A claimed pad touchpad is the one exception on both counts: it stays grabbed
+//! (handing it back is what re-creates the cursor it exists to suppress) and its contacts still
+//! reach the sink, since a dropped lift is a finger the host holds down forever.
 
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
@@ -233,7 +235,10 @@ impl HidInput {
             .spawn(move || {
                 let gate = Arc::clone(&thread_shared);
                 let gated_sink = move |report: HidReport| {
-                    if gate.grab.load(Ordering::Relaxed) {
+                    // Touch is exempt from the gate: a contact is a level, not an edge, so a
+                    // dropped lift is a finger the host holds down forever (see
+                    // `release_touches`). Keys and clicks self-clear on the next report.
+                    if gate.grab.load(Ordering::Relaxed) || matches!(report, HidReport::Touch(_)) {
                         sink(report);
                     }
                 };
@@ -326,6 +331,10 @@ struct Touchpad {
 #[derive(Clone, Copy, Default)]
 struct Finger {
     active: bool,
+    /// The host currently believes this contact is down. Gates the lift: a node claimed with a
+    /// finger already on it reports coordinates without a `ABS_MT_TRACKING_ID`, which would
+    /// otherwise send a lift for a contact the host never saw start.
+    sent: bool,
     x: i32,
     y: i32,
     /// Something in this report changed the contact — sent at the next `SYN_REPORT` and cleared.
@@ -489,7 +498,7 @@ fn is_pad_touchpad(absolute_pointer: bool, has_btn_touch: bool, vendor: impl FnO
 impl Touchpad {
     /// Reads the node's axis ranges once, at open. A node whose `ABS_MT_POSITION_*` ranges are
     /// unusable is still worth claiming (the compositor must not have it) — it just reports no
-    /// contacts, which [`Self::normalize`] enforces.
+    /// contacts, which [`normalize`] enforces.
     fn new(fd: RawFd) -> Self {
         Self {
             slot: 0,
@@ -498,22 +507,22 @@ impl Touchpad {
             y_range: abs_range(fd, ABS_MT_POSITION_Y),
         }
     }
+}
 
-    /// Device units → the wire's `0..=65535` across the pad. `None` when the driver gave no
-    /// range to scale against, since a bogus coordinate is worse than no contact at all.
-    fn normalize(&self, x: i32, y: i32) -> Option<(u16, u16)> {
-        let scale = |v: i32, (min, max): (i32, i32)| {
-            let span = i64::from(max) - i64::from(min);
-            (span > 0).then(|| ((i64::from(v.clamp(min, max)) - i64::from(min)) * 65535 / span) as u16)
-        };
-        // evdev's +y is already down, the direction the wire and the host's virtual pad expect.
-        Some((scale(x, self.x_range)?, scale(y, self.y_range)?))
-    }
+/// Device units → the wire's `0..=65535` across the pad. `None` when the driver gave no range to
+/// scale against, since a bogus coordinate is worse than no contact at all.
+fn normalize(x: i32, y: i32, x_range: (i32, i32), y_range: (i32, i32)) -> Option<(u16, u16)> {
+    let scale = |v: i32, (min, max): (i32, i32)| {
+        let span = i64::from(max) - i64::from(min);
+        (span > 0).then(|| ((i64::from(v.clamp(min, max)) - i64::from(min)) * 65535 / span) as u16)
+    };
+    // evdev's +y is already down, the direction the wire and the host's virtual pad expect.
+    Some((scale(x, x_range)?, scale(y, y_range)?))
 }
 
 /// `EVIOCGABS(code)`'s `(minimum, maximum)` out of `struct input_absinfo`
 /// (`value, minimum, maximum, fuzz, flat, resolution`). Falls back to `(0, 0)` when the ioctl
-/// fails, which [`Touchpad::normalize`] reads as "no usable range".
+/// fails, which [`normalize`] reads as "no usable range".
 fn abs_range(fd: RawFd, code: u16) -> (i32, i32) {
     let mut info = [0i32; 6];
     // SAFETY: as `event_bits` — length-encoding request, buffer of exactly that length.
@@ -567,6 +576,10 @@ fn bit(bits: &[u8; 128], code: u16) -> bool {
 /// `commons-evmouse`'s `evmouse_set_grab`, so a steady state costs no ioctls at all.
 fn apply_grab(devices: &mut [Device], want: bool) {
     for dev in devices {
+        // A pad touchpad is claimed whether the reader is active or not: ungrabbing it hands the
+        // compositor back a node it turns into a cursor with a stuck left button, which is the
+        // whole reason it's claimed (see `is_pad_touchpad`).
+        let want = want || dev.touchpad.is_some();
         if dev.grabbed == want {
             continue;
         }
@@ -640,6 +653,7 @@ fn reader_loop(sink: &impl Fn(HidReport), shared: &Shared) {
                     if fds[i].revents & DEAD == 0 {
                         continue;
                     }
+                    release_touches(&mut devices[i], sink);
                     let gone = devices.remove(i);
                     tracing::info!("HID device gone: {}", gone.path.display());
                     seen.retain(|p| *p != gone.path);
@@ -670,6 +684,10 @@ fn reader_loop(sink: &impl Fn(HidReport), shared: &Shared) {
                 }
             }
         }
+    }
+    // Stopping with a finger on the pad must not leave the host holding it.
+    for dev in &mut devices {
+        release_touches(dev, sink);
     }
 }
 
@@ -709,59 +727,61 @@ fn read_device(dev: &mut Device, sink: &impl Fn(HidReport), keys: &KeyActivity) 
         // different wire plane — so it takes the whole burst on its own path.
         if let Some(pad) = dev.touchpad.as_mut() {
             read_touch(pad, &buf[..n], size, sink);
-            if n < buf.len() {
-                return;
-            }
-            continue;
-        }
-        for chunk in buf[..n].chunks_exact(size) {
-            // SAFETY: `InputEventRaw` is plain `repr(C)` integers with no padding
-            // invariants, and the chunk is exactly its size; read unaligned because the
-            // buffer offset carries no alignment guarantee.
-            let ev = unsafe { chunk.as_ptr().cast::<InputEventRaw>().read_unaligned() };
-            match ev.kind {
-                EV_REL if dev.mouse => match ev.code {
-                    REL_X | REL_Y => {
-                        if ev.code == REL_X {
-                            dev.dx += ev.value;
-                        } else {
-                            dev.dy += ev.value;
-                        }
-                    }
-                    // evdev's wheel is one unit per notch, same as SDL's, so the ×120 wire
-                    // scaling accumulator applies unchanged.
-                    REL_WHEEL | REL_HWHEEL => {
-                        flush_motion(dev, sink);
-                        if let Some(e) = dev.scroll.scroll_event(ev.value, ev.code == REL_HWHEEL) {
-                            sink(HidReport::Input(&e));
-                        }
-                    }
-                    _ => {}
-                },
-                // 0 = release, 1 = press, 2 = autorepeat (keyboard-only).
-                EV_KEY if matches!(ev.value, 0..=2) => {
-                    // Buttons and keys share `EV_KEY`, and a combo node reports both — the code
-                    // ranges are what tells them apart, not the device.
-                    // Buttons skip repeats: one would double-fire the click.
-                    if let Some(button) = (dev.mouse && ev.value != 2).then(|| button_code(ev.code)).flatten() {
-                        // Motion first: the click must land where the pointer already is.
-                        flush_motion(dev, sink);
-                        sink(HidReport::Input(&mouse::raw_button_event(button, ev.value == 1)));
-                    } else if let Some(vk) = dev.keyboard.then(|| keyboard::vk_from_evdev(ev.code)).flatten() {
-                        keys.touch();
-                        // Autorepeat rides as a repeated KeyDown — the host has no repeat timer of
-                        // its own, so dropping these kills held-key repeat.
-                        sink(HidReport::Input(&keyboard::raw_key_event(vk, ev.value != 0)));
-                    }
-                }
-                _ => {}
-            }
+        } else {
+            decode_hid(dev, &buf[..n], size, sink, keys);
         }
         if n < buf.len() {
             break;
         }
     }
     flush_motion(dev, sink);
+}
+
+/// Decodes one read burst off a mouse/keyboard node — see [`read_device`] for the drain.
+fn decode_hid(dev: &mut Device, buf: &[u8], size: usize, sink: &impl Fn(HidReport), keys: &KeyActivity) {
+    for chunk in buf.chunks_exact(size) {
+        // SAFETY: `InputEventRaw` is plain `repr(C)` integers with no padding
+        // invariants, and the chunk is exactly its size; read unaligned because the
+        // buffer offset carries no alignment guarantee.
+        let ev = unsafe { chunk.as_ptr().cast::<InputEventRaw>().read_unaligned() };
+        match ev.kind {
+            EV_REL if dev.mouse => match ev.code {
+                REL_X | REL_Y => {
+                    if ev.code == REL_X {
+                        dev.dx += ev.value;
+                    } else {
+                        dev.dy += ev.value;
+                    }
+                }
+                // evdev's wheel is one unit per notch, same as SDL's, so the ×120 wire
+                // scaling accumulator applies unchanged.
+                REL_WHEEL | REL_HWHEEL => {
+                    flush_motion(dev, sink);
+                    if let Some(e) = dev.scroll.scroll_event(ev.value, ev.code == REL_HWHEEL) {
+                        sink(HidReport::Input(&e));
+                    }
+                }
+                _ => {}
+            },
+            // 0 = release, 1 = press, 2 = autorepeat (keyboard-only).
+            EV_KEY if matches!(ev.value, 0..=2) => {
+                // Buttons and keys share `EV_KEY`, and a combo node reports both — the code
+                // ranges are what tells them apart, not the device.
+                // Buttons skip repeats: one would double-fire the click.
+                if let Some(button) = (dev.mouse && ev.value != 2).then(|| button_code(ev.code)).flatten() {
+                    // Motion first: the click must land where the pointer already is.
+                    flush_motion(dev, sink);
+                    sink(HidReport::Input(&mouse::raw_button_event(button, ev.value == 1)));
+                } else if let Some(vk) = dev.keyboard.then(|| keyboard::vk_from_evdev(ev.code)).flatten() {
+                    keys.touch();
+                    // Autorepeat rides as a repeated KeyDown — the host has no repeat timer of
+                    // its own, so dropping these kills held-key repeat.
+                    sink(HidReport::Input(&keyboard::raw_key_event(vk, ev.value != 0)));
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Decodes one read burst off a claimed pad touchpad into [`RichInput::Touchpad`] contacts.
@@ -793,29 +813,61 @@ fn read_touch(pad: &mut Touchpad, buf: &[u8], size: usize, sink: &impl Fn(HidRep
                 finger.dirty = true;
             }
             (EV_SYN, SYN_REPORT) => {
-                for i in 0..pad.fingers.len() {
-                    let finger = pad.fingers[i];
+                let (x_range, y_range) = (pad.x_range, pad.y_range);
+                for (i, finger) in pad.fingers.iter_mut().enumerate() {
                     if !finger.dirty {
                         continue;
                     }
-                    pad.fingers[i].dirty = false;
-                    // A lift's coordinates are whatever the contact last had, which is what the
-                    // host wants — the release still has to land where the finger was.
-                    let Some((x, y)) = pad.normalize(finger.x, finger.y) else {
+                    finger.dirty = false;
+                    if !finger.active && !finger.sent {
+                        continue; // never announced — nothing to lift
+                    }
+                    let Some(contact) = contact(i, finger, x_range, y_range) else {
                         continue;
                     };
-                    sink(HidReport::Touch(RichInput::Touchpad {
-                        pad: 0,
-                        finger: i as u8,
-                        active: finger.active,
-                        x,
-                        y,
-                    }));
+                    finger.sent = finger.active;
+                    sink(HidReport::Touch(contact));
                 }
             }
             _ => {}
         }
     }
+}
+
+/// Lifts every contact the host still believes is down on this node. A touch is a level, not an
+/// edge: a pad unplugged (or a reader stopped) mid-gesture would otherwise leave the finger down
+/// on the host's virtual pad with nothing left to release it.
+fn release_touches(dev: &mut Device, sink: &impl Fn(HidReport)) {
+    let Some(pad) = dev.touchpad.as_mut() else {
+        return;
+    };
+    let (x_range, y_range) = (pad.x_range, pad.y_range);
+    for (i, finger) in pad.fingers.iter_mut().enumerate() {
+        if !std::mem::take(&mut finger.sent) {
+            continue;
+        }
+        finger.active = false;
+        finger.dirty = false;
+        if let Some(contact) = contact(i, finger, x_range, y_range) {
+            sink(HidReport::Touch(contact));
+        }
+    }
+}
+
+/// One contact for the wire, or `None` when the node gave no usable axis range ([`normalize`]).
+///
+/// A lift's coordinates are whatever the contact last had, which is what the host wants — the
+/// release still has to land where the finger was. `pad` is 0 throughout: this client drives a
+/// single pad.
+fn contact(finger_idx: usize, finger: &Finger, x_range: (i32, i32), y_range: (i32, i32)) -> Option<RichInput> {
+    let (x, y) = normalize(finger.x, finger.y, x_range, y_range)?;
+    Some(RichInput::Touchpad {
+        pad: 0,
+        finger: finger_idx as u8,
+        active: finger.active,
+        x,
+        y,
+    })
 }
 
 /// Sends the accumulated deltas as one `MouseMove`, undamped — damping is for the remote's
