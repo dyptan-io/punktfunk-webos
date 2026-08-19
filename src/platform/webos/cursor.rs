@@ -6,8 +6,10 @@
 //! it stops drawing. But starving only stops *future* draws: an arrow already on screen when the
 //! stream starts stays painted until something retracts it, which is why the hide is also
 //! requested outright on each [`Cursor::apply`] and again once the grab is actually in place
-//! ([`Cursor::reassert_hidden`]). The 4 Hz re-assert *loop* stays off, see
-//! [`COMPOSITOR_REASSERT`].
+//! ([`Cursor::reassert_hidden`]), and on a 4 Hz loop bounded to the start of a capture
+//! ([`Cursor::tick`]). An *unbounded* version of that loop was tried and dropped: verified on
+//! webOS 26 the compositor re-shows its arrow on pointer activity regardless, so past the panel
+//! mode switch it only spent Wayland requests. See [`STARTUP_REASSERT`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -19,14 +21,14 @@ use sdl2::sys::SDL_bool;
 
 use super::sdl_webos;
 
-/// Polling re-assert is off: verified on webOS 26 the compositor re-shows its arrow regardless,
-/// so the loop only spent Wayland requests. Kept, not deleted, in case a firmware/SDL-fork fix
-/// makes flipping this worth it. The one-shot retracts are unconditional — a different question
-/// from whether the hide *sticks* against later pointer activity.
-const COMPOSITOR_REASSERT: bool = false;
+/// How long after a capture the hide keeps being re-issued. The compositor repaints its arrow
+/// when the panel changes mode — entering HDR is the case that bites, the arrow coming back for
+/// as long as the TV's HDR badge is up, well after the one-shot retracts have run. Bounded rather
+/// than the always-on loop: this covers the mode switch without spending requests all stream.
+const STARTUP_REASSERT: Duration = Duration::from_secs(10);
 
-/// Compositor gives no "took the pointer back" event, so re-hiding just polls on activity,
-/// capped here at 4 Wayland requests/sec.
+/// Compositor gives no "took the pointer back" event, so re-hiding just polls, capped here at
+/// 4 Wayland requests/sec however often [`Cursor::tick`] runs.
 const REASSERT_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Global: shared with the panic hook, which has no [`Cursor`] to reach for.
@@ -40,6 +42,8 @@ pub struct Cursor {
     last_assert: Instant,
     captured: bool,
     sdl_relative: bool,
+    /// End of the post-capture [`STARTUP_REASSERT`] window.
+    reassert_until: Instant,
 }
 
 impl Cursor {
@@ -49,6 +53,7 @@ impl Cursor {
             last_assert: Instant::now(),
             captured: false,
             sdl_relative: true,
+            reassert_until: Instant::now(),
         }
     }
 
@@ -79,6 +84,21 @@ impl Cursor {
         set_compositor_visible(!self.captured);
         COMPOSITOR_HIDDEN.store(self.captured, Ordering::Relaxed);
         self.last_assert = Instant::now();
+        // Anchored at the capture, not advanced by the re-asserts themselves (`last_assert` is).
+        // Releasing arms nothing: there is no hide to keep re-issuing.
+        self.reassert_until = if self.captured {
+            self.last_assert + STARTUP_REASSERT
+        } else {
+            self.last_assert
+        };
+    }
+
+    /// Drive once per frame: keeps re-issuing the hide for [`STARTUP_REASSERT`] after a capture,
+    /// so a panel mode switch mid-startup (HDR) can't leave the compositor's arrow on screen.
+    pub fn tick(&mut self) {
+        if Instant::now() < self.reassert_until {
+            self.reassert_hidden();
+        }
     }
 
     /// Asks the compositor once more to drop its pointer. For the point where the evdev grab has
@@ -94,21 +114,6 @@ impl Cursor {
         }
         set_compositor_visible(false);
         self.last_assert = Instant::now();
-    }
-
-    /// Re-asserts the hide when due; no-op unless hidden and [`COMPOSITOR_REASSERT`] is on.
-    pub fn on_pointer_activity(&mut self) {
-        if !COMPOSITOR_REASSERT {
-            return;
-        }
-        if !COMPOSITOR_HIDDEN.load(Ordering::Relaxed) {
-            return;
-        }
-        if self.last_assert.elapsed() < REASSERT_INTERVAL {
-            return;
-        }
-        self.last_assert = Instant::now();
-        set_compositor_visible(false);
     }
 }
 

@@ -321,6 +321,9 @@ pub(super) fn run_inner() -> Result<()> {
                 connected.disconnect_quit();
                 break 'running StreamOutcome::Quit;
             }
+            // Bounded post-capture re-assert — the compositor repaints its arrow when the panel
+            // switches into HDR, after the one-shot retracts below have already run.
+            cursor.tick();
             if settings.cursor_capture
                 && !hid_device_seen
                 && hid
@@ -456,7 +459,6 @@ pub(super) fn run_inner() -> Result<()> {
                     // Magic Remote pointer mode surfaces as plain SDL2 mouse events, forwarded
                     // to the host instead of driving local UI focus (see `mouse.rs`).
                     Event::MouseMotion { x, y, xrel, yrel, .. } => {
-                        cursor.on_pointer_activity();
                         if !hid_motion {
                             // Relative only for the remote alone: SDL's warp emulation is off
                             // whenever the evdev reader owns motion, so the remote sends

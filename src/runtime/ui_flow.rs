@@ -65,10 +65,8 @@ pub(super) fn run_ui_flow(
     const TICK_BUDGET: Duration = Duration::from_millis(16);
     canvas.window_mut().show();
     let mut app = App::new(identity.clone());
-    // `app` is rebuilt per menu entry but `controller` outlives it, and `ControllerDeviceAdded`
-    // fires only once per physical connect — so poll the subsystem here instead of relying on
-    // an event that already fired during the last menu or mid-stream. Without this the
-    // Controller row is locked on every menu entry after the first.
+    // `ControllerDeviceAdded` fires once per connect, not per menu entry, so re-poll here
+    // or the Controller row stays stale after the first menu.
     app.detected_gamepad_type = gamepad::detect_type(game_controller);
     // The GPU tile cache is the render loop's, not App's — App holds only screen state
     // Recreated per menu entry, same as `app`.
@@ -274,15 +272,19 @@ pub(super) fn run_ui_flow(
                     tracing::info!("quit during UI");
                     return Ok(None);
                 }
-                Event::ControllerDeviceAdded { which, .. } if controller.is_none() => {
-                    match game_controller.open(which) {
-                        Ok(c) => {
-                            tracing::info!("controller connected: {}", c.name());
-                            *controller = Some(c);
-                            app.detected_gamepad_type = gamepad::detect_type(game_controller);
+                Event::ControllerDeviceAdded { which, .. } => {
+                    if controller.is_none() {
+                        match game_controller.open(which) {
+                            Ok(c) => {
+                                tracing::info!("controller connected: {}", c.name());
+                                *controller = Some(c);
+                            }
+                            Err(e) => tracing::warn!("controller open failed: {e}"),
                         }
-                        Err(e) => tracing::warn!("controller open failed: {e}"),
                     }
+                    // Outside the open: only the first pad becomes `controller`, but a second one
+                    // plugged in after it can still be the pad `detect_type` names.
+                    app.detected_gamepad_type = gamepad::detect_type(game_controller);
                     continue;
                 }
                 Event::ControllerDeviceRemoved { .. } => {
