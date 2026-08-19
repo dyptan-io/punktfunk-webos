@@ -91,14 +91,24 @@ pub fn call_capture(uri: &str, payload: &str, timeout: Duration) -> anyhow::Resu
 /// reaping on timeout so no zombie is left). Returns its stdout when `capture` is set, else an
 /// empty string. Shared by [`call`] and [`call_capture`] — the only differences between them are
 /// the args, `capture`, and the deadline.
+///
+/// **Why a temp file and not a pipe.** `luna-send-pub` leaves stdout fully buffered when it is
+/// not a tty and exits without flushing, so a piped reply arrives empty every time (verified
+/// on-device: the same call redirected to a file prints its JSON). A regular file is the one
+/// non-tty destination that survives that, since the buffer is flushed by the kernel on exit.
 fn run_bounded(args: &[&str], timeout: Duration, capture: bool) -> anyhow::Result<String> {
     if !available() {
         anyhow::bail!("luna-send-pub unavailable");
     }
+    let reply = capture.then(ReplyFile::new);
+    let stdout = match &reply {
+        Some(reply) => Stdio::from(std::fs::File::create(&reply.0)?),
+        None => Stdio::null(),
+    };
     let mut child = Command::new(LUNA_SEND_PUB)
         .args(args)
         .stdin(Stdio::null())
-        .stdout(if capture { Stdio::piped() } else { Stdio::null() })
+        .stdout(stdout)
         .stderr(Stdio::null())
         .spawn()?;
 
@@ -106,12 +116,10 @@ fn run_bounded(args: &[&str], timeout: Duration, capture: bool) -> anyhow::Resul
     loop {
         match child.try_wait()? {
             Some(status) if status.success() => {
-                let out = if capture {
-                    String::from_utf8_lossy(&child.wait_with_output()?.stdout).into_owned()
-                } else {
-                    String::new()
+                return match &reply {
+                    Some(reply) => reply.read(),
+                    None => Ok(String::new()),
                 };
-                return Ok(out);
             }
             Some(status) => anyhow::bail!("luna-send-pub exited {status}"),
             None if Instant::now() >= deadline => {
@@ -123,5 +131,30 @@ fn run_bounded(args: &[&str], timeout: Duration, capture: bool) -> anyhow::Resul
             }
             None => std::thread::sleep(Duration::from_millis(10)),
         }
+    }
+}
+
+/// The file one call's reply is written to, unlinked on drop so every way out of
+/// [`run_bounded`] — including ones added later — cleans up without having to remember to.
+///
+/// The path is unique per process AND per call: calls can be in flight from several threads
+/// (feedback sends, the root probe), and a shared path would let one truncate another's reply.
+struct ReplyFile(std::path::PathBuf);
+
+impl ReplyFile {
+    fn new() -> Self {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!("pf-luna-{}-{n}.json", std::process::id())))
+    }
+
+    fn read(&self) -> anyhow::Result<String> {
+        Ok(std::fs::read_to_string(&self.0)?)
+    }
+}
+
+impl Drop for ReplyFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }

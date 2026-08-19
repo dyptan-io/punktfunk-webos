@@ -16,22 +16,14 @@ use serde_json::Value;
 use std::time::Duration;
 
 const URI_EXEC: &str = "luna://org.webosbrew.hbchannel.service/exec";
-/// The Homebrew Channel's elevated helper — [`enter`] can only reach `settingsservice` by having
-/// this service run `luna-send` as root (see the module docs).
-const HBCHANNEL_SERVICE: &str = "/media/developer/apps/usr/palm/services/org.webosbrew.hbchannel.service";
-
-/// Whether the Homebrew Channel's elevated service is installed at all — free, and false rules
-/// root out without paying for [`probe_rooted`]'s round-trip.
-pub fn hbchannel_installed() -> bool {
-    std::path::Path::new(HBCHANNEL_SERVICE).is_dir()
-}
 
 /// Probes whether this TV can actually run privileged commands through the Homebrew Channel.
-/// [`hbchannel_installed`] is not enough — a non-rooted TV has the service but the call comes
-/// back permission-denied, so a harmless `true` has to make the round-trip for real.
+/// Only the round-trip is trustworthy: the service's install path varies (`/media/developer` vs
+/// `/media/cryptofs`, depending on how the Homebrew Channel was installed), and even when it is
+/// present a non-rooted TV answers permission-denied. So a harmless `true` is run for real.
 pub fn probe_rooted() -> bool {
     if let Err(e) = exec(PROBE_TIMEOUT, "true") {
-        tracing::info!("hbchannel service present but root exec failed — TV is not rooted: {e:#}");
+        tracing::info!("hbchannel root exec failed — TV is not rooted: {e:#}");
         return false;
     }
     true
@@ -40,8 +32,9 @@ pub fn probe_rooted() -> bool {
 /// Generous: the outer call forks `luna-send` as root on the TV, which itself round-trips to
 /// `settingsservice`. Passed through as `luna-send-pub -w` and the process kill deadline.
 const EXEC_TIMEOUT: Duration = Duration::from_millis(4000);
-/// The probe runs a bare `true` — no `settingsservice` hop — so it needn't wait as long.
-const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+/// The probe runs a bare `true` — no `settingsservice` hop — but the Homebrew Channel's service
+/// is launched on demand, so a cold first call pays for that start-up before it answers.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(4000);
 
 /// One setting we changed, plus the value to put back on exit (`None` = nothing to restore:
 /// couldn't read the prior value, or it already equalled what we set).

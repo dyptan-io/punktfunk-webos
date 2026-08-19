@@ -14,11 +14,6 @@ impl App {
         if self.rooted.is_some() || self.rooted_rx.is_some() {
             return;
         }
-        // No Homebrew Channel, no root, no thread — the answer is a stat away.
-        if !crate::platform::webos::game_mode::hbchannel_installed() {
-            self.settle_rooted(false);
-            return;
-        }
         let (tx, rx) = std::sync::mpsc::channel();
         match std::thread::Builder::new().name("root-probe".into()).spawn(move || {
             let _ = tx.send(crate::platform::webos::game_mode::probe_rooted());
