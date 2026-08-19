@@ -330,13 +330,14 @@ struct Device {
 /// its full rate forever.
 #[derive(Default)]
 struct Sensors {
-    /// Pitch/yaw/roll then accelerometer, in the pad's own units (`hid-playstation` keeps the
-    /// report's scale), as the wire orders them.
+    /// Pitch/yaw/roll then accelerometer, in the node's own units, as the wire orders them.
     axes: [i32; 6],
     /// A `SYN_REPORT` completed a sample since the last send.
     dirty: bool,
     /// Last sample actually sent, for the unchanged-sample skip.
     sent: Option<[i16; 6]>,
+    /// Per-axis node units → wire units, `SCALE_SHIFT` fixed point — see [`Sensors::new`].
+    scale: [i64; 6],
 }
 
 /// Multitouch decode state for a claimed pad touchpad, plus the axis ranges its coordinates are
@@ -474,7 +475,7 @@ fn open_hid(path: &Path, grab_mouse: bool) -> Probe {
     if is_pad_touchpad(absolute_pointer, bit(&key, BTN_TOUCH), || device_vendor(fd)) {
         dev.touchpad = Some(Touchpad::new(fd));
     } else if is_pad_motion(&abs, bit(&key, BTN_TOUCH) || bit(&key, BTN_SOUTH), || device_vendor(fd)) {
-        dev.sensors = Some(Sensors::default());
+        dev.sensors = Some(Sensors::new(fd));
     }
     if !dev.mouse && !dev.keyboard && dev.touchpad.is_none() && dev.sensors.is_none() {
         // Not ours, or a pointer-only node in desktop mode — left with the compositor so the
@@ -538,6 +539,46 @@ fn is_pad_motion(abs: &[u8; 128], has_buttons: bool, vendor: impl FnOnce() -> u1
     (ABS_X..=ABS_RZ).all(|c| bit(abs, c)) && !has_buttons && vendor() == VENDOR_SONY
 }
 
+/// The units the wire carries: the raw `DualSense` report scale the host's *virtual* pad is
+/// calibrated for, since the host injects inputtino's fixed calibration blob. Same convention as
+/// the Linux and Apple clients.
+const WIRE_GYRO_LSB_PER_DEG_S: i32 = 20;
+const WIRE_ACCEL_LSB_PER_G: i32 = 10_000;
+
+/// `hid-playstation`'s own output scale, for a node that publishes no `resolution`.
+const DS_GYRO_RES_PER_DEG_S: i32 = 1024;
+const DS_ACC_RES_PER_G: i32 = 8192;
+
+/// Fixed-point fraction bits of [`Sensors::scale`]. Both real ratios (20/1024, 10000/8192) are
+/// exact at 16.
+const SCALE_SHIFT: u32 = 16;
+
+impl Sensors {
+    /// Builds the per-axis wire scale once, at open. The node's `resolution` is per device — the
+    /// driver derives it from *this* pad's factory calibration blob — so it is the only honest
+    /// answer to what a raw count here means. Reciprocal rather than a divisor: armv7 has no
+    /// 64-bit divide, and [`flush_sensors`] runs per read burst.
+    fn new(fd: RawFd) -> Self {
+        let scale = std::array::from_fn(|i| {
+            // Gyro axes first, then accelerometer — the order `read_sensors` fills.
+            let (code, wire, fallback) = if i < 3 {
+                (ABS_RX + i as u16, WIRE_GYRO_LSB_PER_DEG_S, DS_GYRO_RES_PER_DEG_S)
+            } else {
+                (ABS_X + (i - 3) as u16, WIRE_ACCEL_LSB_PER_G, DS_ACC_RES_PER_G)
+            };
+            let res = match abs_resolution(fd, code) {
+                r if r > 0 => r,
+                _ => fallback,
+            };
+            (i64::from(wire) << SCALE_SHIFT) / i64::from(res)
+        });
+        Self {
+            scale,
+            ..Default::default()
+        }
+    }
+}
+
 impl Touchpad {
     /// Reads the node's axis ranges once, at open. A node whose `ABS_MT_POSITION_*` ranges are
     /// unusable is still worth claiming (the compositor must not have it) — it just reports no
@@ -563,10 +604,9 @@ fn normalize(x: i32, y: i32, x_range: (i32, i32), y_range: (i32, i32)) -> Option
     Some((scale(x, x_range)?, scale(y, y_range)?))
 }
 
-/// `EVIOCGABS(code)`'s `(minimum, maximum)` out of `struct input_absinfo`
-/// (`value, minimum, maximum, fuzz, flat, resolution`). Falls back to `(0, 0)` when the ioctl
-/// fails, which [`normalize`] reads as "no usable range".
-fn abs_range(fd: RawFd, code: u16) -> (i32, i32) {
+/// `EVIOCGABS(code)` — `struct input_absinfo` as `value, minimum, maximum, fuzz, flat,
+/// resolution`. All zeroes when the ioctl fails, which every caller reads as "no usable value".
+fn abs_info(fd: RawFd, code: u16) -> [i32; 6] {
     let mut info = [0i32; 6];
     // SAFETY: as `event_bits` — length-encoding request, buffer of exactly that length.
     let rc = unsafe {
@@ -577,9 +617,22 @@ fn abs_range(fd: RawFd, code: u16) -> (i32, i32) {
         )
     };
     if rc < 0 {
-        return (0, 0);
+        return [0; 6];
     }
+    info
+}
+
+/// The axis's `(minimum, maximum)`; `(0, 0)` when unknown, which [`normalize`] reads as "no
+/// usable range".
+fn abs_range(fd: RawFd, code: u16) -> (i32, i32) {
+    let info = abs_info(fd, code);
     (info[1], info[2])
+}
+
+/// The axis's `resolution` — units per deg/s on a gyro axis, per g on an accelerometer one.
+/// `0` when the driver publishes none.
+fn abs_resolution(fd: RawFd, code: u16) -> i32 {
+    abs_info(fd, code)[5]
 }
 
 /// The vendor id out of `EVIOCGID`'s `struct input_id` (`bustype, vendor, product, version`) —
@@ -939,15 +992,19 @@ fn read_sensors(sensors: &mut Sensors, buf: &[u8], size: usize) {
 /// reports forever, and re-sending its resting attitude at 500 Hz would cost a datagram per
 /// sample to tell the host nothing.
 ///
-/// Clamped to `i16`: the wire carries the `DualSense` report's own signed-16 units, and
-/// `hid-playstation`'s calibration can push a sample a little past that at the extremes.
+/// Rescaled to the wire's units before the `i16` clamp: this node reports `hid-playstation`'s
+/// *calibrated* readings (~1024 counts per deg/s) where the wire wants the host virtual pad's raw
+/// report scale (~20), so forwarding them verbatim rails every axis on the slightest movement.
+/// The divide also quantizes a resting pad's bias jitter to a clean zero, which the skip below
+/// then stops sending.
 fn flush_sensors(sensors: &mut Sensors, sink: &impl Fn(HidReport)) {
     if !std::mem::take(&mut sensors.dirty) {
         return;
     }
-    let axes = sensors
-        .axes
-        .map(|v| v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16);
+    let axes: [i16; 6] = std::array::from_fn(|i| {
+        ((i64::from(sensors.axes[i]) * sensors.scale[i]) >> SCALE_SHIFT)
+            .clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+    });
     if sensors.sent == Some(axes) {
         return;
     }
