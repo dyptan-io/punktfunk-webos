@@ -65,6 +65,11 @@ pub(super) fn run_ui_flow(
     const TICK_BUDGET: Duration = Duration::from_millis(16);
     canvas.window_mut().show();
     let mut app = App::new(identity.clone());
+    // `app` is rebuilt per menu entry but `controller` outlives it, and `ControllerDeviceAdded`
+    // fires only once per physical connect — so poll the subsystem here instead of relying on
+    // an event that already fired during the last menu or mid-stream. Without this the
+    // Controller row is locked on every menu entry after the first.
+    app.detected_gamepad_type = gamepad::detect_type(game_controller);
     // The GPU tile cache is the render loop's, not App's — App holds only screen state
     // Recreated per menu entry, same as `app`.
     let mut tiles = crate::ui::cache::TileStore::new();
@@ -282,7 +287,8 @@ pub(super) fn run_ui_flow(
                 }
                 Event::ControllerDeviceRemoved { .. } => {
                     *controller = None;
-                    app.detected_gamepad_type = None;
+                    // Re-poll rather than clearing: another pad may still be attached.
+                    app.detected_gamepad_type = gamepad::detect_type(game_controller);
                     // An unplugged pad sends no releases — drop any armed chord.
                     chord.clear();
                     continue;
