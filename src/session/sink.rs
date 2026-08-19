@@ -114,6 +114,7 @@ fn cushion_frames(samples: impl Iterator<Item = u64>) -> u64 {
 }
 
 /// What the pump knows about a frame that the sink can't work out for itself.
+#[derive(Clone, Copy)]
 pub struct FrameFlags {
     /// This frame can restart decoding on its own (IDR, or an LTR recovery anchor).
     pub reanchor: bool,

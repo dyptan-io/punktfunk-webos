@@ -26,6 +26,10 @@ items_after_statements = "warn"
 match_same_arms = "warn"
 format_collect = "warn"
 suspicious_operation_groupings = "warn"
+# Both target the classes the render path kept regressing on: a key or a row list taken by
+# value and then only read, and a label cloned to be hashed once (see `app::render::key`).
+needless_pass_by_value = "warn"
+redundant_clone = "warn"
 
 [dependencies]
 anyhow = "1"

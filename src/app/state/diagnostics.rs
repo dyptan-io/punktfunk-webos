@@ -43,7 +43,7 @@ impl App {
         }
         let len = crate::app::view::diagnostics::rows(&self.settings).len();
         if ui::widgets::list_nav(&mut self.diagnostics_focused, len, menu::nav_dir(ev)) {
-            self.modal_focus_anim = Some(Instant::now());
+            self.modal.focus_anim = Some(Instant::now());
             return;
         }
         match (self.diagnostics_focused, ev) {
@@ -58,13 +58,13 @@ impl App {
             (menu::DIAG_ROW_STATS_OVERLAY, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
                 let from = self.settings.stats_overlay;
                 self.settings.stats_overlay = !from;
-                self.switch_anim = Some((Instant::now(), from, self.diagnostics_focused));
+                self.modal.switch_anim = Some((Instant::now(), from, self.diagnostics_focused));
             }
             (menu::DIAG_ROW_SHOW_LOGS, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
                 let from = self.settings.show_logs;
                 self.settings.show_logs = !from;
                 crate::runtime::set_log_overlay_enabled(!from);
-                self.switch_anim = Some((Instant::now(), from, self.diagnostics_focused));
+                self.modal.switch_anim = Some((Instant::now(), from, self.diagnostics_focused));
             }
             (menu::DIAG_ROW_SEND_LOGS, MenuEvent::Confirm) => {
                 // Persist any pending diagnostics changes before leaving the screen —

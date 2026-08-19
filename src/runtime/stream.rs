@@ -274,13 +274,17 @@ pub(super) fn run_inner() -> Result<()> {
         // Transient toasts. `overlay_was_active` catches the fade-out edge so the canvas gets
         // wiped once; `stats_dst`/`log_dst` recomposite each frame at their own slower cadence.
         let mut notif = crate::ui::widgets::Notification::new();
-        // Last (text, w, h) uploaded for the toast tile — see `push_notification_cmd`.
-        let mut notif_tile: Option<(String, u32, u32)> = None;
+        let mut toast = super::toast::Toast::default();
         // Edge-detects `stats.holding` (freeze-until-reanchor — see `session::pump`'s video pump) so a
         // packet-loss stall surfaces as a toast even with the stats overlay off, same signal the
         // overlay's "Beat" line already reads.
         let mut was_holding = false;
         let mut overlay_was_active = false;
+        // The two overlays' own rasterized-text cache, long-lived and separate from anything
+        // the menu owns: their content is dynamic (a log tail, per-frame figures), so it must
+        // not settle into the UI cache — and rebuilding at ~2Hz from an empty map, as this
+        // used to, threw away every glyph run the previous rebuild had already rasterized.
+        let mut overlay_text = crate::ui::text::TextCache::with_capacity(OVERLAY_TEXT_CAP);
         let mut stats_dst: Option<crate::ui::render::Rect> = None;
         let mut log_dst: Option<crate::ui::render::Rect> = None;
         let mut stats_built_at: Option<Instant> = None;
@@ -762,10 +766,13 @@ pub(super) fn run_inner() -> Result<()> {
                     if let Some(line) = cpu_mem_line {
                         lines.push(line);
                     }
-                    match crate::ui::tiles::render_stats_overlay_tile(
+                    match crate::ui::rasterize(
+                        crate::ui::tiles::StatsOverlayTile {
+                            lines: &lines,
+                            hint: "Press green button to hide this overlay",
+                        },
+                        &mut overlay_text,
                         &fonts,
-                        &lines,
-                        "Press green button to hide this overlay",
                     ) {
                         Ok(tile) => {
                             let (tw, th) = (tile.width(), tile.height());
@@ -792,7 +799,14 @@ pub(super) fn run_inner() -> Result<()> {
                 // `None` during fade-out once the toggle flips Off — the fade keeps
                 // recompositing the last uploaded tile via `log_dst`.
                 if let Some(lines) = log_overlay_lines() {
-                    match crate::ui::tiles::render_log_overlay_tile(&fonts, display_mode.w as u32, &lines) {
+                    match crate::ui::rasterize(
+                        crate::ui::tiles::LogOverlayTile {
+                            screen_w: display_mode.w as u32,
+                            lines: &lines,
+                        },
+                        &mut overlay_text,
+                        &fonts,
+                    ) {
                         Ok(tile) => {
                             let (tw, th) = (tile.width(), tile.height());
                             compositor.upload(&texture_creator, tile::LOG_OVERLAY, &tile, false)?;
@@ -810,13 +824,12 @@ pub(super) fn run_inner() -> Result<()> {
                         });
                     }
                 }
-                push_notification_cmd(
+                toast.draw(
                     &mut compositor,
                     &texture_creator,
-                    &fonts,
+                    (&fonts, &mut overlay_text),
                     &notif_frame,
                     display_mode.w,
-                    &mut notif_tile,
                     &mut cmds,
                 )?;
                 if !cmds.is_empty() {

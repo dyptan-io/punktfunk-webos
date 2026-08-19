@@ -1,10 +1,11 @@
 //! Home screen logic: sidebar/grid navigation, host selection, game library fetch,
 //! launching. Grid pixel geometry (rect helpers) lives in `app::view::home`.
+use crate::app::grid::{GridCard, GridLayout};
 use crate::app::hosts::HostEntry;
 use crate::app::state::addhost::AddHostState;
 use crate::app::view;
 use crate::app::App;
-use crate::app::{ConnectTarget, GridCard, GridLayout};
+use crate::app::ConnectTarget;
 use crate::core::event::MenuEvent;
 use crate::core::screen::{HomeFocus, Screen, SettingsScope};
 use crate::services::store::{self};
@@ -113,7 +114,7 @@ impl App {
         map.group(
             GROUP_GRID,
             ui::focus::Wrap::None,
-            HomeFocus::Grid(self.grid_focus_last),
+            HomeFocus::Grid(self.grid.focus_last),
             HomeFocus::Grid(0),
         );
 
@@ -144,7 +145,22 @@ impl App {
         } else {
             0
         };
-        for idx in 0..grid_len {
+        // Only the cards a single move can actually reach (see `view::home::focus_window`) —
+        // one item per card in the library made every keypress allocate and rescan the whole
+        // list to answer a question about its immediate neighbours.
+        let focus_window = view::home::focus_window(
+            grid_len,
+            columns,
+            available_w,
+            sections,
+            self.grid.scroll_target,
+            screen_h as i32,
+            match self.home_focus {
+                HomeFocus::Grid(i) => Some(i),
+                HomeFocus::Sidebar(_) | HomeFocus::SidebarMenu(_) => None,
+            },
+        );
+        for idx in focus_window {
             if layout.card_at(&self.games, idx).is_none() {
                 continue;
             }
@@ -152,7 +168,7 @@ impl App {
                 view::home::unscrolled_card_rect(idx, columns, ui::widgets::SIDEBAR_W as i32, available_w, sections);
             // Screen space, at the scroll the grid is easing *toward* — so that a move
             // crossing into the sidebar compares against its rows on equal terms.
-            map.item(HomeFocus::Grid(idx), r.offset(0, -self.grid_scroll_target), GROUP_GRID);
+            map.item(HomeFocus::Grid(idx), r.offset(0, -self.grid.scroll_target), GROUP_GRID);
         }
         map
     }
@@ -171,7 +187,7 @@ impl App {
         };
         self.home_focus = next;
         if let HomeFocus::Grid(idx) = next {
-            self.grid_focus_last = idx;
+            self.grid.focus_last = idx;
             self.ensure_grid_visible(idx, columns, screen_w, screen_h);
         }
     }
@@ -265,14 +281,14 @@ impl App {
         self.reorder_games_by_pin();
         if let Some(new_idx) = self.grid_idx_for_pin_id(&id, columns) {
             self.home_focus = HomeFocus::Grid(new_idx);
-            self.grid_focus_last = new_idx;
+            self.grid.focus_last = new_idx;
             self.ensure_grid_visible(new_idx, columns, screen_w, screen_h);
         }
         self.replay_reorder_pop(&id, was_pinned, columns);
     }
 
     /// Reorder's appear animation — the same "every card pops in together" look
-    /// as a fresh library reveal (see `grid_reveal_ready`), scoped to what
+    /// as a fresh library reveal (see `app::spinner::GridReveal`), scoped to what
     /// actually needs it: the newly pinned card alone (top row — an already-
     /// pinned card that just changed order doesn't replay), plus every card in
     /// the unpinned "rest" section, which reshuffles regardless of direction.
@@ -281,17 +297,30 @@ impl App {
     fn replay_reorder_pop(&mut self, id: &str, was_pinned: bool, columns: usize) {
         let now = Instant::now();
         let layout = self.grid_layout(columns);
-        let rest_ids: Vec<String> = (layout.unpinned_start..layout.len(self.games.len()))
-            .filter_map(|idx| layout.pin_id_at(&self.games, idx).map(str::to_string))
+        // Driven off what is rasterized, not off the library: a card outside the scroll window
+        // has no pop on screen to replay, and `prepare_grid` arms its clock when it is built.
+        // Off the whole library this put one entry per game into `card_pop` — a map
+        // `tick_animations` scans every frame, and which eviction never reaches for a card it
+        // holds no tile for. The pinned block is the grid's first `front_count` indices, so
+        // "in the rest section" is decidable from a set bounded by `MAX_PINNED_GAMES`.
+        let pinned: std::collections::HashSet<&str> = (0..layout.front_count)
+            .filter_map(|idx| layout.pin_id_at(&self.games, idx))
+            .collect();
+        let rest_ids: Vec<String> = self
+            .grid
+            .card_ids
+            .pin_ids()
+            .filter(|id| !pinned.contains(id))
+            .map(str::to_string)
             .collect();
         // Re-arm the pop clock unconditionally (not gated on a built tile like the old
         // per-`CardTile` clock): a not-yet-built card has no visible pop to replay, and
         // its clock is overwritten with a fresh one when `prepare_grid` builds it.
         if !was_pinned {
-            self.card_pop.insert(id.to_string(), now);
+            self.grid.card_pop.insert(id.to_string(), now);
         }
         for pin_id in rest_ids {
-            self.card_pop.insert(pin_id, now);
+            self.grid.card_pop.insert(pin_id, now);
         }
     }
 
@@ -355,7 +384,7 @@ impl App {
     /// Eased 0..=1 progress of pin id `id`'s zoom-in (see `card_pop`)
     /// — 1.0, full size, for anything not animating.
     pub(crate) fn card_pop_frac(&self, id: &str) -> f32 {
-        ui::animation::anim_frac(self.card_pop.get(id).copied(), crate::app::CARD_POP)
+        ui::animation::anim_frac(self.grid.card_pop.get(id).copied(), crate::app::CARD_POP)
     }
 
     /// The largest useful `grid_scroll` for the current library/layout — 0 when
@@ -383,8 +412,8 @@ impl App {
         let card = self.unscrolled_card_rect(idx, columns, ui::widgets::SIDEBAR_W as i32, available_w);
         let viewport = (view::home::GRID_TOP_Y, screen_h as i32 - view::home::GRID_PAD);
         let max_scroll = self.max_grid_scroll(columns, available_w, screen_h);
-        self.grid_scroll_target =
-            ui::scroll::scroll_to_reveal(card, viewport, self.grid_scroll_target, FOCUS_MARGIN).clamp(0, max_scroll);
+        self.grid.scroll_target =
+            ui::scroll::scroll_to_reveal(card, viewport, self.grid.scroll_target, FOCUS_MARGIN).clamp(0, max_scroll);
     }
 
     /// Scrolls the grid by `dy_px` (positive = content moves up), clamped — the
@@ -398,9 +427,9 @@ impl App {
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
         let max_scroll = self.max_grid_scroll(columns, available_w, screen_h);
-        let next = (self.grid_scroll_target + dy_px).clamp(0, max_scroll);
-        let changed = next != self.grid_scroll_target;
-        self.grid_scroll_target = next;
+        let next = (self.grid.scroll_target + dy_px).clamp(0, max_scroll);
+        let changed = next != self.grid.scroll_target;
+        self.grid.scroll_target = next;
         changed
     }
     pub(crate) fn confirm_sidebar_host(&mut self, idx: usize) {
@@ -431,8 +460,8 @@ impl App {
         self.home_status = None;
         self.home_status_sticky = false;
         self.home_focus = HomeFocus::Sidebar(0);
-        self.grid_focus_last = 0;
-        self.grid_dirty = true;
+        self.grid.focus_last = 0;
+        self.grid.dirty = true;
     }
 
     /// Selects host and kicks off async library fetch; avoids blocking the UI thread (used to freeze input).
@@ -458,11 +487,11 @@ impl App {
         self.art_loader = None;
         // Focus stays on the sidebar until `drain_games` has cards to land on: `navigate`
         // can't move off a key with no rect, so an empty grid would kill the d-pad.
-        self.grid_focus_last = 0;
+        self.grid.focus_last = 0;
         self.sidebar_dirty = true;
-        self.grid_dirty = true;
-        self.grid_scroll = 0;
-        self.grid_scroll_target = 0;
+        self.grid.dirty = true;
+        self.grid.scroll = 0;
+        self.grid.scroll_target = 0;
 
         let identity = (self.identity.0.clone(), self.identity.1.clone());
         let known = self.known_hosts.iter().find(|h| h.host == host && h.port == port);
@@ -516,7 +545,7 @@ impl App {
                     mgmt_port,
                     identity,
                     fingerprint,
-                    self.card_size,
+                    self.grid.card_size,
                 ));
                 self.games = games;
                 self.games_loaded = true;
@@ -539,10 +568,10 @@ impl App {
             }
             Err(e) => {
                 tracing::warn!("library fetch failed ({host}:{mgmt_port}): {e}");
-                self.handle_library_error(host, port, e);
+                self.handle_library_error(host, port, &e);
             }
         }
-        self.grid_dirty = true;
+        self.grid.dirty = true;
         true
     }
 
@@ -551,7 +580,7 @@ impl App {
     /// (even with no MAC on record — `start_wake`/`render_wake` just hide the send
     /// controls then); `NotPaired`/`PinMismatch`/`Http` mean the host answered, so
     /// Wake-on-LAN wouldn't help — those stay a plain status line.
-    pub(crate) fn handle_library_error(&mut self, host: String, port: u16, e: crate::services::library::LibraryError) {
+    pub(crate) fn handle_library_error(&mut self, host: String, port: u16, e: &crate::services::library::LibraryError) {
         let reason = e.to_string();
         // A live problem with the host beats the previous launch's reason for bouncing.
         self.home_status_sticky = false;
@@ -659,6 +688,6 @@ impl App {
             }
         }
         self.sidebar_dirty = true;
-        self.grid_dirty = true;
+        self.grid.dirty = true;
     }
 }

@@ -67,14 +67,14 @@ impl App {
     pub(crate) fn handle_experimental_event(&mut self, ev: MenuEvent) {
         let len = menu::EXP_ROW_COUNT;
         if ui::widgets::list_nav(&mut self.experimental_focused, len, menu::nav_dir(ev)) {
-            self.modal_focus_anim = Some(Instant::now());
+            self.modal.focus_anim = Some(Instant::now());
             return;
         }
         match (self.experimental_focused, ev) {
             (menu::EXP_ROW_HW_AUDIO, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
                 let from = self.settings.ndl_audio_offload;
                 self.settings.ndl_audio_offload = !from;
-                self.switch_anim = Some((Instant::now(), from, self.experimental_focused));
+                self.modal.switch_anim = Some((Instant::now(), from, self.experimental_focused));
             }
             // A locked row (see `menu::exp_row_lock`) rejects the press — the greyed control
             // already says the value is fixed.
@@ -83,7 +83,7 @@ impl App {
             {
                 let from = self.settings.game_mode;
                 self.settings.game_mode = !from;
-                self.switch_anim = Some((Instant::now(), from, self.experimental_focused));
+                self.modal.switch_anim = Some((Instant::now(), from, self.experimental_focused));
             }
             (_, MenuEvent::Back) => {
                 self.persist();

@@ -5,7 +5,10 @@
 //! speed test's retry, picking a host. Anything that opens or closes a modal drops it:
 //! the modal fade (75ms, full-screen scrim) darkens the pressed row and replaces the
 //! tile that was dipping, so the 5px dip underneath is never seen. One motion per press.
-use crate::app::*;
+
+use crate::app::{App, ConnectTarget, HomeFocus, PairingFocus, Screen};
+use crate::core::event::MenuEvent;
+use crate::ui;
 
 impl App {
     /// Routes one `MenuEvent` to the open screen — the single dispatch table, which

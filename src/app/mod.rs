@@ -4,13 +4,16 @@
 //! Per-screen `impl App` blocks are split by concern: `state` (event handling, transitions)
 //! and `view` (geometry + draw-list building). Keeping them under `app` lets `ui`/`core`
 //! stay dependency leaves — neither reaches back into `App`.
+pub(crate) mod grid;
 pub(crate) mod hero;
 pub(crate) mod hosts;
 pub(crate) mod menu;
+pub(crate) mod modal;
 pub(crate) mod pointer;
 pub(crate) mod press;
 pub(crate) mod render;
 pub(crate) mod render_input;
+pub(crate) mod spinner;
 pub(crate) mod state;
 pub(crate) mod view;
 
@@ -20,10 +23,8 @@ use crate::ui::render::Rect;
 use anyhow::Result;
 use tiny_skia::Pixmap;
 
+use crate::app::grid::GridCard;
 use crate::app::hosts::HostEntry;
-use crate::app::render::key::ModalShellKey;
-use crate::app::render::tile;
-use crate::app::render::ModalSnapshot;
 use crate::app::state::addhost::AddHostState;
 use crate::core::event::MenuEvent;
 pub use crate::core::model::ConnectTarget;
@@ -33,18 +34,6 @@ use crate::services::discovery::Discovery;
 use crate::services::store::{self, KnownHost, Settings};
 use crate::ui;
 use crate::ui::render::TileId;
-use crate::ui::Painter;
-
-/// Rows beyond viewport kept rasterized (prevents scroll stalls).
-const CARD_PREFETCH_ROWS: i32 = 2;
-/// Rows beyond which tiles are dropped. Hysteresis prevents eviction oscillation.
-const CARD_KEEP_ROWS: i32 = 5;
-/// Cards rasterized per frame. Lowered from 2→1 due to text rasterization cost
-/// (cold TextCache/FreeType on armv7 softfloat). Bounds memory and keeps frame time steady.
-const CARD_BUILD_BUDGET: usize = 1;
-
-/// Loading spinner timeout: failed fetches never become ready, so cap the wait.
-const SPINNER_MAX_WAIT: Duration = Duration::from_millis(900);
 
 /// How much a focused grid card grows. Bigger than the modal widgets' pop (they sit
 /// in a fixed column where any spill reads as a layout shift); a card has the grid gap
@@ -106,94 +95,6 @@ pub struct WakeState {
     pub(crate) probe_rx: Option<std::sync::mpsc::Receiver<crate::services::library::GamesLoaded>>,
 }
 
-/// Grid card: Desktop or game (both pinnable).
-pub(crate) enum GridCard<'a> {
-    Desktop,
-    Game(&'a GameEntry),
-}
-
-/// Grid layout shape: pinned block (owns whole rows) + rest section (padding-aware).
-#[derive(Clone, Copy)]
-pub(crate) struct GridLayout {
-    pub(crate) pinned_count: usize,
-    pub(crate) desktop_pinned: bool,
-    pub(crate) desktop_in_rest: bool,
-    pub(crate) front_count: usize,
-    pub(crate) pinned_rows: usize,
-    pub(crate) unpinned_start: usize,
-}
-
-impl GridLayout {
-    /// The vertical section shape this layout implies: the pinned block's row count, and one
-    /// heading per section that actually has cards — so neither names an empty block, and the
-    /// gap between them only exists when both do.
-    pub(crate) fn sections(&self, games: usize) -> view::home::GridSections {
-        view::home::GridSections {
-            pinned_rows: self.pinned_rows,
-            pinned_heading: self.pinned_rows > 0,
-            library_heading: self.len(games) > self.unpinned_start,
-        }
-    }
-
-    pub(crate) fn len(&self, games: usize) -> usize {
-        self.unpinned_start + usize::from(self.desktop_in_rest) + games.saturating_sub(self.pinned_count)
-    }
-
-    pub(crate) fn card_at<'a>(&self, games: &'a [GameEntry], idx: usize) -> Option<GridCard<'a>> {
-        if idx < self.front_count {
-            if self.desktop_pinned {
-                return if idx == 0 {
-                    Some(GridCard::Desktop)
-                } else {
-                    games.get(idx - 1).map(GridCard::Game)
-                };
-            }
-            return games.get(idx).map(GridCard::Game);
-        }
-        let rest_pos = idx.checked_sub(self.unpinned_start)?;
-        if self.desktop_in_rest {
-            return if rest_pos == 0 {
-                Some(GridCard::Desktop)
-            } else {
-                games.get(self.pinned_count + rest_pos - 1).map(GridCard::Game)
-            };
-        }
-        games.get(self.pinned_count + rest_pos).map(GridCard::Game)
-    }
-
-    /// Like `card_at` but only games (not Desktop or padding).
-    pub(crate) fn game_at<'a>(&self, games: &'a [GameEntry], idx: usize) -> Option<&'a GameEntry> {
-        match self.card_at(games, idx)? {
-            GridCard::Game(g) => Some(g),
-            GridCard::Desktop => None,
-        }
-    }
-
-    /// The pin id for whatever's at grid index `idx` — a `GameEntry::id`, or
-    /// `store::DESKTOP_PIN_ID` for "Desktop" — `None` for the padding after a
-    /// partial pinned row. The one place this mapping is spelled out; every
-    /// caller (`App::pin_id_at_grid_idx`, tile build/evict, `draw_list`)
-    /// delegates here instead of matching `card_at` itself.
-    pub(crate) fn pin_id_at<'a>(&self, games: &'a [GameEntry], idx: usize) -> Option<&'a str> {
-        match self.card_at(games, idx)? {
-            GridCard::Desktop => Some(store::DESKTOP_PIN_ID),
-            GridCard::Game(g) => Some(g.id.as_str()),
-        }
-    }
-
-    pub(crate) fn idx_for_pin_id(&self, games: &[GameEntry], id: &str) -> Option<usize> {
-        if id == store::DESKTOP_PIN_ID {
-            return Some(if self.desktop_pinned { 0 } else { self.unpinned_start });
-        }
-        let pos = games.iter().position(|g| g.id == id)?;
-        Some(if pos < self.pinned_count {
-            usize::from(self.desktop_pinned) + pos
-        } else {
-            self.unpinned_start + usize::from(self.desktop_in_rest) + (pos - self.pinned_count)
-        })
-    }
-}
-
 /// Open dropdown on settings modal.
 pub struct DropdownState {
     pub row: usize,
@@ -210,10 +111,6 @@ pub struct App {
     /// Whether this TV is webosbrew-rooted — `None` until [`App::start_root_probe`] answers.
     pub(crate) rooted: Option<bool>,
     pub(crate) rooted_rx: Option<std::sync::mpsc::Receiver<bool>>,
-    /// Where the grid is re-entered from the sidebar. Only ever consulted through the
-    /// focus map, which drops it when it no longer names a real card, so reorders and
-    /// library reloads need no invalidation of their own.
-    pub(crate) grid_focus_last: usize,
     pub selected_host: Option<(String, u16)>,
     pub games: Vec<GameEntry>,
     /// Leading pinned-game entries; kept in pin order.
@@ -363,109 +260,31 @@ pub struct App {
     /// Bumped every time the sidebar strip is rebuilt, so its cache entry is versioned by
     /// the `sidebar_dirty` flag the event side maintains rather than by hashing every row.
     pub(crate) sidebar_gen: u64,
-    /// Which `TileId` each grid card's pin id holds (see `render::tile::CardIds`). Lives
-    /// on `App` rather than in the store because the event side reorders the grid and the
-    /// render side has to keep drawing the same tile for the same game.
-    pub(crate) card_ids: tile::CardIds,
     // The `Painter` tile cache (`ui::cache::TileStore`) is owned by the render loop
-    // (`runtime::ui_flow`), not `App` — App keeps only screen state plus these
-    // render-facing derived values that the event side also needs.
-    /// Per-card zoom-in start clock, keyed by pin id — set when a card first
-    /// appears/reveals, read by `card_pop_frac`. Animation state (the event side
-    /// re-arms it on reorder), kept off the `Painter` cache so that cache is
-    /// touched only by the render loop.
-    pub(crate) card_pop: std::collections::HashMap<String, Instant>,
-    /// Current grid card size, derived from screen width in `advance_frame`. Screen
-    /// geometry (the event side reads it to size cover-art requests), not a rasterized
-    /// tile — hence on `App`, not in the `Painter` cache.
-    pub(crate) card_size: (u32, u32),
+    // (`runtime::ui_flow`), not `App` — App keeps only screen state plus the render-facing
+    // derived values the event side also needs (see [`grid::GridState`]).
     /// Sidebar row content changed — the sidebar strip must re-rasterize
     /// (never set on focus movement).
     pub(crate) sidebar_dirty: bool,
-    /// All card tiles stale (games list / host changed) — a fresh library load,
-    /// so `prepare_tiles` also re-arms the loading spinner (`grid_reveal_ready`).
-    pub(crate) grid_dirty: bool,
-    /// Card tiles still waiting to be rasterized inside the prefetch window. Keeps the
-    /// main loop ticking until the window is filled — without it the redraw-on-change
-    /// loop would go idle mid-build and leave blank cards on screen.
-    pub(crate) tiles_pending: bool,
-    /// Individual card tiles stale (cover art arrived), by pin id — cheaper than
-    /// `grid_dirty` when the layout is unchanged.
-    pub(crate) grid_cards_dirty: Vec<String>,
     /// Tiles whose GPU texture should be released this frame — drained by `main.rs`,
     /// which owns the `Compositor`.
     pub(crate) evicted_tiles: Vec<TileId>,
-    /// What the modal shell tile was last rasterized from — a value change invalidates
-    /// it, but moving focus alone must not (that's the focus tile's job).
-    /// `None` while `Screen::Home`/`Screen::AddHost` (no `ModalShellKey`
-    /// variant; `AddHost` just redraws on any `content_dirty` tick instead —
-    /// its typed-digit display has no separate focus tile to protect).
-    pub(crate) modal_shell_key: Option<ModalShellKey>,
-    /// Where the scrolling modal's viewport is *rendered*, in pixels, and where it is heading.
-    ///
-    /// `scroll.offset` stays an integral row/line index — focus logic and the scrollbar are
-    /// defined in those units, and quantized steps are what make keyboard navigation land
-    /// predictably. Only the rendered crop is continuous, which is what makes the motion
-    /// smooth, and it is also what lets the last row sit flush against the viewport's bottom
-    /// (an integral offset overshoots by whatever the peek strip is worth).
-    pub(crate) modal_scroll_px: i32,
-    pub(crate) modal_scroll_target_px: i32,
-    /// Which screen `modal_scroll_px` describes, so opening a different modal snaps instead of
-    /// gliding from the previous one's offset.
-    pub(crate) modal_scroll_screen: Option<Screen>,
-    /// Screen-space region the `tile::MODAL` painter currently covers (card bbox +
-    /// [`MODAL_TILE_PAD`]) — set by `prepare_modal` when it (re)builds the tile, read by
-    /// `compose_modal` to place it. Only the *live* modal's; a fading one carries its own
-    /// region in [`ModalSnapshot`].
-    pub(crate) modal_tile_region: Rect,
-    /// The fading-out modal's pixels, taken the frame it was left. `None` when no close
-    /// fade is in flight.
-    pub(crate) modal_prev: Option<ModalSnapshot>,
-    /// Whether the grid's initial build for the current library has finished — while
-    /// `false`, the grid shows the loading spinner (`tile::spinner`) instead of
-    /// popping cards in one by one. One-shot per library: only `prepare_tiles`'s
-    /// full-reset branch sets it `false` again; later scrolling into a fresh row
-    /// does not.
-    pub(crate) grid_reveal_ready: bool,
-    /// The active spinner frame index shown while grid is loading.
-    pub(crate) spinner_frame: Option<usize>,
-    /// When the grid last became not-ready — feeds the spinner's rotation phase.
-    pub(crate) spinner_since: Option<Instant>,
-    /// The clock [`SPINNER_MAX_WAIT`] is measured against, armed on the first frame the grid
-    /// has a library to build from. Stays `None` for the fetch before that, which is why it
-    /// can't be `spinner_since`: that one starts at the fetch and must run continuously, or
-    /// the spinner's rotation jumps when the games land.
-    pub(crate) grid_build_since: Option<Instant>,
+    /// Everything that only exists while a modal is up — see [`modal::ModalState`].
+    pub(crate) modal: modal::ModalState,
+    /// The game grid: its tiles, its clocks, its eased scroll and its dirty flags — see
+    /// [`grid::GridState`].
+    pub(crate) grid: grid::GridState,
     // ------------------------------------------------------------ animations --
-    /// Grid scroll offset actually rendered this frame (px; 0 = row 0 at
-    /// `GRID_TOP_Y`) — eases toward `grid_scroll_target` each tick.
-    pub grid_scroll: i32,
-    pub(crate) grid_scroll_target: i32,
     /// When the current grid-focus pop started (card scales in over
     /// `ui::animation::FOCUS_POP` — set on every d-pad focus move).
     pub(crate) focus_anim: Option<Instant>,
-    /// Open/close fade for whichever modal is up — see `ui::fade::ModalFade`'s docs. Payload
-    /// is the `Screen` that was left — `snapshot_closing_modal` needs it to freeze that
-    /// screen's scroll crop after `self.screen` has moved on.
-    pub(crate) modal_fade: ui::fade::ModalFade<Screen>,
-    /// When the open modal's focused widget last moved (zooms it in over
-    /// `ui::animation::FOCUS_POP`, same GPU-scale technique as `focus_anim` — see
-    /// `draw_list`'s `tile::MODAL_FOCUS` handling). Shared by every
-    /// modal (Settings row, Wake row, Pairing digit/button, `ForgetHost`
-    /// button) since only one is ever open, and focused, at a time.
-    pub(crate) modal_focus_anim: Option<Instant>,
+    /// When `tick_animations` last ran, so the eased scroll can advance by real elapsed time
+    /// instead of by a frame count (see `ui::animation::ease_scroll`). Every other animation
+    /// here is already clocked off its own `Instant`.
+    last_tick: Option<Instant>,
     /// The pressed button's dip, if one is in flight — purely visual, and only for a
     /// press that stayed on its screen (see `App::press`).
     pub(crate) press: ui::animation::Press,
-    /// In-flight `Toggle` row flip: `(when it started, the value it flipped
-    /// from, the focused row it flipped)` — lets `modal_focus_tile`'s render
-    /// slide the switch knob from its old state to its new one over
-    /// `ui::animation::FOCUS_POP` instead of snapping. The row index scopes the slide to
-    /// the row that actually changed: without it, navigating onto a different
-    /// toggle whose state happens to differ from `from` mid-animation would
-    /// make that unrelated switch spuriously slide (see `toggle_frac`).
-    /// Shared by Settings' HDR/Stats-overlay toggles and Wake's auto-send one.
-    pub(crate) switch_anim: Option<(Instant, bool, usize)>,
     /// Last screen `prepare_tiles` saw — a change triggers the modal-open
     /// animation and a modal re-rasterize without every transition site
     /// needing to remember to.
@@ -525,7 +344,6 @@ impl App {
             home_focus: HomeFocus::Sidebar(0),
             rooted: None,
             rooted_rx: None,
-            grid_focus_last: 0,
             selected_host: None,
             games: Vec::new(),
             pinned_count: 0,
@@ -584,32 +402,14 @@ impl App {
             pairing_entry: 0,
             hover_close: false,
             identity,
-            card_pop: std::collections::HashMap::new(),
-            card_size: (0, 0),
             sidebar_dirty: true,
-            grid_dirty: true,
-            tiles_pending: false,
-            grid_cards_dirty: Vec::new(),
             evicted_tiles: Vec::new(),
-            card_ids: tile::CardIds::new(),
             sidebar_gen: 0,
-            modal_shell_key: None,
-            modal_scroll_px: 0,
-            modal_scroll_target_px: 0,
-            modal_scroll_screen: None,
-            modal_tile_region: Rect::new(0, 0, 1, 1),
-            modal_prev: None,
-            grid_reveal_ready: true,
-            spinner_frame: None,
-            spinner_since: None,
-            grid_build_since: None,
-            grid_scroll: 0,
-            grid_scroll_target: 0,
+            grid: grid::GridState::default(),
+            modal: modal::ModalState::default(),
             focus_anim: None,
-            modal_fade: ui::fade::ModalFade::new(),
-            modal_focus_anim: None,
+            last_tick: None,
             press: ui::animation::Press::default(),
-            switch_anim: None,
             last_screen: Screen::Home,
             pairing_rx: None,
         };
@@ -757,24 +557,26 @@ impl App {
             grid_x,
             available_w,
             self.grid_sections(columns),
-            self.grid_scroll,
+            self.grid.scroll,
         )
     }
 
-    /// The grid card under the pointer, if any. Tests against `unscrolled_card_rect`, so the
-    /// section headings and the gap that push the library block down on screen are honoured —
-    /// a test against the bare grid rect picked the row above. One `GridSections` for the whole
-    /// sweep: it rescans the host's pin list, and a pointer motion would pay that per card.
+    /// The grid card under the pointer, if any — see `view::home::card_at_point`, which
+    /// honours the section headings and the gap that push the library block down on screen (a
+    /// test against the bare grid rect picked the row above).
     pub(crate) fn hit_test_grid_card(&self, x: i32, y: i32, columns: usize, available_w: u32) -> Option<usize> {
         let grid_x = ui::widgets::SIDEBAR_W as i32;
         if x < grid_x {
             return None;
         }
-        let sections = self.grid_sections(columns);
-        (0..self.grid_len(columns)).find(|&i| {
-            view::home::unscrolled_card_rect(i, columns, grid_x, available_w, sections)
-                .contains_point((x, y + self.grid_scroll))
-        })
+        view::home::card_at_point(
+            self.grid_len(columns),
+            columns,
+            grid_x,
+            available_w,
+            self.grid_sections(columns),
+            (x, y + self.grid.scroll),
+        )
     }
 
     /// Rebuilds the sidebar from `known_hosts`, dropping any discovered-but-unsaved rows. Every
@@ -918,7 +720,7 @@ impl App {
                 crate::services::art::ArtLoaded::Card { game_id, pixmap } => {
                     // Layout is unchanged by art arriving — queue a repaint of just that
                     // card's tile (see `grid_cards_dirty`) rather than a full layer rebuild.
-                    self.grid_cards_dirty.push(game_id.clone());
+                    self.grid.cards_dirty.push(game_id.clone());
                     self.art.insert(game_id, pixmap);
                 }
                 crate::services::art::ArtLoaded::Hero { game_id, image } => {
@@ -969,17 +771,20 @@ impl App {
     /// loop keeps rendering while true). Expired animations report one final
     /// `true` so their end state gets drawn.
     pub fn tick_animations(&mut self) -> bool {
-        let mut animating = ui::animation::ease_scroll(&mut self.grid_scroll, self.grid_scroll_target);
+        let now = Instant::now();
+        let dt = self.last_tick.map_or(ui::animation::SCROLL_STEP_TICK, |t| now - t);
+        self.last_tick = Some(now);
+        let mut animating = ui::animation::ease_scroll(&mut self.grid.scroll, self.grid.scroll_target, dt);
         // The scrolling modal's viewport, on the same ease-out as the grid. `scroll.offset`
         // has already jumped to its new row; this is only the rendered crop catching up.
-        animating |= ui::animation::ease_scroll(&mut self.modal_scroll_px, self.modal_scroll_target_px);
+        animating |= ui::animation::ease_scroll(&mut self.modal.scroll_px, self.modal.scroll_target_px, dt);
         if let Some(t) = self.focus_anim {
             if t.elapsed() >= ui::animation::CARD_FOCUS_POP {
                 self.focus_anim = None;
             }
             animating = true;
         }
-        if self.modal_fade.tick_split(MODAL_FADE, MODAL_FADE_OUT) {
+        if self.modal.fade.tick_split(MODAL_FADE, MODAL_FADE_OUT) {
             animating = true;
         }
         if self.dropdown_fade.tick(DROPDOWN_FADE) {
@@ -993,9 +798,9 @@ impl App {
         {
             animating = true;
         }
-        if let Some(t) = self.modal_focus_anim {
+        if let Some(t) = self.modal.focus_anim {
             if t.elapsed() >= ui::animation::FOCUS_POP {
-                self.modal_focus_anim = None;
+                self.modal.focus_anim = None;
             }
             animating = true;
         }
@@ -1003,9 +808,9 @@ impl App {
         if self.press.armed() {
             animating = true;
         }
-        if let Some((t, _, _)) = self.switch_anim {
+        if let Some((t, _, _)) = self.modal.switch_anim {
             if t.elapsed() >= ui::animation::FOCUS_POP {
-                self.switch_anim = None;
+                self.modal.switch_anim = None;
             }
             animating = true;
         }
@@ -1023,7 +828,7 @@ impl App {
             animating = true;
         }
         // A scan, not one clock: every card zooms on its own (see `card_pop`).
-        if self.card_pop.values().any(|t| t.elapsed() < CARD_POP) {
+        if self.grid.card_pop.values().any(|t| t.elapsed() < CARD_POP) {
             animating = true;
         }
         animating
@@ -1081,7 +886,7 @@ impl App {
     /// slide only plays for the row that actually flipped, not a same-valued
     /// neighbor focused mid-animation.
     pub(crate) fn toggle_frac(&self, target_on: bool, row: usize) -> f32 {
-        match self.switch_anim {
+        match self.modal.switch_anim {
             Some((t, from_on, anim_row)) if anim_row == row && from_on != target_on => {
                 let f = ui::animation::anim_frac(Some(t), ui::animation::FOCUS_POP);
                 if target_on {
@@ -1105,7 +910,7 @@ impl App {
     pub fn advance_frame(&mut self, screen_w: u32) -> bool {
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
-        self.card_size = view::home::grid_card_size(available_w, columns);
+        self.grid.card_size = view::home::grid_card_size(available_w, columns);
 
         // Every screen transition triggers close-fade for the left screen and
         // open-fade for the entered screen, centralized here rather than at each
@@ -1117,13 +922,13 @@ impl App {
             let left = self.last_screen;
             self.last_screen = self.screen;
             if !matches!(left, Screen::Home) {
-                self.modal_fade.close(left);
+                self.modal.fade.close(left);
             }
             if !matches!(self.screen, Screen::Home) {
-                self.modal_fade.open();
+                self.modal.fade.open();
                 // Reopening the same screen before its close-fade finished — the new
                 // open wins. A close-fade for a *different* screen is left alone.
-                self.modal_fade.cancel_closing(self.screen);
+                self.modal.fade.cancel_closing(self.screen);
             }
         }
         screen_changed

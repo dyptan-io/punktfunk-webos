@@ -189,22 +189,30 @@ pub fn draw_utility_row(c: &mut Canvas, rect: Rect, label: &str, focused: bool) 
     c.render(ui::widgets::SidebarRow::new(glyph, label).focused(focused), rect)
 }
 
-/// Focused sidebar row as padded tile. `menu_focused` flags the actions button.
-/// Both button states reuse one tile; moving between them costs one re-rasterize.
-pub fn render_focused_row_tile(
-    text_cache: &mut ui::text::TextCache,
-    fonts: &ui::text::Fonts,
-    entries: &[HostEntry],
-    index: usize,
-    menu_focused: bool,
-    online: Option<bool>,
-) -> Result<ui::Painter> {
-    let (w, h) = (
-        ui::widgets::SIDEBAR_W - 2 * ui::widgets::SIDEBAR_PAD as u32,
-        ui::widgets::SIDEBAR_ROW_H,
-    );
-    ui::tiles::padded_widget_tile(text_cache, fonts, w, h, |c, rect| {
-        if let Some(entry) = entries.get(index) {
+/// The focused sidebar row, padded so the compositor can pop it without clipping its shadow.
+/// `menu_focused` flags the actions button; both button states reuse one tile, so moving
+/// between them costs one re-rasterize.
+pub struct FocusedRowTile<'a> {
+    pub entries: &'a [HostEntry],
+    pub index: usize,
+    pub menu_focused: bool,
+    pub online: Option<bool>,
+}
+
+impl FocusedRowTile<'_> {
+    /// The row's own size, before the padding [`TileWidget::size`] adds.
+    fn row_size() -> (u32, u32) {
+        (
+            ui::widgets::SIDEBAR_W - 2 * ui::widgets::SIDEBAR_PAD as u32,
+            ui::widgets::SIDEBAR_ROW_H,
+        )
+    }
+}
+
+impl ui::Widget for FocusedRowTile<'_> {
+    fn render(self, area: ui::render::Rect, c: &mut ui::Canvas) -> Result<()> {
+        let rect = area.inflate(-ui::tiles::ROW_TILE_PAD);
+        if let Some(entry) = self.entries.get(self.index) {
             draw_host_row(
                 c,
                 rect,
@@ -213,14 +221,21 @@ pub fn render_focused_row_tile(
                     paired: entry.is_paired(),
                     focused: true,
                     selected: false,
-                    menu_focused,
-                    online,
+                    menu_focused: self.menu_focused,
+                    online: self.online,
                 },
             )
-        } else if index == entries.len() {
+        } else if self.index == self.entries.len() {
             draw_utility_row(c, rect, "+ Add host", true)
         } else {
             draw_utility_row(c, rect, "Settings", true)
         }
-    })
+    }
+}
+
+impl ui::TileWidget for FocusedRowTile<'_> {
+    fn size(&self, _fonts: &ui::text::Fonts) -> (u32, u32) {
+        let (w, h) = Self::row_size();
+        ui::tiles::padded_size(w, h, ui::tiles::ROW_TILE_PAD)
+    }
 }

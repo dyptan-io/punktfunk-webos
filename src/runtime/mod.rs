@@ -83,7 +83,7 @@ fn spawn_connect(
                 settings.height,
                 settings.refresh_hz
             );
-            session::connect(session::ConnectParams {
+            session::connect(&session::ConnectParams {
                 host,
                 port,
                 mode,
@@ -201,49 +201,6 @@ fn log_overlay_lines() -> Option<Vec<String>> {
     }
 }
 
-/// Renders a toast (`ui::widgets::Notification::frame()`'s output) and appends its `DrawCmd` — shared by
-/// the streaming loop and the menu loop so the two toasts stay pixel-identical.
-///
-/// `cache` holds the last rendered `(text, w, h)`. The tile is alpha-independent (the fade is
-/// applied at draw time via `DrawCmd`'s `alpha`), so only a *text* change needs a re-raster and
-/// re-upload — without this the identical tile would be rasterized and uploaded on every one of
-/// the ~120 frames a single toast lives for.
-fn push_notification_cmd(
-    compositor: &mut Compositor,
-    texture_creator: &sdl2::render::TextureCreator<sdl2::video::WindowContext>,
-    fonts: &crate::ui::text::Fonts,
-    frame: &Option<(String, f32)>,
-    display_w: i32,
-    cache: &mut Option<(String, u32, u32)>,
-    cmds: &mut Vec<DrawCmd>,
-) -> Result<()> {
-    let Some((text, alpha)) = frame else {
-        return Ok(());
-    };
-    let (tw, th) = match cache {
-        Some((cached, w, h)) if cached == text => (*w, *h),
-        _ => match crate::ui::widgets::render_notification_tile(fonts, fonts.value, text) {
-            Ok(tile) => {
-                let (tw, th) = (tile.width(), tile.height());
-                compositor.upload(texture_creator, tile::NOTIFICATION, &tile, false)?;
-                *cache = Some((text.clone(), tw, th));
-                (tw, th)
-            }
-            Err(e) => {
-                tracing::warn!("toast render failed: {e:#}");
-                return Ok(());
-            }
-        },
-    };
-    // Top-centre: never overlaps the top-right stats or bottom log overlay.
-    cmds.push(DrawCmd::Tex {
-        tile: tile::NOTIFICATION,
-        dst: crate::ui::render::Rect::new((display_w - tw as i32) / 2, 24, tw, th),
-        alpha: (alpha * 255.0) as u8,
-    });
-    Ok(())
-}
-
 pub fn run() -> Result<()> {
     install_signal_handlers();
     // Streams to a dev machine when `task deploy TELEMETRY=...` passed a
@@ -308,9 +265,15 @@ enum StreamOutcome {
     ReturnToMenu,
 }
 
+/// Cap for the debug overlays' text cache. Their lines are mostly unique, so this bounds a
+/// cache that exists for reuse *between consecutive rebuilds* rather than for permanence.
+const OVERLAY_TEXT_CAP: usize = 256;
+
+mod frame_timer;
 mod input;
 mod session_ext;
 mod stream;
+mod toast;
 mod ui_flow;
 use input::*;
 use stream::run_inner;

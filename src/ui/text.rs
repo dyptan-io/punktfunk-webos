@@ -26,24 +26,52 @@ pub struct Fonts<'a> {
     pub caption: FontId,
 }
 
+/// Cap on resident entries before a sweep runs. Comfortably above what one screen draws
+/// (a few hundred distinct runs), so steady-state UI text never sweeps at all.
+const TEXT_CACHE_CAP: usize = 512;
+
+struct Entry {
+    pixmap: Pixmap,
+    /// Drawn since the last sweep — its second chance (see [`TextCache::sweep`]).
+    used: bool,
+}
+
 /// Caches rasterized-text `Pixmap`s across frames, keyed by the exact
 /// `(text, color, font)` that produced them. Without this, [`Canvas::text`] re-rasterized
 /// (freetype glyph lookup + blend + premultiply) on *every* call — and every draw
 /// function in this module is called on every render tick (the pre-stream UI loop
 /// runs at ~60fps), so a static label like "Settings" paid that cost 60 times a
-/// second for pixels that never changed. Entry count is naturally bounded by this
-/// app's own content (a handful of static labels, a bounded set of settings values,
-/// one row per known host/game) — no eviction needed; see module docs if that
-/// assumption ever stops holding.
+/// second for pixels that never changed.
+///
+/// Most of what this app draws is bounded by its own content (a handful of static labels,
+/// a bounded set of settings values, one row per known host/game) and stays resident for
+/// free. Some of it is not — a speed-test status line, a pairing status, a log tail — so a
+/// [capacity](TEXT_CACHE_CAP) bounds the map: on reaching it, a second-chance sweep drops
+/// every entry not drawn since the previous sweep. Steady-state text is drawn every frame
+/// and so is never the entry that goes.
 pub struct TextCache {
-    entries: HashMap<u64, Pixmap>,
+    entries: HashMap<u64, Entry>,
+    cap: usize,
 }
 
 impl TextCache {
     pub fn new() -> Self {
+        Self::with_capacity(TEXT_CACHE_CAP)
+    }
+
+    /// [`new`](Self::new) with an explicit cap — for a cache whose content is known to be
+    /// dynamic (the log overlay's tail), which wants a tighter bound than the menu's.
+    pub fn with_capacity(cap: usize) -> Self {
         Self {
             entries: HashMap::new(),
+            cap: cap.max(1),
         }
+    }
+
+    /// Resident entries. Read back by the frame report — this cache is the one that grows
+    /// with what the app has *said*, not with what it shows.
+    pub fn len(&self) -> usize {
+        self.entries.len()
     }
 
     /// Hashes `(font, text, color)` into the key the cache stores under.
@@ -63,11 +91,26 @@ impl TextCache {
     /// caching) it first if this is the first time this exact combination has
     /// been drawn.
     fn get_or_create(&mut self, raster: &dyn TextRaster, font: FontId, text: &str, color: Color) -> Result<&Pixmap> {
-        use std::collections::hash_map::Entry;
-        match self.entries.entry(Self::key(font, text, color)) {
-            Entry::Occupied(slot) => Ok(slot.into_mut()),
-            Entry::Vacant(slot) => Ok(slot.insert(raster.rasterize(font, text, color)?)),
+        let key = Self::key(font, text, color);
+        if self.entries.contains_key(&key) {
+            let entry = self.entries.get_mut(&key).expect("just probed");
+            entry.used = true;
+            return Ok(&entry.pixmap);
         }
+        if self.entries.len() >= self.cap {
+            self.sweep();
+        }
+        let pixmap = raster.rasterize(font, text, color)?;
+        Ok(&self.entries.entry(key).or_insert(Entry { pixmap, used: true }).pixmap)
+    }
+
+    /// Second chance: keep what has been drawn since the last sweep, clear its mark, drop
+    /// the rest. No recency ordering to maintain — a clock sweep is enough here, because
+    /// the entries worth keeping are re-drawn every single frame.
+    fn sweep(&mut self) {
+        let before = self.entries.len();
+        self.entries.retain(|_, e| std::mem::take(&mut e.used));
+        tracing::debug!("text cache swept: {before} -> {}", self.entries.len());
     }
 }
 

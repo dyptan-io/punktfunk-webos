@@ -38,7 +38,7 @@ impl App {
         match ev {
             MenuEvent::Left | MenuEvent::Right => {
                 self.send_logs_focused = 1 - self.send_logs_focused;
-                self.modal_focus_anim = Some(Instant::now());
+                self.modal.focus_anim = Some(Instant::now());
             }
             MenuEvent::Confirm => {
                 if self.send_logs_focused == 0 {

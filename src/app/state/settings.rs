@@ -55,14 +55,14 @@ impl App {
             MenuEvent::Up => {
                 if self.settings_focused > 0 {
                     self.settings_focused -= 1;
-                    self.modal_focus_anim = Some(Instant::now());
+                    self.modal.focus_anim = Some(Instant::now());
                     self.scroll_settings_into_view(screen_h);
                 }
             }
             MenuEvent::Down => {
                 if self.settings_focused + 1 < total {
                     self.settings_focused += 1;
-                    self.modal_focus_anim = Some(Instant::now());
+                    self.modal.focus_anim = Some(Instant::now());
                     self.scroll_settings_into_view(screen_h);
                 }
             }
@@ -162,7 +162,7 @@ impl App {
             self.capture_game_override(row);
             if let Some(from) = toggled_from {
                 // Scope the slide to the display row being rendered (see `toggle_frac`).
-                self.switch_anim = Some((Instant::now(), from, display_row));
+                self.modal.switch_anim = Some((Instant::now(), from, display_row));
             }
         }
     }

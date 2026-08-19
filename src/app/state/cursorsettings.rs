@@ -24,7 +24,7 @@ impl App {
             menu::CURSOR_ROW_COUNT,
             menu::nav_dir(ev),
         ) {
-            self.modal_focus_anim = Some(Instant::now());
+            self.modal.focus_anim = Some(Instant::now());
             return;
         }
         let row = self.cursor_settings_focused;
@@ -39,7 +39,7 @@ impl App {
                 if menu::adjust_setting(self.settings_target_mut(), logical, true, detected) {
                     self.capture_game_override(logical);
                     if let Some(from) = from {
-                        self.switch_anim = Some((Instant::now(), from, row));
+                        self.modal.switch_anim = Some((Instant::now(), from, row));
                     }
                 }
             }

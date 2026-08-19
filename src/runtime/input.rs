@@ -274,20 +274,31 @@ impl ConfirmDialog {
         let full = crate::ui::render::Rect::new(0, 0, w, h);
         if self.shell_dirty {
             self.shell_dirty = false;
-            let shell =
-                crate::ui::tiles::render_confirm_dialog_shell(w, h, fonts, self.title, self.subtitle, &self.buttons)?;
+            let shell = crate::ui::rasterize(
+                crate::ui::tiles::ConfirmDialogShellTile {
+                    screen_w: w,
+                    screen_h: h,
+                    title: self.title,
+                    subtitle: self.subtitle,
+                    buttons: &self.buttons,
+                },
+                &mut self.tc,
+                fonts,
+            )?;
             compositor.upload(texture_creator, tile::DISCONNECT_DIALOG, &shell, false)?;
         }
         let (_, content) = crate::ui::tiles::confirm_dialog_layout(w, h, fonts, self.subtitle);
         let btn_rect = crate::ui::widgets::confirm_button_rect(content, focus);
         if self.focus_dirty {
             self.focus_dirty = false;
-            let tile = crate::ui::widgets::render_confirm_button_tile(
+            let tile = crate::ui::rasterize(
+                crate::ui::widgets::ConfirmButtonTile {
+                    button: &self.buttons[focus],
+                    w: btn_rect.width(),
+                    h: btn_rect.height(),
+                },
                 &mut self.tc,
                 fonts,
-                &self.buttons[focus],
-                btn_rect.width(),
-                btn_rect.height(),
             )?;
             compositor.upload(texture_creator, tile::DISCONNECT_FOCUS_BUTTON, &tile, false)?;
         }
@@ -556,6 +567,9 @@ fn dispatch_menu_event(
 /// One SDL event from the pre-stream UI's pump, routed into `app`. `dirty` is
 /// set whenever the event can have changed what's on screen. Device-level
 /// events (quit, controller hotplug) are the caller's and never arrive here.
+// Takes the event by value: it comes straight off `poll_iter`, and the `match` arms below read
+// cleaner destructuring an owned event than reborrowing every payload out of a reference.
+#[allow(clippy::needless_pass_by_value)]
 pub(super) fn handle_ui_event(
     app: &mut App,
     event: sdl2::event::Event,

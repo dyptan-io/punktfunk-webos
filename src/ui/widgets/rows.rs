@@ -327,38 +327,49 @@ impl StatefulWidget for FocusRows<'_> {
 /// Renders one focused row as a tile, composited over the shell. Moving focus
 /// recomposites this tile instead of re-rasterizing the whole modal.
 /// `switch_frac` animates a `Toggle` row's knob independently.
-pub fn render_focus_row_tile(
-    text_cache: &mut TextCache,
-    fonts: &Fonts,
-    rows: &[FocusRow],
-    content_width: u32,
-    index: usize,
-    dropdown_open: bool,
-    switch_frac: f32,
-) -> Result<Painter> {
-    crate::ui::tiles::padded_widget_tile(text_cache, fonts, content_width, FOCUS_ROW_H, |c, rect| {
-        match rows.get(index) {
-            Some(row) => c.focus_row(row, true, dropdown_open, switch_frac, rect),
+pub struct FocusRowTile<'a> {
+    pub rows: &'a [FocusRow],
+    pub content_width: u32,
+    pub index: usize,
+    pub dropdown_open: bool,
+    pub switch_frac: f32,
+}
+
+impl Widget for FocusRowTile<'_> {
+    fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
+        let inner = area.inflate(-ROW_TILE_PAD);
+        match self.rows.get(self.index) {
+            Some(row) => c.focus_row(row, true, self.dropdown_open, self.switch_frac, inner),
             None => Ok(()),
         }
-    })
+    }
+}
+
+impl TileWidget for FocusRowTile<'_> {
+    fn size(&self, _fonts: &Fonts) -> (u32, u32) {
+        padded_size(self.content_width, FOCUS_ROW_H, ROW_TILE_PAD)
+    }
 }
 
 /// All rows unfocused as one tile. GPU-side `DrawCmd::TexCropped` handles
 /// scrolling without re-rasterizing on each scroll event.
-pub fn render_focus_rows_tile(
-    text_cache: &mut TextCache,
-    fonts: &Fonts,
-    rows: &[FocusRow],
-    width: u32,
-    open_dropdown_row: Option<usize>,
-) -> Result<Painter> {
-    let height = rows.len() as u32 * focus_row_stride();
-    let mut p = Painter::new(width, height.max(1));
-    let mut c = Canvas::tile(&mut p, text_cache, fonts);
-    let mut state = FocusRowsState::unfocused().open_dropdown(open_dropdown_row);
-    c.render_stateful(FocusRows::new(rows), Rect::new(0, 0, width, height), &mut state)?;
-    Ok(p)
+pub struct FocusRowsTile<'a> {
+    pub rows: &'a [FocusRow],
+    pub width: u32,
+    pub open_dropdown_row: Option<usize>,
+}
+
+impl Widget for FocusRowsTile<'_> {
+    fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
+        let mut state = FocusRowsState::unfocused().open_dropdown(self.open_dropdown_row);
+        c.render_stateful(FocusRows::new(self.rows), area, &mut state)
+    }
+}
+
+impl TileWidget for FocusRowsTile<'_> {
+    fn size(&self, _fonts: &Fonts) -> (u32, u32) {
+        (self.width, (self.rows.len() as u32 * focus_row_stride()).max(1))
+    }
 }
 
 impl Canvas<'_, '_> {

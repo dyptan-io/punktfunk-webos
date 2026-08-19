@@ -28,7 +28,7 @@ impl App {
         match ev {
             MenuEvent::Left | MenuEvent::Right => {
                 self.host_menu_focused = 1 - self.host_menu_focused;
-                self.modal_focus_anim = Some(Instant::now());
+                self.modal.focus_anim = Some(Instant::now());
             }
             MenuEvent::Confirm => {
                 if self.host_menu_focused == 0 {

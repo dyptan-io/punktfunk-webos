@@ -123,18 +123,24 @@ pub fn digit_rect(card: Rect, digit_y: i32, index: usize) -> Rect {
 
 pub const REQUEST_LABEL: &str = "Request access";
 
-/// One PIN digit, focused, as its own zoom-animated tile — composited by the
-/// GPU over the shell's unfocused digit boxes, same pattern as
-/// `render_focus_row_tile`.
-pub fn render_digit_tile(text_cache: &mut ui::text::TextCache, fonts: &Fonts, digit: u8) -> Result<ui::Painter> {
-    ui::widgets::render_card_text_tile(text_cache, fonts, fonts.title, &digit.to_string(), DIGIT_W, DIGIT_H)
+/// The "Request access" button, focused, as its own zoom-animated tile — accent-filled like
+/// the shell's copy (see `ui::Canvas::primary_button`), not the surface-card treatment the
+/// digit tiles use, so the primary action keeps its emphasis while focused.
+pub struct RequestButtonTile {
+    pub w: u32,
+    pub h: u32,
 }
 
-/// The "Request access" button, focused, as its own zoom-animated tile — accent-filled
-/// like the shell's copy (see `ui::Canvas::primary_button`), not the surface-card treatment
-/// the digit tiles use, so the primary action keeps its emphasis while focused.
-pub fn render_button_tile(text_cache: &mut ui::text::TextCache, fonts: &Fonts, w: u32, h: u32) -> Result<ui::Painter> {
-    ui::tiles::padded_widget_tile(text_cache, fonts, w, h, |c, rect| c.primary_button(rect, REQUEST_LABEL))
+impl ui::Widget for RequestButtonTile {
+    fn render(self, area: ui::render::Rect, c: &mut ui::Canvas) -> Result<()> {
+        c.primary_button(area.inflate(-ui::tiles::ROW_TILE_PAD), REQUEST_LABEL)
+    }
+}
+
+impl ui::TileWidget for RequestButtonTile {
+    fn size(&self, _fonts: &ui::text::Fonts) -> (u32, u32) {
+        ui::tiles::padded_size(self.w, self.h, ui::tiles::ROW_TILE_PAD)
+    }
 }
 
 /// The pairing modal as a [`ModalScreen`].

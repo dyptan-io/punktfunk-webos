@@ -2,28 +2,53 @@
 //! dissolve a partially-scrolled row into the viewport's edges. Both are their own tiles so
 //! showing and hiding them is an alpha composite rather than a re-raster.
 use crate::ui::prelude::*;
+use anyhow::Result;
 
 /// Scrollbar track+thumb. Rendered as own tile so fade-in/out is alpha
 /// composite, not re-rasterization.
 const SCROLLBAR_TRACK_W: u32 = 6;
 
-pub fn render_list_scrollbar_tile(tile_w: u32, tile_h: u32, total: usize, visible: usize, scroll: usize) -> Painter {
-    let mut painter = Painter::new(tile_w, tile_h.max(1));
-    if total <= visible {
-        return painter;
-    }
-    let track_w = SCROLLBAR_TRACK_W.min(tile_w);
-    let track = Rect::new(tile_w as i32 - track_w as i32, 0, track_w, tile_h);
-    painter.fill_rounded_rect(track, track_w as i32 / 2, Color::RGBA(0xff, 0xff, 0xff, 0x14));
+pub struct ListScrollbarTile {
+    pub w: u32,
+    pub h: u32,
+    pub total: usize,
+    pub visible: usize,
+    pub scroll: usize,
+}
 
-    let thumb_h = ((visible as f32 / total as f32) * track.height() as f32).round() as u32;
-    let thumb_h = thumb_h.clamp(24, track.height());
-    let max_thumb_y = track.height().saturating_sub(thumb_h) as f32;
-    let max_scroll = (total - visible).max(1) as f32;
-    let thumb_y = track.y() + ((scroll as f32 / max_scroll) * max_thumb_y).round() as i32;
-    let thumb = Rect::new(track.x(), thumb_y, track_w, thumb_h);
-    painter.fill_rounded_rect(thumb, track_w as i32 / 2, Color::RGBA(0xff, 0xff, 0xff, 0x50));
-    painter
+impl Widget for ListScrollbarTile {
+    fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
+        // A list that fits leaves the tile transparent rather than not existing: whether the
+        // bar is *drawn* is an alpha the compose path picks, so the tile has to be uploadable
+        // either way.
+        if self.total <= self.visible {
+            return Ok(());
+        }
+        let (tile_w, tile_h) = (area.width(), area.height());
+        let track_w = SCROLLBAR_TRACK_W.min(tile_w);
+        let track = Rect::new(tile_w as i32 - track_w as i32, 0, track_w, tile_h);
+        let radius = track_w as i32 / 2;
+        c.painter
+            .fill_rounded_rect(track, radius, Color::RGBA(0xff, 0xff, 0xff, 0x14));
+
+        let thumb_h = ((self.visible as f32 / self.total as f32) * track.height() as f32).round() as u32;
+        let thumb_h = thumb_h.clamp(24, track.height());
+        let max_thumb_y = track.height().saturating_sub(thumb_h) as f32;
+        let max_scroll = (self.total - self.visible).max(1) as f32;
+        let thumb_y = track.y() + ((self.scroll as f32 / max_scroll) * max_thumb_y).round() as i32;
+        c.painter.fill_rounded_rect(
+            Rect::new(track.x(), thumb_y, track_w, thumb_h),
+            radius,
+            Color::RGBA(0xff, 0xff, 0xff, 0x50),
+        );
+        Ok(())
+    }
+}
+
+impl TileWidget for ListScrollbarTile {
+    fn size(&self, _fonts: &Fonts) -> (u32, u32) {
+        (self.w, self.h.max(1))
+    }
 }
 
 /// How tall an edge fade is: exactly one row.
@@ -59,11 +84,22 @@ pub enum FadeEdge {
 /// Fades to the modal card's own background (`theme().panel`), not to black: the band has to
 /// look like the card surface swallowing the row, and any other colour reads as a shadow
 /// sitting on top of the list.
-pub fn render_scroll_fade_tile(edge: FadeEdge) -> Painter {
-    let mut painter = Painter::new(SCROLL_FADE_TILE_W, SCROLL_FADE_H);
-    match edge {
-        FadeEdge::Top => painter.fill_vertical_fade(theme().panel, 0xff, 0x00),
-        FadeEdge::Bottom => painter.fill_vertical_fade(theme().panel, 0x00, 0xff),
+pub struct ScrollFadeTile {
+    pub edge: FadeEdge,
+}
+
+impl Widget for ScrollFadeTile {
+    fn render(self, _area: Rect, c: &mut Canvas) -> Result<()> {
+        match self.edge {
+            FadeEdge::Top => c.painter.fill_vertical_fade(theme().panel, 0xff, 0x00),
+            FadeEdge::Bottom => c.painter.fill_vertical_fade(theme().panel, 0x00, 0xff),
+        }
+        Ok(())
     }
-    painter
+}
+
+impl TileWidget for ScrollFadeTile {
+    fn size(&self, _fonts: &Fonts) -> (u32, u32) {
+        (SCROLL_FADE_TILE_W, SCROLL_FADE_H)
+    }
 }

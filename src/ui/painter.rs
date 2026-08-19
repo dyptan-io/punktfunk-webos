@@ -219,7 +219,7 @@ impl Painter {
             return;
         };
         let curved = effective_radius(rect.width() as f32, rect.height() as f32, radius as f32) > 0.0;
-        self.fill_with(&path, if curved { aa_paint(color) } else { solid_paint(color) });
+        self.fill_with(&path, &if curved { aa_paint(color) } else { solid_paint(color) });
     }
 
     /// Always anti-aliased, even for a square rect: a fractional-width stroke straddles the
@@ -245,7 +245,7 @@ impl Painter {
         let Some(path) = PathBuilder::from_circle(cx, cy, r) else {
             return;
         };
-        self.fill_with(&path, aa_paint(color));
+        self.fill_with(&path, &aa_paint(color));
     }
 
     /// [`fill_circle`](Self::fill_circle) with `Screen` blend (overlapping circles lighten).
@@ -261,12 +261,12 @@ impl Painter {
             blend_mode: tiny_skia::BlendMode::Screen,
             ..aa_paint(color)
         };
-        self.fill_with(&path, paint);
+        self.fill_with(&path, &paint);
     }
 
-    fn fill_with(&mut self, path: &tiny_skia::Path, paint: Paint<'_>) {
+    fn fill_with(&mut self, path: &tiny_skia::Path, paint: &Paint<'_>) {
         self.pixmap
-            .fill_path(path, &paint, FillRule::Winding, Transform::identity(), None);
+            .fill_path(path, paint, FillRule::Winding, Transform::identity(), None);
     }
 
     /// A soft, real (box-blurred) drop shadow for a rounded-rect shape, offset by

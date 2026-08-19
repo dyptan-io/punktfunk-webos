@@ -339,19 +339,24 @@ impl Canvas<'_, '_> {
 /// one `Painter::card(.., false)` box (no CPU inflate; the zoom is a GPU animation
 /// in `app::App`'s draw-list building) with `text` centered in it. Backs the pairing screen's
 /// focused digit and button tiles.
-pub fn render_card_text_tile(
-    text_cache: &mut TextCache,
-    fonts: &Fonts,
-    font: FontId,
-    text: &str,
-    w: u32,
-    h: u32,
-) -> Result<Painter> {
-    let pad = ROW_TILE_PAD;
-    let mut p = Painter::new(w + 2 * pad as u32, h + 2 * pad as u32);
-    let mut c = Canvas::tile(&mut p, text_cache, fonts);
-    let drawn = c.painter.card(Rect::new(pad, pad, w, h), false);
-    let text_y = drawn.y() + (drawn.height() as i32 - c.fonts.raster.height(font)) / 2;
-    c.text_centered(font, text, drawn, text_y, theme().text)?;
-    Ok(p)
+pub struct CardTextTile<'a> {
+    pub font: FontId,
+    pub text: &'a str,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl Widget for CardTextTile<'_> {
+    fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
+        let drawn = c.painter.card(area.inflate(-ROW_TILE_PAD), false);
+        let text_y = drawn.y() + (drawn.height() as i32 - c.fonts.raster.height(self.font)) / 2;
+        c.text_centered(self.font, self.text, drawn, text_y, theme().text)?;
+        Ok(())
+    }
+}
+
+impl TileWidget for CardTextTile<'_> {
+    fn size(&self, _fonts: &Fonts) -> (u32, u32) {
+        padded_size(self.w, self.h, ROW_TILE_PAD)
+    }
 }

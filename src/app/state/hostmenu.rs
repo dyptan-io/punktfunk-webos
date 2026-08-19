@@ -124,7 +124,7 @@ impl App {
             // Vertical movement always lands on the row body — a ⋯ belongs to the row
             // it's on, so leaving that row leaves the button too.
             self.host_menu_dots = false;
-            self.modal_focus_anim = Some(Instant::now());
+            self.modal.focus_anim = Some(Instant::now());
             return;
         }
         match ev {
@@ -132,11 +132,11 @@ impl App {
             // `HomeFocus::SidebarMenu`; on a row without one they do nothing.
             MenuEvent::Right if !self.host_menu_dots && self.host_menu_row_has_dots() => {
                 self.host_menu_dots = true;
-                self.modal_focus_anim = Some(Instant::now());
+                self.modal.focus_anim = Some(Instant::now());
             }
             MenuEvent::Left if self.host_menu_dots => {
                 self.host_menu_dots = false;
-                self.modal_focus_anim = Some(Instant::now());
+                self.modal.focus_anim = Some(Instant::now());
             }
             MenuEvent::Confirm if self.host_menu_dots => self.open_wake_settings(),
             MenuEvent::Confirm => self.confirm_host_menu_row(),

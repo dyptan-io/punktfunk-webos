@@ -46,20 +46,35 @@ impl Notification {
     }
 }
 
+/// Padding inside the notification panel.
+const NOTIFICATION_PAD: i32 = 18;
+
 /// Single-line notification panel, styled like the stats overlay's glass background.
-pub fn render_notification_tile(fonts: &Fonts, font: FontId, text: &str) -> Result<Painter> {
-    let pad = 18i32;
-    let (tw, _) = fonts.raster.measure(font, text);
-    let w = tw + 2 * pad as u32;
-    let h = (fonts.raster.height(font) + 2 * pad) as u32;
-    let mut p = Painter::new(w.max(1), h.max(1));
-    let mut tc = TextCache::new();
-    let rect = Rect::new(0, 0, w, h);
-    p.fill_rounded_rect(rect, 14, Color::RGBA(0x14, 0x10, 0x1f, 0x90));
-    // The fill is the same near-black hue as the menu's own background (`ui::BG`), so over
-    // that screen it's a same-color-on-same-color box — a light stroke keeps the panel
-    // legible there, not just over the stream's video content.
-    p.stroke_rounded_rect(rect, 14, Color::RGBA(0xff, 0xff, 0xff, 0x40), 1.5);
-    Canvas::tile(&mut p, &mut tc, fonts).text(font, text, pad, pad, theme().text)?;
-    Ok(p)
+pub struct NotificationTile<'a> {
+    pub font: FontId,
+    pub text: &'a str,
+}
+
+impl Widget for NotificationTile<'_> {
+    fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
+        c.painter
+            .fill_rounded_rect(area, 14, Color::RGBA(0x14, 0x10, 0x1f, 0x90));
+        // The fill is the same near-black hue as the menu's own background (`ui::BG`), so over
+        // that screen it's a same-color-on-same-color box — a light stroke keeps the panel
+        // legible there, not just over the stream's video content.
+        c.painter
+            .stroke_rounded_rect(area, 14, Color::RGBA(0xff, 0xff, 0xff, 0x40), 1.5);
+        c.text(self.font, self.text, NOTIFICATION_PAD, NOTIFICATION_PAD, theme().text)?;
+        Ok(())
+    }
+}
+
+impl TileWidget for NotificationTile<'_> {
+    fn size(&self, fonts: &Fonts) -> (u32, u32) {
+        let pad = 2 * NOTIFICATION_PAD;
+        (
+            fonts.raster.measure(self.font, self.text).0 + pad as u32,
+            (fonts.raster.height(self.font) + pad) as u32,
+        )
+    }
 }

@@ -23,7 +23,7 @@ impl App {
     pub(crate) fn handle_wake_settings_event(&mut self, ev: MenuEvent) {
         let len = crate::app::view::wakesettings::rows(self.wake_settings_host().is_some_and(|h| h.wol_auto)).len();
         if crate::ui::widgets::list_nav(&mut self.wake_settings_focused, len, crate::app::menu::nav_dir(ev)) {
-            self.modal_focus_anim = Some(Instant::now());
+            self.modal.focus_anim = Some(Instant::now());
             return;
         }
         match ev {
@@ -47,6 +47,6 @@ impl App {
         self.persist();
         // Captures the value it's flipping *from*, so the knob slides rather than
         // snapping — same contract as the Settings modal's switch rows.
-        self.switch_anim = Some((Instant::now(), from, self.wake_settings_focused));
+        self.modal.switch_anim = Some((Instant::now(), from, self.wake_settings_focused));
     }
 }

@@ -146,7 +146,7 @@ impl App {
             _ if !done => {}
             MenuEvent::Left | MenuEvent::Right => {
                 self.speed_test_focused = 1 - self.speed_test_focused;
-                self.modal_focus_anim = Some(Instant::now());
+                self.modal.focus_anim = Some(Instant::now());
             }
             MenuEvent::Confirm => {
                 if self.speed_test_focused != 0 {

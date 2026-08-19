@@ -153,3 +153,17 @@ pub enum DrawCmd {
 }
 
 pub type DrawList = Vec<DrawCmd>;
+
+/// A width/height pair, no position — the screen's, for layout code that only needs the
+/// extent it is laying out into.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Size {
+    pub w: u32,
+    pub h: u32,
+}
+
+impl Size {
+    pub fn new(w: u32, h: u32) -> Self {
+        Self { w, h }
+    }
+}

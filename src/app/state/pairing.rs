@@ -44,7 +44,7 @@ impl App {
                     PairingFocus::Pin => PairingFocus::RequestAccess,
                     PairingFocus::RequestAccess => PairingFocus::Pin,
                 };
-                self.modal_focus_anim = Some(Instant::now());
+                self.modal.focus_anim = Some(Instant::now());
                 return;
             }
             _ => {}
@@ -69,14 +69,14 @@ impl App {
                     } else {
                         self.pairing_focus = PairingFocus::RequestAccess;
                     }
-                    self.modal_focus_anim = Some(Instant::now());
+                    self.modal.focus_anim = Some(Instant::now());
                 }
                 MenuEvent::Right => {
                     // Stops at the last digit — the button is *above* this row now, so
                     // tabbing off the right-hand end no longer corresponds to anything.
                     if self.pin_digit_index + 1 < self.pin_digits.len() {
                         self.pin_digit_index += 1;
-                        self.modal_focus_anim = Some(Instant::now());
+                        self.modal.focus_anim = Some(Instant::now());
                     }
                 }
                 MenuEvent::Confirm => self.try_pair(),
@@ -89,7 +89,7 @@ impl App {
                 MenuEvent::Down | MenuEvent::Right => {
                     self.pairing_focus = PairingFocus::Pin;
                     self.pin_digit_index = 0;
-                    self.modal_focus_anim = Some(Instant::now());
+                    self.modal.focus_anim = Some(Instant::now());
                 }
                 MenuEvent::Confirm => self.try_request_access(),
                 MenuEvent::Up | MenuEvent::Left | MenuEvent::Back | MenuEvent::Secondary => {}

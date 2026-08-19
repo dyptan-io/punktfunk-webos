@@ -19,6 +19,7 @@ pub(crate) struct ModalSnapshot {
 }
 
 pub(crate) mod compose;
+pub(crate) mod ctx;
 pub(crate) mod geometry;
 pub(crate) mod key;
 pub(crate) mod prepare;

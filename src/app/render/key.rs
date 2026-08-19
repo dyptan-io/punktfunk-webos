@@ -6,12 +6,16 @@
 //!
 //! App-side on purpose: they name this app's screens and its `Settings`, which is exactly
 //! what a widget library must not know.
+//!
+//! Every key here is hashed the moment it is built and then dropped — nothing stores one (see
+//! `App::modal_shell_version`). The borrowed `&str` fields say so in the type: a key that could
+//! outlive the state it describes would have to own a copy of every label, once per frame.
 use crate::core::model::{GamepadType, LogLevelOverride, Settings, SettingsOverride};
 
 /// Focused widget in the open modal. Each variant carries its content,
 /// so value changes (not just focus moves) invalidate the tile.
 #[derive(PartialEq, Eq, Hash)]
-pub enum ModalFocusKey {
+pub enum ModalFocusKey<'a> {
     /// The detected pad type rides along because the Controller row's "Automatic (...)" value
     /// depends on it, not just on `Settings` — a hotplug alone doesn't touch `Settings` at all.
     /// The override rides along because it decides which rows wear a "use global" button —
@@ -23,9 +27,9 @@ pub enum ModalFocusKey {
     PairingButton,
     ForgetButton(usize),
     /// Carries label to prevent stale tiles across screen changes.
-    SpeedTestButton(usize, String),
+    SpeedTestButton(usize, &'a str),
     /// Carries label+menu flag for row list shape changes and ⋯ state.
-    MenuRow(usize, String, bool),
+    MenuRow(usize, &'a str, bool),
     /// (focused row, log level, stats-overlay on, show-logs on) — any change invalidates the tile.
     DiagnosticsRow(usize, LogLevelOverride, bool, bool),
     ExperimentalRow(usize, bool, bool, Option<bool>),
@@ -48,7 +52,7 @@ pub enum ScrollContentKey {
 /// Each modal's shell content keys. Value changes invalidate the shell;
 /// pure focus moves don't (that's `ModalFocusKey`'s job).
 #[derive(PartialEq, Eq, Hash)]
-pub enum ModalShellKey {
+pub enum ModalShellKey<'a> {
     // Only what `render_settings` reads — the whole `Settings` struct (or the
     // dropdown row) would invalidate this key, forcing a full-screen re-raster,
     // on every keystroke or dropdown open/close. The shell draws chrome only (no
@@ -57,33 +61,33 @@ pub enum ModalShellKey {
     Settings {
         /// The per-game screen's dim title suffix — `None` on the global one. The only thing
         /// separating the two shells.
-        game: Option<String>,
+        game: Option<&'a str>,
         hover_close: bool,
     },
     Wake {
-        name: String,
+        name: &'a str,
         mac_empty: bool,
         sent: bool,
         hover_close: bool,
     },
     Pairing {
         digits: [u8; 4],
-        status: Option<String>,
+        status: Option<&'a str>,
         busy: bool,
         hover_close: bool,
     },
     ForgetHost {
-        name: Option<String>,
+        name: Option<&'a str>,
         hover_close: bool,
     },
     HostMenu {
-        name: String,
-        subtitle: String,
+        name: &'a str,
+        subtitle: &'a str,
         rows: usize,
         hover_close: bool,
     },
     WakeSettings {
-        title: String,
+        title: &'a str,
         auto: bool,
         hover_close: bool,
     },
@@ -91,7 +95,7 @@ pub enum ModalShellKey {
         hover_close: bool,
     },
     SpeedTest {
-        status: String,
+        status: &'a str,
         hover_close: bool,
     },
     Diagnostics {

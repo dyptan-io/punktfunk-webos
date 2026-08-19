@@ -29,9 +29,12 @@ Layered by module, deps point inward (acyclic). Leaves first:
   `painter` (the surface + themed card shapes), `text` + `text_raster` (`TextRaster`
   trait/`FontId`; glyph rasterization is a platform seam), `style` (colors/icons),
   `layout` (`Layout`/`Constraint` — 1-D constraint splits, no cassowary), `widgets`
-  (`sidebar`/`rows`/`cards`/`modal`/`listmodal`/`notification`), `tiles`, `focus`,
+  (`sidebar`/`rows`/`cards`/`modal`/`listmodal`/`notification`), `tiles/` (the rasterized-once
+  tile sources, split by family: `card`/`cardmenu`/`text`/`overlay`/`confirm`), `focus`,
   `scroll`, `animation`/`fade`. Drawing goes through `Canvas` methods and the
-  `Widget`/`StatefulWidget` traits (`widget.rs`); inside `ui` the names stay flat via
+  `Widget`/`StatefulWidget` traits (`widget.rs`) — plus `TileWidget`, a `Widget` that also names
+  its own surface size, which `ui::rasterize` turns into a standalone tile. Every tile in the tree
+  is one, so there is a single drawing idiom. Inside `ui` the names stay flat via
   `ui::prelude`. Depends on `core` only.
 - **`services/`** — portable I/O: `store` (JSON persistence), `discovery` (mDNS),
   `library` (mTLS REST), `art`, `wol`. Depends on `core`.
@@ -49,15 +52,30 @@ Layered by module, deps point inward (acyclic). Leaves first:
   `dualsense`, `sdl_webos` (the SDL fork's own entry points, `dlopen`'d), C build shims.
 - **`app/`** — the `App` state machine. Per-screen `impl App` blocks split by concern:
   `app::state::<screen>` (event handling/transitions) and `app::view::<screen>` (geometry +
-  draw-list building).
+  draw-list building). `app::render` holds the render path's own vocabulary: `tile` (which tile
+  is which), `key` (what each tile's pixels depend on — hashed, never stored), and `ctx`
+  (`RenderCtx`, the caches/fonts/screen every `prepare_*` pass writes through). `App`'s own state
+  is grouped rather than flat: `grid` (`GridState` — card tiles, pop clocks, eased scroll, dirty
+  flags; plus `GridLayout`/`GridCard` and the card build/keep tuning), `modal` (`ModalState` —
+  everything that only exists while a modal is up), `spinner` (`GridReveal` — whether the grid has
+  revealed, and the two clocks that decide it).
 - **`runtime/`** — top-level loop (was `main.rs`'s `mod real`): `mod.rs` (`run()`, connect
   spawn, signal handlers, log-overlay state, shared input/dialog helpers), `ui_flow.rs`
-  (`run_ui_flow`, the menu loop), `stream.rs` (`run_inner`, the streaming loop).
+  (`run_ui_flow`, the menu loop), `stream.rs` (`run_inner`, the streaming loop),
+  `frame_timer.rs` (per-tick stage timing; WARN when a tick overruns `TICK_BUDGET`, carrying the
+  tile store's resident count and bytes), `toast.rs` (the notification overlay both loops share).
 
 Add a screen: build on `ui::widgets::ListModal` (see `app/state/hostmenu.rs` / `app/view/hostmenu.rs`);
 the `Screen` enum has eight dispatch sites across `app/mod.rs` and `runtime/` (compiler finds
 all at once, mechanical but safe). Rendering: `tiny_skia` software framebuffer,
 redraw-on-change (`dirty` flag, no time-based animation).
+
+**The grid is O(visible), not O(library)** — deliberately, at every layer, and worth preserving:
+card tiles build inside a scroll window on a time budget (`CARD_BUILD_BUDGET`) and evict outside a
+hysteresis window; `view::home::visible_cards` computes the drawn range arithmetically;
+`focus_window` bounds the per-keypress focus map; `card_at_point` inverts the layout for the
+pointer instead of scanning; and `card_pop`/`art` are pruned with the tiles they belong to. A new
+path that walks `self.games` per frame, per keypress or per pointer motion is a regression.
 
 **Platform gating**: one target — Linux (webOS armv7 cross target, or a plain Linux box).
 `platform/webos/sdl_webos.rs` resolves the `webosbrew/SDL-webOS` fork's own entry points the

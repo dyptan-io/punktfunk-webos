@@ -82,7 +82,7 @@ impl App {
         );
         self.edit_host_index = None;
         self.sidebar_dirty = true;
-        self.grid_dirty = true;
+        self.grid.dirty = true;
         self.screen = Screen::Home;
     }
 }

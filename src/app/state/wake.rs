@@ -154,7 +154,7 @@ impl App {
         match ev {
             MenuEvent::Up | MenuEvent::Down | MenuEvent::Left | MenuEvent::Right => {
                 wake.focused = usize::from(wake.focused == 0);
-                self.modal_focus_anim = Some(Instant::now());
+                self.modal.focus_anim = Some(Instant::now());
             }
             MenuEvent::Confirm if wake.focused == 0 => Self::send_wake(wake),
             MenuEvent::Confirm => {

@@ -210,7 +210,12 @@ impl Compositor {
         resolved
     }
 
-    /// Uploads already-decoded pixels to a GPU texture. No-op if already cached.
+    /// Uploads already-decoded pixels to a GPU texture, replacing whatever `tile` held.
+    ///
+    /// Replaces rather than no-ops: a cached texture used to be taken as already correct, so
+    /// the one caller that reuses a tile id (the hero) had to `drop_tile` first, and any
+    /// future one that forgot would get last image's pixels and no error. The texture object
+    /// itself is still reused when the shape matches — same idiom as [`upload`](Self::upload).
     ///
     /// `format` is the caller's, not this module's — a straight-RGBA8 source and a 16-bit one
     /// blend identically here, since a fade comes from the texture's alpha mod rather than from
@@ -226,9 +231,6 @@ impl Compositor {
         format: PixelFormatEnum,
         pixels: &[u8],
     ) -> Result<()> {
-        if self.tiles.contains_key(&tile) {
-            return Ok(());
-        }
         let pitch = w as usize * format.byte_size_per_pixel();
         let expected = pitch * h as usize;
         anyhow::ensure!(
@@ -236,12 +238,17 @@ impl Compositor {
             "upload {tile:?}: {} bytes for {w}x{h} {format:?} (want {expected})",
             pixels.len(),
         );
-        self.acquire(creator, tile, (w, h, format))?;
-        let tile = self.tiles.get_mut(&tile).expect("just acquired");
-        tile.texture
+        let shape = (w, h, format);
+        if self.tiles.get(&tile).map(|t| t.shape) != Some(shape) {
+            self.acquire(creator, tile, shape)?;
+        }
+        let entry = self.tiles.get_mut(&tile).expect("acquired above or already fresh");
+        entry.premultiplied = false;
+        entry
+            .texture
             .update(None, pixels, pitch)
             .map_err(|e| anyhow::anyhow!("upload raw: {e}"))?;
-        tile.texture.set_blend_mode(BlendMode::Blend);
+        entry.texture.set_blend_mode(BlendMode::Blend);
         Ok(())
     }
 
@@ -348,6 +355,10 @@ impl Compositor {
     /// Executes one frame's draw list. The caller has already cleared the canvas
     /// to the background color.
     pub fn present(&mut self, canvas: &mut Canvas<Window>, cmds: &[DrawCmd]) -> Result<()> {
+        // A `Fill` needs alpha blending on the canvas itself; every caller sets the mode it
+        // wants before calling, so leaving one behind would silently blend the *next* frame's
+        // clear. Restored below rather than set per command — the canvas keeps the state.
+        let entry_blend = canvas.blend_mode();
         for cmd in cmds {
             match cmd {
                 DrawCmd::Tex { tile, dst, alpha } => {
@@ -375,7 +386,9 @@ impl Compositor {
                         .map_err(|e| anyhow::anyhow!("copy float {tile:?}: {e}"))?;
                 }
                 DrawCmd::Fill { rect, color } => {
-                    canvas.set_blend_mode(BlendMode::Blend);
+                    if canvas.blend_mode() != BlendMode::Blend {
+                        canvas.set_blend_mode(BlendMode::Blend);
+                    }
                     canvas.set_draw_color(to_sdl_color(*color));
                     canvas
                         .fill_rect(Some(to_sdl_rect(*rect)))
@@ -383,6 +396,7 @@ impl Compositor {
                 }
             }
         }
+        canvas.set_blend_mode(entry_blend);
         Ok(())
     }
 }

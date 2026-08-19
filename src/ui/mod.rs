@@ -5,7 +5,9 @@
 //! Namespaced rather than flat (Ratatui's own division): [`layout`] splits rects,
 //! [`widgets`] draws into them, [`style`] says in what colour, [`text`] measures and
 //! rasterizes glyphs. [`Canvas`] is the surface all of them draw through, and
-//! [`Widget`]/[`StatefulWidget`] the contract they implement. Screens live in `app::view`.
+//! [`Widget`]/[`StatefulWidget`] the contract they implement — plus [`TileWidget`] for one
+//! that sizes and owns its own surface, which is what every entry in [`tiles`] is. Screens
+//! live in `app::view`.
 //!
 //! Inside this module the names stay flat — widgets compose each other constantly — via
 //! the crate-internal [`prelude`].
@@ -32,7 +34,7 @@ mod widget;
 pub use canvas::Canvas;
 pub use painter::Painter;
 pub use screen::ModalScreen;
-pub use widget::{StatefulWidget, Widget};
+pub use widget::{rasterize, StatefulWidget, TileWidget, Widget};
 
 /// Every `ui` name, flat — for `ui`'s own modules only. A widget reaches for the theme, the
 /// text cache, the layout solver and two neighbouring widgets in the same function; making
@@ -49,5 +51,5 @@ pub(crate) mod prelude {
     pub(crate) use crate::ui::text_raster::{FontId, TextRaster};
     pub(crate) use crate::ui::tiles::*;
     pub(crate) use crate::ui::widgets::*;
-    pub(crate) use crate::ui::{Canvas, StatefulWidget, Widget};
+    pub(crate) use crate::ui::{Canvas, StatefulWidget, TileWidget, Widget};
 }

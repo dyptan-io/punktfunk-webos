@@ -65,15 +65,23 @@ impl Widget for ConfirmButtons<'_> {
     }
 }
 
-/// Renders one focused button as a tile, composited over the shell.
-pub fn render_confirm_button_tile(
-    text_cache: &mut TextCache,
-    fonts: &Fonts,
-    button: &ConfirmButton<'_>,
-    w: u32,
-    h: u32,
-) -> Result<Painter> {
-    crate::ui::tiles::padded_widget_tile(text_cache, fonts, w, h, |c, rect| c.confirm_button(button, true, rect))
+/// One focused button as a tile, composited over the shell.
+pub struct ConfirmButtonTile<'a> {
+    pub button: &'a ConfirmButton<'a>,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl Widget for ConfirmButtonTile<'_> {
+    fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
+        c.confirm_button(self.button, true, area.inflate(-ROW_TILE_PAD))
+    }
+}
+
+impl TileWidget for ConfirmButtonTile<'_> {
+    fn size(&self, _fonts: &Fonts) -> (u32, u32) {
+        padded_size(self.w, self.h, ROW_TILE_PAD)
+    }
 }
 
 impl Canvas<'_, '_> {

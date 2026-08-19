@@ -8,9 +8,13 @@
 //!
 //! Split out of `app/mod.rs`, which held this next to the state machine and the whole
 //! render path.
-// A glob for the same reason `app::render`'s modules use one: this is an `impl App` block
-// lifted out of `app/mod.rs`.
-use crate::app::*;
+
+use std::time::Instant;
+
+use crate::app::{menu, view, App, ConnectTarget, HomeFocus, PairingFocus, Screen};
+use crate::core::event::MenuEvent;
+use crate::ui;
+use crate::ui::render::Rect;
 
 impl App {
     /// Handed to `SDL_SetTextInputRect` by the render loop.
@@ -44,7 +48,7 @@ impl App {
         // it's excluded. An open dropdown is excluded too — hover there only moves the
         // option cursor, so popping the parent row (as the D-pad also declines to) is wrong.
         if focus_changed && self.dropdown.is_none() && !matches!(self.screen, Screen::Home) {
-            self.modal_focus_anim = Some(Instant::now());
+            self.modal.focus_anim = Some(Instant::now());
         }
         let close_changed = self.hover_close_at(x, y, screen_w, screen_h, fonts);
         focus_changed || close_changed
@@ -252,7 +256,8 @@ impl App {
         let stride = ui::widgets::focus_row_stride() as i32;
         let total = menu::settings_row_count(set);
         let scroll_px = self
-            .modal_scroll_px
+            .modal
+            .scroll_px
             .clamp(0, Self::max_scroll_px(total, stride, content.height()));
         (content, scroll_px)
     }

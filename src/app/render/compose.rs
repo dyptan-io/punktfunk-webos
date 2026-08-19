@@ -4,13 +4,14 @@
 //! focus pop and every fade is a texture-copy parameter here, never a re-raster (see
 //! `platform::webos::compositor`). Split out of `app/mod.rs` alongside `prepare`.
 use crate::app::render::tile;
+use crate::app::{
+    hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP_SHRINK, LAUNCH_GROWTH, MODAL_FADE,
+    MODAL_FADE_OUT, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD, SCROLL_INDICATOR_TILE_W,
+    STATUS_BG_PAD,
+};
 use crate::ui;
 use crate::ui::cache::TileStore;
 use crate::ui::render::{DrawCmd, Rect};
-
-// A glob, deliberately: these are `impl App` blocks lifted out of `app/mod.rs`, and
-// they read the same private tuning constants the rest of that module does.
-use crate::app::*;
 
 /// How far a modal card slides down as it fades out (and up as it fades in), in px.
 const MODAL_RISE: f32 = 26.0;
@@ -24,7 +25,7 @@ impl App {
             entries: &self.entries,
             host_selected: self.selected_host.is_some(),
             has_status: self.home_status.is_some(),
-            grid_reveal_ready: self.grid_reveal_ready,
+            grid_reveal_ready: self.grid.reveal.is_revealed(),
             press: self.press_dip(Screen::Home),
         }
     }
@@ -44,14 +45,15 @@ impl App {
         // `snapshot_closing_modal`) — the entering one owns `tile::MODAL` from this frame.
         // The two overlap, so leaving one modal for another cross-fades.
         let closing = self
-            .modal_fade
+            .modal
+            .fade
             .closing_frame(MODAL_FADE_OUT)
-            .and_then(|(alpha, _)| Some((alpha, self.modal_prev?)));
+            .and_then(|(alpha, _)| Some((alpha, self.modal.prev?)));
         let screen = self.screen;
         let m = if matches!(screen, Screen::Home) {
             0.0
         } else {
-            self.modal_fade.open_alpha(MODAL_FADE)
+            self.modal.fade.open_alpha(MODAL_FADE)
         };
         // The backdrop belongs to "a modal is up", not to either card: re-fading it
         // mid-step would brighten the whole screen and read as a blink. It only fades when
@@ -73,7 +75,7 @@ impl App {
             // composites there rather than full-screen. Opening plays the same motion
             // `compose_modal`'s closing snapshot uses below, in reverse — fade + rise, no
             // scale.
-            let modal_base = self.modal_tile_region.offset(0, dy);
+            let modal_base = self.modal.tile_region.offset(0, dy);
             cmds.push(DrawCmd::Tex {
                 tile: tile::MODAL,
                 dst: modal_base,
@@ -85,7 +87,8 @@ impl App {
             if let Some((total, _, _, content)) = scroll_geom {
                 let stride = self.scroll_stride_for(screen, fonts);
                 let scroll_px = self
-                    .modal_scroll_px
+                    .modal
+                    .scroll_px
                     .clamp(0, Self::max_scroll_px(total, stride, content.height()));
                 if let Some((src, dst)) = self.scroll_src_rect(screen, screen_w, screen_h, fonts) {
                     cmds.push(DrawCmd::TexCropped {
@@ -155,7 +158,7 @@ impl App {
                 // rasterized once at its literal size, never re-rendered for
                 // this (except while `switch_anim` animates its content, see
                 // `prepare_tiles`).
-                let dst = ui::animation::focus_tile_rect(base, self.modal_focus_anim, self.press_dip(screen));
+                let dst = ui::animation::focus_tile_rect(base, self.modal.focus_anim, self.press_dip(screen));
                 let alpha = (255.0 * m) as u8;
                 // In a scrolling modal the focused row can hang past the viewport's bottom
                 // edge mid-glide (the crop lags the row offset by up to one stride), so it is
@@ -280,16 +283,13 @@ impl App {
     /// Grid family compose: the card tiles at their scrolled positions, the pinned
     /// divider, and the focused card with its ring/title-strip/pin-badge pop. Only reached
     /// once the grid is revealed. Extracted from `draw_list` (A2 staging).
-    #[allow(clippy::too_many_arguments)]
-    fn compose_grid(
-        &self,
-        screen_h: u32,
-        grid_x: i32,
-        available_w: u32,
-        columns: usize,
-        tiles: &TileStore,
-        cmds: &mut Vec<DrawCmd>,
-    ) {
+    fn compose_grid(&self, tiles: &TileStore, screen: ui::render::Size, cmds: &mut Vec<DrawCmd>) {
+        // Derived here rather than passed down: all three follow from the screen's width, and
+        // `draw_list` was handing them over one by one purely because this used to live in it.
+        let screen_h = screen.h;
+        let grid_x = ui::widgets::SIDEBAR_W as i32;
+        let available_w = screen.w.saturating_sub(ui::widgets::SIDEBAR_W);
+        let columns = view::home::grid_columns(available_w);
         let count = self.grid_len(columns);
         let focused = match self.home_focus {
             HomeFocus::Grid(i) if i < count => Some(i),
@@ -301,8 +301,19 @@ impl App {
         // list, and every card rect below would otherwise rebuild them (see `home_focus_map`).
         let sections = layout.sections(self.games.len());
         let card_rect =
-            |idx| view::home::scrolled_card_rect(idx, columns, grid_x, available_w, sections, self.grid_scroll);
-        for idx in 0..count {
+            |idx| view::home::scrolled_card_rect(idx, columns, grid_x, available_w, sections, self.grid.scroll);
+        // The on-screen window, computed rather than found by testing every card in the
+        // library once per frame (`view::home::visible_cards`).
+        let visible = view::home::visible_cards(
+            count,
+            columns,
+            available_w,
+            sections,
+            self.grid.scroll,
+            screen_h as i32,
+            pad,
+        );
+        for idx in visible {
             if Some(idx) == focused {
                 continue; // drawn last, on top of its neighbors
             }
@@ -311,10 +322,7 @@ impl App {
                 continue;
             };
             let r = card_rect(idx);
-            if r.bottom() + pad < 0 || r.y() - pad > screen_h as i32 {
-                continue; // culled — fully off-screen at this scroll offset
-            }
-            let Some(card) = self.card_ids.get(pin_id) else {
+            let Some(card) = self.grid.card_ids.get(pin_id) else {
                 continue; // not rasterized yet — outside the build window
             };
             // A card that just landed is still zooming up to full size.
@@ -347,7 +355,7 @@ impl App {
                 continue;
             }
             let band =
-                view::home::section_heading_rect(first_idx, columns, grid_x, available_w, sections, self.grid_scroll);
+                view::home::section_heading_rect(first_idx, columns, grid_x, available_w, sections, self.grid.scroll);
             if band.bottom() < 0 || band.y() > screen_h as i32 {
                 continue;
             }
@@ -371,7 +379,7 @@ impl App {
                 // tile fading in behind it at the same scale.
                 let f = ui::animation::anim_frac_smooth(self.focus_anim, ui::animation::CARD_FOCUS_POP);
                 let r = card_rect(idx);
-                let Some(card) = self.card_ids.get(pin_id) else {
+                let Some(card) = self.grid.card_ids.get(pin_id) else {
                     return; // not rasterized yet
                 };
                 let pop = self.card_pop_frac(pin_id);
@@ -604,8 +612,7 @@ impl App {
                 });
             }
         } else if !input.grid_reveal_ready {
-            let phase = self.spinner_since.map_or(0.0, |s| s.elapsed().as_secs_f32());
-            let (idx, frame) = crate::assets::spinner_frame_at(phase);
+            let (idx, frame) = crate::assets::spinner_frame_at(self.grid.reveal.phase());
             let (fw, fh) = (frame.width(), frame.height());
             let x = grid_x + (available_w as i32 - fw as i32) / 2;
             // 40% down rather than dead-center, which reads as slightly low on a TV.
@@ -617,7 +624,7 @@ impl App {
                 alpha: 0xff,
             });
         } else {
-            self.compose_grid(screen_h, grid_x, available_w, columns, tiles, &mut cmds);
+            self.compose_grid(tiles, ui::render::Size::new(screen_w, screen_h), &mut cmds);
         }
         if input.has_status {
             if let Some(p) = tiles.get(tile::STATUS) {
@@ -649,7 +656,7 @@ impl App {
             let base = self.scrolled_card_rect(idx, columns, grid_x, available_w);
             if let Some(card) = self
                 .pin_id_at_grid_idx(idx, columns)
-                .and_then(|pin_id| self.card_ids.get(pin_id))
+                .and_then(|pin_id| self.grid.card_ids.get(pin_id))
             {
                 cmds.push(DrawCmd::Tex {
                     tile: card,

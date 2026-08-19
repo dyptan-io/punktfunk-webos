@@ -335,15 +335,15 @@ fn audio_path_label(player: &VideoPlayer, has_plane: bool, offload_opt_in: bool,
 /// Blocks until the handshake completes or `params.timeout` elapses. NDL manages its own
 /// punch-through area natively (see [`crate::platform::webos::ndl`]'s module docs), so no
 /// display geometry is needed here.
-pub fn connect(params: ConnectParams) -> Result<Connected> {
+pub fn connect(params: &ConnectParams) -> Result<Connected> {
     // Fails before touching the network: a full handshake would only end in `NdlVideo::load()`
     // rejecting the same gate, pointlessly holding the host's pending-session slot for `timeout`.
     crate::platform::webos::ndl::ensure_not_poisoned()?;
-    let negotiated = Negotiated::clamp(&params);
-    let client = Arc::new(dial(&params, &negotiated)?);
+    let negotiated = Negotiated::clamp(params);
+    let client = Arc::new(dial(params, &negotiated)?);
     log_handshake(&client, &negotiated);
 
-    let (player, is_hdr) = load_player(&params, &client)?;
+    let (player, is_hdr) = load_player(params, &client)?;
     let ndl_audio = player.ndl_audio_handle();
     // Whether the REAL stream rides the plane. `ndl_audio.is_some()` is a different question —
     // it only says the load HAS a plane, which every accepted V2 load does now.

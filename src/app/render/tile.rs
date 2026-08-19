@@ -107,22 +107,25 @@ pub fn spinner_index(id: TileId) -> Option<usize> {
 /// reorders the grid, and keying by index would rebuild every tile after the moved one.
 /// Slots are recycled, so a library refresh reuses the same small band rather than growing
 /// the id space for the life of the process.
-#[derive(Default)]
 pub struct CardIds {
     slots: std::collections::HashMap<String, TileId>,
     free: Vec<TileId>,
     next: u32,
 }
 
-impl CardIds {
-    pub fn new() -> Self {
+/// Hand-written rather than derived: a derived `Default` would start `next` at 0, handing the
+/// first card a `TileId` already taken by one of the fixed tiles above.
+impl Default for CardIds {
+    fn default() -> Self {
         Self {
             slots: std::collections::HashMap::new(),
             free: Vec::new(),
             next: CARD_BASE,
         }
     }
+}
 
+impl CardIds {
     /// `pin_id`'s tile, assigning a slot if it has none.
     pub fn id(&mut self, pin_id: &str) -> TileId {
         if let Some(id) = self.slots.get(pin_id) {

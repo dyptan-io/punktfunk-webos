@@ -210,6 +210,9 @@ impl VideoPump {
 }
 
 /// The video thread's body: boost the threads that carry the stream, then pump until `stop`.
+// The thread body owns everything it is handed — the `Arc`s die with it, which is what keeps
+// the client and the stats alive for exactly as long as the pump runs.
+#[allow(clippy::needless_pass_by_value)]
 pub(super) fn video_pump(
     client: Arc<NativeClient>,
     sink: NdlSink,

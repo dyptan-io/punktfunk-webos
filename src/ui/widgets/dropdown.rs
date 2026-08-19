@@ -49,16 +49,21 @@ pub fn dropdown_option_rect(rect: Rect, index: usize) -> Rect {
 
 /// Renders one focused dropdown option as a tile, composited over the overlay.
 /// Moving focus recomposites just this tile instead of re-rasterizing.
-pub fn render_dropdown_option_tile(
-    text_cache: &mut TextCache,
-    fonts: &Fonts,
-    option: &str,
-    width: u32,
-) -> Result<Painter> {
-    let mut p = Painter::new(width, DROPDOWN_OPTION_H);
-    let mut c = Canvas::tile(&mut p, text_cache, fonts);
-    c.dropdown_option(option, true, Rect::new(0, 0, width, DROPDOWN_OPTION_H))?;
-    Ok(p)
+pub struct DropdownOptionTile<'a> {
+    pub option: &'a str,
+    pub width: u32,
+}
+
+impl Widget for DropdownOptionTile<'_> {
+    fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
+        c.dropdown_option(self.option, true, area)
+    }
+}
+
+impl TileWidget for DropdownOptionTile<'_> {
+    fn size(&self, _fonts: &Fonts) -> (u32, u32) {
+        (self.width, DROPDOWN_OPTION_H)
+    }
 }
 
 impl Canvas<'_, '_> {

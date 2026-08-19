@@ -177,6 +177,7 @@ pub(crate) fn row_shown(row: usize) -> bool {
 /// [`app::view::settings`]'s business (it needs the OS release to phrase it); this is the
 /// predicate both the renderer and the input path read, so a greyed row and a rejected
 /// keypress can't disagree.
+#[derive(Clone, Copy)]
 pub(crate) enum RowLock {
     /// HDR under an explicit H.264 pick: the host never resolves HDR for such a session, so the
     /// toggle would be a no-op. `Automatic` leaves it editable — HEVC may still be resolved.
@@ -194,6 +195,7 @@ pub(crate) enum RowLock {
 
 /// Why an Experimental row can't be changed. Same contract as [`RowLock`]: the predicate that
 /// greys the row is the one that rejects the keypress, so the two can't disagree.
+#[derive(Clone, Copy)]
 pub(crate) enum ExpRowLock {
     /// The root probe hasn't answered yet.
     RootUnknown,

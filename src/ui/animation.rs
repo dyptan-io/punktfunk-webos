@@ -16,18 +16,35 @@ pub const CARD_FOCUS_POP: Duration = Duration::from_millis(160);
 /// reads as one motion.
 pub const CARD_MENU_RISE: Duration = CARD_FOCUS_POP;
 
-/// Advances an eased scroll one tick: cover ~35% of the remaining distance, snapping when
-/// close so it terminates. Returns whether anything moved. Shared by the card grid and the
-/// scrolling modals' viewports so both lists feel identical.
-pub fn ease_scroll(current: &mut i32, target: i32) -> bool {
+/// Fraction of the remaining distance one 16ms tick covers — the constant this ease was
+/// written with, kept as the unit [`ease_scroll`] expresses its rate in.
+const SCROLL_STEP_PER_TICK: f64 = 0.35;
+
+/// The tick length [`SCROLL_STEP_PER_TICK`] is quoted at.
+pub const SCROLL_STEP_TICK: Duration = Duration::from_millis(16);
+
+/// A frame long enough that the scroll should resume rather than teleport: the app was
+/// stalled (or idle between animations), and covering the whole gap at once reads as a jump.
+const SCROLL_MAX_DT: Duration = Duration::from_millis(64);
+
+/// Advances an eased scroll by `dt`: cover ~35% of the remaining distance per 16ms, snapping
+/// when close so it terminates. Returns whether anything moved. Shared by the card grid and
+/// the scrolling modals' viewports so both lists feel identical.
+///
+/// Rate, not step-per-call: stepping a fixed fraction per *tick* made scroll speed a function
+/// of the achieved frame rate, so a frame that overran its budget slowed the motion itself
+/// rather than only its smoothness — and pinned the loop's tick budget in place.
+pub fn ease_scroll(current: &mut i32, target: i32, dt: Duration) -> bool {
     let d = target - *current;
     if d == 0 {
         return false;
     }
+    let ticks = dt.min(SCROLL_MAX_DT).as_secs_f64() / SCROLL_STEP_TICK.as_secs_f64();
+    let covered = 1.0 - (1.0 - SCROLL_STEP_PER_TICK).powf(ticks);
     let step = if d.abs() <= 3 {
         d
     } else {
-        match (f64::from(d) * 0.35) as i32 {
+        match (f64::from(d) * covered) as i32 {
             0 => d.signum(),
             s => s,
         }
