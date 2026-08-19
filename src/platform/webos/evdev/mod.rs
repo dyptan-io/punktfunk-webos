@@ -306,8 +306,6 @@ struct Device {
     pad: Option<Pad>,
 }
 
-
-
 impl Drop for Device {
     fn drop(&mut self) {
         // SAFETY: `fd` came from `open` in `open_mouse` and is owned solely by this struct.
@@ -765,5 +763,4 @@ mod tests {
         assert!(!is_tv_builtin("M720 Triathlon Mouse"));
         assert!(!is_tv_builtin("MX MCHNCL M Keyboard"));
     }
-
 }

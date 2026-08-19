@@ -12,7 +12,9 @@ use std::os::unix::io::RawFd;
 
 use punktfunk_core::quic::RichInput;
 
-use super::{abs_range, abs_resolution, bit, device_vendor, HidReport, InputEventRaw, ABS_X, EV_ABS, EV_SYN, SYN_REPORT};
+use super::{
+    abs_range, abs_resolution, bit, device_vendor, HidReport, InputEventRaw, ABS_X, EV_ABS, EV_SYN, SYN_REPORT,
+};
 
 /// A claimed pad node, decoded. Never both at once — they are separate nodes — which is why this
 /// is one enum on [`super::Device`] rather than two `Option`s that must not overlap.
@@ -151,7 +153,7 @@ struct Finger {
 }
 
 /// A `PlayStation` pad's touchpad, which the kernel publishes as its own absolute/multitouch node
-/// alongside the pad itself — the source of the stuck left button [`mouse::is_touch_emulated`]
+/// alongside the pad itself — the source of the stuck left button [`super::mouse::is_touch_emulated`]
 /// describes, since the compositor drives the TV cursor from it. Claiming it takes it away from
 /// the compositor entirely and gives [`read_touch`] the contacts to forward as
 /// [`RichInput::Touchpad`], which is what makes a game's touchpad swipes work. The pad's own
@@ -338,7 +340,11 @@ fn flush_sensors(sensors: &mut Sensors, sink: &impl Fn(HidReport)) {
         return;
     }
     let axes: [i16; 6] = std::array::from_fn(|i| {
-        ((i64::from(sensors.axes[i]) * sensors.scale[i]) >> SCALE_SHIFT)
+        // Truncating divide, not an arithmetic shift: a shift floors, so a resting pad's
+        // negative bias jitter would quantize to -1 where the positive half quantizes to 0 and
+        // the skip below would never catch it. The divisor is a power of two, so this is still
+        // shifts, not a 64-bit divide call.
+        ((i64::from(sensors.axes[i]) * sensors.scale[i]) / (1 << SCALE_SHIFT))
             .clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
     });
     if sensors.sent == Some(axes) {
@@ -352,7 +358,6 @@ fn flush_sensors(sensors: &mut Sensors, sink: &impl Fn(HidReport)) {
         accel: [ax, ay, az],
     }));
 }
-
 
 #[cfg(test)]
 mod tests {
