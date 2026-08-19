@@ -88,10 +88,11 @@ struct State {
 
 /// CRC32 (IEEE 802.3, reflected) — the `crc32_le` variant `hid-playstation` signs Bluetooth
 /// output reports with. Computed bitwise: 78 bytes per report at human-paced update rates
-/// isn't worth a 1 KiB lookup table.
-fn crc32_le(bytes: &[u8]) -> u32 {
+/// isn't worth a 1 KiB lookup table. Over an iterator so the seed byte the signature covers
+/// chains onto the report without copying it into a buffer first.
+fn crc32_le(bytes: impl IntoIterator<Item = u8>) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
-    for &b in bytes {
+    for b in bytes {
         crc ^= u32::from(b);
         for _ in 0..8 {
             // 0xEDB88320 = reflected 0x04C11DB7.
@@ -113,18 +114,25 @@ fn crc32_le(bytes: &[u8]) -> u32 {
 /// (no `Uniq`), which is correct — this path is Bluetooth-only.
 pub fn find_address() -> Option<String> {
     let devices = std::fs::read_to_string("/proc/bus/input/devices").ok()?;
-    devices.split("\n\n").find_map(|block| {
-        let is_dualsense = block
-            .lines()
-            .any(|l| l.starts_with("N: Name=") && l.to_ascii_lowercase().contains("dualsense"));
-        if !is_dualsense {
-            return None;
-        }
+    // Bound rather than returned directly: the iterator borrows `devices`, and a tail-position
+    // temporary outlives the local it borrows from.
+    let address = dualsense_blocks(&devices).find_map(|block| {
         block
             .lines()
             .find_map(|l| l.strip_prefix("U: Uniq="))
             .map(|u| u.trim().to_ascii_lowercase())
             .filter(|u| !u.is_empty())
+    });
+    address
+}
+
+/// The `/proc/bus/input/devices` records of every connected `DualSense`, matched on the `N: Name=`
+/// line. One pad publishes three of them, and only some carry the field a caller wants.
+fn dualsense_blocks<'a>(devices: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+    devices.split("\n\n").filter(|block| {
+        block
+            .lines()
+            .any(|l| l.starts_with("N: Name=") && l.to_ascii_lowercase().contains("dualsense"))
     })
 }
 
@@ -163,24 +171,17 @@ pub fn hid_playstation_bound() -> bool {
 /// The uncached probe behind [`hid_playstation_bound`].
 fn probe_hid_playstation_bound() -> bool {
     let devices = std::fs::read_to_string("/proc/bus/input/devices").unwrap_or_default();
-    devices.split("\n\n").any(|block| {
-        let is_dualsense = block
-            .lines()
-            .any(|l| l.starts_with("N: Name=") && l.to_ascii_lowercase().contains("dualsense"));
-        if !is_dualsense {
-            return false;
-        }
+    // Bound for the same reason as in `find_address`.
+    let bound = dualsense_blocks(&devices)
         // The evdev node's `Sysfs=` line points at `<hid-device>/input/inputN`; the driver
         // binding lives on the HID device itself, one level up.
-        let Some(sysfs) = block.lines().find_map(|l| l.strip_prefix("S: Sysfs=")) else {
-            return false;
-        };
-        let Some(device_dir) = sysfs.split("/input/input").next() else {
-            return false;
-        };
-        std::fs::read_link(format!("/sys{device_dir}/driver"))
-            .is_ok_and(|d| d.file_name().is_some_and(|f| f == "playstation"))
-    })
+        .filter_map(|block| block.lines().find_map(|l| l.strip_prefix("S: Sysfs=")))
+        .any(|sysfs| {
+            let device_dir = sysfs.split("/input/input").next().unwrap_or(sysfs);
+            std::fs::read_link(format!("/sys{device_dir}/driver"))
+                .is_ok_and(|d| d.file_name().is_some_and(|f| f == "playstation"))
+        });
+    bound
 }
 
 /// Owns the pad's feedback state and the thread that ships it.
@@ -287,14 +288,6 @@ impl Drop for Feedback {
     }
 }
 
-/// Monotonic report sequence, low 4 bits used — the pad expects a changing sequence number
-/// per report.
-fn seq_next() -> u8 {
-    use std::sync::atomic::{AtomicU8, Ordering};
-    static SEQ: AtomicU8 = AtomicU8::new(0);
-    SEQ.fetch_add(1, Ordering::Relaxed) & 0x0F
-}
-
 /// Builds one Bluetooth output report for `state`.
 ///
 /// Note which valid-flags are never set: not `0x01` (compatible vibration), so the motor
@@ -322,10 +315,9 @@ fn build_report(seq: u8, state: &State) -> [u8; REPORT_LEN] {
     }
     // CRC32 over a 0xA2 seed byte (the HIDP DATA/Output header the stack prepends) followed
     // by everything ahead of the CRC field itself.
-    let mut signed = Vec::with_capacity(REPORT_LEN);
-    signed.push(0xA2);
-    signed.extend_from_slice(&r[..REPORT_LEN - 4]);
-    r[REPORT_LEN - 4..].copy_from_slice(&crc32_le(&signed).to_le_bytes());
+    let signed = std::iter::once(0xA2).chain(r[..REPORT_LEN - 4].iter().copied());
+    let crc = crc32_le(signed);
+    r[REPORT_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
     r
 }
 
@@ -378,11 +370,14 @@ fn sender_loop(address: &str, rx: &Receiver<State>) {
     let mut failing = false;
     let mut last_sent: Option<State> = None;
     let mut sends: u32 = 0;
+    // The pad expects a changing sequence number per report; low 4 bits, so it wraps freely.
+    let mut seq: u8 = 0;
     while let Ok(state) = rx.recv() {
         if last_sent == Some(state) {
             continue;
         }
-        match send_report(address, &build_report(seq_next(), &state)) {
+        seq = seq.wrapping_add(1);
+        match send_report(address, &build_report(seq, &state)) {
             Ok(()) => {
                 failing = false;
                 last_sent = Some(state);
@@ -414,7 +409,7 @@ mod tests {
     #[test]
     fn crc32_matches_known_vector() {
         // Standard IEEE CRC32 check value for "123456789".
-        assert_eq!(crc32_le(b"123456789"), 0xCBF4_3926);
+        assert_eq!(crc32_le(*b"123456789"), 0xCBF4_3926);
     }
 
     #[test]
