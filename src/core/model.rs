@@ -59,103 +59,114 @@ impl GamePrefs {
     }
 }
 
-/// A sparse [`Settings`] diff: `Some` overrides the global value for one game, `None` inherits it.
-///
-/// Deliberately *not* every field. The experimental and diagnostics toggles are device-wide
-/// and stay global-only, as does `video_backend` — it is a process-global
-/// (`core::caps::set_backend`, which both `session::connect`'s clamp and the caps-derived row
-/// locks read), so a per-game value would need an apply/restore around every launch.
-///
-/// `Copy + Hash + Eq` because it rides the render cache keys next to `Settings`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SettingsOverride {
+/// The one table every per-game override derives from — the struct, [`OverrideField`] and all
+/// the merge/capture/clear logic are generated from it, so a new overridable setting is one
+/// line here plus one row mapping in `app::menu::row_fields`.
+macro_rules! settings_override {
+    ($(
+        $(#[$attr:meta])*
+        $field:ident: $ty:ty as $variant:ident,
+        |$get:ident| $read:expr,
+        |$set:ident, $val:ident| $write:expr;
+    )*) => {
+        /// A sparse [`Settings`] diff: `Some` overrides the global value for one game, `None`
+        /// inherits it.
+        ///
+        /// A field starts overriding when the user picks a value the global doesn't have, and
+        /// stops two ways, both done *on this screen*: picking the global's own value back
+        /// ([`SettingsOverride::capture`] stores nothing) or clearing the row
+        /// ([`SettingsOverride::clear`]). The global later drifting onto the value does
+        /// **not** clear it — "pinned to 60 Hz" must survive the global moving away again.
+        ///
+        /// Deliberately *not* every field. Experimental and diagnostics toggles are
+        /// device-wide, and `video_backend` is a process-global (`core::caps::set_backend`,
+        /// read by `session::connect`'s clamp and the row locks), so a per-game value would
+        /// need an apply/restore around every launch.
+        ///
+        /// `Copy + Hash + Eq` because it rides the render cache keys next to `Settings`.
+        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(default)]
+        pub struct SettingsOverride {
+            $(
+                $(#[$attr])*
+                #[serde(skip_serializing_if = "Option::is_none")]
+                pub $field: Option<$ty>,
+            )*
+        }
+
+        /// One overridable field, as a value — what `app::menu` keys its row mapping by, so
+        /// "which rows carry a mark" and "what an edited row records" read the same table.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum OverrideField {
+            $($variant,)*
+        }
+
+        impl SettingsOverride {
+            /// Whether this field overrides the global — what puts the mark on its row.
+            pub fn is_set(&self, field: OverrideField) -> bool {
+                match field {
+                    $(OverrideField::$variant => self.$field.is_some(),)*
+                }
+            }
+
+            /// Records `field` from `edited` unless that is what `global` says right now, in
+            /// which case it goes back to inheriting (see [`SettingsOverride`]).
+            ///
+            /// Only the named field: editing Bitrate must neither pin Resolution to whatever
+            /// the global happened to be, nor clear an override the global has drifted onto.
+            pub fn capture(&mut self, field: OverrideField, edited: &Settings, global: &Settings) {
+                match field {
+                    $(OverrideField::$variant => {
+                        let value = { let $get = edited; $read };
+                        let inherited = { let $get = global; $read };
+                        self.$field = (value != inherited).then_some(value);
+                    })*
+                }
+            }
+
+            /// Drops `field` back to inheriting the global, for a value that genuinely
+            /// differs — the other way an override ends (see [`SettingsOverride`]).
+            pub fn clear(&mut self, field: OverrideField) {
+                match field {
+                    $(OverrideField::$variant => self.$field = None,)*
+                }
+            }
+
+            /// `base` with every set field applied. The result still needs
+            /// [`Settings::clamp_to_caps`] before it reaches the wire, exactly like a
+            /// global value.
+            #[must_use]
+            pub fn merge_into(&self, mut base: Settings) -> Settings {
+                $(
+                    if let Some($val) = self.$field {
+                        let $set = &mut base;
+                        $write;
+                    }
+                )*
+                base
+            }
+        }
+    };
+}
+
+settings_override! {
     /// Width and height move together — they are one Resolution row.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mode: Option<(u32, u32)>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refresh_hz: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bitrate_kbps: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hdr_enabled: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub codec: Option<CodecPref>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audio_channels: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gamepad_type: Option<GamepadType>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor_capture: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor_gestures: Option<bool>,
+    mode: (u32, u32) as Mode,
+        |s| (s.width, s.height),
+        |s, v| { s.width = v.0; s.height = v.1; };
+    refresh_hz: u32 as RefreshHz, |s| s.refresh_hz, |s, v| s.refresh_hz = v;
+    bitrate_kbps: u32 as BitrateKbps, |s| s.bitrate_kbps, |s, v| s.bitrate_kbps = v;
+    hdr_enabled: bool as HdrEnabled, |s| s.hdr_enabled, |s, v| s.hdr_enabled = v;
+    codec: CodecPref as Codec, |s| s.codec, |s, v| s.codec = v;
+    audio_channels: u8 as AudioChannels, |s| s.audio_channels, |s, v| s.audio_channels = v;
+    gamepad_type: GamepadType as GamepadKind, |s| s.gamepad_type, |s, v| s.gamepad_type = v;
+    cursor_capture: bool as CursorCapture, |s| s.cursor_capture, |s, v| s.cursor_capture = v;
+    cursor_gestures: bool as CursorGestures, |s| s.cursor_gestures, |s, v| s.cursor_gestures = v;
 }
 
 impl SettingsOverride {
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
-    }
-
-    /// `base` with every set field applied. The result still needs
-    /// [`Settings::clamp_to_caps`] before it reaches the wire, exactly like a global value.
-    /// Clears every field that already equals `global` — a value the user has just set back
-    /// to what the global screen says is not an override, and must not linger in the
-    /// document. Run after every edit, so the record stays minimal (and disappears
-    /// entirely, via [`KnownHost::edit_overrides`], once nothing differs).
-    pub fn drop_matching(&mut self, global: &Settings) {
-        // Field by field against the global, not against the merge: a field is an override
-        // exactly when it is set *and* differs, and an unset one has nothing to drop.
-        macro_rules! drop_if_global {
-            ($($field:ident => $global:expr),* $(,)?) => {
-                $(if self.$field == Some($global) {
-                    self.$field = None;
-                })*
-            };
-        }
-        drop_if_global! {
-            mode => (global.width, global.height),
-            refresh_hz => global.refresh_hz,
-            bitrate_kbps => global.bitrate_kbps,
-            hdr_enabled => global.hdr_enabled,
-            codec => global.codec,
-            audio_channels => global.audio_channels,
-            gamepad_type => global.gamepad_type,
-            cursor_capture => global.cursor_capture,
-            cursor_gestures => global.cursor_gestures,
-        }
-    }
-
-    #[must_use]
-    pub fn merge_into(&self, mut base: Settings) -> Settings {
-        if let Some((w, h)) = self.mode {
-            base.width = w;
-            base.height = h;
-        }
-        if let Some(v) = self.refresh_hz {
-            base.refresh_hz = v;
-        }
-        if let Some(v) = self.bitrate_kbps {
-            base.bitrate_kbps = v;
-        }
-        if let Some(v) = self.hdr_enabled {
-            base.hdr_enabled = v;
-        }
-        if let Some(v) = self.codec {
-            base.codec = v;
-        }
-        if let Some(v) = self.audio_channels {
-            base.audio_channels = v;
-        }
-        if let Some(v) = self.gamepad_type {
-            base.gamepad_type = v;
-        }
-        if let Some(v) = self.cursor_capture {
-            base.cursor_capture = v;
-        }
-        if let Some(v) = self.cursor_gestures {
-            base.cursor_gestures = v;
-        }
-        base
     }
 }
 
@@ -256,9 +267,10 @@ pub fn pinned_only(id: &str) -> BTreeMap<String, GamePrefs> {
 /// for the games that are the common case and the desktop is the one card where the host's own
 /// pointer should stay visible. Doubles as the shipped demo of per-game overrides.
 ///
-/// `None` when the global value is already off — an override equal to the global reads as noise
-/// (matching [`SettingsOverride::drop_matching`]). The one place this default lives: new hosts
-/// get it from [`new_host_games`], existing ones from `store`'s version bootstrap.
+/// `None` when the global is already off: a seeded default has no business pinning a value the
+/// user would then have to find and clear (a *user-set* override equal to the global is kept —
+/// see [`SettingsOverride`]). The one place this default lives: new hosts get it from
+/// [`new_host_games`], existing ones from `store`'s version bootstrap.
 pub fn desktop_capture_override(global: &Settings) -> Option<bool> {
     global.cursor_capture.then_some(false)
 }
@@ -499,31 +511,59 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Normalise to what the active backend can present (`core::caps`). Called on load and
-    /// whenever the backend row changes, so the document never holds a *set* value whose row
-    /// the UI has just hidden. `session::connect` clamps the wire regardless.
+    /// Normalise to what the active backend can present (`core::caps`), plus the one
+    /// cross-field rule: HDR needs HEVC, so an explicit H.264 pick turns it off. Called on
+    /// load and on every backend change, so the document never holds a *set* value whose row
+    /// the UI has just hidden or locked. `session::connect` clamps the wire regardless.
+    ///
+    /// Neither this nor [`Settings::presentable`] ever rewrites an override: one a current
+    /// global pick shadows stays in the document, unused, and applies again once it doesn't.
     pub fn clamp_to_caps(&mut self) {
+        self.clamp(true);
+    }
+
+    /// [`Settings::clamp_to_caps`] as a value, and silent — the per-game screen re-derives its
+    /// merged copy on every keystroke, which is no place to log the same clamp repeatedly.
+    #[must_use]
+    pub fn presentable(mut self) -> Self {
+        self.clamp(false);
+        self
+    }
+
+    fn clamp(&mut self, log: bool) {
+        // Only ever narrows, so `log` gating a line can't gate a mutation with it.
+        macro_rules! note {
+            ($($arg:tt)*) => { if log { tracing::info!($($arg)*); } };
+        }
         let backend = crate::core::caps::effective_backend(self.video_backend);
         if backend != self.video_backend {
-            tracing::info!("settings: SMP isn't offerable on this TV — using NDL");
+            note!("settings: SMP isn't offerable on this TV — using NDL");
             self.video_backend = backend;
         }
         let caps = crate::core::caps::video_caps();
+        // Before the HDR rules below: which codec is in force is what decides them.
         let codecs = caps.codec_prefs();
         if !codecs.contains(&self.codec) {
-            tracing::info!(
+            note!(
                 "settings: {:?} isn't offerable on this video backend — using {:?}",
                 self.codec,
                 codecs[0],
             );
             self.codec = codecs[0];
         }
-        if !caps.hdr && self.hdr_enabled {
-            tracing::info!("settings: HDR isn't presentable on this video backend — turning it off");
+        if self.hdr_enabled && !caps.hdr {
+            note!("settings: HDR isn't presentable on this video backend — turning it off");
+            self.hdr_enabled = false;
+        }
+        if self.hdr_enabled && self.codec == CodecPref::H264 {
+            // Mirrors `session::connect`'s own gate and `menu::RowLock::HdrNeedsHevc`: a
+            // session pinned to H.264 never resolves HDR. Reachable through the merge, where
+            // a game's HDR override can meet a global codec pick made after it.
+            note!("settings: HDR needs HEVC — an explicit H.264 pick turns it off");
             self.hdr_enabled = false;
         }
         if self.audio_channels > caps.max_channels {
-            tracing::info!(
+            note!(
                 "settings: {} audio channels exceeds this backend's {} — clamping",
                 self.audio_channels,
                 caps.max_channels,
@@ -609,23 +649,70 @@ mod tests {
     }
 
     #[test]
-    fn a_value_set_back_to_the_global_stops_being_an_override() {
+    fn picking_the_globals_own_value_stores_no_override() {
         let global = Settings::default();
-        let mut over = SettingsOverride {
-            refresh_hz: Some(120),
-            bitrate_kbps: Some(50_000),
-            ..SettingsOverride::default()
-        };
-        over.drop_matching(&global);
-        assert_eq!(over.refresh_hz, Some(120), "still differs");
+        let mut over = SettingsOverride::default();
+        over.capture(
+            OverrideField::RefreshHz,
+            &Settings {
+                refresh_hz: 120,
+                ..global
+            },
+            &global,
+        );
+        assert_eq!(
+            over.refresh_hz,
+            Some(120),
+            "differs from the global, so it is an override"
+        );
+        // Picking the global's own value back is the "use global" gesture.
+        over.capture(OverrideField::RefreshHz, &global, &global);
+        assert!(over.is_empty(), "nothing differs, so nothing is stored");
+    }
+
+    #[test]
+    fn an_override_survives_the_global_moving_onto_it_and_past_it() {
+        let mut global = Settings::default();
+        let mut over = SettingsOverride::default();
+        over.capture(
+            OverrideField::RefreshHz,
+            &Settings {
+                refresh_hz: 120,
+                ..global
+            },
+            &global,
+        );
+        // The global drifts onto the same value — a coincidence, not a gesture.
+        global.refresh_hz = 120;
+        assert_eq!(
+            over.refresh_hz,
+            Some(120),
+            "an override the user never touched is left alone"
+        );
+        global.refresh_hz = 30;
+        assert_eq!(over.merge_into(global).refresh_hz, 120);
+        // Only an explicit clear inherits again.
+        over.clear(OverrideField::RefreshHz);
+        assert!(over.is_empty());
+        assert_eq!(over.merge_into(global).refresh_hz, 30);
+    }
+
+    #[test]
+    fn editing_one_row_leaves_an_unrelated_override_alone() {
+        let global = Settings::default();
+        let mut over = SettingsOverride::default();
+        over.capture(
+            OverrideField::BitrateKbps,
+            &Settings {
+                bitrate_kbps: 50_000,
+                ..global
+            },
+            &global,
+        );
+        // A second row set to the global's own value must not drag the first one out with it.
+        over.capture(OverrideField::RefreshHz, &global, &global);
         assert_eq!(over.bitrate_kbps, Some(50_000));
-        // The user picks the global's own value back.
-        over.refresh_hz = Some(global.refresh_hz);
-        over.drop_matching(&global);
-        assert_eq!(over.refresh_hz, None, "matching the global is not an override");
-        over.bitrate_kbps = Some(global.bitrate_kbps);
-        over.drop_matching(&global);
-        assert!(over.is_empty(), "nothing differs, so nothing is persisted");
+        assert_eq!(over.refresh_hz, None);
     }
 
     #[test]
@@ -633,7 +720,7 @@ mod tests {
         let mut h = host();
         h.edit_overrides("steam:1", |o| o.refresh_hz = Some(120));
         assert!(h.games.contains_key("steam:1"));
-        h.edit_overrides("steam:1", |o| o.refresh_hz = None);
+        h.edit_overrides("steam:1", |o| o.clear(OverrideField::RefreshHz));
         assert!(!h.games.contains_key("steam:1"), "an empty record is dropped");
     }
 

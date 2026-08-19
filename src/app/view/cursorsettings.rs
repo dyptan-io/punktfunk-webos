@@ -15,8 +15,9 @@ pub const SUBTITLE: &str = "How the pointer behaves in a stream.";
 /// Order must match `menu::CURSOR_ROW_*`.
 ///
 /// `over` is the per-game override this screen is editing (empty on the global one) — a row
-/// it sets wears the same dot the per-game row list gives its own rows.
-pub fn rows(settings: &Settings, over: &SettingsOverride) -> Vec<FocusRow> {
+/// it sets wears the same dot the per-game row list gives its own rows. `focused` is `None` for
+/// the shell, which draws every row unfocused.
+pub fn rows(settings: &Settings, over: &SettingsOverride, focused: Option<usize>) -> Vec<FocusRow> {
     let mut rows = vec![
         FocusRow::toggle(crate::app::view::icons::ICON_MOUSE, "Capture", settings.cursor_capture).with_subtext(
             ui::widgets::RowSubtext::hint(if settings.cursor_capture {
@@ -35,7 +36,12 @@ pub fn rows(settings: &Settings, over: &SettingsOverride) -> Vec<FocusRow> {
         )),
     ];
     for (cursor_row, row) in rows.iter_mut().enumerate() {
-        row.mark = menu::override_mark(over, menu::cursor_logical_row(cursor_row));
+        menu::decorate_override(
+            row,
+            over,
+            menu::cursor_logical_row(cursor_row),
+            focused == Some(cursor_row),
+        );
     }
     rows
 }
@@ -60,12 +66,20 @@ impl ModalScreen for Modal<'_> {
             card,
             fonts,
             SUBTITLE,
-            rows(self.settings, self.over).len(),
+            menu::CURSOR_ROW_COUNT,
         ))
     }
 
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
         let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
-        c.list_modal_screen(card, TITLE, SUBTITLE, &rows(self.settings, self.over), hover_close)
+        // Always unfocused: the focused row is composited from its own tile, and
+        // `ModalShellKey` carries no focus to invalidate on.
+        c.list_modal_screen(
+            card,
+            TITLE,
+            SUBTITLE,
+            &rows(self.settings, self.over, None),
+            hover_close,
+        )
     }
 }

@@ -4,8 +4,11 @@
 //! *widgets*, not this app's menus.
 use crate::core::caps::video_caps;
 use crate::core::event::MenuEvent;
-use crate::services::store::{CodecPref, GamepadType, LogLevelOverride, Settings, SettingsOverride, VideoBackend};
+use crate::services::store::{
+    CodecPref, GamepadType, LogLevelOverride, OverrideField, Settings, SettingsOverride, VideoBackend,
+};
 use crate::ui::focus::Dir;
+use crate::ui::widgets::{FocusRow, RowSubtext};
 
 /// This app's input vocabulary mapped onto `ui`'s spatial one. `ui` navigates by
 /// direction; deciding that "Up" means a d-pad press is the app's business, and this is
@@ -262,58 +265,69 @@ pub fn toggle_value(settings: &Settings, row: usize) -> Option<bool> {
     }
 }
 
-/// Whether `row` currently overrides the global value — what decides that the row gets a
-/// "use global" delete affordance.
-pub fn override_is_set(over: &SettingsOverride, row: usize) -> bool {
+/// The override fields a settings row owns — one table for both the mark and the capture, so
+/// a row can't show a dot for a field it doesn't record. The Cursor *link* row owns both
+/// toggles behind it, or a game overriding only a cursor one shows a dot on its card and
+/// nothing on the list saying where it came from.
+fn row_fields(row: usize) -> &'static [OverrideField] {
     match row {
-        ROW_RESOLUTION => over.mode.is_some(),
-        ROW_FRAMERATE => over.refresh_hz.is_some(),
-        ROW_BITRATE => over.bitrate_kbps.is_some(),
-        ROW_HDR => over.hdr_enabled.is_some(),
-        ROW_CODEC => over.codec.is_some(),
-        ROW_AUDIO => over.audio_channels.is_some(),
-        ROW_GAMEPAD => over.gamepad_type.is_some(),
-        ROW_CURSOR_CAPTURE => over.cursor_capture.is_some(),
-        ROW_CURSOR_GESTURES => over.cursor_gestures.is_some(),
-        // The link row stands in for the two toggles behind it — without this a game whose
-        // only override is a cursor one shows a dot on its card and nothing on the list that
-        // says where it came from.
-        ROW_CURSOR => over.cursor_capture.is_some() || over.cursor_gestures.is_some(),
-        _ => false,
+        ROW_RESOLUTION => &[OverrideField::Mode],
+        ROW_FRAMERATE => &[OverrideField::RefreshHz],
+        ROW_BITRATE => &[OverrideField::BitrateKbps],
+        ROW_HDR => &[OverrideField::HdrEnabled],
+        ROW_CODEC => &[OverrideField::Codec],
+        ROW_AUDIO => &[OverrideField::AudioChannels],
+        ROW_GAMEPAD => &[OverrideField::GamepadKind],
+        ROW_CURSOR_CAPTURE => &[OverrideField::CursorCapture],
+        ROW_CURSOR_GESTURES => &[OverrideField::CursorGestures],
+        ROW_CURSOR => &[OverrideField::CursorCapture, OverrideField::CursorGestures],
+        _ => &[],
     }
 }
 
-/// The row's override mark, for [`ui::widgets::FocusRow::mark`] — amber when this row
-/// differs from the global, nothing when it doesn't. The colour lives here rather than in
-/// `ui`, which knows only that some rows carry a mark.
-pub fn override_mark(over: &SettingsOverride, row: usize) -> Option<crate::ui::render::Color> {
-    override_is_set(over, row).then(|| crate::ui::style::theme().warning)
+/// Whether `row` currently overrides the global value — what decides that the row gets a
+/// "use global" delete affordance.
+pub fn override_is_set(over: &SettingsOverride, row: usize) -> bool {
+    row_fields(row).iter().any(|&f| over.is_set(f))
 }
 
-/// Records `row`'s value from `edited` — a scratch `Settings` one of the mutators above has
-/// just been run against. Only the edited row is captured, so touching Bitrate never silently
-/// pins Resolution to whatever the global happened to be.
+/// Marks `row` as overriding the global and, on the focused row, names the gesture that
+/// clears it. Every settings-shaped screen goes through here, so the mark and the affordance
+/// explaining it can't drift apart or be forgotten by a new sub-screen.
 ///
-/// `ROW_CODEC` is the one row that writes two fields: an H.264 pick forces HDR off (see
-/// [`apply_dropdown_choice`]), and that consequence has to be recorded or the merge would put
-/// the global's HDR back on top of a codec that can't carry it.
-pub fn override_capture(over: &mut SettingsOverride, row: usize, edited: &Settings) {
-    match row {
-        ROW_RESOLUTION => over.mode = Some((edited.width, edited.height)),
-        ROW_FRAMERATE => over.refresh_hz = Some(edited.refresh_hz),
-        ROW_BITRATE => over.bitrate_kbps = Some(edited.bitrate_kbps),
-        ROW_HDR => over.hdr_enabled = Some(edited.hdr_enabled),
-        ROW_CODEC => {
-            over.codec = Some(edited.codec);
-            if edited.codec == CodecPref::H264 {
-                over.hdr_enabled = Some(false);
-            }
-        }
-        ROW_AUDIO => over.audio_channels = Some(edited.audio_channels),
-        ROW_GAMEPAD => over.gamepad_type = Some(edited.gamepad_type),
-        ROW_CURSOR_CAPTURE => over.cursor_capture = Some(edited.cursor_capture),
-        ROW_CURSOR_GESTURES => over.cursor_gestures = Some(edited.cursor_gestures),
-        _ => {}
+/// Focused only because subtext renders nowhere else; a caption the row already carries wins,
+/// since a lock explains why the row can't be used at all. The colour lives here rather than
+/// in `ui`, which knows only that some rows carry a mark.
+pub fn decorate_override(row: &mut FocusRow, over: &SettingsOverride, logical: usize, focused: bool) {
+    row.mark = override_is_set(over, logical).then(|| crate::ui::style::theme().warning);
+    if row.mark.is_some() && focused && row.subtext.is_none() {
+        row.subtext = Some(RowSubtext::hint("Delete to use the global setting"));
+    }
+}
+
+/// Drops `row` back to inheriting the global — every field it owns, so clearing the Cursor
+/// link row clears both toggles behind it.
+pub fn override_clear(over: &mut SettingsOverride, row: usize) {
+    for &field in row_fields(row) {
+        over.clear(field);
+    }
+}
+
+/// Records `row`'s value from `edited` against the `global` the game inherits from — a pick
+/// landing on the global's own value stores nothing (see [`SettingsOverride::capture`]).
+///
+/// Strictly the fields the row owns: an H.264 pick's effect on HDR is
+/// `Settings::presentable`'s job, not a second override written behind the user's back and
+/// stranded the moment they clear the Codec row.
+pub fn override_capture(over: &mut SettingsOverride, row: usize, edited: &Settings, global: &Settings) {
+    // An adjustable row owning no field would have its edit silently reverted by
+    // `edit_game_override`'s re-merge. Unreachable today (link rows don't adjust).
+    debug_assert!(
+        !row_fields(row).is_empty(),
+        "settings row {row} is adjustable but overrides nothing"
+    );
+    for &field in row_fields(row) {
+        over.capture(field, edited, global);
     }
 }
 

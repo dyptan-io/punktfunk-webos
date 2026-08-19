@@ -10,12 +10,17 @@ use crate::services::store::{Settings, SettingsOverride};
 /// What the per-game settings screen is editing. Set alongside `Screen::Settings(Game)`
 /// and cleared on the way out, so `Some` and the screen being up mean the same thing.
 pub(crate) struct GameSettingsState {
+    /// The write-back key, pinned at open time rather than re-read from `selected_host`: the
+    /// selection can move under an open modal (a wake completing), and the edits belong to
+    /// the host they were made on.
+    pub host: (String, u16),
     /// The `KnownHost::games` key: a `GameEntry::id`, or `store::DESKTOP_PIN_ID`.
     pub pin_id: String,
     /// The game's name, shown dimmer after "Settings" in the title.
     pub title: String,
-    /// The global settings with `over` applied — what every row renders from and what the
-    /// shared `menu::*` mutators edit. Only the edited row is copied back into `over`.
+    /// The global settings with `over` applied, then `Settings::presentable` — what every row
+    /// renders from and what the shared `menu::*` mutators edit, so a row shows the value the
+    /// stream will actually use. The clamp never reaches `over`.
     pub merged: Settings,
     pub over: SettingsOverride,
 }
@@ -23,14 +28,17 @@ pub(crate) struct GameSettingsState {
 impl App {
     /// Opens the per-game screen for `pin_id`. Only the card submenu calls this.
     pub(crate) fn open_game_settings(&mut self, pin_id: &str, title: &str) {
+        let Some(host) = self.selected_host.clone() else {
+            return;
+        };
         let over = self
-            .selected_known_host()
-            .map(|h| h.overrides(pin_id))
-            .unwrap_or_default();
+            .known_host(&host.0, host.1)
+            .map_or_else(SettingsOverride::default, |h| h.overrides(pin_id));
         self.game_settings = Some(GameSettingsState {
+            host,
             pin_id: pin_id.to_string(),
             title: title.to_string(),
-            merged: over.merge_into(self.settings),
+            merged: over.merge_into(self.settings).presentable(),
             over,
         });
         self.settings_focused = 0;
@@ -45,18 +53,39 @@ impl App {
     /// row whose value the merge would clamp (HDR under an H.264 pick) shows what will
     /// actually be used.
     ///
-    /// A value set back to what the global screen says stops being an override here rather
-    /// than needing a separate "use global" gesture: `drop_matching` clears it, the row's dot
-    /// goes out, and once nothing differs the game's whole record leaves the document (see
-    /// `KnownHost::edit_overrides`). There is deliberately no other way to clear one row.
+    /// A pick that lands on the global's own current value stores nothing; a row that
+    /// genuinely differs is cleared by `clear_game_override` instead. Both rules, and why
+    /// only *this* row is judged against the global, are on `store::SettingsOverride`.
     pub(crate) fn capture_game_override(&mut self, row: usize) {
         let global = self.settings;
-        let Some(gs) = self.game_settings.as_mut() else {
+        self.edit_game_override(|over, merged| menu::override_capture(over, row, merged, &global));
+    }
+
+    /// Drops the focused row back to inheriting the global — the Secondary key, and the only
+    /// way a single override goes away (the Reset row drops them all). A no-op outside the
+    /// per-game scope and on a row that overrides nothing, so the key is safe to lean on.
+    ///
+    /// Resolves the row here rather than at each binding: separate index spaces are the only
+    /// thing the flow's two screens would differ in.
+    pub(crate) fn clear_focused_override(&mut self) {
+        let row = match self.screen {
+            Screen::CursorSettings(_) => menu::cursor_logical_row(self.cursor_settings_focused),
+            _ => menu::settings_logical_row(self.settings_scope(), self.settings_focused),
+        };
+        self.edit_game_override(|over, _| menu::override_clear(over, row));
+    }
+
+    /// Runs one edit against the open game's override, handing it the scratch `merged` the row
+    /// mutators just ran against, then re-derives `merged`. The one place the two halves of
+    /// the scratch state are kept in step, and gated by `editing_game_mut`.
+    fn edit_game_override(&mut self, edit: impl FnOnce(&mut SettingsOverride, &Settings)) {
+        let global = self.settings;
+        let Some(gs) = self.editing_game_mut() else {
             return;
         };
-        menu::override_capture(&mut gs.over, row, &gs.merged);
-        gs.over.drop_matching(&global);
-        gs.merged = gs.over.merge_into(global);
+        let merged = gs.merged;
+        edit(&mut gs.over, &merged);
+        gs.merged = gs.over.merge_into(global).presentable();
     }
 
     /// Writes the edited override back onto the host record and persists. Called on the way
@@ -65,7 +94,7 @@ impl App {
         let Some(gs) = self.game_settings.take() else {
             return;
         };
-        let Some(known) = self.selected_known_host_mut() else {
+        let Some(known) = self.known_host_mut(&gs.host.0, gs.host.1) else {
             return;
         };
         known.edit_overrides(&gs.pin_id, |over| *over = gs.over);

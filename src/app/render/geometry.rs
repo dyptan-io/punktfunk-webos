@@ -39,7 +39,7 @@ impl App {
     ) -> Option<(usize, usize, Rect, Rect)> {
         match screen {
             Screen::Settings(_) => {
-                let set = self.row_set();
+                let set = self.settings_scope();
                 let (card, content) = view::settings::layout(set, screen_w, screen_h);
                 let visible = view::settings::visible_rows(set, screen_h);
                 Some((menu::settings_row_count(set), visible, card, content))
@@ -311,7 +311,7 @@ impl App {
             | Screen::WakeSettings
             | Screen::Diagnostics
             | Screen::Experimental
-            | Screen::CursorSettings => self.list_modal_focus_rect(screen_w, screen_h, fonts),
+            | Screen::CursorSettings(_) => self.list_modal_focus_rect(screen_w, screen_h, fonts),
             Screen::Home | Screen::AddHost | Screen::EditHost | Screen::About | Screen::PinLimit => None,
         }
     }
@@ -325,7 +325,7 @@ impl App {
             Screen::WakeSettings => self.wake_settings_focused,
             Screen::Diagnostics => self.diagnostics_focused,
             Screen::Experimental => self.experimental_focused,
-            Screen::CursorSettings => self.cursor_settings_focused,
+            Screen::CursorSettings(_) => self.cursor_settings_focused,
             _ => return None,
         })
     }
@@ -338,7 +338,7 @@ impl App {
             Screen::WakeSettings => &mut self.wake_settings_focused,
             Screen::Diagnostics => &mut self.diagnostics_focused,
             Screen::Experimental => &mut self.experimental_focused,
-            Screen::CursorSettings => &mut self.cursor_settings_focused,
+            Screen::CursorSettings(_) => &mut self.cursor_settings_focused,
             _ => return None,
         })
     }
@@ -355,7 +355,7 @@ impl App {
     pub(crate) fn dropdown_options_len(&self, row: usize) -> usize {
         match self.screen {
             Screen::Diagnostics => menu::LOG_LEVEL_OPTIONS.len(),
-            _ => menu::dropdown_option_count(menu::settings_logical_row(self.row_set(), row)),
+            _ => menu::dropdown_option_count(menu::settings_logical_row(self.settings_scope(), row)),
         }
     }
 
@@ -373,7 +373,7 @@ impl App {
             // one adds, and it comes from the scratch copy that scope implies.
             Screen::Settings(set) => f(&view::settings::Modal {
                 set,
-                game: self.game_settings.as_ref().map(|gs| gs.title.as_str()),
+                game: self.editing_game().map(|gs| gs.title.as_str()),
             }),
             Screen::Pairing => f(&view::pairing::Modal {
                 pin_digits: &self.pin_digits,
@@ -419,7 +419,7 @@ impl App {
                 settings: &self.settings,
                 rooted: self.rooted,
             }),
-            Screen::CursorSettings => f(&view::cursorsettings::Modal {
+            Screen::CursorSettings(_) => f(&view::cursorsettings::Modal {
                 settings: self.settings_target(),
                 over: &self.editing_override(),
             }),

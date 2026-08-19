@@ -38,7 +38,7 @@ impl App {
             Screen::PinLimit => self.handle_pin_limit_event(ev),
             Screen::Diagnostics => self.handle_diagnostics_event(ev),
             Screen::Experimental => self.handle_experimental_event(ev),
-            Screen::CursorSettings => self.handle_cursor_settings_event(ev),
+            Screen::CursorSettings(_) => self.handle_cursor_settings_event(ev),
             Screen::SendLogs => self.handle_send_logs_event(ev),
         }
         None
@@ -99,7 +99,7 @@ impl App {
             | Screen::PinLimit
             | Screen::Diagnostics
             | Screen::Experimental
-            | Screen::CursorSettings => false,
+            | Screen::CursorSettings(_) => false,
         }
     }
 

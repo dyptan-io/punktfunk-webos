@@ -31,7 +31,9 @@ pub enum Screen {
     /// Experimental/unstable toggles (see `app/experimental.rs`).
     Experimental,
     /// Pointer/cursor behaviour, grouped off Settings (see `app/cursorsettings.rs`).
-    CursorSettings,
+    /// Carries the scope of the settings screen that opened it, so the sub-screen edits the
+    /// same document its parent does and Back knows where to return.
+    CursorSettings(SettingsScope),
     /// "Send logs to developer" confirmation (see `app/sendlogs.rs`).
     SendLogs,
 }

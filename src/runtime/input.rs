@@ -598,7 +598,7 @@ pub(super) fn handle_ui_event(
             | Screen::WakeSettings
             | Screen::Diagnostics
             | Screen::Experimental
-            | Screen::CursorSettings
+            | Screen::CursorSettings(_)
                 if wheel_y != 0 =>
             {
                 let menu_ev = if wheel_y > 0 { MenuEvent::Up } else { MenuEvent::Down };

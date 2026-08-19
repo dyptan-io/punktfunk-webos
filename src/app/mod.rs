@@ -641,16 +641,29 @@ impl App {
             .map(HostEntry::name)
     }
 
-    /// Which row list the settings screen that is up shows — its own scope, and off it the
-    /// scope of the flow that is running. The Cursor sub-screen is reachable from either, so
-    /// there it comes from the scratch copy: `game_settings` is `Some` for exactly the
-    /// per-game flow, for as long as it lasts (`persist_game_settings` takes it on the way
-    /// out). `Global` is the answer everywhere else, where nothing reads it.
-    pub(crate) fn row_set(&self) -> menu::SettingsScope {
+    /// Which document the settings-shaped screen that is up is editing. Read off the screen
+    /// itself — it and the Cursor sub-screen both carry their scope — so a scratch copy that
+    /// outlives its flow can't redirect the global screen's edits into it.
+    pub(crate) fn settings_scope(&self) -> menu::SettingsScope {
         match self.screen {
-            Screen::Settings(set) => set,
-            _ if self.game_settings.is_some() => menu::SettingsScope::Game,
+            Screen::Settings(scope) | Screen::CursorSettings(scope) => scope,
             _ => menu::SettingsScope::Global,
+        }
+    }
+
+    /// The per-game scratch state, but only while a per-game screen is actually up — the one
+    /// gate every accessor below shares, in the two forms borrowck needs.
+    pub(crate) fn editing_game(&self) -> Option<&state::gamesettings::GameSettingsState> {
+        match self.settings_scope() {
+            menu::SettingsScope::Game => self.game_settings.as_ref(),
+            menu::SettingsScope::Global => None,
+        }
+    }
+
+    pub(crate) fn editing_game_mut(&mut self) -> Option<&mut state::gamesettings::GameSettingsState> {
+        match self.settings_scope() {
+            menu::SettingsScope::Game => self.game_settings.as_mut(),
+            menu::SettingsScope::Global => None,
         }
     }
 
@@ -658,31 +671,33 @@ impl App {
     /// per-game scratch copy. One accessor so every mutator, lock check and dropdown lookup
     /// in `menu` sees the same value the rows were built from.
     pub(crate) fn settings_target(&self) -> &Settings {
-        match &self.game_settings {
+        match self.editing_game() {
             Some(gs) => &gs.merged,
             None => &self.settings,
         }
     }
 
+    /// Spells `editing_game_mut`'s gate out rather than calling it: the fallback arm needs
+    /// `self` back, which borrowck won't grant while a returned `Option<&mut _>` is in scope.
     pub(crate) fn settings_target_mut(&mut self) -> &mut Settings {
+        let scope = self.settings_scope();
         match &mut self.game_settings {
-            Some(gs) => &mut gs.merged,
-            None => &mut self.settings,
+            Some(gs) if scope == menu::SettingsScope::Game => &mut gs.merged,
+            _ => &mut self.settings,
         }
     }
 
     /// This game's overrides while the per-game screen is up — what decides which rows wear
     /// a "use global" button. Empty everywhere else, so the global screen shows none.
     pub(crate) fn editing_override(&self) -> store::SettingsOverride {
-        self.game_settings
-            .as_ref()
+        self.editing_game()
             .map_or_else(store::SettingsOverride::default, |gs| gs.over)
     }
 
     /// The settings rows, with the platform/hardware facts the view can't reach folded in,
     /// plus the override dot on every row this game differs from the global on.
     pub(crate) fn settings_rows(&self) -> Vec<ui::widgets::FocusRow> {
-        let set = self.row_set();
+        let set = self.settings_scope();
         let settings = self.settings_target();
         let effective = if settings.gamepad_type == store::GamepadType::Auto {
             self.detected_gamepad_type.unwrap_or_default()
@@ -699,15 +714,20 @@ impl App {
             webos_major,
         );
         let over = self.editing_override();
-        for (row, logical) in rows.iter_mut().zip(menu::settings_visible_logical_rows(set)) {
-            row.mark = menu::override_mark(&over, logical);
+        let focused = self.settings_focused;
+        for (display, (row, logical)) in rows
+            .iter_mut()
+            .zip(menu::settings_visible_logical_rows(set))
+            .enumerate()
+        {
+            menu::decorate_override(row, &over, logical, display == focused);
         }
         rows
     }
 
     /// Scrolls `settings_focused` into view.
     pub(crate) fn scroll_settings_into_view(&mut self, screen_h: u32) {
-        let set = self.row_set();
+        let set = self.settings_scope();
         let visible = view::settings::visible_rows(set, screen_h);
         self.scroll
             .scroll_into_view(self.settings_focused, menu::settings_row_count(set), visible);
@@ -867,7 +887,14 @@ impl App {
     pub(crate) fn wake_succeeded(&mut self, host: String, port: u16, mgmt_port: Option<u16>, source: &str) {
         tracing::info!("wake succeeded: {host}:{port} back ({source})");
         let name = self.wake.take().map(|w| w.name);
-        self.screen = Screen::Home;
+        // A wake ends on its own timing, not a keypress, so it dismisses its own modal and
+        // nothing else. The selection still moves — that is what the wait was for. Safe under
+        // an open modal: the one that writes per-host state off the selection pins its target
+        // at open time (`GameSettingsState::host`), and the rest key off `host_menu_index`,
+        // which nothing in the background reorders (`drain_discovery` only appends).
+        if matches!(self.screen, Screen::Wake) {
+            self.screen = Screen::Home;
+        }
         self.select_host(host, port, mgmt_port);
         // Overrides `select_host`'s plain "Loading library…": after a wait that may
         // have run for minutes with no modal up, the bar's job is to report that the
@@ -1027,9 +1054,13 @@ impl App {
         self.known_host(host, *port)
     }
 
+    pub(crate) fn known_host_mut(&mut self, host: &str, port: u16) -> Option<&mut KnownHost> {
+        self.known_hosts.iter_mut().find(|h| h.host == host && h.port == port)
+    }
+
     pub(crate) fn selected_known_host_mut(&mut self) -> Option<&mut KnownHost> {
         let (host, port) = self.selected_host.clone()?;
-        self.known_hosts.iter_mut().find(|h| h.host == host && h.port == port)
+        self.known_host_mut(&host, port)
     }
 
     /// The title of grid card `idx` (see `grid_card_at`) and its cover art, if

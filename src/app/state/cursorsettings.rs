@@ -8,15 +8,16 @@ use std::time::Instant;
 
 impl App {
     /// Opens the Cursor screen (Settings → `menu::ROW_CURSOR`). Holds the two pointer
-    /// toggles: capture mode and the OK-button gestures.
-    pub(crate) fn open_cursor_settings(&mut self) {
+    /// toggles: capture mode and the OK-button gestures. `scope` is the caller's, carried on
+    /// the screen so the sub-screen keeps editing the same document.
+    pub(crate) fn open_cursor_settings(&mut self, scope: menu::SettingsScope) {
         self.cursor_settings_focused = 0;
-        self.screen = Screen::CursorSettings;
+        self.screen = Screen::CursorSettings(scope);
     }
 
     /// All rows are plain Left/Right/Confirm toggles. Back saves and returns to whichever
     /// settings screen opened it — the per-game one keeps editing its own copy while here
-    /// (see `App::settings_target`), so this handler needs no branch of its own for it.
+    /// (see `App::settings_target`), so only where the save lands differs.
     pub(crate) fn handle_cursor_settings_event(&mut self, ev: MenuEvent) {
         if ui::widgets::list_nav(
             &mut self.cursor_settings_focused,
@@ -42,16 +43,17 @@ impl App {
                     }
                 }
             }
+            // Same clear gesture as the parent list: these rows are on it in every way but
+            // which screen draws them.
+            (_, MenuEvent::Secondary) => self.clear_focused_override(),
             (_, MenuEvent::Back) => {
-                match self.game_settings {
-                    // The per-game copy is saved once, on the way out of its own screen —
-                    // this is a step back into it, not out of the flow.
-                    Some(_) => self.screen = Screen::Settings(menu::SettingsScope::Game),
-                    None => {
-                        self.persist();
-                        self.screen = Screen::Settings(menu::SettingsScope::Global);
-                    }
+                let scope = self.settings_scope();
+                // The per-game copy is saved once, on the way out of its own screen — this
+                // is a step back into it, not out of the flow.
+                if scope == menu::SettingsScope::Global {
+                    self.persist();
                 }
+                self.screen = Screen::Settings(scope);
             }
             _ => {}
         }

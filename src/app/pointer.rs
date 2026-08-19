@@ -154,7 +154,7 @@ impl App {
                 changed
             }
             // Identical row-list geometry; only which focus field they carry differs.
-            Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings => {
+            Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
                 let Some(row) = self.modal_list_row_at(x, y, screen_w, screen_h, fonts) else {
                     return false;
                 };
@@ -234,7 +234,7 @@ impl App {
         if !content.contains_point((x, y)) {
             return None;
         }
-        let total = menu::settings_row_count(self.row_set());
+        let total = menu::settings_row_count(self.settings_scope());
         (0..total).find(|&r| {
             let rect = ui::widgets::focus_row_rect_at_px(content, r, scroll_px);
             // Clipped edge rows aren't hoverable: a focused row composites on its own
@@ -247,7 +247,7 @@ impl App {
     /// geometry `settings_row_at`'s hit test and `settings_row_rect`'s lookup both index
     /// into, so a scrolled list can't put them at odds.
     fn settings_content_scroll(&self, screen_w: u32, screen_h: u32) -> (Rect, i32) {
-        let set = self.row_set();
+        let set = self.settings_scope();
         let (_, content) = view::settings::layout(set, screen_w, screen_h);
         let stride = ui::widgets::focus_row_stride() as i32;
         let total = menu::settings_row_count(set);
@@ -458,7 +458,7 @@ impl App {
                 // arms the drag (see `handle_mouse_motion`) instead of nudging one notch the
                 // way `Confirm` below would — a slider is for landing on a value, not stepping
                 // to it one click at a time.
-                if menu::settings_logical_row(self.row_set(), self.settings_focused) == menu::ROW_BITRATE
+                if menu::settings_logical_row(self.settings_scope(), self.settings_focused) == menu::ROW_BITRATE
                     && menu::row_lock(menu::ROW_BITRATE, self.settings_target(), self.detected_gamepad_type).is_none()
                 {
                     let (row_rect, track) = self.bitrate_row_and_track(screen_w, screen_h);
@@ -494,7 +494,7 @@ impl App {
                 }
             }
             // Identical row-list geometry; only which focus field they carry differs.
-            Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings => {
+            Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
                 let row = self.modal_list_row_at(x, y, screen_w, screen_h, fonts)?;
                 *self.list_modal_focused_mut()? = row;
             }

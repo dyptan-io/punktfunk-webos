@@ -16,7 +16,7 @@ impl App {
     /// Handles one menu event on the settings modal. `screen_h` is only used by
     /// `Up`/`Down` to keep `self.scroll` following `settings_focused`.
     pub fn handle_settings_event(&mut self, ev: MenuEvent, screen_h: u32) {
-        let set = self.row_set();
+        let set = self.settings_scope();
         // An open Resolution/Frame rate dropdown intercepts all input until it's
         // closed (by picking an option or backing out) — it's a modal overlay on
         // top of the settings row list.
@@ -82,7 +82,7 @@ impl App {
                     if set == menu::SettingsScope::Global {
                         self.persist();
                     }
-                    self.open_cursor_settings();
+                    self.open_cursor_settings(set);
                 }
                 menu::ROW_EXPERIMENTAL => {
                     self.persist();
@@ -125,15 +125,14 @@ impl App {
             // once per Settings visit.
             MenuEvent::Back => {
                 match set {
-                    // One save per visit, not one per keystroke — `StateWriter` queues the
-                    // write off-thread either way, but there's no reason to touch disk more
-                    // often than that.
                     menu::SettingsScope::Global => self.persist(),
                     menu::SettingsScope::Game => self.persist_game_settings(),
                 }
                 self.screen = Screen::Home;
             }
-            MenuEvent::Secondary => {}
+            // Per-game only — there is nothing above the global document to fall back to,
+            // and `clear_focused_override` gates on the scope anyway.
+            MenuEvent::Secondary => self.clear_focused_override(),
         }
     }
 
@@ -143,9 +142,10 @@ impl App {
     /// Per-game only: the row appears on `SettingsScope::Game` alone (see
     /// `menu::settings_visible_logical_rows`), so a global screen can never reach here.
     fn reset_settings(&mut self) {
-        if let Some(gs) = self.game_settings.as_mut() {
+        let inherited = self.settings.presentable();
+        if let Some(gs) = self.editing_game_mut() {
             gs.over = crate::services::store::SettingsOverride::default();
-            gs.merged = self.settings;
+            gs.merged = inherited;
         }
     }
 
@@ -155,7 +155,7 @@ impl App {
     /// No focus re-anchoring afterwards: which rows are shown depends on the environment only
     /// (see `menu::row_shown`), so no adjustment can renumber the list under the cursor.
     pub(crate) fn apply_setting_adjust(&mut self, display_row: usize, forward: bool) {
-        let row = menu::settings_logical_row(self.row_set(), display_row);
+        let row = menu::settings_logical_row(self.settings_scope(), display_row);
         let toggled_from = menu::toggle_value(self.settings_target(), row);
         let detected = self.detected_gamepad_type;
         if menu::adjust_setting(self.settings_target_mut(), row, forward, detected) {

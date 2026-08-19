@@ -522,7 +522,7 @@ impl App {
         // `content_dirty` tick, same as every modal did before this split.
         let modal_shell_key = match self.screen {
             Screen::Settings(_) => Some(ModalShellKey::Settings {
-                game: self.game_settings.as_ref().map(|gs| gs.title.clone()),
+                game: self.editing_game().map(|gs| gs.title.clone()),
                 hover_close: self.hover_close,
             }),
             Screen::Wake => self.wake.as_ref().map(|w| ModalShellKey::Wake {
@@ -576,7 +576,7 @@ impl App {
                 rooted: self.rooted,
                 hover_close: self.hover_close,
             }),
-            Screen::CursorSettings => Some(ModalShellKey::CursorSettings {
+            Screen::CursorSettings(_) => Some(ModalShellKey::CursorSettings {
                 cursor_capture: self.settings_target().cursor_capture,
                 cursor_gestures: self.settings_target().cursor_gestures,
                 over: self.editing_override(),
@@ -659,7 +659,7 @@ impl App {
                 self.settings.game_mode,
                 self.rooted,
             )),
-            Screen::CursorSettings => Some(ModalFocusKey::CursorSettingsRow(
+            Screen::CursorSettings(_) => Some(ModalFocusKey::CursorSettingsRow(
                 self.cursor_settings_focused,
                 self.settings_target().cursor_capture,
                 self.settings_target().cursor_gestures,
@@ -679,7 +679,7 @@ impl App {
             if stale {
                 let tile = match self.screen {
                     Screen::Settings(_) => {
-                        let (_, content) = view::settings::layout(self.row_set(), screen_w, screen_h);
+                        let (_, content) = view::settings::layout(self.settings_scope(), screen_w, screen_h);
                         let rows = self.settings_rows();
                         let dropdown_open = self.dropdown.as_ref().is_some_and(|dd| dd.row == self.settings_focused);
                         let target_on = rows.get(self.settings_focused).is_some_and(|r| r.value == "On");
@@ -757,14 +757,18 @@ impl App {
                     }
                     // The plain list modals: same tile, same geometry, built from whichever
                     // rows this screen shows. Only Diagnostics can have a dropdown open.
-                    Screen::WakeSettings | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings => {
+                    Screen::WakeSettings | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
                         let rows = match self.screen {
                             Screen::WakeSettings => {
                                 view::wakesettings::rows(self.wake_settings_host().is_some_and(|h| h.wol_auto))
                             }
                             Screen::Diagnostics => view::diagnostics::rows(&self.settings),
                             Screen::Experimental => view::experimental::rows(&self.settings, self.rooted),
-                            _ => view::cursorsettings::rows(self.settings_target(), &self.editing_override()),
+                            _ => view::cursorsettings::rows(
+                                self.settings_target(),
+                                &self.editing_override(),
+                                Some(self.cursor_settings_focused),
+                            ),
                         };
                         let focused = self
                             .list_modal_focused()
@@ -812,8 +816,8 @@ impl App {
                     (menu::log_level_dropdown_options(), content.width())
                 }
                 _ => {
-                    let (_, content) = view::settings::layout(self.row_set(), screen_w, screen_h);
-                    let logical = menu::settings_logical_row(self.row_set(), dd.row);
+                    let (_, content) = view::settings::layout(self.settings_scope(), screen_w, screen_h);
+                    let logical = menu::settings_logical_row(self.settings_scope(), dd.row);
                     (
                         menu::dropdown_options(logical, self.detected_gamepad_type),
                         content.width(),
@@ -926,7 +930,7 @@ impl App {
                         // Settings' whole row list always fits one tile — no windowing.
                         self.content_window = ui::scroll::ContentWindow {
                             start: 0,
-                            len: menu::settings_row_count(self.row_set()),
+                            len: menu::settings_row_count(self.settings_scope()),
                         };
                         updated.push(tile::SCROLL_CONTENT);
                     }
