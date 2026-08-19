@@ -113,8 +113,9 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         self.pairing_rx = Some(rx);
         std::thread::spawn(move || {
-            let result = crate::session::request_access(&host, port, identity, crate::services::budget::HOST_WAIT)
-                .map_err(|e| crate::errors::friendly(&e));
+            let result =
+                crate::session::probe::request_access(&host, port, identity, crate::services::budget::HOST_WAIT)
+                    .map_err(|e| crate::errors::friendly(&e));
             let _ = tx.send(PairingOutcome {
                 host,
                 port,

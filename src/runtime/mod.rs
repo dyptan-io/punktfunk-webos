@@ -83,25 +83,25 @@ fn spawn_connect(
                 settings.height,
                 settings.refresh_hz
             );
-            session::connect(
-                &host,
+            session::connect(session::ConnectParams {
+                host,
                 port,
                 mode,
-                settings.bitrate_kbps,
-                settings.hdr_enabled,
-                settings.audio_channels,
+                bitrate_kbps: settings.bitrate_kbps,
+                hdr_enabled: settings.hdr_enabled,
+                audio_channels: settings.audio_channels,
                 identity,
-                Some(fp),
+                pin: Some(fp),
                 launch,
                 // A pinned host is reachable now or off, so a long budget would only hold the
                 // black launch scrim. Waiting on an operator is the pairing flow's job.
-                crate::services::budget::HANDSHAKE,
-                settings.codec,
-                settings.video_backend,
-                settings.gamepad_type,
-                settings.cursor_capture,
-                settings.ndl_audio_offload,
-            )
+                timeout: crate::services::budget::HANDSHAKE,
+                codec: settings.codec,
+                video_backend: settings.video_backend,
+                gamepad_type: settings.gamepad_type,
+                cursor_capture: settings.cursor_capture,
+                ndl_audio_offload: settings.ndl_audio_offload,
+            })
             // Flagged before the handle is joined, so the loading screen can stop waiting
             // for a stream that is not coming — the error itself still travels by `Result`.
             .inspect_err(|_| CONNECT_FAILED.store(true, Ordering::Relaxed))

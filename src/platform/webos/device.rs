@@ -243,3 +243,44 @@ impl DeviceInfo {
         );
     }
 }
+
+/// Nice value every stream-carrying thread is boosted to. Reached at nice 0, a thread that
+/// feeds the decoder or reads a 1 kHz mouse loses the CPU to the vendor's own boosted decode
+/// threads for tens of milliseconds at a stretch on this 3-core `SoC`.
+pub const HOT_THREAD_NICE: libc::c_int = -10;
+
+/// Renices `tid` (0 = calling thread) to [`HOT_THREAD_NICE`]; `false` if the kernel refused.
+///
+/// Always best-effort: it needs `CAP_SYS_NICE` or a nonzero `RLIMIT_NICE`, present on a rooted
+/// install and absent under a plain Dev-Mode SAM jail.
+pub fn renice(tid: i32) -> bool {
+    // SAFETY: plain syscall — tid and priority value only, no pointers.
+    unsafe { libc::setpriority(libc::PRIO_PROCESS, tid as libc::id_t, HOT_THREAD_NICE) == 0 }
+}
+
+/// Boosts the calling thread. See [`renice`].
+pub fn boost_current_thread() {
+    let _ = renice(0);
+}
+
+/// Process CPU time (user+sys clock ticks, see [`clock_ticks_per_sec`]) and resident
+/// memory (bytes), for the stats overlay's CPU/RAM line. Plain `/proc/self` reads.
+pub fn process_cpu_mem() -> Option<(u64, u64)> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    // `comm` (field 2) may contain spaces/parens, so split after the last ')'.
+    let after_comm = stat.rsplit_once(')')?.1;
+    let mut fields = after_comm.split_whitespace();
+    let utime: u64 = fields.nth(11)?.parse().ok()?;
+    let stime: u64 = fields.next()?.parse().ok()?;
+
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let rss_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64; // SAFETY: no pointers
+
+    Some((utime + stime, rss_pages * page_size))
+}
+
+/// Clock ticks per second, for converting [`process_cpu_mem`]'s ticks to seconds.
+pub fn clock_ticks_per_sec() -> u64 {
+    (unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64).max(1) // SAFETY: no pointers
+}

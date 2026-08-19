@@ -41,7 +41,7 @@ mod runtime {
 /// link had the host dropping 20k packets.
 ///
 /// 300 Mbps matches what this client already burst-tests its own speed probe at
-/// (`session::run_speed_probe`, capped for the same reason: an unbounded firehose starves a
+/// (`session::probe::run_speed_probe`, capped for the same reason: an unbounded firehose starves a
 /// 2-3 core TV), and still sits well above the ~245 Mbps airlink ceiling this hardware can
 /// reach — so it measures the link without knocking it over.
 const ABR_PROBE_KBPS: &str = "300000";

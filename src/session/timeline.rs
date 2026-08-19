@@ -36,15 +36,13 @@ pub fn reconciled_frame_interval_ns(stream_hz: u32) -> u64 {
 /// [`crate::session::sink::VideoPlayer::pts_base_ns`]). Same anchoring as SS4S's
 /// `ndl_player.c::SS4S_NDL_webOS5_NextVideoPts`. Reset after a freeze-until-reanchor hold,
 /// where the timeline jumps.
+#[derive(Default)]
 pub struct HostPtsAnchor {
+    /// `(host_pts_ns, player_clock_ns)` of the frame the current run anchored on.
     anchor: Option<(u64, u64)>,
 }
 
 impl HostPtsAnchor {
-    pub fn new() -> Self {
-        Self { anchor: None }
-    }
-
     pub fn reset(&mut self) {
         self.anchor = None;
     }

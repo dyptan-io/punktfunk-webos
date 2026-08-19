@@ -35,8 +35,13 @@ Layered by module, deps point inward (acyclic). Leaves first:
   `ui::prelude`. Depends on `core` only.
 - **`services/`** — portable I/O: `store` (JSON persistence), `discovery` (mDNS),
   `library` (mTLS REST), `art`, `wol`. Depends on `core`.
-- **`session/`** — streaming orchestration on `punktfunk-core`: `session::connect` spawns
-  the video pump thread; `session/pacing.rs` is the PTS pacer.
+- **`session/`** — streaming orchestration on `punktfunk-core`, split by phase: `connect`
+  (capability clamp → handshake → decoder load → pump threads, taking a `ConnectParams`),
+  `pump` (the video/audio thread bodies), `probe` (the handshake-only pairing and speed-test
+  connections). Underneath: `sink` (the only code that talks to the decoder), `timeline`
+  (panel-reconciled frame interval + host-PTS anchor), `stats`, `priority` (thread renices),
+  `join` (bounded teardown joins). No `sdl2` — the pad-feedback drain lives with the loop that
+  owns the SDL objects (`runtime::session_ext`).
 - **`platform/webos/`** — SDL2/hardware boundary (all `#[cfg(target_os = "linux")]`):
   `compositor` (translates `ui::DrawList` → SDL textures, owns the texture cache),
   `input` (SDL events → `InputEvent`), `text_sdl` (SDL2_ttf impl of `TextRaster`),

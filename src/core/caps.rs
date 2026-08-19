@@ -95,7 +95,7 @@ pub fn video_caps() -> VideoCaps {
 /// to have a second backend. Matched against the named baseline rather than tested for "not FULL",
 /// so a future profile that is merely narrow doesn't silently turn the row on. Not gated on SMP
 /// actually loading: that is only knowable at load time, and a load failure falls back to NDL
-/// (`session::open_player`) rather than costing the user the choice.
+/// (`session::connect`) rather than costing the user the choice.
 pub fn smp_selectable() -> bool {
     NDL_BASELINE.get() == Some(&VideoCaps::H264_SDR)
 }

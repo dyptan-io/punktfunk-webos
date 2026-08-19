@@ -76,7 +76,7 @@ impl App {
         self.speed_test_rx = Some(rx);
         std::thread::spawn(move || {
             let progress_tx = tx.clone();
-            let result = crate::session::run_speed_probe(
+            let result = crate::session::probe::run_speed_probe(
                 &host,
                 port,
                 identity,

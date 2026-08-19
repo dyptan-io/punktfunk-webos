@@ -1,4 +1,4 @@
-//! Headless speed probe CLI (mirrors `session::run_speed_probe`). Run on-device over SSH to test connection.
+//! Headless speed probe CLI (mirrors `session::probe::run_speed_probe`). Run on-device over SSH to test connection.
 //! Usage: pfprobe <host> <port> <cert.pem> <key.pem> <pin-hex-64> [`target_kbps`] [`duration_ms`]
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

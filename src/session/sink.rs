@@ -318,7 +318,7 @@ impl NdlSink {
             player,
             stats,
             frame_interval_ns,
-            host_anchor: HostPtsAnchor::new(),
+            host_anchor: HostPtsAnchor::default(),
             cfg,
             backlog_cached: None,
             backlog_recent: std::collections::VecDeque::with_capacity(CUSHION_MIN_POLLS),
@@ -433,37 +433,12 @@ impl NdlSink {
     /// Present one access unit, or decide not to. `pts_ns` is the host's capture-clock
     /// PTS; the sink maps and paces it into the decoder's own clock domain.
     pub fn submit(&mut self, au: &[u8], pts_ns: u64, flags: FrameFlags) -> SinkResult {
-        if flags.loss && !self.holding() {
-            self.begin_hold();
-            tracing::warn!("loss (frame {}) — freezing", flags.index);
-            let _ = self.player.flush();
-        }
-        let mut need_keyframe = self.holding() && self.take_keyframe_slot();
-
-        let gave_up = self.hold_started.is_some_and(|t| t.elapsed() >= HOLD_GIVE_UP);
-        if self.holding() && !flags.reanchor && !gave_up {
-            return if need_keyframe {
-                SinkResult::NeedKeyframe
-            } else {
-                SinkResult::Held
-            };
-        }
-        if self.holding() {
-            tracing::info!(
-                "resuming after {:.0}ms (frame {}, reanchor={}, gave_up={gave_up})",
-                self.hold_started.map_or(0.0, |t| t.elapsed().as_secs_f32() * 1000.0),
-                flags.index,
-                flags.reanchor,
-            );
-            // The real timeline just jumped (freeze then reanchor/give-up) — nothing about
-            // the pre-hold accumulator is worth continuing.
-            self.reset_timeline();
-        }
-        self.stats.holding.store(false, Ordering::Relaxed);
-        self.hold_started = None;
+        let request_keyframe = match self.gate(&flags) {
+            HoldGate::Skip(result) => return result,
+            HoldGate::Feed { request_keyframe } => request_keyframe,
+        };
 
         let base_ns = self.player.pts_base_ns(pts_ns, &mut self.host_anchor);
-
         // The submit instant, on CLOCK_REALTIME — the same basis the host stamps `pts_ns` with and
         // the skew handshake compares, so the two are directly subtractable. Taken BEFORE the feed
         // call: `play` blocks for its submission time, and the frame enters NDL's pipeline behind
@@ -486,54 +461,106 @@ impl NdlSink {
         // A failed query counts as no queue for both consumers below: neither the ABR figure nor the
         // A/V reference has a better guess, and both already treat 0 as "nothing to add".
         let backlog = self.poll_backlog().unwrap_or(0);
-        if play_result.is_ok() {
-            // Only a frame NDL actually accepted is on its way to the glass. A failed feed is
-            // followed by a flush and a hold below, where the reference would be meaningless.
-            self.publish_video_e2e(submit_realtime_ns, pts_ns, backlog);
-            // Same reason, and it also doubles as the audio plane's start gate. `play_audio` has
-            // no `ensure_loaded` guard of its own, so latching off a REJECTED frame turns the
-            // audio thread loose on a pipeline NDL hasn't loaded yet — which costs the session
-            // its audio outright.
-            self.player.latch_pts_offset(pts_ns, base_ns);
-        }
-        let decode_us =
-            (self.cfg.report_decode_latency && play_result.is_ok()).then(|| self.decode_us(feed_elapsed, backlog));
-
-        if let Err(e) = play_result {
-            tracing::warn!(
-                "NDL error (frame {}, pts {:.2}ms): {e:#}",
-                flags.index,
-                base_ns as f64 / 1_000_000.0,
-            );
-            // A frame refused because the pipeline hasn't finished loading is NOT a decode
-            // error, and gets neither loss response.
-            //
-            // No flush: against a not-yet-loaded pipeline it silently kills the audio plane for
-            // the session (video recovers, audio never does — observed on CX), and nothing is
-            // queued in NDL to discard anyway.
-            //
-            // No hold: freeze-until-reanchor is mid-stream recovery, and at frame 0 there is no
-            // last-good picture to freeze on. Worse, holding short-circuits `submit` before
-            // `play`, the only caller of the feed-anyway escape, so the hold outlives its own
-            // cause — release then needs the host's reanchor or `HOLD_GIVE_UP`, both evaluated
-            // only when a frame arrives, and a static desktop sends none. Request a keyframe and
-            // let the next frame retry.
-            let not_loaded = e.downcast_ref::<NotLoadedYet>().is_some();
-            if self.take_keyframe_slot() {
-                if !not_loaded {
-                    let _ = self.player.flush();
-                    self.begin_hold();
-                }
-                need_keyframe = true;
+        let (decode_us, failed_keyframe) = match play_result {
+            Ok(()) => {
+                // Only a frame NDL actually accepted is on its way to the glass. A failed feed is
+                // followed by a flush and a hold, where the reference would be meaningless.
+                self.publish_video_e2e(submit_realtime_ns, pts_ns, backlog);
+                // Same reason, and it also doubles as the audio plane's start gate. `play_audio` has
+                // no `ensure_loaded` guard of its own, so latching off a REJECTED frame turns the
+                // audio thread loose on a pipeline NDL hasn't loaded yet — which costs the session
+                // its audio outright.
+                self.player.latch_pts_offset(pts_ns, base_ns);
+                let decode_us = self
+                    .cfg
+                    .report_decode_latency
+                    .then(|| self.decode_us(feed_elapsed, backlog));
+                (decode_us, false)
             }
-        }
+            Err(e) => (None, self.on_play_error(&e, &flags, base_ns)),
+        };
 
-        if need_keyframe {
+        if request_keyframe || failed_keyframe {
             SinkResult::NeedKeyframe
         } else {
             SinkResult::Presented { decode_us }
         }
     }
+
+    /// The freeze-until-reanchor gate, run before every feed: opens a hold on fresh loss, keeps
+    /// frames out while one is up, and releases it on a re-anchor or [`HOLD_GIVE_UP`].
+    fn gate(&mut self, flags: &FrameFlags) -> HoldGate {
+        if flags.loss && !self.holding() {
+            self.begin_hold();
+            tracing::warn!("loss (frame {}) — freezing", flags.index);
+            let _ = self.player.flush();
+        }
+        let Some(started) = self.hold_started else {
+            return HoldGate::Feed {
+                request_keyframe: false,
+            };
+        };
+        let request_keyframe = self.take_keyframe_slot();
+        let gave_up = started.elapsed() >= HOLD_GIVE_UP;
+        if !flags.reanchor && !gave_up {
+            return HoldGate::Skip(if request_keyframe {
+                SinkResult::NeedKeyframe
+            } else {
+                SinkResult::Held
+            });
+        }
+        tracing::info!(
+            "resuming after {:.0}ms (frame {}, reanchor={}, gave_up={gave_up})",
+            started.elapsed().as_secs_f32() * 1000.0,
+            flags.index,
+            flags.reanchor,
+        );
+        // The real timeline just jumped (freeze then reanchor/give-up) — nothing about
+        // the pre-hold accumulator is worth continuing.
+        self.reset_timeline();
+        self.stats.holding.store(false, Ordering::Relaxed);
+        self.hold_started = None;
+        HoldGate::Feed { request_keyframe }
+    }
+
+    /// Handles a refused feed; returns whether to ask the host for a keyframe.
+    fn on_play_error(&mut self, e: &anyhow::Error, flags: &FrameFlags, base_ns: u64) -> bool {
+        tracing::warn!(
+            "NDL error (frame {}, pts {:.2}ms): {e:#}",
+            flags.index,
+            base_ns as f64 / 1_000_000.0,
+        );
+        if !self.take_keyframe_slot() {
+            return false;
+        }
+        // A frame refused because the pipeline hasn't finished loading is NOT a decode error, and
+        // gets neither loss response.
+        //
+        // No flush: against a not-yet-loaded pipeline it silently kills the audio plane for the
+        // session (video recovers, audio never does — observed on CX), and nothing is queued in
+        // NDL to discard anyway.
+        //
+        // No hold: freeze-until-reanchor is mid-stream recovery, and at frame 0 there is no
+        // last-good picture to freeze on. Worse, holding short-circuits `submit` before `play`,
+        // the only caller of the feed-anyway escape, so the hold outlives its own cause — release
+        // then needs the host's reanchor or `HOLD_GIVE_UP`, both evaluated only when a frame
+        // arrives, and a static desktop sends none. Request a keyframe and let the next frame
+        // retry.
+        if e.downcast_ref::<NotLoadedYet>().is_none() {
+            let _ = self.player.flush();
+            self.begin_hold();
+        }
+        true
+    }
+}
+
+/// What [`NdlSink::gate`] decided about this frame.
+enum HoldGate {
+    /// Feed it. `request_keyframe` is set when a hold released on this frame and the throttle
+    /// allowed asking for one — the frame is still fed, but the request is what gets reported.
+    Feed { request_keyframe: bool },
+    /// Still frozen — skip it, and report this instead.
+    Skip(SinkResult),
 }
 
 #[cfg(test)]

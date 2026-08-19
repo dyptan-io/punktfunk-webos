@@ -257,7 +257,7 @@ fn wait_load_completed() -> bool {
 }
 
 /// Count of video/audio pump threads leaked past `SHUTDOWN_JOIN_TIMEOUT` (see
-/// `session::join_with_timeout`), not yet confirmed exited. A leaked thread may still be
+/// `session::join`), not yet confirmed exited. A leaked thread may still be
 /// inside an `NDL_Direct*` call and still holds a live decode session with its own
 /// unsynchronized `ffi` mutex — a second load on top of that races it instead of starting
 /// clean, reproducing as an undecodable stream rather than a clean failure.

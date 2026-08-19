@@ -668,11 +668,10 @@ fn reader_loop(sink: &impl Fn(HidReport), shared: &Shared) {
         tracing::info!("no HID mouse/keyboard on /dev/input yet — using SDL input until one appears");
     }
     store_presence(&devices, shared);
-    // Nice -10, like the video pump, from here on: at nice 0 this thread lost the CPU to
-    // boosted decode threads for up to 28ms at a stretch while a 1kHz mouse kept reporting —
+    // Boosted like the video pump from here on: at nice 0 this thread lost the CPU to the
+    // vendor's decode threads for up to 28ms at a stretch while a 1kHz mouse kept reporting —
     // exactly the jitter this module exists to remove.
-    // SAFETY: plain scalar arguments; failure returns -1 and changes nothing.
-    unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -10) };
+    super::device::boost_current_thread();
     let mut last_scan = Instant::now();
     let mut dir_mtime = std::fs::metadata("/dev/input").and_then(|m| m.modified()).ok();
     // Rebuilt only on device-set change — a moving 1kHz mouse makes `poll` return continuously,

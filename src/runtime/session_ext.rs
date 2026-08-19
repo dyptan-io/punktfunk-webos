@@ -5,6 +5,7 @@
 //! loop asks for, not by how the session works.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use punktfunk_core::input::InputEvent;
 
@@ -17,7 +18,7 @@ pub(crate) struct InputSender(Arc<punktfunk_core::client::NativeClient>);
 
 impl InputSender {
     pub(crate) fn send(&self, ev: &InputEvent) {
-        let _ = session::send_input(&self.0, ev);
+        let _ = self.0.send_input(ev);
     }
 
     /// One pad touchpad contact or motion sample, on the rich-input plane the host applies to
@@ -25,7 +26,7 @@ impl InputSender {
     /// `InputEvent` shape. Best-effort like every datagram, and a no-op toward a host running a
     /// different gamepad backend.
     pub(crate) fn send_rich(&self, rich: punktfunk_core::quic::RichInput) {
-        let _ = session::send_rich_input(&self.0, rich);
+        let _ = self.0.send_rich_input(rich);
     }
 }
 
@@ -35,7 +36,7 @@ impl Connected {
     }
 
     pub(crate) fn send_input(&self, ev: &InputEvent) {
-        let _ = session::send_input(&self.client, ev);
+        let _ = self.client.send_input(ev);
     }
 
     pub(crate) fn stats(&self) -> &Arc<StreamStats> {
@@ -101,15 +102,6 @@ impl Connected {
         session::join_audio_feed(handle);
     }
 
-    /// Drains the host→client pad feedback planes.
-    pub(crate) fn pump_feedback_once(
-        &self,
-        controller: Option<&mut sdl2::controller::GameController>,
-        feedback: Option<&mut crate::platform::webos::dualsense::Feedback>,
-    ) {
-        session::pump_feedback_once(&self.client, controller, feedback);
-    }
-
     pub(crate) fn is_session_ended(&self) -> bool {
         self.client.is_session_ended()
     }
@@ -157,4 +149,79 @@ pub(crate) struct OverlayInfo {
     pub frames_dropped: Option<u64>,
     pub fec_recovered: Option<u64>,
     pub target_kbps: u32,
+}
+
+/// Ceiling on feedback events handled per tick.
+///
+/// Both planes are human-paced (a rumble change, a weapon swap), so this is never reached in
+/// normal play — it exists so a host that floods, or a plane that backed up while a modal was
+/// open, cannot starve rendering and input for a tick.
+const FEEDBACK_DRAIN_BUDGET: usize = 32;
+
+impl Connected {
+    /// Drains the host→client gamepad feedback planes (non-blocking) and applies them to the
+    /// physical pad. Call once per main-loop tick.
+    ///
+    /// The two planes go to different places, because each has one route that works for every
+    /// controller rather than only one:
+    ///   * **rumble** → SDL's evdev force feedback (`GameController::set_rumble`, plus
+    ///     `set_rumble_triggers` for the impulse-trigger motors on pads that have them), which
+    ///     works on any pad the TV has bound, `DualSense` included;
+    ///   * **`DualSense` HID feedback** (adaptive triggers, lightbar, player LEDs) → the Bluetooth
+    ///     service, since SDL's own `DualSense` path needs a hidraw node the app's jail doesn't
+    ///     have (see [`crate::platform::webos::dualsense`]).
+    ///
+    /// Both drains run even when their sink is absent: the planes are bounded queues, and leaving
+    /// one unread would let it fill and then discard the *newest* events — including, for rumble,
+    /// the zero that stops a motor.
+    pub(crate) fn pump_feedback_once(
+        &self,
+        mut controller: Option<&mut sdl2::controller::GameController>,
+        mut feedback: Option<&mut crate::platform::webos::dualsense::Feedback>,
+    ) {
+        let client = &self.client;
+        // `next_rumble_command` is the policy-engine API: it already resolves lease expiry, stale
+        // legacy hosts and close-drain zeros, so commands apply verbatim — all-zero stops now.
+        //
+        // Queried once per tick, not per command: SDL walks its joystick list for this, and a hotplug
+        // arrives as a new `GameController` rather than changing this answer mid-drain.
+        let has_triggers = controller
+            .as_deref()
+            .is_some_and(sdl2::controller::GameController::has_rumble_triggers);
+        let mut budget = FEEDBACK_DRAIN_BUDGET;
+        while budget > 0 {
+            let Ok(cmd) = client.next_rumble_command(Duration::ZERO) else {
+                break; // NoFrame (empty) or Closed (session over)
+            };
+            budget -= 1;
+            if let Some(pad) = controller.as_deref_mut() {
+                // `backstop_ms` passes straight through, including 0: SDL2 reads a zero duration as
+                // "no expiration" (`rumble_expiration = 0`, run until changed), not "stop now", which
+                // is exactly the semantics wanted here — the policy engine guarantees an explicit
+                // zero-level command at every stop, so a self-expiring effect would only risk
+                // cutting a held rumble short. Don't "fix" this into a floor.
+                //
+                // Errors here are the common "this pad has no rumble motors" case, not a fault:
+                // logging per command would spam a tick loop, and there is no recovery to attempt.
+                let _ = pad.set_rumble(cmd.low, cmd.high, cmd.backstop_ms);
+                // Dropping the trigger pair on a pad without those motors is the correct degrade;
+                // folding it into the handles would turn a racing title's continuous trigger stream
+                // into a handle motor droning flat-out for the whole race.
+                if has_triggers {
+                    let _ = pad.set_rumble_triggers(cmd.left_trigger, cmd.right_trigger, cmd.backstop_ms);
+                }
+            }
+        }
+
+        let mut budget = FEEDBACK_DRAIN_BUDGET;
+        while budget > 0 {
+            let Ok(event) = client.next_hidout(Duration::ZERO) else {
+                break;
+            };
+            budget -= 1;
+            if let Some(fb) = feedback.as_deref_mut() {
+                fb.apply(&event);
+            }
+        }
+    }
 }

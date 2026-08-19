@@ -184,7 +184,7 @@ impl AudioPlayer {
 }
 
 /// The decode half: Opus → PCM, loss concealment, the A/V measurement, and the hand-off to the
-/// ring. Lives on its own thread (`session::audio_feed_pump`).
+/// ring. Lives on its own thread (`session::pump`'s audio feed).
 pub struct AudioFeed {
     pcm_tx: SyncSender<Vec<f32>>,
     /// Drained chunk `Vec`s coming back from the callback for reuse — the pool half of the chunk

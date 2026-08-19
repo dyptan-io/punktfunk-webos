@@ -1,4 +1,5 @@
 use super::*;
+use crate::platform::webos::device;
 use crate::platform::webos::input::{
     webos_scancode_down as key_down, WEBOS_EXIT_SCANCODE, WEBOS_GREEN_SCANCODE, WEBOS_HOME_SCANCODE,
     WEBOS_YELLOW_SCANCODE,
@@ -275,7 +276,7 @@ pub(super) fn run_inner() -> Result<()> {
         let mut notif = crate::ui::widgets::Notification::new();
         // Last (text, w, h) uploaded for the toast tile — see `push_notification_cmd`.
         let mut notif_tile: Option<(String, u32, u32)> = None;
-        // Edge-detects `stats.holding` (freeze-until-reanchor — see `session::video_pump`) so a
+        // Edge-detects `stats.holding` (freeze-until-reanchor — see `session::pump`'s video pump) so a
         // packet-loss stall surfaces as a toast even with the stats overlay off, same signal the
         // overlay's "Beat" line already reads.
         let mut was_holding = false;
@@ -576,7 +577,7 @@ pub(super) fn run_inner() -> Result<()> {
             }
             yellow_held = yellow_down;
             // Connection-issue toast: fires on the rising edge of a freeze-until-reanchor hold
-            // (dropped/gapped frames — see `session::video_pump`), which is the same "network
+            // (dropped/gapped frames — see `session::pump`), which is the same "network
             // trouble" signal the stats overlay's "Beat" line reads, just edge-triggered here so
             // it's visible without the overlay open. No matching "recovered" toast — the video
             // itself resuming is the recovery signal.
@@ -633,8 +634,8 @@ pub(super) fn run_inner() -> Result<()> {
                 canvas.present();
             }
             // Audio drains on its own threads either way now — the software path on
-            // `session::audio_feed_pump` into SDL's audio callback, the offloaded path on
-            // `session::ndl_audio_pump`. Nothing for this loop to do.
+            // `session::pump`'s feed thread into SDL's audio callback, the offloaded path on
+            // its NDL audio pump. Nothing for this loop to do.
             //
             // Unconditional so both feedback planes keep draining with no pad attached.
             connected.pump_feedback_once(controller.as_mut(), ds_feedback.as_mut());
@@ -688,11 +689,11 @@ pub(super) fn run_inner() -> Result<()> {
                     let feed_ms = connected.stats().feed_us.load(Ordering::Relaxed) as f32 / 1000.0;
                     let holding = connected.stats().holding.load(Ordering::Relaxed);
                     // CPU% (one core) + RSS, only read while the overlay is up.
-                    let cpu_mem_line = session::process_cpu_mem().map(|(cpu_ticks, mem_bytes)| {
+                    let cpu_mem_line = device::process_cpu_mem().map(|(cpu_ticks, mem_bytes)| {
                         // No baseline on the first sample, so CPU shows from the 2nd on.
                         let cpu = overlay_prev_cpu_ticks.map(|prev| {
                             let pct =
-                                (cpu_ticks.saturating_sub(prev)) as f32 / session::clock_ticks_per_sec() as f32 / dt
+                                (cpu_ticks.saturating_sub(prev)) as f32 / device::clock_ticks_per_sec() as f32 / dt
                                     * 100.0;
                             format!("CPU {pct:.0}% · ")
                         });
