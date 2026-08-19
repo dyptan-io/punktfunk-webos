@@ -32,8 +32,9 @@ pub const STATUS: TileId = TileId(9);
 pub const NO_HOST: TileId = TileId(10);
 /// Whichever scrollable modal's scroll indicator — one slot, versioned per screen.
 pub const SCROLL_INDICATOR: TileId = TileId(11);
-/// Whichever scrollable modal's content, baked at full unscrolled height — one slot,
-/// versioned per screen, so scrolling inside the baked window invalidates nothing.
+/// About's document, baked at full unscrolled height — one slot, versioned per screen, so
+/// scrolling inside the baked window invalidates nothing. Settings does not use it: its rows
+/// are a tile each (see [`settings_row`]), so one changed value repaints one row.
 pub const SCROLL_CONTENT: TileId = TileId(12);
 /// The bottom scroll-edge alpha ramp, stretched to each list's width.
 pub const SCROLL_FADE: TileId = TileId(13);
@@ -60,8 +61,8 @@ pub const CARD_SHADOW: TileId = TileId(22);
 /// The modal fading *out* — a snapshot of [`MODAL`] taken the frame it was left, so the
 /// entering modal can own [`MODAL`] while this one finishes (see `App::modal_prev`).
 pub const MODAL_PREV: TileId = TileId(23);
-/// That snapshot's scrolled content, for a leaving modal whose body lives in
-/// [`SCROLL_CONTENT`] rather than in its shell (Settings, About).
+/// That snapshot's scrolled content, for a leaving modal whose body lives outside its shell
+/// — About's [`SCROLL_CONTENT`] frozen, or the settings rows stitched into one buffer.
 pub const MODAL_PREV_CONTENT: TileId = TileId(24);
 /// The focused card's submenu panel — [`CARD_TITLE`] grown to carry the Pin/Settings rows.
 /// Its own slot rather than a second shape for `CARD_TITLE`, so it can be baked *ahead* of
@@ -83,10 +84,25 @@ pub const CARD_MENU_BAND: TileId = TileId(28);
 pub const SECTION_PINNED: TileId = TileId(29);
 pub const SECTION_LIBRARY: TileId = TileId(30);
 
+/// First id of the settings-row band — one slot per on-screen row of the open settings
+/// list (see [`settings_row`]). Fixed rather than interned: the list is short, its rows are
+/// addressed by position, and every screen that uses it shows one list at a time.
+const SETTINGS_ROW_BASE: u32 = 32;
+/// Slots in that band. `menu::SETTINGS_ROW_COUNT` and its sub-pages are all far under this;
+/// [`settings_row`] refuses anything past it rather than colliding with the spinner band.
+pub const SETTINGS_ROW_SLOTS: usize = 32;
+
 /// First id of the spinner band. One per frame, so animation is a swap not an upload.
 const SPINNER_BASE: u32 = 64;
 /// First id of the grid-card band, interned by pin id (see [`CardIds`]).
 const CARD_BASE: u32 = 256;
+
+/// The tile for on-screen settings row `index`, or `None` past the band — a list longer
+/// than [`SETTINGS_ROW_SLOTS`] draws its tail unbaked rather than reaching into the
+/// spinner's ids.
+pub fn settings_row(index: usize) -> Option<TileId> {
+    (index < SETTINGS_ROW_SLOTS).then(|| TileId(SETTINGS_ROW_BASE + index as u32))
+}
 
 /// The tile for spinner frame `idx`.
 pub fn spinner(idx: usize) -> TileId {

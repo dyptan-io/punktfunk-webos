@@ -441,6 +441,12 @@ impl Painter {
         );
     }
 
+    /// Composites another painter's buffer at `(x, y)` — for assembling one tile out of
+    /// several already-rasterized ones, which is a blit rather than a re-render.
+    pub fn draw_painter(&mut self, x: i32, y: i32, src: &Self) {
+        self.draw_pixmap(x, y, &src.pixmap);
+    }
+
     /// Composites `src` scaled to exactly fill `dst` — only ever at tile-build time
     /// (glyph scaling in `ui::text`, and cover art via
     /// [`draw_pixmap_rounded`](Self::draw_pixmap_rounded)), not per frame: the result is

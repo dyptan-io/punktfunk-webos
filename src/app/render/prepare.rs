@@ -554,10 +554,18 @@ impl App {
         };
         // Still the left card's — `modal_painter` moves it on later in this same call.
         let region = self.modal.tile_region;
-        // The crop `compose_modal` was drawing for this screen last frame, frozen.
+        // The crop `compose_modal` was drawing for this screen last frame, frozen. Settings
+        // has no single body tile to freeze — its rows are a tile each — so one is stitched
+        // from them at the geometry they were just drawn at. That is a blit per row and no
+        // rasterization, and it keeps the fade-out a snapshot rather than a live list the
+        // leaving screen would have to keep its tiles alive for.
+        let body = match left {
+            Screen::Settings(_) => self.stitch_settings_body(tiles, screen_w, screen_h, fonts),
+            _ => tiles.get(tile::SCROLL_CONTENT).cloned(),
+        };
         let content = self
             .scroll_src_rect(left, screen_w, screen_h, fonts)
-            .zip(tiles.get(tile::SCROLL_CONTENT).cloned())
+            .zip(body)
             .map(|((src, dst), body)| (body, src, dst));
         tiles.put(tile::MODAL_PREV, cache::STATIC, shell);
         updated.push(tile::MODAL_PREV);
@@ -567,6 +575,28 @@ impl App {
             (src, dst)
         });
         self.modal.prev = Some(crate::app::render::ModalSnapshot { region, content });
+    }
+
+    /// The settings list as one painter, at the full unscrolled height `scroll_src_rect`
+    /// crops against — the single body tile the row band deliberately does not keep. Built
+    /// only when a settings screen is being left (see `snapshot_closing_modal`).
+    fn stitch_settings_body(
+        &self,
+        tiles: &ui::cache::TileStore,
+        screen_w: u32,
+        screen_h: u32,
+        fonts: &ui::text::Fonts,
+    ) -> Option<Painter> {
+        let (total, _, _, content) = self.scroll_geometry_for(self.screen, screen_w, screen_h, fonts)?;
+        let stride = ui::widgets::focus_row_stride();
+        let mut body = Painter::new(content.width().max(1), (total as u32 * stride).max(1));
+        for i in 0..total {
+            let Some(row) = tile::settings_row(i).and_then(|id| tiles.get(id)) else {
+                continue;
+            };
+            body.draw_painter(0, i as i32 * stride as i32, row);
+        }
+        Some(body)
     }
 
     /// The version [`tile::MODAL`] is valid at — a hash of everything the open screen's
@@ -995,6 +1025,17 @@ impl App {
         Ok(())
     }
 
+    /// Releases settings-row tiles from `first` on: the tail of a list that just got
+    /// shorter, or the whole band once the settings screens are left.
+    fn evict_settings_rows_from(&mut self, first: usize, tiles: &mut ui::cache::TileStore) {
+        for i in first..tile::SETTINGS_ROW_SLOTS {
+            let Some(id) = tile::settings_row(i) else { break };
+            if tiles.remove(id) {
+                self.evicted_tiles.push(id);
+            }
+        }
+    }
+
     /// Scroll family: the indicator, edge-fade ramps, and windowed content tile for whichever modal overflows (Settings rows / About document). Extracted from `prepare_tiles`.
     fn prepare_scroll(&mut self, ctx: &mut RenderCtx<'_>) -> Result<()> {
         let RenderCtx {
@@ -1006,6 +1047,11 @@ impl App {
             ..
         } = ctx;
         let (screen_w, screen_h) = (size.w, size.h);
+        // The settings-row band belongs to the settings screens alone; leaving them releases
+        // it rather than holding a list's worth of textures behind whatever is on screen now.
+        if !matches!(self.screen, Screen::Settings(_)) {
+            self.evict_settings_rows_from(0, tiles);
+        }
         // Whichever modal's content overflows its viewport (Settings' rows, About's
         // document) gets its scroll indicator and content tile refreshed here — see
         // `scroll_geometry`'s docs for why this one block covers every such modal
@@ -1065,34 +1111,38 @@ impl App {
             match self.screen {
                 Screen::Settings(_) => {
                     let dropdown_row = self.dropdown.as_ref().map(|dd| dd.row);
-                    let key = cache::version(&(
-                        self.screen,
-                        ScrollContentKey::Settings(
-                            *self.settings_target(),
-                            self.editing_override(),
-                            dropdown_row,
-                            self.detected_gamepad_type,
-                        ),
-                    ));
-                    if !tiles.is_fresh(tile::SCROLL_CONTENT, key) {
-                        let rows = self.settings_rows();
+                    let rows = self.settings_rows();
+                    // One tile per row, each keyed on that row's own content. Rebuilding the
+                    // whole list as one strip cost 25-60ms on armv7 every time a single value
+                    // moved; this pays for the row that actually changed and reads the rest
+                    // straight out of the cache.
+                    for (i, row) in rows.iter().enumerate() {
+                        let Some(id) = tile::settings_row(i) else { break };
+                        let key = cache::version(&(self.screen, i, row.key(), dropdown_row == Some(i)));
+                        if tiles.is_fresh(id, key) {
+                            continue;
+                        }
                         let tile = ui::rasterize(
-                            ui::widgets::FocusRowsTile {
-                                rows: &rows,
+                            ui::widgets::RowTile {
+                                row,
                                 width: content.width(),
-                                open_dropdown_row: dropdown_row,
+                                dropdown_open: dropdown_row == Some(i),
                             },
                             text_cache,
                             fonts,
                         )?;
-                        tiles.put(tile::SCROLL_CONTENT, key, tile);
-                        // Settings' whole row list always fits one tile — no windowing.
-                        self.content_window = ui::scroll::ContentWindow {
-                            start: 0,
-                            len: menu::settings_row_count(self.settings_scope()),
-                        };
-                        updated.push(tile::SCROLL_CONTENT);
+                        tiles.put(id, key, tile);
+                        updated.push(id);
                     }
+                    // Slots past the end of a list that just got shorter (a sub-page is a
+                    // shorter list on the same screen) would otherwise keep drawing.
+                    self.evict_settings_rows_from(rows.len(), tiles);
+                    // Every row is baked, so the window is the whole list — the crop
+                    // rebase in `scroll_src_rect` has nothing to shift.
+                    self.content_window = ui::scroll::ContentWindow {
+                        start: 0,
+                        len: menu::settings_row_count(self.settings_scope()),
+                    };
                 }
                 Screen::About => {
                     if let Some(new_start) = self.content_window.recenter_if_needed(
@@ -1146,15 +1196,19 @@ impl App {
         )?;
         let (_, content) = view::settings::layout(menu::SettingsScope::Global, screen_w, screen_h);
         let rows = self.settings_rows();
-        let _ = ui::rasterize(
-            ui::widgets::FocusRowsTile {
-                rows: &rows,
-                width: content.width(),
-                open_dropdown_row: None,
-            },
-            text_cache,
-            fonts,
-        )?;
+        // One row is enough to warm the glyph cache the whole list draws from — the rest are
+        // the same fonts at the same sizes.
+        if let Some(row) = rows.first() {
+            let _ = ui::rasterize(
+                ui::widgets::RowTile {
+                    row,
+                    width: content.width(),
+                    dropdown_open: false,
+                },
+                text_cache,
+                fonts,
+            )?;
+        }
         let _ = ui::rasterize(
             ui::widgets::FocusRowTile {
                 rows: &rows,

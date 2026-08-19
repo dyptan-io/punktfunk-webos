@@ -8,7 +8,7 @@ use anyhow::Result;
 
 /// How a focus row's right-hand control behaves — every row list in the app shares
 /// [`FocusRows`]' single implementation, see its docs.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RowKind {
     Dropdown,
     Slider,
@@ -292,12 +292,6 @@ impl FocusRowsState {
             open_dropdown: None,
         }
     }
-
-    /// The row whose dropdown is expanded (see [`FocusRowsState::open_dropdown`]).
-    pub fn open_dropdown(mut self, row: Option<usize>) -> Self {
-        self.open_dropdown = row;
-        self
-    }
 }
 
 impl<'a> FocusRows<'a> {
@@ -311,12 +305,11 @@ impl StatefulWidget for FocusRows<'_> {
 
     fn render(self, area: Rect, c: &mut Canvas, state: &mut Self::State) -> Result<()> {
         for (i, row) in self.rows.iter().enumerate() {
-            let switch_frac = if row.value == "On" { 1.0 } else { 0.0 };
             c.focus_row(
                 row,
                 i == state.focused,
                 state.open_dropdown == Some(i),
-                switch_frac,
+                switch_frac(row),
                 focus_row_rect(area, i),
             )?;
         }
@@ -351,24 +344,88 @@ impl TileWidget for FocusRowTile<'_> {
     }
 }
 
-/// All rows unfocused as one tile. GPU-side `DrawCmd::TexCropped` handles
-/// scrolling without re-rasterizing on each scroll event.
-pub struct FocusRowsTile<'a> {
-    pub rows: &'a [FocusRow],
+/// One unfocused row as its own tile.
+///
+/// A scrolling list that changes is a stack of these rather than the single baked strip
+/// [`FocusRowsTile`] bakes: Settings keyed its whole strip on the whole `Settings` struct, so
+/// moving one slider re-rasterized every row — 25-60ms on armv7 per keypress, measured. The
+/// value that changed lives in exactly one row, and [`FocusRow::key`] is what lets the cache
+/// see that.
+pub struct RowTile<'a> {
+    pub row: &'a FocusRow,
     pub width: u32,
-    pub open_dropdown_row: Option<usize>,
+    pub dropdown_open: bool,
 }
 
-impl Widget for FocusRowsTile<'_> {
+impl Widget for RowTile<'_> {
     fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
-        let mut state = FocusRowsState::unfocused().open_dropdown(self.open_dropdown_row);
-        c.render_stateful(FocusRows::new(self.rows), area, &mut state)
+        c.focus_row(self.row, false, self.dropdown_open, switch_frac(self.row), area)
     }
 }
 
-impl TileWidget for FocusRowsTile<'_> {
+impl TileWidget for RowTile<'_> {
     fn size(&self, _fonts: &Fonts) -> (u32, u32) {
-        (self.width, (self.rows.len() as u32 * focus_row_stride()).max(1))
+        (self.width.max(1), FOCUS_ROW_H)
+    }
+}
+
+/// A [`RowKind::Toggle`]'s knob position at rest. The switch animates from its own tile
+/// while a toggle is mid-flip; a row drawn as part of a list is always at one end or the
+/// other.
+fn switch_frac(row: &FocusRow) -> f32 {
+    if row.value == "On" {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// A row's pixels as something hashable — the version its [`RowTile`] is valid at.
+///
+/// Borrowed from the row rather than cloned: `cache::version` keeps only the hash, so this
+/// never outlives the `Vec<FocusRow>` the caller built for this frame.
+///
+/// Hand-written rather than `#[derive(Hash)]` on [`FocusRow`], because `fraction` is an
+/// `f32` and `cache::version` refuses floats on purpose — a tile keyed on a clock rebuilds
+/// every frame. A slider's fill is not a clock: it moves only when the setting behind it
+/// does. So it is hashed by bit pattern here, deliberately and in one place, rather than by
+/// making `FocusRow` blanket-hashable.
+/// A [`Color`] flattened to something hashable — [`Color`] itself is only `Eq`.
+type Rgba8 = (u8, u8, u8, u8);
+
+#[derive(PartialEq, Eq, Hash)]
+pub struct FocusRowKey<'a> {
+    icon: &'a str,
+    label: &'a str,
+    value: &'a str,
+    kind: RowKind,
+    fraction_bits: u32,
+    danger: bool,
+    locked: bool,
+    menu: Option<bool>,
+    mark: Option<Rgba8>,
+    subtext: Option<(&'a str, Rgba8)>,
+}
+
+fn color_bytes(c: Color) -> Rgba8 {
+    (c.r, c.g, c.b, c.a)
+}
+
+impl FocusRow {
+    /// Everything [`Canvas::focus_row`] reads off this row, hashable. See [`FocusRowKey`].
+    pub fn key(&self) -> FocusRowKey<'_> {
+        FocusRowKey {
+            icon: self.icon,
+            label: &self.label,
+            value: &self.value,
+            kind: self.kind,
+            fraction_bits: self.fraction.to_bits(),
+            danger: self.danger,
+            locked: self.locked,
+            menu: self.menu,
+            mark: self.mark.map(color_bytes),
+            subtext: self.subtext.as_ref().map(|s| (s.text.as_str(), color_bytes(s.color))),
+        }
     }
 }
 

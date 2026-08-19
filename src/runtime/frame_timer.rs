@@ -3,7 +3,9 @@
 //! The loop paces off each tick's own start (`TICK_BUDGET`), so a tick that overruns its
 //! budget silently halves the frame rate instead of failing — the one class of regression
 //! this UI can have without anything logging it. This times each stage of the tick and
-//! reports the breakdown: at WARN when the budget was blown, at DEBUG otherwise.
+//! reports the breakdown — but only when the tick's own work blew the budget. A frame
+//! inside budget is the steady state and says nothing at sixty lines a second, so it logs
+//! nothing at all.
 use std::time::{Duration, Instant};
 
 use crate::core::screen::Screen;
@@ -81,22 +83,36 @@ impl FrameTimer {
         self.start.elapsed()
     }
 
-    /// Logs the breakdown — WARN past `budget`, DEBUG within it.
+    /// The tick's own cost: everything but `Present`. `Present` ends in a blocking vsync
+    /// swap, so it measures how long until the panel wanted the frame, not how long the
+    /// frame took — on a 60Hz panel against a 16ms budget it sawtooths up to a full
+    /// interval and back on its own, and budgeting the total reports that as an overrun
+    /// every ~10 frames with nothing rebuilt. Only this is ours to blow.
+    fn work(&self) -> Duration {
+        self.stages[Stage::Prepare as usize]
+            + self.stages[Stage::Upload as usize]
+            + self.stages[Stage::Compose as usize]
+    }
+
+    /// Reports the tick, but only when its own work blew `budget` — a frame inside budget
+    /// says nothing that is worth a line at any level, sixty times a second. See
+    /// [`Self::work`] for why `Present` is excluded from the comparison.
     pub fn report(&self, budget: Duration, stats: &FrameStats) {
-        let total = self.elapsed();
-        let breakdown = self.breakdown();
+        let work = self.work();
+        if work <= budget {
+            return;
+        }
+        // Everything below is overrun-only: the breakdown allocates and `TileStore::bytes`
+        // scans the store, and neither is worth paying on a healthy frame.
         let FrameStats {
             screen,
             rebuilt,
             tiles,
             text,
         } = stats;
-        if total > budget {
-            let (resident, mib) = (tiles.len(), tiles.bytes() as f32 / (1024.0 * 1024.0));
-            tracing::warn!("frame overran {budget:?}: {total:?} on {screen:?} ({breakdown}, {rebuilt} tiles rebuilt, {resident} resident / {mib:.1} MiB, {text} text)");
-        } else {
-            tracing::debug!("frame {total:?} on {screen:?} ({breakdown})");
-        }
+        let (total, breakdown) = (self.elapsed(), self.breakdown());
+        let (resident, mib) = (tiles.len(), tiles.bytes() as f32 / (1024.0 * 1024.0));
+        tracing::warn!("frame work overran {budget:?}: {work:?} of {total:?} on {screen:?} ({breakdown}, {rebuilt} tiles rebuilt, {resident} resident / {mib:.1} MiB, {text} text)");
     }
 
     fn breakdown(&self) -> String {

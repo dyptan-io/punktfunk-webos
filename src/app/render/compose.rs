@@ -90,14 +90,14 @@ impl App {
                     .modal
                     .scroll_px
                     .clamp(0, Self::max_scroll_px(total, stride, content.height()));
-                if let Some((src, dst)) = self.scroll_src_rect(screen, screen_w, screen_h, fonts) {
-                    cmds.push(DrawCmd::TexCropped {
-                        tile: tile::SCROLL_CONTENT,
-                        src,
-                        dst: dst.offset(0, dy),
-                        alpha: (255.0 * m) as u8,
-                    });
-                }
+                self.push_scroll_content(
+                    cmds,
+                    screen,
+                    ui::render::Size::new(screen_w, screen_h),
+                    fonts,
+                    dy,
+                    (255.0 * m) as u8,
+                );
                 // Bottom fade, only while rows remain below the viewport — it is the
                 // "there is more" signal, so it has to vanish exactly when scrolling has
                 // reached the end, or it reads as content that can never be got to.
@@ -264,6 +264,59 @@ impl App {
     /// Sidebar family compose: the focused-row highlight overlay (the strip itself
     /// is an unconditional `tile::SIDEBAR` blit in `draw_list`). Reads only the
     /// `RenderInput` slice — a template for the per-family `TileCache::compose` split.
+    /// The scrolling modal's body, positioned and clipped to its viewport.
+    ///
+    /// Two shapes behind one call. About bakes a window of its document into a single
+    /// [`tile::SCROLL_CONTENT`] and crops it; Settings bakes one tile per row (see
+    /// `tile::settings_row`) and places each, so changing one value repaints one row rather
+    /// than the strip. Both are pure placement — scrolling either never re-rasterizes.
+    fn push_scroll_content(
+        &self,
+        cmds: &mut Vec<DrawCmd>,
+        screen: Screen,
+        size: ui::render::Size,
+        fonts: &ui::text::Fonts,
+        dy: i32,
+        alpha: u8,
+    ) {
+        let (screen_w, screen_h) = (size.w, size.h);
+        if !matches!(screen, Screen::Settings(_)) {
+            if let Some((src, dst)) = self.scroll_src_rect(screen, screen_w, screen_h, fonts) {
+                cmds.push(DrawCmd::TexCropped {
+                    tile: tile::SCROLL_CONTENT,
+                    src,
+                    dst: dst.offset(0, dy),
+                    alpha,
+                });
+            }
+            return;
+        }
+        let Some((total, _, _, content)) = self.scroll_geometry_for(screen, screen_w, screen_h, fonts) else {
+            return;
+        };
+        let stride = self.scroll_stride_for(screen, fonts);
+        let scroll_px = self
+            .modal
+            .scroll_px
+            .clamp(0, Self::max_scroll_px(total, stride, content.height()));
+        let viewport = content.offset(0, dy);
+        for i in 0..total {
+            let Some(id) = tile::settings_row(i) else { break };
+            let dst = ui::widgets::focus_row_rect_at_px(content, i, scroll_px).offset(0, dy);
+            // Rows scrolled fully out of the viewport cost nothing but this test; the ones
+            // straddling an edge are cropped rather than allowed to paint over the chrome.
+            let Some((src, visible)) = Self::clip_tile(dst, viewport, content.width(), ui::widgets::FOCUS_ROW_H) else {
+                continue;
+            };
+            cmds.push(DrawCmd::TexCropped {
+                tile: id,
+                src,
+                dst: visible,
+                alpha,
+            });
+        }
+    }
+
     fn compose_sidebar_focus(input: &render_input::RenderInput<'_>, screen_h: u32, cmds: &mut Vec<DrawCmd>) {
         let sidebar_focus_row = match input.home_focus {
             HomeFocus::Sidebar(i) | HomeFocus::SidebarMenu(i) => Some(i),
