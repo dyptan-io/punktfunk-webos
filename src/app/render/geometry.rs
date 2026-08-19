@@ -87,7 +87,17 @@ impl App {
         (total as i32 * stride - viewport_h as i32).max(0)
     }
 
-    /// Which slice of `screen`'s baked `tile::SCROLL_CONTENT` is showing, as `(src crop,
+    /// The animated scroll offset, held inside the range this list can actually travel.
+    ///
+    /// `modal.scroll_px` is the raw target the ease writes; every reader wants it clamped, and
+    /// the clamp used to be spelled out at each of them.
+    pub(crate) fn clamped_scroll_px(&self, total: usize, stride: i32, viewport_h: u32) -> i32 {
+        self.modal
+            .scroll_px
+            .clamp(0, Self::max_scroll_px(total, stride, viewport_h))
+    }
+
+    /// Which slice of `screen`'s baked `tile::SCROLL_CONTENT` is showing    /// Which slice of `screen`'s baked `tile::SCROLL_CONTENT` is showing, as `(src crop,
     /// dst rect)` — `None` for a screen whose body lives in its shell tile.
     ///
     /// The one place the window rebase lives: `compose_modal` draws the live modal with it,
@@ -108,10 +118,7 @@ impl App {
         let stride = self.scroll_stride_for(screen, fonts);
         // The animated offset (see `sync_modal_scroll`), in absolute content pixels,
         // rebased onto whatever slice is currently baked into the tile.
-        let scroll_px = self
-            .modal
-            .scroll_px
-            .clamp(0, Self::max_scroll_px(total, stride, content.height()));
+        let scroll_px = self.clamped_scroll_px(total, stride, content.height());
         let src = Rect::new(
             0,
             scroll_px - window_start as i32 * stride,
@@ -283,10 +290,7 @@ impl App {
                 // re-rendered — so anchoring it to the quantized row would show that row's
                 // content twice, in two places, for the length of every scroll.
                 let stride = ui::widgets::focus_row_stride() as i32;
-                let px = self
-                    .modal
-                    .scroll_px
-                    .clamp(0, Self::max_scroll_px(total, stride, content.height()));
+                let px = self.clamped_scroll_px(total, stride, content.height());
                 Some(ui::widgets::focus_row_rect_at_px(content, self.settings_focused, px))
             }
             // Every two-button confirm dialog: one subtitle drives the card, so one

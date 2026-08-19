@@ -600,13 +600,17 @@ impl App {
     }
 
     /// The version [`tile::MODAL`] is valid at — a hash of everything the open screen's
-    /// chrome reads. `None` for a screen with no shell key of its own (`AddHost` and friends
-    /// redraw on any `content_dirty` tick instead; see [`ModalShellKey`]).
+    /// chrome reads, plus the close-button hover every shell shares. `None` for a screen with
+    /// no shell key of its own (`AddHost` and friends redraw on any `content_dirty` tick
+    /// instead; see [`ModalShellKey`]).
     ///
     /// The key never leaves this function, which is what lets it borrow labels straight out of
     /// `App`: only the hash is kept, so a shell that is re-entered with different content
     /// differs by version rather than by a stored clone of every string it draws.
-    fn modal_shell_version(&self) -> Option<u64> {
+    fn modal_shell_version(
+        &self,
+        host_menu_actions: &[(crate::app::state::hostmenu::HostAction, ui::widgets::FocusRow)],
+    ) -> Option<u64> {
         // The derived strings the key borrows — bound here so they outlive it, and built only
         // on the screen that actually reads each one.
         let host_menu_title = matches!(self.screen, Screen::HostMenu)
@@ -624,86 +628,74 @@ impl App {
         let key = match self.screen {
             Screen::Settings(_) => Some(ModalShellKey::Settings {
                 game: self.editing_game().map(|gs| gs.title.as_str()),
-                hover_close: self.hover_close,
             }),
             Screen::Wake => self.wake.as_ref().map(|w| ModalShellKey::Wake {
                 name: &w.name,
                 mac_empty: w.mac.is_empty(),
                 sent: w.sent,
-                hover_close: self.hover_close,
             }),
             Screen::Pairing => Some(ModalShellKey::Pairing {
                 digits: self.pin_digits,
                 status: self.pairing_status.as_deref(),
                 busy: self.pairing_busy,
-                hover_close: self.hover_close,
             }),
             Screen::ForgetHost => Some(ModalShellKey::ForgetHost {
                 name: self
                     .host_menu_index
                     .and_then(|i| self.entries.get(i))
                     .map(HostEntry::name),
-                hover_close: self.hover_close,
             }),
             Screen::HostMenu => Some(ModalShellKey::HostMenu {
                 name: &host_menu_title,
                 subtitle: &host_menu_subtitle,
-                rows: self.host_menu_actions().len(),
-                hover_close: self.hover_close,
+                rows: host_menu_actions.len(),
             }),
             Screen::WakeSettings => Some(ModalShellKey::WakeSettings {
                 title: &wake_settings_title,
                 auto: self.wake_settings_host().is_some_and(|h| h.wol_auto),
-                hover_close: self.hover_close,
             }),
-            Screen::About => Some(ModalShellKey::About {
-                hover_close: self.hover_close,
-            }),
+            Screen::About => Some(ModalShellKey::About),
             // The whole shell is derived from the status sentence, which already encodes
             // the phase and the latest measurement.
             Screen::SpeedTest => Some(ModalShellKey::SpeedTest {
                 status: &speed_test_status,
-                hover_close: self.hover_close,
             }),
             Screen::Diagnostics => Some(ModalShellKey::Diagnostics {
                 log_level: self.settings.log_level_override,
                 stats_overlay: self.settings.stats_overlay,
                 show_logs: self.settings.show_logs,
-                hover_close: self.hover_close,
             }),
             Screen::Experimental => Some(ModalShellKey::Experimental {
                 ndl_audio_offload: self.settings.ndl_audio_offload,
                 game_mode: self.settings.game_mode,
                 rooted: self.rooted,
-                hover_close: self.hover_close,
             }),
             Screen::CursorSettings(_) => Some(ModalShellKey::CursorSettings {
                 cursor_capture: self.settings_target().cursor_capture,
                 cursor_gestures: self.settings_target().cursor_gestures,
                 over: self.editing_override(),
-                hover_close: self.hover_close,
             }),
-            Screen::SendLogs => Some(ModalShellKey::SendLogs {
-                hover_close: self.hover_close,
-            }),
+            Screen::SendLogs => Some(ModalShellKey::SendLogs),
             // `EditHost` joins `AddHost` in having no shell key: its typed-digit
             // display has no separate focus tile to protect, so it just redraws on
             // any `content_dirty` tick — same for `PinLimit`, which is a fixed
             // message plus one always-focused button.
             Screen::Home | Screen::AddHost | Screen::EditHost | Screen::PinLimit => None,
         };
-        key.as_ref().map(cache::version)
+        // Hashed with the key rather than carried inside it: the close-button hover changes
+        // every shell alike (see `ModalShellKey`).
+        key.as_ref().map(|k| cache::version(&(self.hover_close, k)))
     }
 
     /// The version [`tile::MODAL_FOCUS`] is valid at — a hash of the open modal's focused
     /// widget *and its value*, so a value change invalidates the tile just as a focus move
     /// does. `None` for a screen with no single focused widget. Borrowed like
     /// [`modal_shell_version`](Self::modal_shell_version), and for the same reason.
-    fn modal_focus_version(&self) -> Option<u64> {
-        // Both borrowed by the key below, so both outlive it.
-        let host_menu_actions = matches!(self.screen, Screen::HostMenu)
-            .then(|| self.host_menu_actions())
-            .unwrap_or_default();
+    fn modal_focus_version(
+        &self,
+        host_menu_actions: &[(crate::app::state::hostmenu::HostAction, ui::widgets::FocusRow)],
+    ) -> Option<u64> {
+        // Borrowed by the key below, so it outlives it.
         let speed_test_label = matches!(self.screen, Screen::SpeedTest)
             .then(|| view::speedtest::apply_label(view::speedtest::recommendation(self.speed_test.as_ref())))
             .unwrap_or_default();
@@ -784,7 +776,12 @@ impl App {
         // `ModalShellKey`'s docs). `AddHost` has no `ModalShellKey` variant
         // (no split focus tile to protect) and just redraws on any
         // `content_dirty` tick, same as every modal did before this split.
-        let shell_version = self.modal_shell_version();
+        // Built once for both version fns — it is a `Vec` of owned rows, and each of them
+        // used to build its own copy every frame the host menu was up.
+        let host_menu_actions = matches!(self.screen, Screen::HostMenu)
+            .then(|| self.host_menu_actions())
+            .unwrap_or_default();
+        let shell_version = self.modal_shell_version(&host_menu_actions);
         let modal_stale = match shell_version {
             Some(_) => !tiles.contains(tile::MODAL) || self.modal.shell_version != shell_version,
             None => content_dirty || !tiles.contains(tile::MODAL),
@@ -799,8 +796,10 @@ impl App {
             let c = &mut ui::Canvas::new(&mut p, text_cache, fonts, screen_w, screen_h);
             let hover_close = self.hover_close;
             self.with_modal_screen(|s| s.render(c, hover_close)).transpose()?;
-            // Staleness is decided above (the shell key is compared against the previous
-            // frame's, not hashed), so the store just takes the result.
+            // Staleness was already decided above, against `modal.shell_version` rather than
+            // against the store — the keyless screens have no version to compare, so they turn
+            // on `content_dirty` instead. Hence `STATIC` here: the store is told to keep this
+            // until something removes it, not to arbitrate.
             tiles.put(tile::MODAL, cache::STATIC, p);
             updated.push(tile::MODAL);
         }
@@ -808,7 +807,7 @@ impl App {
         // (`ModalFocusKey`'s docs) — `None` for screens with no such widget
         // (Home, AddHost) or when Wake has nothing to focus (no MAC on record,
         // see `handle_wake_event`'s matching guard).
-        if let Some(version) = self.modal_focus_version() {
+        if let Some(version) = self.modal_focus_version(&host_menu_actions) {
             // Also stale on every tick of an in-flight `switch_anim`: the knob's
             // position depends on elapsed time, not on the key, which doesn't
             // change mid-flip.

@@ -266,8 +266,8 @@ pub struct App {
     /// Sidebar row content changed — the sidebar strip must re-rasterize
     /// (never set on focus movement).
     pub(crate) sidebar_dirty: bool,
-    /// Tiles whose GPU texture should be released this frame — drained by `main.rs`,
-    /// which owns the `Compositor`.
+    /// Tiles whose GPU texture should be released this frame — drained by `runtime`, which
+    /// owns the `Compositor`, before it uploads whatever the same pass rebuilt.
     pub(crate) evicted_tiles: Vec<TileId>,
     /// Everything that only exists while a modal is up — see [`modal::ModalState`].
     pub(crate) modal: modal::ModalState,

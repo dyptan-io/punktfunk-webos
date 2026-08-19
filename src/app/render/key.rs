@@ -53,74 +53,64 @@ pub enum ScrollContentKey {
 
 /// Each modal's shell content keys. Value changes invalidate the shell;
 /// pure focus moves don't (that's `ModalFocusKey`'s job).
+///
+/// The close-button hover is not in here. It changes every shell alike and belongs to none of
+/// them, so `modal_shell_version` hashes it alongside whichever key it got — one place instead
+/// of a `hover_close` field repeated down every variant and every arm that builds one.
 #[derive(PartialEq, Eq, Hash)]
 pub enum ModalShellKey<'a> {
     // Only what `render_settings` reads — the whole `Settings` struct (or the
     // dropdown row) would invalidate this key, forcing a full-screen re-raster,
     // on every keystroke or dropdown open/close. The shell draws chrome only (no
     // row content, not even the Bitrate caution — that's the focus tile's job),
-    // so the only thing that can actually change it is the close-button hover.
+    // so nothing but the title suffix can actually change it.
     Settings {
         /// The per-game screen's dim title suffix — `None` on the global one. The only thing
         /// separating the two shells.
         game: Option<&'a str>,
-        hover_close: bool,
     },
     Wake {
         name: &'a str,
         mac_empty: bool,
         sent: bool,
-        hover_close: bool,
     },
     Pairing {
         digits: [u8; 4],
         status: Option<&'a str>,
         busy: bool,
-        hover_close: bool,
     },
     ForgetHost {
         name: Option<&'a str>,
-        hover_close: bool,
     },
     HostMenu {
         name: &'a str,
         subtitle: &'a str,
         rows: usize,
-        hover_close: bool,
     },
     WakeSettings {
         title: &'a str,
         auto: bool,
-        hover_close: bool,
     },
-    About {
-        hover_close: bool,
-    },
+    About,
     SpeedTest {
         status: &'a str,
-        hover_close: bool,
     },
     Diagnostics {
         log_level: LogLevelOverride,
         stats_overlay: bool,
         show_logs: bool,
-        hover_close: bool,
     },
     Experimental {
         ndl_audio_offload: bool,
         game_mode: bool,
         /// The root-probe verdict — it locks the Game mode row and rewrites its caption.
         rooted: Option<bool>,
-        hover_close: bool,
     },
     CursorSettings {
         cursor_capture: bool,
         cursor_gestures: bool,
         over: SettingsOverride,
-        hover_close: bool,
     },
-    /// Fixed warning copy + two buttons; only the close (X) hover varies.
-    SendLogs {
-        hover_close: bool,
-    },
+    /// Fixed warning copy + two buttons — nothing screen-specific left to key on.
+    SendLogs,
 }

@@ -24,7 +24,8 @@
 //! they cannot fight the kernel's force-feedback state — see [`build_report`].
 use std::fmt::Write as _;
 use std::sync::mpsc::{Receiver, SyncSender};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use punktfunk_core::quic::HidOutput;
 
@@ -137,7 +138,30 @@ pub fn find_address() -> Option<String> {
 /// webOS 5/6-class set (kernel 4.4.84): `/sys/bus/hid/devices/0005:054C:0CE6.0002/driver` links to
 /// `hid-generic`, and neither the lightbar nor the player LEDs moved for a report identical to
 /// the one confirmed working on webOS 10.3. This is the caption Settings shows for that case.
+///
+/// Answered from a short-lived cache. The Settings screen reads this while building its rows,
+/// which the render pass does every tick the modal animates — and the uncached answer is two
+/// filesystem reads. A pad binding changes only when one is plugged in or out, so a second of
+/// staleness is invisible and 60 reads a second are not.
 pub fn hid_playstation_bound() -> bool {
+    /// How long a probe's answer stands. Human-scale: a hotplug shows up in the caption within
+    /// one refresh, and nothing else in the app reacts faster than that.
+    const TTL: Duration = Duration::from_secs(1);
+    static CACHED: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+
+    let mut cached = CACHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((at, bound)) = *cached {
+        if at.elapsed() < TTL {
+            return bound;
+        }
+    }
+    let bound = probe_hid_playstation_bound();
+    *cached = Some((Instant::now(), bound));
+    bound
+}
+
+/// The uncached probe behind [`hid_playstation_bound`].
+fn probe_hid_playstation_bound() -> bool {
     let devices = std::fs::read_to_string("/proc/bus/input/devices").unwrap_or_default();
     devices.split("\n\n").any(|block| {
         let is_dualsense = block

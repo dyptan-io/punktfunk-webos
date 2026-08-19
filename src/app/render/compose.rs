@@ -86,18 +86,20 @@ impl App {
             let scroll_geom = self.scroll_geometry_for(screen, screen_w, screen_h, fonts);
             if let Some((total, _, _, content)) = scroll_geom {
                 let stride = self.scroll_stride_for(screen, fonts);
-                let scroll_px = self
-                    .modal
-                    .scroll_px
-                    .clamp(0, Self::max_scroll_px(total, stride, content.height()));
-                self.push_scroll_content(
-                    cmds,
-                    screen,
-                    ui::render::Size::new(screen_w, screen_h),
-                    fonts,
-                    dy,
-                    (255.0 * m) as u8,
-                );
+                let scroll_px = self.clamped_scroll_px(total, stride, content.height());
+                let alpha = (255.0 * m) as u8;
+                // Settings' body is one tile per row (see `tile::settings_row`), so it is
+                // placed row by row; every other scrolling modal crops its single baked tile.
+                if matches!(screen, Screen::Settings(_)) {
+                    Self::push_settings_rows(cmds, total, content, scroll_px, dy, alpha);
+                } else if let Some((src, dst)) = self.scroll_src_rect(screen, screen_w, screen_h, fonts) {
+                    cmds.push(DrawCmd::TexCropped {
+                        tile: tile::SCROLL_CONTENT,
+                        src,
+                        dst: dst.offset(0, dy),
+                        alpha,
+                    });
+                }
                 // Bottom fade, only while rows remain below the viewport — it is the
                 // "there is more" signal, so it has to vanish exactly when scrolling has
                 // reached the end, or it reads as content that can never be got to.
@@ -129,22 +131,27 @@ impl App {
                     });
                 }
             }
+            // An open dropdown's panel and its focused option, resolved once — the two are
+            // drawn either side of the focus tile below, which is the only reason they are
+            // not one block.
+            let dropdown = self.dropdown_draw_state().and_then(|(row, focused, dd_alpha)| {
+                let (content, scroll_px) = self.dropdown_geom(screen_w, screen_h, fonts)?;
+                let overlay_rect = view::settings::dropdown_overlay_rect_at_px(content, row, scroll_px);
+                Some((row, focused, overlay_rect, (255.0 * m * dd_alpha) as u8))
+            });
             // Dropdown overlay (Settings or Diagnostics).
-            if let Some((row, _, dd_alpha)) = self.dropdown_draw_state() {
-                if let Some((content, scroll_px)) = self.dropdown_geom(screen_w, screen_h, fonts) {
-                    let overlay_rect = view::settings::dropdown_overlay_rect_at_px(content, row, scroll_px);
-                    let options_len = self.dropdown_options_len(row);
-                    cmds.push(DrawCmd::Tex {
-                        tile: tile::DROPDOWN_OVERLAY,
-                        dst: Rect::new(
-                            overlay_rect.x(),
-                            overlay_rect.y() + dy,
-                            overlay_rect.width(),
-                            options_len as u32 * ui::widgets::DROPDOWN_OPTION_H,
-                        ),
-                        alpha: (255.0 * m * dd_alpha) as u8,
-                    });
-                }
+            if let Some((row, _, overlay_rect, dd_alpha)) = dropdown {
+                let options_len = self.dropdown_options_len(row);
+                cmds.push(DrawCmd::Tex {
+                    tile: tile::DROPDOWN_OVERLAY,
+                    dst: Rect::new(
+                        overlay_rect.x(),
+                        overlay_rect.y() + dy,
+                        overlay_rect.width(),
+                        options_len as u32 * ui::widgets::DROPDOWN_OPTION_H,
+                    ),
+                    alpha: dd_alpha,
+                });
             }
             // Focused widget of the active modal (setting row, button, etc.);
             // composites on shell at its on-screen position (no re-rasterize on move).
@@ -188,21 +195,18 @@ impl App {
             // top of the shell's unfocused option list at its actual
             // position, so navigating dropdown options needs no modal
             // re-rasterize either. `Settings` or `Diagnostics`.
-            if let Some((row, focused, dd_alpha)) = self.dropdown_draw_state() {
-                if let Some((content, scroll_px)) = self.dropdown_geom(screen_w, screen_h, fonts) {
-                    let overlay_rect = view::settings::dropdown_overlay_rect_at_px(content, row, scroll_px);
-                    let option_rect = ui::widgets::dropdown_option_rect(overlay_rect, focused);
-                    cmds.push(DrawCmd::Tex {
-                        tile: tile::DROPDOWN_FOCUS,
-                        dst: Rect::new(
-                            option_rect.x(),
-                            option_rect.y() + dy,
-                            option_rect.width(),
-                            option_rect.height(),
-                        ),
-                        alpha: (255.0 * m * dd_alpha) as u8,
-                    });
-                }
+            if let Some((_, focused, overlay_rect, dd_alpha)) = dropdown {
+                let option_rect = ui::widgets::dropdown_option_rect(overlay_rect, focused);
+                cmds.push(DrawCmd::Tex {
+                    tile: tile::DROPDOWN_FOCUS,
+                    dst: Rect::new(
+                        option_rect.x(),
+                        option_rect.y() + dy,
+                        option_rect.width(),
+                        option_rect.height(),
+                    ),
+                    alpha: dd_alpha,
+                });
             }
             // Whichever modal is scrollable, its indicator — full opacity for
             // `SCROLL_INDICATOR_HOLD`, then a linear fade over `SCROLL_INDICATOR_FADE`
@@ -264,41 +268,9 @@ impl App {
     /// Sidebar family compose: the focused-row highlight overlay (the strip itself
     /// is an unconditional `tile::SIDEBAR` blit in `draw_list`). Reads only the
     /// `RenderInput` slice — a template for the per-family `TileCache::compose` split.
-    /// The scrolling modal's body, positioned and clipped to its viewport.
-    ///
-    /// Two shapes behind one call. About bakes a window of its document into a single
-    /// [`tile::SCROLL_CONTENT`] and crops it; Settings bakes one tile per row (see
-    /// `tile::settings_row`) and places each, so changing one value repaints one row rather
-    /// than the strip. Both are pure placement — scrolling either never re-rasterizes.
-    fn push_scroll_content(
-        &self,
-        cmds: &mut Vec<DrawCmd>,
-        screen: Screen,
-        size: ui::render::Size,
-        fonts: &ui::text::Fonts,
-        dy: i32,
-        alpha: u8,
-    ) {
-        let (screen_w, screen_h) = (size.w, size.h);
-        if !matches!(screen, Screen::Settings(_)) {
-            if let Some((src, dst)) = self.scroll_src_rect(screen, screen_w, screen_h, fonts) {
-                cmds.push(DrawCmd::TexCropped {
-                    tile: tile::SCROLL_CONTENT,
-                    src,
-                    dst: dst.offset(0, dy),
-                    alpha,
-                });
-            }
-            return;
-        }
-        let Some((total, _, _, content)) = self.scroll_geometry_for(screen, screen_w, screen_h, fonts) else {
-            return;
-        };
-        let stride = self.scroll_stride_for(screen, fonts);
-        let scroll_px = self
-            .modal
-            .scroll_px
-            .clamp(0, Self::max_scroll_px(total, stride, content.height()));
+    /// The settings list: each row's tile placed at its scrolled position and clipped to the
+    /// viewport. Pure placement — scrolling re-rasterizes nothing.
+    fn push_settings_rows(cmds: &mut Vec<DrawCmd>, total: usize, content: Rect, scroll_px: i32, dy: i32, alpha: u8) {
         let viewport = content.offset(0, dy);
         for i in 0..total {
             let Some(id) = tile::settings_row(i) else { break };

@@ -255,11 +255,7 @@ impl App {
         let (_, content) = view::settings::layout(set, screen_w, screen_h);
         let stride = ui::widgets::focus_row_stride() as i32;
         let total = menu::settings_row_count(set);
-        let scroll_px = self
-            .modal
-            .scroll_px
-            .clamp(0, Self::max_scroll_px(total, stride, content.height()));
-        (content, scroll_px)
+        (content, self.clamped_scroll_px(total, stride, content.height()))
     }
 
     /// Display row `row`'s on-screen rect, same animated scroll offset `settings_row_at`
