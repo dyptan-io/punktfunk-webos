@@ -265,9 +265,6 @@ impl App {
         }
     }
 
-    /// Sidebar family compose: the focused-row highlight overlay (the strip itself
-    /// is an unconditional `tile::SIDEBAR` blit in `draw_list`). Reads only the
-    /// `RenderInput` slice — a template for the per-family `TileCache::compose` split.
     /// The settings list: each row's tile placed at its scrolled position and clipped to the
     /// viewport. Pure placement — scrolling re-rasterizes nothing.
     fn push_settings_rows(cmds: &mut Vec<DrawCmd>, total: usize, content: Rect, scroll_px: i32, dy: i32, alpha: u8) {
@@ -289,6 +286,9 @@ impl App {
         }
     }
 
+    /// Sidebar family compose: the focused-row highlight overlay (the strip itself
+    /// is an unconditional `tile::SIDEBAR` blit in `draw_list`). Reads only the
+    /// `RenderInput` slice — a template for the per-family `TileCache::compose` split.
     fn compose_sidebar_focus(input: &render_input::RenderInput<'_>, screen_h: u32, cmds: &mut Vec<DrawCmd>) {
         let sidebar_focus_row = match input.home_focus {
             HomeFocus::Sidebar(i) | HomeFocus::SidebarMenu(i) => Some(i),

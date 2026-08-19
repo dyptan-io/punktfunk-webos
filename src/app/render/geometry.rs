@@ -36,8 +36,10 @@ impl App {
         fonts: &ui::text::Fonts,
     ) -> Option<(usize, usize, Rect, Rect)> {
         match screen {
-            Screen::Settings(_) => {
-                let set = self.settings_scope();
+            // The scope comes off the passed screen, not `self.screen`: a closing Settings(Game)
+            // is asked about after `self.screen` has moved on, and reading the live scope there
+            // measures the global list instead of the one being faded out.
+            Screen::Settings(set) => {
                 let (card, content) = view::settings::layout(set, screen_w, screen_h);
                 let visible = view::settings::visible_rows(set, screen_h);
                 Some((menu::settings_row_count(set), visible, card, content))
@@ -97,7 +99,7 @@ impl App {
             .clamp(0, Self::max_scroll_px(total, stride, viewport_h))
     }
 
-    /// Which slice of `screen`'s baked `tile::SCROLL_CONTENT` is showing    /// Which slice of `screen`'s baked `tile::SCROLL_CONTENT` is showing, as `(src crop,
+    /// Which slice of `screen`'s baked `tile::SCROLL_CONTENT` is showing, as `(src crop,
     /// dst rect)` — `None` for a screen whose body lives in its shell tile.
     ///
     /// The one place the window rebase lives: `compose_modal` draws the live modal with it,

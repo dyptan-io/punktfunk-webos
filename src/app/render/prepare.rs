@@ -560,7 +560,7 @@ impl App {
         // rasterization, and it keeps the fade-out a snapshot rather than a live list the
         // leaving screen would have to keep its tiles alive for.
         let body = match left {
-            Screen::Settings(_) => self.stitch_settings_body(tiles, screen_w, screen_h, fonts),
+            Screen::Settings(_) => self.stitch_settings_body(left, tiles, screen_w, screen_h, fonts),
             _ => tiles.get(tile::SCROLL_CONTENT).cloned(),
         };
         let content = self
@@ -580,14 +580,19 @@ impl App {
     /// The settings list as one painter, at the full unscrolled height `scroll_src_rect`
     /// crops against — the single body tile the row band deliberately does not keep. Built
     /// only when a settings screen is being left (see `snapshot_closing_modal`).
+    ///
+    /// `screen` is the one being *left*, not `self.screen` — that has already moved on, and
+    /// asking it for this geometry answers `None` (or the wrong scope's row count), which
+    /// drops the row list out of the fade instead of freezing it.
     fn stitch_settings_body(
         &self,
+        screen: Screen,
         tiles: &ui::cache::TileStore,
         screen_w: u32,
         screen_h: u32,
         fonts: &ui::text::Fonts,
     ) -> Option<Painter> {
-        let (total, _, _, content) = self.scroll_geometry_for(self.screen, screen_w, screen_h, fonts)?;
+        let (total, _, _, content) = self.scroll_geometry_for(screen, screen_w, screen_h, fonts)?;
         let stride = ui::widgets::focus_row_stride();
         let mut body = Painter::new(content.width().max(1), (total as u32 * stride).max(1));
         for i in 0..total {

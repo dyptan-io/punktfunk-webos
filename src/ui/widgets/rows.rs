@@ -380,6 +380,9 @@ fn switch_frac(row: &FocusRow) -> f32 {
     }
 }
 
+/// A [`Color`] flattened to something hashable — [`Color`] itself is only `Eq`.
+type Rgba8 = (u8, u8, u8, u8);
+
 /// A row's pixels as something hashable — the version its [`RowTile`] is valid at.
 ///
 /// Borrowed from the row rather than cloned: `cache::version` keeps only the hash, so this
@@ -390,9 +393,6 @@ fn switch_frac(row: &FocusRow) -> f32 {
 /// every frame. A slider's fill is not a clock: it moves only when the setting behind it
 /// does. So it is hashed by bit pattern here, deliberately and in one place, rather than by
 /// making `FocusRow` blanket-hashable.
-/// A [`Color`] flattened to something hashable — [`Color`] itself is only `Eq`.
-type Rgba8 = (u8, u8, u8, u8);
-
 #[derive(PartialEq, Eq, Hash)]
 pub struct FocusRowKey<'a> {
     icon: &'a str,
