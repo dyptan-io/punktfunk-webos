@@ -148,7 +148,7 @@ const TITLE_STRIP_PAD: i32 = 16;
 const TITLE_STRIP_INSET: i32 = 8;
 /// Inset of the override dot from the panel's right edge — deeper than the label's own, so
 /// the mark reads as sitting inside the frosted window rather than against its corner.
-const MARK_DOT_INSET: i32 = 22;
+const MARK_DOT_INSET: i32 = 16;
 /// Blur radius of the frost under the strip.
 const TITLE_STRIP_BLUR: usize = 6;
 /// Gap between a submenu row's icon and its label.
@@ -222,25 +222,27 @@ impl Canvas<'_, '_> {
     /// Cards only; hero art keeps its own (art-or-nothing) treatment.
     fn placeholder_poster(&mut self, r: Rect, title: &str) {
         self.painter.fill_rounded_rect(r, CARD_RADIUS, tint_for(title));
-        let font = self.fonts.title;
         let (raster, gap) = (self.fonts.raster, PLACEHOLDER_LINE_GAP);
-        let line_h = raster.height(font) + gap;
         let max_w = r.width().saturating_sub(2 * PLACEHOLDER_PAD as u32);
+        let font = fitting_font(raster, title, max_w);
+        let line_h = raster.height(font) + gap;
         let mut lines = wrap_text(raster, font, title, max_w);
-        // Keep the block inside the card even for a long title; the strip has the full
-        // text (ellipsized) anyway, so truncating here loses nothing.
+        // Keep the block inside the card even for a long title; the strip carries the whole
+        // title anyway, so dropping lines here loses nothing.
         let max_lines = ((r.height() as i32 - 2 * PLACEHOLDER_PAD) / line_h.max(1)).max(1) as usize;
         lines.truncate(max_lines);
-        if let Some(last) = lines.last_mut() {
-            *last = ellipsize(raster, font, last, max_w);
-        }
 
         let block_h = lines.len() as i32 * line_h - gap;
         let mut y = r.y() + (r.height() as i32 - block_h) / 2;
         for line in &lines {
+            // Centred on the width it actually gets: a word too long even for the smallest
+            // font still overflows its line, and must fade at the padding rather than spill
+            // out over the card's shadow.
+            let w = raster.measure(font, line).0.min(max_w);
+            let x = r.x() + (r.width() as i32 - w as i32) / 2;
             // Infallible in practice (glyphs come from the bundled font); a placeholder
             // that can't measure its own title just draws the tint.
-            let _ = self.text_centered(font, line, r, y, Color::RGBA(0xff, 0xff, 0xff, 0xd8));
+            let _ = self.text_faded(font, line, x, y, max_w, Color::RGBA(0xff, 0xff, 0xff, 0xd8));
             y += line_h;
         }
     }
@@ -285,8 +287,7 @@ impl Canvas<'_, '_> {
         let avail = band
             .width()
             .saturating_sub((TITLE_STRIP_INSET + label_right_pad(overridden)) as u32);
-        let label = ellipsize(self.fonts.raster, font, title, avail);
-        self.text(font, &label, x, y, theme().text)?;
+        self.text_faded(font, title, x, y, avail, theme().text)?;
         Ok(())
     }
 
@@ -324,9 +325,8 @@ impl Canvas<'_, '_> {
             let text_x = icon_x + icon as i32 + ICON_LABEL_GAP;
             let marked = marked == Some(i);
             let avail = row.right().saturating_sub(text_x + label_right_pad(marked)).max(0) as u32;
-            let label = ellipsize(self.fonts.raster, font, label, avail);
             let y = row.y() + (row.height() as i32 - self.fonts.raster.height(font)) / 2;
-            self.text(font, &label, text_x, y, fg)?;
+            self.text_faded(font, label, text_x, y, avail, fg)?;
             if marked {
                 self.mark_dot(mark_dot_x(row), row.y() + row.height() as i32 / 2, theme().warning);
             }

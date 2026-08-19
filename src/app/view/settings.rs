@@ -297,14 +297,14 @@ pub(crate) fn render(c: &mut Canvas, set: SettingsScope, suffix: Option<&str>, h
             ui::style::theme().muted,
         );
         let used = title_w + (2 * SEP_DOT_GAP + 2 * SEP_DOT_R) as u32;
-        // Ellipsized rather than clipped: a long game name must not run under the close button.
+        // Faded rather than clipped: a long game name must not run under the close button.
         let avail = column.width().saturating_sub(used + CLOSE_RESERVE);
-        let suffix = ui::text::ellipsize(c.fonts.raster, font, suffix, avail);
-        c.text(
+        c.text_faded(
             font,
-            &suffix,
+            suffix,
             column.x() + used as i32,
             baseline,
+            avail,
             ui::style::theme().muted,
         )?;
     }

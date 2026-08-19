@@ -394,6 +394,42 @@ impl Painter {
         });
     }
 
+    /// [`draw_pixmap`](Self::draw_pixmap) cut to `max_w`, its last [`FADE_EDGE_W`] px ramped
+    /// out — how an overlong label says "this continues" without spending width on an
+    /// ellipsis. A `src` that already fits is drawn untouched.
+    ///
+    /// Smoothstep, premultiplied and rounded for the reasons on
+    /// [`fill_vertical_fade`](Self::fill_vertical_fade), which it can't share: this modulates
+    /// the buffer rather than filling it.
+    pub fn draw_pixmap_faded(&mut self, x: i32, y: i32, src: &Pixmap, max_w: u32) {
+        if src.width() <= max_w {
+            self.draw_pixmap(x, y, src);
+            return;
+        }
+        let Some(mut cut) = Pixmap::new(max_w, src.height()) else {
+            return;
+        };
+        // Identity blit into a narrower buffer: the crop is the clip.
+        cut.draw_pixmap(0, 0, src.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        let w = max_w as usize;
+        let fade = (FADE_EDGE_W as usize).min(w);
+        // Per column, not per pixel: the ramp doesn't vary down the line.
+        let ramp: Vec<u16> = (0..fade)
+            .map(|i| {
+                let eased = crate::ui::animation::smoothstep((fade - i) as f32 / fade as f32);
+                (eased * 255.0).round().clamp(0.0, 255.0) as u16
+            })
+            .collect();
+        for row in cut.data_mut().chunks_exact_mut(w * 4) {
+            for (pixel, &k) in row[(w - fade) * 4..].chunks_exact_mut(4).zip(&ramp) {
+                for b in pixel {
+                    *b = ((u16::from(*b) * k + 127) / 255) as u8;
+                }
+            }
+        }
+        self.draw_pixmap(x, y, &cut);
+    }
+
     pub fn draw_pixmap(&mut self, x: i32, y: i32, src: &Pixmap) {
         self.pixmap.draw_pixmap(
             x - self.origin.0,
@@ -469,6 +505,10 @@ impl Painter {
             .fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
     }
 }
+
+/// Width of [`Painter::draw_pixmap_faded`]'s ramp: wide enough not to read as a hard cut,
+/// narrow enough to eat no more of the line than an ellipsis would.
+pub const FADE_EDGE_W: u32 = 28;
 
 /// How far a shadow's blur extends past the shape casting it, in px — a fixed
 /// constant (not derived from anything) picked to read as a soft TV-scale shadow.

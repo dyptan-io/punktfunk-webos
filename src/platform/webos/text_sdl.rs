@@ -118,7 +118,7 @@ impl TextRaster for SdlTextRaster<'_> {
 
     /// Memoized, because `size_of` is a full freetype glyph-metrics walk and this UI asks for
     /// the same measurement constantly: `wrap_text` measures every word of every string it
-    /// wraps (and words repeat), `ellipsize` binary-searches over prefixes of one title,
+    /// wraps (and words repeat), every label measures itself against its width budget,
     /// `Layout::total_length` probes a stack before placing it, and all of that happens again
     /// on the next tile rebuild. None of it can change — a loaded font's metrics are fixed.
     fn measure(&self, font: FontId, text: &str) -> (u32, u32) {

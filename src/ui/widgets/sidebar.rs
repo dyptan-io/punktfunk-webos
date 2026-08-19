@@ -110,13 +110,12 @@ impl Widget for SidebarRow<'_> {
         let drawn = c.painter.selectable_with_selection(area, self.focused, self.selected);
         let color = if self.focused { theme().text } else { theme().muted };
         c.icon(sidebar_icon_rect(drawn), self.glyph, color)?;
-        // Ellipsized to prevent overflow; `reserve_right` keeps it clear of the ⋯ button.
+        // Faded rather than clipped; `reserve_right` keeps it clear of the ⋯ button.
         let text_x = SIDEBAR_ICON_PAD + SIDEBAR_ICON_SIZE as i32 + 16;
         let max_w = drawn.width().saturating_sub(text_x as u32 + 20 + self.reserve_right);
-        let label = ellipsize(c.fonts.raster, c.fonts.label, self.label, max_w);
         let font = c.fonts.label;
         let y = drawn.y() + (drawn.height() as i32 - c.fonts.raster.height(font)) / 2;
-        c.text(font, &label, drawn.x() + text_x, y, color)?;
+        c.text_faded(font, self.label, drawn.x() + text_x, y, max_w, color)?;
         Ok(())
     }
 }

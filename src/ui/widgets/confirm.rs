@@ -93,15 +93,14 @@ impl Canvas<'_, '_> {
         let (icon_size, icon_gap, side_pad) = confirm_button_metrics(self.fonts.raster, font);
 
         // Icon and label are centred as one group, the same way a label without an icon
-        // was already centred on its own — and the label is ellipsized to whatever the icon
+        // was already centred on its own — and the label is held to whatever the icon
         // leaves, so no label can overflow the button regardless of resolution.
         let leading = match button.icon {
             Some(_) => icon_size + icon_gap as u32,
             None => 0,
         };
         let budget = rect.width().saturating_sub(2 * side_pad as u32).saturating_sub(leading);
-        let label = ellipsize(self.fonts.raster, font, button.label, budget);
-        let label_w = self.fonts.raster.measure(font, &label).0;
+        let label_w = self.fonts.raster.measure(font, button.label).0.min(budget);
         let start_x = rect.x() + (rect.width() as i32 - (leading + label_w) as i32) / 2;
 
         if let Some(icon) = button.icon {
@@ -113,11 +112,12 @@ impl Canvas<'_, '_> {
             );
             self.icon(icon_rect, icon, color)?;
         }
-        self.text(
+        self.text_faded(
             font,
-            &label,
+            button.label,
             start_x + leading as i32,
             rect.y() + (rect.height() as i32 - line_h) / 2,
+            budget,
             color,
         )?;
         Ok(())

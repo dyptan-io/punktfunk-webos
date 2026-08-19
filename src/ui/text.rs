@@ -92,6 +92,19 @@ impl Canvas<'_, '_> {
         Ok(width)
     }
 
+    /// [`text`](Self::text), except an overlong line is cut at `max_w` and faded rather than
+    /// ellipsized — see
+    /// [`Painter::draw_pixmap_faded`](crate::ui::painter::Painter::draw_pixmap_faded).
+    pub fn text_faded(&mut self, font: FontId, s: &str, x: i32, y: i32, max_w: u32, color: Color) -> Result<u32> {
+        if s.is_empty() || max_w == 0 {
+            return Ok(0);
+        }
+        let pixmap = self.text_cache.get_or_create(self.fonts.raster, font, s, color)?;
+        let width = pixmap.width().min(max_w);
+        self.painter.draw_pixmap_faded(x, y, pixmap, max_w);
+        Ok(width)
+    }
+
     /// Renders one line of text WITHOUT touching [`TextCache`] — for text that is
     /// unique per line and scrolled past once, where caching is pure loss.
     ///
@@ -194,36 +207,27 @@ impl Canvas<'_, '_> {
     }
 }
 
-/// Truncates `text` with a trailing "…" so it fits within `max_w` pixels in `font`
-/// (moonlight-tv scroll-marquees long titles on focus instead — see the module docs
-/// on why this client keeps it simple).
-/// Binary-searches the character count rather than popping one at a time: a measurement is a
-/// freetype metrics walk, and a long title that has to lose most of itself was paying one per
-/// dropped character. Width is monotonic in the prefix length, which is what makes the search
-/// valid — the same negligible-kerning assumption every width budget in this UI already makes.
-pub fn ellipsize(raster: &dyn TextRaster, font: FontId, text: &str, max_w: u32) -> String {
-    if raster.measure(font, text).0 <= max_w {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let candidate = |take: usize| chars[..take].iter().collect::<String>() + "…";
-    // Invariant: `lo` always fits, `hi` never does. `lo = 0` is "…" alone, which is the
-    // documented last resort when even that overflows.
-    let (mut lo, mut hi) = (0usize, chars.len());
-    while hi - lo > 1 {
-        let mid = lo + (hi - lo) / 2;
-        if raster.measure(font, &candidate(mid)).0 <= max_w {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    candidate(lo)
+/// Largest loaded font whose longest word in `text` fits `max_w` (smallest if none does).
+/// For wrapped blocks: wrapping never breaks inside a word, so one word wider than the box
+/// overflows at any fixed size.
+pub fn fitting_font(raster: &dyn TextRaster, text: &str, max_w: u32) -> FontId {
+    // Descending point size — see `SdlTextRaster::new`.
+    const LADDER: [FontId; 4] = [FontId::Title, FontId::Label, FontId::Value, FontId::Caption];
+    let longest_word = |f| {
+        text.split_whitespace()
+            .map(|w| raster.measure(f, w).0)
+            .max()
+            .unwrap_or(0)
+    };
+    LADDER
+        .into_iter()
+        .find(|&f| longest_word(f) <= max_w)
+        .unwrap_or(FontId::Caption)
 }
 
 /// Greedily word-wraps `text` into lines no wider than `max_w` px in `font` — for modal
-/// copy that's a full sentence or two (status/explanation text), unlike `ellipsize`'s
-/// single-line truncation for card titles.
+/// copy that's a full sentence or two (status/explanation text), unlike
+/// [`Canvas::text_faded`]'s single-line budget for card titles and row labels.
 ///
 /// Tracks the running line width instead of re-measuring the whole (growing) line on
 /// every word — the original did a full-prefix measure each time, which is O(line
