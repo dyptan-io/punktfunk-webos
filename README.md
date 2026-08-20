@@ -27,21 +27,25 @@ video decode, and webOS packaging.
 
 ## Features
 
-- LAN discovery (mDNS) or add a host manually by IP; PIN pairing with persisted trust, and a
-  live reachability dot on every host so an offline machine is visible before you try it.
-- Per-host actions behind a ⋯ button on each host row: connect, pair, **network speed test**
-  (measures over the real data plane and applies a recommended bitrate in one press), wake,
-  edit address, forget.
-- Configurable resolution (1080p/1440p/4K), frame rate, bitrate, HDR, and audio channels
-  (stereo / 5.1 / 7.1).
-- Browses the host's game library (with cover art, alphabetically sorted) and launches
-  straight into a title.
-- About & licenses screen with the build version and full third-party notices.
-- Hardware H.264/H.265 decode via webOS's NDL DirectMedia API; audio via SDL2/PulseAudio.
-- Gamepad feedback back to the controller — rumble for any pad, plus DualSense adaptive triggers,
-  haptics and lightbar. **Requires a newer webOS version** (see note below).
-- Magic Remote friendly: d-pad navigation, pointer hover/click, number-pad PIN/IP entry, and the
-  Red button as a Back/disconnect substitute.
+- **Video** — up to 4K120 with HDR. H.264 or HEVC, decoded by the TV's hardware media pipeline
+  (NDL DirectMedia), with a fallback decode path for webOS 3.5–4.x.
+- **Bitrate** — Automatic mode adjusts to the network, or set a fixed rate from 10 to 200 Mbps.
+  A per-host network speed test measures over the real data plane and applies a recommended rate.
+- **Audio** — stereo, 5.1 or 7.1, decoded on the TV.
+- **Library** — the host's game library, alphabetically sorted, launched with one press. Pinned
+  games appear in the top row.
+- **Per-game overrides** — any game can override the global resolution, frame rate, bitrate, codec,
+  HDR, audio or controller settings.
+- **Input** — Magic Remote pointer, gamepads, USB keyboard and mouse. Pointer capture for games,
+  absolute pointing for the desktop. D-pad navigation, number-pad PIN/IP entry, and the Red button
+  as a Back/disconnect substitute.
+- **DualSense** — adaptive triggers, lightbar, player LEDs, touchpad, gyro and rumble over
+  Bluetooth (see the note below).
+- **Hosts** — LAN discovery (mDNS) or add a host by IP; PIN pairing with persisted trust, a live
+  reachability dot per host, and per-host actions behind a ⋯ button: connect, pair, speed test,
+  wake, edit address, forget.
+- **Game mode (rooted TVs)** — optional setting that switches picture and sound to Game mode while
+  streaming and restores the previous settings on exit.
 
 > **Controller feedback needs newer webOS version.** Rumble, DualSense triggers, haptics and lightbar all
 > rely on the kernel's `hid-playstation` driver, which LG ships only on latest webOS versions 24+.
@@ -74,30 +78,23 @@ dev/CI builds don't.
 
 ## Development
 
-Everything is a [go-task](https://taskfile.dev) target. The bare `build`/`check`/`lint`/`package`
-targets run natively and need a Linux-aarch64 host with Rust installed (that's how CI runs). For
-**local dev, use the `docker:*` variants** — they run the same logic in an ephemeral `docker run`,
-so **only Docker is required, no local Rust/NDK install** (the webOS cross-toolchain ships
-Linux-aarch64-only; works on amd64 hosts too via QEMU). Run `task --list` for everything.
+Everything is a [go-task](https://taskfile.dev) target. Bare targets run natively and need a
+Linux-aarch64 host with Rust installed (that's how CI runs).
 
 | Task | What it does |
 | --- | --- |
-| `task docker:package` | Build + package `dist/*.ipk` — the one you usually want |
-| `task docker:build` / `task docker:check` | Faster inner loop: compile only, or `cargo check` only |
-| `task docker:lint` / `task fmt` | `cargo clippy` / `cargo fmt` |
-| `task deploy TV_HOST=root@<tv-ip>` | Build, package, install, and launch on a real TV (via [ares-cli-rs](https://github.com/webosbrew/ares-cli-rs)) |
-| `task deploy TV_HOST=... TELEMETRY=auto` | Same, but streams the app's logs live to this machine instead of a file on-device |
-| `task clean` | Remove build output and caches |
+| `task build` | Compile a release binary |
+| `task package` | Build + package `dist/*.ipk` |
+| `task deploy TV_HOST=root@<tv-ip>` | Build, package, install, and launch on a real TV (via [ares-cli-rs](https://github.com/webosbrew/ares-cli-rs)); add `TELEMETRY=auto` to stream logs here |
 
-Drop the `docker:` prefix (`task package`, `task lint`, …) to run natively on a Linux-aarch64 box.
+For local dev prefix any target with `docker:` (`task docker:build`, `task docker:package`, …) —
+same logic in an ephemeral `docker run`, so only Docker is required, no local Rust/NDK install (the
+cross-toolchain image is Linux-aarch64-only; works on amd64 hosts via QEMU). `task --list` shows
+the rest.
 
-**Build optimization**: Dev builds use thin LTO for speed (~2-3x faster iteration). For final release builds optimized for weak TV hardware, append `RELEASE_LTO=fat` to any build task: `task docker:package RELEASE_LTO=fat` or `task deploy TV_HOST=... RELEASE_LTO=fat`.
-
-Set `TV_HOST` once in a local `.env` (copy `.env.example`) to skip typing it each time — it's the
-only thing `deploy` needs: it installs the `ares-*` binaries on first use and registers the TV from
-it (root over ssh on port 22). ares ignores `~/.ssh/config`, so set `SSH_KEY` in `.env` if your key
-isn't `~/.ssh/id_rsa`. Architecture
-and on-device gotchas live in [`docs/NOTES.md`](docs/NOTES.md) and `CLAUDE.md`.
+`deploy` settings such as `TV_HOST` and `SSH_KEY` can be set in a local `.env` — see
+[`.env.example`](.env.example). Architecture and on-device gotchas live in
+[`docs/NOTES.md`](docs/NOTES.md) and `CLAUDE.md`.
 
 ## License
 
