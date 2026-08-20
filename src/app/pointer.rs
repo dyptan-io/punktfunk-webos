@@ -56,7 +56,7 @@ impl App {
         // it's excluded. An open dropdown is excluded too — hover there only moves the
         // option cursor, so popping the parent row (as the D-pad also declines to) is wrong.
         if focus_changed && self.settings_ui.dropdown.is_none() && !matches!(self.nav.screen, Screen::Home) {
-            self.modal.focus_anim = Some(Instant::now());
+            self.render.modal.focus_anim = Some(Instant::now());
         }
         let close_changed = self.hover_close_at(x, y, screen_w, screen_h, fonts);
         focus_changed || close_changed
@@ -219,7 +219,7 @@ impl App {
         // landing on a card with the Magic Remote renders it already finished. Only on a
         // change: the pointer streams motion events and each would restart the clock.
         if changed && matches!(focus, HomeFocus::Grid(_)) {
-            self.focus_anim = Some(Instant::now());
+            self.render.focus_anim = Some(Instant::now());
         }
         changed
     }
@@ -376,9 +376,9 @@ impl App {
             // Home draws no close button, but `hover_close` is only ever set true by a
             // modal branch — without clearing it on the way back to Home it stayed stuck
             // `true` forever (nothing on Home reset it), and `handle_mouse_click`'s
-            // `if self.hover_close { return self.back() }` then swallowed every Home
+            // `if self.render.hover_close { return self.back() }` then swallowed every Home
             // click. Not reported as a visible change: Home draws no close button.
-            self.hover_close = false;
+            self.render.hover_close = false;
             return false;
         };
         self.set_hover_close(ui::widgets::modal_close_rect(card).contains_point((x, y)))
@@ -388,8 +388,8 @@ impl App {
     /// screen's close-button hover check in `handle_mouse_motion` follows this same
     /// shape.
     pub(crate) fn set_hover_close(&mut self, hover_close: bool) -> bool {
-        let changed = hover_close != self.hover_close;
-        self.hover_close = hover_close;
+        let changed = hover_close != self.render.hover_close;
+        self.render.hover_close = hover_close;
         changed
     }
 
@@ -407,7 +407,7 @@ impl App {
         // MouseButtonDown can carry a slightly different (x, y) than the last
         // MouseMotion (the physical button press can jostle the remote a little).
         self.handle_mouse_motion(x, y, screen_w, screen_h, fonts);
-        if self.hover_close {
+        if self.render.hover_close {
             // Same "what Back means here" as everywhere else — see `back`'s docs.
             return self.back(screen_w, screen_h, fonts);
         }

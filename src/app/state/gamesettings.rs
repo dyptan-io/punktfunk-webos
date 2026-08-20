@@ -46,7 +46,7 @@ impl App {
         self.settings_ui.dropdown = None;
         // Its own scroll position, like every other modal list — and Settings' is stashed
         // the same way About stashes it.
-        self.scroll = crate::ui::scroll::ScrollWindow::new();
+        self.render.scroll = crate::ui::scroll::ScrollWindow::new();
         self.nav.screen = Screen::Settings(menu::SettingsScope::Game);
     }
 

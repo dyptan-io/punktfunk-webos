@@ -44,7 +44,7 @@ impl App {
                     PairingFocus::Pin => PairingFocus::RequestAccess,
                     PairingFocus::RequestAccess => PairingFocus::Pin,
                 };
-                self.modal.focus_anim = Some(Instant::now());
+                self.render.modal.focus_anim = Some(Instant::now());
                 return;
             }
             _ => {}
@@ -69,14 +69,14 @@ impl App {
                     } else {
                         self.screens.pairing_focus = PairingFocus::RequestAccess;
                     }
-                    self.modal.focus_anim = Some(Instant::now());
+                    self.render.modal.focus_anim = Some(Instant::now());
                 }
                 MenuEvent::Right => {
                     // Stops at the last digit — the button is *above* this row now, so
                     // tabbing off the right-hand end no longer corresponds to anything.
                     if self.screens.pin_digit_index + 1 < self.screens.pin_digits.len() {
                         self.screens.pin_digit_index += 1;
-                        self.modal.focus_anim = Some(Instant::now());
+                        self.render.modal.focus_anim = Some(Instant::now());
                     }
                 }
                 MenuEvent::Confirm => self.try_pair(),
@@ -89,7 +89,7 @@ impl App {
                 MenuEvent::Down | MenuEvent::Right => {
                     self.screens.pairing_focus = PairingFocus::Pin;
                     self.screens.pin_digit_index = 0;
-                    self.modal.focus_anim = Some(Instant::now());
+                    self.render.modal.focus_anim = Some(Instant::now());
                 }
                 MenuEvent::Confirm => self.try_request_access(),
                 MenuEvent::Up | MenuEvent::Left | MenuEvent::Back | MenuEvent::Secondary => {}
@@ -153,7 +153,7 @@ impl App {
                 );
                 self.persist();
                 self.rebuild_entries();
-                self.sidebar_dirty = true;
+                self.render.sidebar_dirty = true;
                 self.nav.screen = Screen::Home;
                 self.select_host(outcome.host, outcome.port, outcome.mgmt_port);
             }

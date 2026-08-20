@@ -50,7 +50,7 @@ impl App {
     /// The transform `compose_grid` composites the focused card and everything on it with:
     /// the focus zoom and the appear pop, both about the card's own centre.
     pub(crate) fn focused_card_scale(&self, pin_id: &str) -> f32 {
-        let f = ui::animation::anim_frac_smooth(self.focus_anim, ui::animation::CARD_FOCUS_POP);
+        let f = ui::animation::anim_frac_smooth(self.render.focus_anim, ui::animation::CARD_FOCUS_POP);
         ui::animation::zoom_scale(f, crate::app::CARD_GROWTH)
             * ui::animation::pop_in_scale(self.card_pop_frac(pin_id), crate::app::CARD_POP_SHRINK)
     }

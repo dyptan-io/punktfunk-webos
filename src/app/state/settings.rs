@@ -15,7 +15,7 @@ use std::time::Instant;
 
 impl App {
     /// Handles one menu event on the settings modal. `screen_h` is only used by
-    /// `Up`/`Down` to keep `self.scroll` following `settings_focused`.
+    /// `Up`/`Down` to keep `self.render.scroll` following `settings_focused`.
     pub fn handle_settings_event(&mut self, ev: MenuEvent, screen_h: u32) {
         let set = self.settings_scope();
         // An open Resolution/Frame rate dropdown intercepts all input until it's
@@ -56,14 +56,14 @@ impl App {
             MenuEvent::Up => {
                 if self.nav.cursor(ScreenKey::Settings) > 0 {
                     *self.nav.cursor_mut(ScreenKey::Settings) -= 1;
-                    self.modal.focus_anim = Some(Instant::now());
+                    self.render.modal.focus_anim = Some(Instant::now());
                     self.scroll_settings_into_view(screen_h);
                 }
             }
             MenuEvent::Down => {
                 if self.nav.cursor(ScreenKey::Settings) + 1 < total {
                     *self.nav.cursor_mut(ScreenKey::Settings) += 1;
-                    self.modal.focus_anim = Some(Instant::now());
+                    self.render.modal.focus_anim = Some(Instant::now());
                     self.scroll_settings_into_view(screen_h);
                 }
             }
@@ -167,7 +167,7 @@ impl App {
             self.capture_game_override(row);
             if let Some(from) = toggled_from {
                 // Scope the slide to the display row being rendered (see `toggle_frac`).
-                self.modal.switch_anim = Some((Instant::now(), from, display_row));
+                self.render.modal.switch_anim = Some((Instant::now(), from, display_row));
             }
         }
     }

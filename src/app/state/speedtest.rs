@@ -147,7 +147,7 @@ impl App {
             MenuEvent::Left | MenuEvent::Right => {
                 self.nav
                     .set_cursor(ScreenKey::SpeedTest, 1 - self.nav.cursor(ScreenKey::SpeedTest));
-                self.modal.focus_anim = Some(Instant::now());
+                self.render.modal.focus_anim = Some(Instant::now());
             }
             MenuEvent::Confirm => {
                 if self.nav.cursor(ScreenKey::SpeedTest) != 0 {

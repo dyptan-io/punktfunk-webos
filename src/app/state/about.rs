@@ -8,13 +8,13 @@ use crate::ui;
 impl App {
     /// Lazy-initialize about lines on first open.
     pub(crate) fn open_about(&mut self) {
-        if self.about_lines.is_empty() {
-            self.about_lines = view::about::lines();
+        if self.render.about_lines.is_empty() {
+            self.render.about_lines = view::about::lines();
         }
         // `scroll` is shared with Settings' row list — stash it (see `settings_scroll`).
-        self.settings_scroll = self.scroll;
-        self.scroll = ui::scroll::ScrollWindow::new();
-        self.content_window = ui::scroll::ContentWindow::new();
+        self.render.settings_scroll = self.render.scroll;
+        self.render.scroll = ui::scroll::ScrollWindow::new();
+        self.render.content_window = ui::scroll::ContentWindow::new();
         self.nav.screen = Screen::About;
     }
 
@@ -28,16 +28,16 @@ impl App {
                 // Page step with anchor: show last few lines of previous page
                 let page_step = visible.saturating_sub(2).max(1);
                 match ev {
-                    MenuEvent::Up => self.scroll.scroll_by(-1, total, visible),
-                    MenuEvent::Down => self.scroll.scroll_by(1, total, visible),
-                    MenuEvent::Left => self.scroll.page(page_step, false, total, visible),
-                    _ => self.scroll.page(page_step, true, total, visible),
+                    MenuEvent::Up => self.render.scroll.scroll_by(-1, total, visible),
+                    MenuEvent::Down => self.render.scroll.scroll_by(1, total, visible),
+                    MenuEvent::Left => self.render.scroll.page(page_step, false, total, visible),
+                    _ => self.render.scroll.page(page_step, true, total, visible),
                 };
             }
             // Return to Settings (not Home) to preserve settings context
             MenuEvent::Back | MenuEvent::Confirm => {
                 self.nav.resume(Screen::Settings(SettingsScope::Global));
-                self.scroll = self.settings_scroll;
+                self.render.scroll = self.render.settings_scroll;
             }
             MenuEvent::Secondary => {}
         }
@@ -57,7 +57,7 @@ impl App {
         if lines == 0 {
             return false;
         }
-        self.scroll.scroll_by(i64::from(lines), total, visible)
+        self.render.scroll.scroll_by(i64::from(lines), total, visible)
     }
 
     /// Total and visible line counts.
@@ -70,18 +70,18 @@ impl App {
         let card = view::about::card_rect(screen_w, screen_h);
         let body = view::about::body_rect(card, fonts);
         self.ensure_about_wrapped(fonts, body.width());
-        let total = self.about_wrapped.as_ref().map_or(0, |(_, v)| v.len());
+        let total = self.render.about_wrapped.as_ref().map_or(0, |(_, v)| v.len());
         let visible = view::about::visible_lines(body, fonts.raster, fonts.value);
         (total, visible)
     }
 
     /// Defer text wrapping until width is known.
     pub(crate) fn ensure_about_wrapped(&mut self, fonts: &ui::text::Fonts, width: u32) {
-        let stale = !matches!(&self.about_wrapped, Some((w, _)) if *w == width);
+        let stale = !matches!(&self.render.about_wrapped, Some((w, _)) if *w == width);
         if stale {
-            self.about_wrapped = Some((
+            self.render.about_wrapped = Some((
                 width,
-                view::about::wrap_document(fonts.raster, fonts.value, &self.about_lines, width),
+                view::about::wrap_document(fonts.raster, fonts.value, &self.render.about_lines, width),
             ));
         }
     }

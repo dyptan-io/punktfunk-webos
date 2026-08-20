@@ -170,11 +170,11 @@ impl App {
             // `HomeFocus::SidebarMenu`; on a row without one they do nothing.
             MenuEvent::Right if !self.screens.host_menu_dots && self.host_menu_row_has_dots() => {
                 self.screens.host_menu_dots = true;
-                self.modal.focus_anim = Some(Instant::now());
+                self.render.modal.focus_anim = Some(Instant::now());
             }
             MenuEvent::Left if self.screens.host_menu_dots => {
                 self.screens.host_menu_dots = false;
-                self.modal.focus_anim = Some(Instant::now());
+                self.render.modal.focus_anim = Some(Instant::now());
             }
             MenuEvent::Confirm if self.screens.host_menu_dots => self.open_wake_settings(),
             MenuEvent::Confirm => self.confirm_host_menu_row(),

@@ -68,7 +68,7 @@ impl App {
         let len = self.list_modal_row_count();
         let key = ScreenKey::of(self.nav.screen);
         if crate::ui::widgets::list_nav(self.nav.cursor_mut(key), len, crate::app::menu::nav_dir(ev)) {
-            self.modal.focus_anim = Some(Instant::now());
+            self.render.modal.focus_anim = Some(Instant::now());
             return true;
         }
         false
@@ -78,7 +78,7 @@ impl App {
     /// rather than snapping — the shared tail of every toggle row on every list screen.
     pub(crate) fn arm_switch_anim(&mut self, from: bool) {
         let row = self.nav.cursor(ScreenKey::of(self.nav.screen));
-        self.modal.switch_anim = Some((Instant::now(), from, row));
+        self.render.modal.switch_anim = Some((Instant::now(), from, row));
     }
 
     /// The options the open dropdown lists, on whichever screen owns one.

@@ -24,7 +24,7 @@ impl App {
         // Anything but a confirm moves focus or closes the screen, so a dip still running
         // from an earlier press belongs to a widget that is no longer under the cursor.
         if ev != MenuEvent::Confirm {
-            self.press.take();
+            self.render.press.take();
         }
         match self.nav.screen {
             Screen::Home => return self.handle_home_event(ev, screen_w, screen_h),
@@ -55,11 +55,11 @@ impl App {
     pub(crate) fn press(&mut self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<ConnectTarget> {
         let before = self.nav.screen;
         if self.pressable() {
-            self.press.arm();
+            self.render.press.arm();
         }
         let launched = self.handle_menu_event(MenuEvent::Confirm, screen_w, screen_h, fonts);
         if self.nav.screen != before || launched.is_some() {
-            self.press.take();
+            self.render.press.take();
         }
         launched
     }
@@ -70,7 +70,7 @@ impl App {
     /// the sidebar row behind its card in alongside the button actually pressed.
     pub(crate) fn press_dip(&self, owner: Screen) -> ui::animation::Press {
         if self.nav.screen == owner {
-            self.press
+            self.render.press
         } else {
             ui::animation::Press::default()
         }
@@ -109,6 +109,6 @@ impl App {
     /// Retires a dip that has played out; called every frame. `true` means the tile moved
     /// back, so the frame is dirty.
     pub(crate) fn poll_press(&mut self) -> bool {
-        self.press.landed() && self.press.take()
+        self.render.press.landed() && self.render.press.take()
     }
 }

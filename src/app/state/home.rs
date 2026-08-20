@@ -101,7 +101,7 @@ impl App {
         map.group(
             GROUP_GRID,
             ui::focus::Wrap::None,
-            HomeFocus::Grid(self.grid.focus_last),
+            HomeFocus::Grid(self.render.grid.focus_last),
             HomeFocus::Grid(0),
         );
 
@@ -140,7 +140,7 @@ impl App {
             columns,
             available_w,
             sections,
-            self.grid.scroll_target,
+            self.render.grid.scroll_target,
             screen_h as i32,
             match self.home_focus {
                 HomeFocus::Grid(i) => Some(i),
@@ -155,7 +155,7 @@ impl App {
                 view::home::unscrolled_card_rect(idx, columns, ui::widgets::SIDEBAR_W as i32, available_w, sections);
             // Screen space, at the scroll the grid is easing *toward* — so that a move
             // crossing into the sidebar compares against its rows on equal terms.
-            map.item(HomeFocus::Grid(idx), r.offset(0, -self.grid.scroll_target), GROUP_GRID);
+            map.item(HomeFocus::Grid(idx), r.offset(0, -self.render.grid.scroll_target), GROUP_GRID);
         }
         map
     }
@@ -174,7 +174,7 @@ impl App {
         };
         self.home_focus = next;
         if let HomeFocus::Grid(idx) = next {
-            self.grid.focus_last = idx;
+            self.render.grid.focus_last = idx;
             self.ensure_grid_visible(idx, columns, screen_w, screen_h);
         }
     }
@@ -207,8 +207,8 @@ impl App {
                     self.nav.screen = Screen::Settings(SettingsScope::Global);
                     self.settings_ui.dropdown = None;
                     self.nav.set_cursor(ScreenKey::Settings, 0);
-                    self.scroll = ui::scroll::ScrollWindow::new();
-                    self.content_window = ui::scroll::ContentWindow::new();
+                    self.render.scroll = ui::scroll::ScrollWindow::new();
+                    self.render.content_window = ui::scroll::ContentWindow::new();
                 }
                 HomeFocus::SidebarMenu(i) => self.open_host_menu(i),
                 HomeFocus::Grid(i) => self.confirm_grid_card(i, columns),
@@ -268,7 +268,7 @@ impl App {
         self.reorder_games_by_pin();
         if let Some(new_idx) = self.grid_idx_for_pin_id(&id, columns) {
             self.home_focus = HomeFocus::Grid(new_idx);
-            self.grid.focus_last = new_idx;
+            self.render.grid.focus_last = new_idx;
             self.ensure_grid_visible(new_idx, columns, screen_w, screen_h);
         }
         self.replay_reorder_pop(&id, was_pinned, columns);
@@ -293,7 +293,7 @@ impl App {
             .filter_map(|idx| layout.pin_id_at(&self.library.games, idx))
             .collect();
         let rest_ids: Vec<String> = self
-            .grid
+            .render.grid
             .card_ids
             .pin_ids()
             .filter(|id| !pinned.contains(id))
@@ -303,10 +303,10 @@ impl App {
         // per-`CardTile` clock): a not-yet-built card has no visible pop to replay, and
         // its clock is overwritten with a fresh one when `prepare_grid` builds it.
         if !was_pinned {
-            self.grid.arm_card_pop(id, now);
+            self.render.grid.arm_card_pop(id, now);
         }
         for pin_id in rest_ids {
-            self.grid.arm_card_pop(&pin_id, now);
+            self.render.grid.arm_card_pop(&pin_id, now);
         }
     }
 
@@ -371,7 +371,7 @@ impl App {
     /// — 1.0, full size, for anything not animating.
     pub(crate) fn card_pop_frac(&self, id: &str) -> f32 {
         ui::animation::anim_frac(
-            self.grid.card_ids.slot(id).and_then(|slot| slot.pop),
+            self.render.grid.card_ids.slot(id).and_then(|slot| slot.pop),
             crate::app::CARD_POP,
         )
     }
@@ -396,13 +396,13 @@ impl App {
         /// Focus ring + `inflate` overhang around a focused card, plus a little
         /// breathing room.
         const FOCUS_MARGIN: i32 = 16;
-        self.focus_anim = Some(Instant::now());
+        self.render.focus_anim = Some(Instant::now());
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let card = self.unscrolled_card_rect(idx, columns, ui::widgets::SIDEBAR_W as i32, available_w);
         let viewport = (view::home::GRID_TOP_Y, screen_h as i32 - view::home::GRID_PAD);
         let max_scroll = self.max_grid_scroll(columns, available_w, screen_h);
-        self.grid.scroll_target =
-            ui::scroll::scroll_to_reveal(card, viewport, self.grid.scroll_target, FOCUS_MARGIN).clamp(0, max_scroll);
+        self.render.grid.scroll_target =
+            ui::scroll::scroll_to_reveal(card, viewport, self.render.grid.scroll_target, FOCUS_MARGIN).clamp(0, max_scroll);
     }
 
     /// Scrolls the grid by `dy_px` (positive = content moves up), clamped — the
@@ -416,9 +416,9 @@ impl App {
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
         let max_scroll = self.max_grid_scroll(columns, available_w, screen_h);
-        let next = (self.grid.scroll_target + dy_px).clamp(0, max_scroll);
-        let changed = next != self.grid.scroll_target;
-        self.grid.scroll_target = next;
+        let next = (self.render.grid.scroll_target + dy_px).clamp(0, max_scroll);
+        let changed = next != self.render.grid.scroll_target;
+        self.render.grid.scroll_target = next;
         changed
     }
     pub(crate) fn confirm_sidebar_host(&mut self, idx: usize) {
@@ -448,8 +448,8 @@ impl App {
         self.home_status = None;
         self.home_status_sticky = false;
         self.home_focus = HomeFocus::Sidebar(0);
-        self.grid.focus_last = 0;
-        self.grid.dirty = true;
+        self.render.grid.focus_last = 0;
+        self.render.grid.dirty = true;
     }
 
     /// Selects host and kicks off async library fetch; avoids blocking the UI thread (used to freeze input).
@@ -475,11 +475,11 @@ impl App {
         self.jobs.art = None;
         // Focus stays on the sidebar until `drain_games` has cards to land on: `navigate`
         // can't move off a key with no rect, so an empty grid would kill the d-pad.
-        self.grid.focus_last = 0;
-        self.sidebar_dirty = true;
-        self.grid.dirty = true;
-        self.grid.scroll = 0;
-        self.grid.scroll_target = 0;
+        self.render.grid.focus_last = 0;
+        self.render.sidebar_dirty = true;
+        self.render.grid.dirty = true;
+        self.render.grid.scroll = 0;
+        self.render.grid.scroll_target = 0;
 
         let identity = (self.identity.0.clone(), self.identity.1.clone());
         let known = self.hosts.known.iter().find(|h| h.host == host && h.port == port);
@@ -533,7 +533,7 @@ impl App {
                     mgmt_port,
                     identity,
                     fingerprint,
-                    self.grid.card_size,
+                    self.render.grid.card_size,
                 ));
                 self.library.games = games;
                 self.library.games_loaded = true;
@@ -559,7 +559,7 @@ impl App {
                 self.handle_library_error(host, port, &e);
             }
         }
-        self.grid.dirty = true;
+        self.render.grid.dirty = true;
         true
     }
 
@@ -616,20 +616,20 @@ impl App {
         // before the art is handed over, so `Hero::accept` recognises a cache hit as belonging
         // to this launch even if the focus prefetch never ran.
         let game = launch.as_ref().and_then(|id| self.library.games.iter().find(|g| &g.id == id));
-        self.hero.arm(launch.clone());
+        self.render.hero.arm(launch.clone());
         if let (Some(game), Some(loader)) = (game, &mut self.jobs.art) {
             // The disk is only touched when the focus prefetch hasn't already decoded this
             // hero — re-reading it would be several MB of nothing, and that is the common case.
-            let in_hand = self.hero.image_for(&game.id).is_some()
+            let in_hand = self.render.hero.image_for(&game.id).is_some()
                 || loader
                     .cached_hero(&game.id)
-                    .is_some_and(|image| self.hero.accept(game.id.clone(), image));
+                    .is_some_and(|image| self.render.hero.accept(game.id.clone(), image));
             if !in_hand && (game.art.hero.is_some() || game.art.header.is_some()) {
                 // Asked for here as well as on focus, since a card can be confirmed before the
                 // prefetch got round to it. The fetch overlaps the connect, and only *this*
                 // case — art that isn't on this TV yet — is worth holding the hand-off for.
                 loader.request_hero(game);
-                self.hero.await_art();
+                self.render.hero.await_art();
             }
         }
         tracing::debug!("launch: connecting to {host}:{port} now, zoom runs in parallel");
@@ -647,7 +647,7 @@ impl App {
         });
         // Not `grid_dirty`: contents are unchanged, and dirtying rebuilds every card tile and
         // re-arms the loading spinner right as the zoom starts.
-        self.sidebar_dirty = true;
+        self.render.sidebar_dirty = true;
     }
 
     /// Takes the `ConnectTarget` `confirm_grid_card` armed, if any — the runtime's tick loop
@@ -675,7 +675,7 @@ impl App {
                 *i = sidebar_len - 1;
             }
         }
-        self.sidebar_dirty = true;
-        self.grid.dirty = true;
+        self.render.sidebar_dirty = true;
+        self.render.grid.dirty = true;
     }
 }

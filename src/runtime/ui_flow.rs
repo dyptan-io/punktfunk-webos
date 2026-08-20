@@ -237,7 +237,7 @@ pub(super) fn run_ui_flow(
                 _ => Connect::Done,
             };
             let presenting = crate::platform::webos::ndl::presenting();
-            if app.hero.handover_ready(t.elapsed(), connect, presenting) {
+            if app.render.hero.handover_ready(t.elapsed(), connect, presenting) {
                 break 'ui;
             }
         }
@@ -371,8 +371,8 @@ pub(super) fn run_ui_flow(
             dirty = true;
         }
         let animating = app.tick_animations()
-            || app.grid.tiles_pending
-            || !app.grid.reveal.is_revealed()
+            || app.render.grid.tiles_pending
+            || !app.render.grid.reveal.is_revealed()
             || quit_dialog_active
             || notif_frame.is_some();
         let log_overlay_due = log_overlay_state() != LogOverlayState::Off
@@ -412,7 +412,7 @@ pub(super) fn run_ui_flow(
         let rebuilt = updated.len();
         frame.stage(Stage::Upload, || -> Result<()> {
             // Free old textures before uploading new (reduce peak memory during scroll).
-            for tile in std::mem::take(&mut app.evicted_tiles) {
+            for tile in std::mem::take(&mut app.render.evicted_tiles) {
                 compositor.drop_tile(tile);
             }
             // Two families upload from outside the tile store (the spinner's pre-rasterized
@@ -422,7 +422,7 @@ pub(super) fn run_ui_flow(
                 if let Some(idx) = tile::spinner_index(id) {
                     upload_spinner(compositor, texture_creator, idx)?;
                 } else if id == tile::HERO {
-                    if let Some(hero) = app.hero.uploaded_image() {
+                    if let Some(hero) = app.render.hero.uploaded_image() {
                         compositor.upload_raw(
                             texture_creator,
                             id,
@@ -525,6 +525,6 @@ pub(super) fn run_ui_flow(
     Ok(connect_handle.map(|(handle, settings)| ConnectOutcome {
         handle,
         settings,
-        first_frame_deadline: app.hero.first_frame_deadline(),
+        first_frame_deadline: app.render.hero.first_frame_deadline(),
     }))
 }

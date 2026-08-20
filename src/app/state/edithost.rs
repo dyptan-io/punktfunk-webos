@@ -81,8 +81,8 @@ impl App {
                 .unwrap_or(0),
         );
         self.screens.edit_host_index = None;
-        self.sidebar_dirty = true;
-        self.grid.dirty = true;
+        self.render.sidebar_dirty = true;
+        self.render.grid.dirty = true;
         self.nav.screen = Screen::Home;
     }
 }

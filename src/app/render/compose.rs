@@ -25,7 +25,7 @@ impl App {
             entries: &self.hosts.entries,
             host_selected: self.library.selected_host.is_some(),
             has_status: self.home_status.is_some(),
-            grid_reveal_ready: self.grid.reveal.is_revealed(),
+            grid_reveal_ready: self.render.grid.reveal.is_revealed(),
             press: self.press_dip(Screen::Home),
         }
     }
@@ -45,15 +45,15 @@ impl App {
         // `snapshot_closing_modal`) — the entering one owns `tile::MODAL` from this frame.
         // The two overlap, so leaving one modal for another cross-fades.
         let closing = self
-            .modal
+            .render.modal
             .fade
             .closing_frame(MODAL_FADE_OUT)
-            .and_then(|(alpha, _)| Some((alpha, self.modal.prev?)));
+            .and_then(|(alpha, _)| Some((alpha, self.render.modal.prev?)));
         let screen = self.nav.screen;
         let m = if matches!(screen, Screen::Home) {
             0.0
         } else {
-            self.modal.fade.open_alpha(MODAL_FADE)
+            self.render.modal.fade.open_alpha(MODAL_FADE)
         };
         // The backdrop belongs to "a modal is up", not to either card: re-fading it
         // mid-step would brighten the whole screen and read as a blink. It only fades when
@@ -75,7 +75,7 @@ impl App {
             // composites there rather than full-screen. Opening plays the same motion
             // `compose_modal`'s closing snapshot uses below, in reverse — fade + rise, no
             // scale.
-            let modal_base = self.modal.tile_region.offset(0, dy);
+            let modal_base = self.render.modal.tile_region.offset(0, dy);
             cmds.push(DrawCmd::Tex {
                 tile: tile::MODAL,
                 dst: modal_base,
@@ -165,7 +165,7 @@ impl App {
                 // rasterized once at its literal size, never re-rendered for
                 // this (except while `switch_anim` animates its content, see
                 // `prepare_tiles`).
-                let dst = ui::animation::focus_tile_rect(base, self.modal.focus_anim, self.press_dip(screen));
+                let dst = ui::animation::focus_tile_rect(base, self.render.modal.focus_anim, self.press_dip(screen));
                 let alpha = (255.0 * m) as u8;
                 // In a scrolling modal the focused row can hang past the viewport's bottom
                 // edge mid-glide (the crop lags the row offset by up to one stride), so it is
@@ -211,11 +211,11 @@ impl App {
             // Whichever modal is scrollable, its indicator — full opacity for
             // `SCROLL_INDICATOR_HOLD`, then a linear fade over `SCROLL_INDICATOR_FADE`
             // (names kept from when only Settings had one; every scrollable modal now
-            // shares the same timing and the same `self.scroll.shown_at` clock, since
+            // shares the same timing and the same `self.render.scroll.shown_at` clock, since
             // only one is ever open at a time).
             if let Some((total, visible, card, content)) = scroll_geom {
                 if total > visible {
-                    let scroll_alpha = self.scroll.shown_at.map_or(0.0, |t| {
+                    let scroll_alpha = self.render.scroll.shown_at.map_or(0.0, |t| {
                         let elapsed = t.elapsed();
                         if elapsed < SCROLL_INDICATOR_HOLD {
                             1.0
@@ -326,7 +326,7 @@ impl App {
         // list, and every card rect below would otherwise rebuild them (see `home_focus_map`).
         let sections = layout.sections(self.library.games.len());
         let card_rect =
-            |idx| view::home::scrolled_card_rect(idx, columns, grid_x, available_w, sections, self.grid.scroll);
+            |idx| view::home::scrolled_card_rect(idx, columns, grid_x, available_w, sections, self.render.grid.scroll);
         // The on-screen window, computed rather than found by testing every card in the
         // library once per frame (`view::home::visible_cards`).
         let visible = view::home::visible_cards(
@@ -334,7 +334,7 @@ impl App {
             columns,
             available_w,
             sections,
-            self.grid.scroll,
+            self.render.grid.scroll,
             screen_h as i32,
             pad,
         );
@@ -348,7 +348,7 @@ impl App {
             };
             let r = card_rect(idx);
             // Tile and pop clock in one lookup — this runs per visible card per frame.
-            let Some(slot) = self.grid.card_ids.slot(pin_id) else {
+            let Some(slot) = self.render.grid.card_ids.slot(pin_id) else {
                 continue; // not rasterized yet — outside the build window
             };
             let card = slot.id;
@@ -382,7 +382,7 @@ impl App {
                 continue;
             }
             let band =
-                view::home::section_heading_rect(first_idx, columns, grid_x, available_w, sections, self.grid.scroll);
+                view::home::section_heading_rect(first_idx, columns, grid_x, available_w, sections, self.render.grid.scroll);
             if band.bottom() < 0 || band.y() > screen_h as i32 {
                 continue;
             }
@@ -404,9 +404,9 @@ impl App {
                 // The focus pop: the GPU scales the (unfocused) card tile up
                 // around its center as the pop progresses, with the shared glow
                 // tile fading in behind it at the same scale.
-                let f = ui::animation::anim_frac_smooth(self.focus_anim, ui::animation::CARD_FOCUS_POP);
+                let f = ui::animation::anim_frac_smooth(self.render.focus_anim, ui::animation::CARD_FOCUS_POP);
                 let r = card_rect(idx);
-                let Some(slot) = self.grid.card_ids.slot(pin_id) else {
+                let Some(slot) = self.render.grid.card_ids.slot(pin_id) else {
                     return; // not rasterized yet
                 };
                 let card = slot.id;
@@ -470,7 +470,7 @@ impl App {
                         // On its own clock: `focus_anim` is re-armed by every focus move, so
                         // the panel would pop open the instant the menu is dismissed by
                         // moving off the card.
-                        let clock = self.card_menu.as_ref().map_or(self.focus_anim, |m| Some(m.since));
+                        let clock = self.card_menu.as_ref().map_or(self.render.focus_anim, |m| Some(m.since));
                         // Smoothstep, not the cubic ease-out the plain strip's short wipe
                         // uses: over a whole panel's travel `1-(1-t)³` is 87% done at the
                         // halfway point, so the tail reads as a small late move after the
@@ -552,7 +552,7 @@ impl App {
                     // No menu: the plain title strip, wiping up from the card's bottom edge
                     // on the card's own focus clock.
                     (_, Some(strip_h)) => {
-                        let wipe = ui::animation::anim_frac(self.focus_anim, ui::animation::CARD_FOCUS_POP);
+                        let wipe = ui::animation::anim_frac(self.render.focus_anim, ui::animation::CARD_FOCUS_POP);
                         let shown = (strip_h as f32 * wipe) as u32;
                         if shown > 0 {
                             cmds.push(DrawCmd::TexCropped {
@@ -640,7 +640,7 @@ impl App {
                 });
             }
         } else if !input.grid_reveal_ready {
-            let (idx, frame) = crate::assets::spinner_frame_at(self.grid.reveal.phase());
+            let (idx, frame) = crate::assets::spinner_frame_at(self.render.grid.reveal.phase());
             let (fw, fh) = (frame.width(), frame.height());
             let x = grid_x + (available_w as i32 - fw as i32) / 2;
             // 40% down rather than dead-center, which reads as slightly low on a TV.
@@ -684,7 +684,7 @@ impl App {
             let base = self.scrolled_card_rect(idx, columns, grid_x, available_w);
             if let Some(card) = self
                 .pin_id_at_grid_idx(idx, columns)
-                .and_then(|pin_id| self.grid.card_ids.get(pin_id))
+                .and_then(|pin_id| self.render.grid.card_ids.get(pin_id))
             {
                 cmds.push(DrawCmd::Tex {
                     tile: card,
@@ -710,11 +710,11 @@ impl App {
     /// to, so a hero arriving mid-handshake eases in and live video arrives out of black
     /// rather than from a lit image.
     fn compose_hero(&self, screen_w: u32, screen_h: u32, cmds: &mut ui::render::DrawList) {
-        let Some(hero) = self.hero.visible() else { return };
-        let f = self.hero.opacity();
+        let Some(hero) = self.render.hero.visible() else { return };
+        let f = self.render.hero.opacity();
         cmds.push(DrawCmd::TexF {
             tile: tile::HERO,
-            dst: hero::hero_pan_dst(hero.width, hero.height, screen_w, screen_h, self.hero.panned_for()),
+            dst: hero::hero_pan_dst(hero.width, hero.height, screen_w, screen_h, self.render.hero.panned_for()),
             alpha: (255.0 * f) as u8,
         });
         cmds.push(DrawCmd::Fill {

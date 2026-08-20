@@ -37,7 +37,6 @@ pub use crate::core::screen::{HomeFocus, PairingFocus, Screen};
 use crate::services::discovery::Discovery;
 use crate::services::store::{self, KnownHost, Settings};
 use crate::ui;
-use crate::ui::render::TileId;
 
 /// How much a focused grid card grows. Bigger than the modal widgets' pop (they sit
 /// in a fixed column where any spill reads as a layout shift); a card has the grid gap
@@ -119,6 +118,8 @@ pub struct App {
     pub(crate) settings_ui: settingsui::SettingsUi,
     /// Per-screen payloads — see [`screens::slots::ScreenSlots`].
     pub(crate) screens: screens::slots::ScreenSlots,
+    /// Tiles, clocks, scroll windows and dirty flags — see [`render::state::RenderState`].
+    pub(crate) render: render::state::RenderState,
     pub home_focus: HomeFocus,
     pub home_status: Option<String>,
     /// Whether `home_status` is the reason the last launch bounced back to the menu, and so must
@@ -126,8 +127,6 @@ pub struct App {
     /// success, which wiped the error a second after the user landed back on the grid. Anything
     /// the user's own actions produce replaces it as usual.
     pub(crate) home_status_sticky: bool,
-    /// The connecting screen's backdrop, and every clock it runs on.
-    pub(crate) hero: hero::Hero,
     pub(crate) launch_ready: Option<ConnectTarget>,
     pub(crate) launch_anim: Option<Instant>,
     pub(crate) launch_anim_idx: Option<usize>,
@@ -146,60 +145,15 @@ pub struct App {
     /// when `settings.gamepad_type` is `Auto` — an explicit pick doesn't need this to know what
     /// it's driving, but the Controller row's `DualSense` caption does (see `settings_rows`).
     pub(crate) detected_gamepad_type: Option<store::GamepadType>,
-    /// Scroll state for overflowing modal content.
-    pub(crate) scroll: ui::scroll::ScrollWindow,
-    /// Settings' scroll position, stashed while About borrows `scroll` for its
-    /// own document — restored on return so the focus highlight doesn't end up
-    /// outside the visible rows.
-    pub(crate) settings_scroll: ui::scroll::ScrollWindow,
-    /// Window slice of baked About document.
-    pub(crate) content_window: ui::scroll::ContentWindow,
     /// Whether webOS's on-screen keyboard is currently up, polled from
     /// `SDL_IsScreenKeyboardShown` each tick by `main.rs` — it moves the address form out
     /// from under the panel (see `App::keyboard_modal_card`).
     pub keyboard_shown: bool,
-    /// The About document's source lines, built once on first open. ~10,000
-    /// static string slices; cheap to hold, wasteful to rebuild per frame.
-    pub about_lines: Vec<&'static str>,
-    /// `about_lines` wrapped to a body width, flattened into one list of visual
-    /// lines (see `view::about::wrap_document`) — the unit `scroll`/`content_window`
-    /// actually scroll over, since a source line's wrapped length varies and
-    /// only the flattened list has a uniform per-unit stride. Keyed by the
-    /// body width it was wrapped for, rebuilt if that width changes.
-    pub(crate) about_wrapped: Option<(u32, Vec<String>)>,
-    /// Whether the Magic Remote's pointer is currently hovering a modal's
-    /// close (X) button.
-    pub hover_close: bool,
     pub(crate) identity: (String, String),
-    // -------------------------------------------------------- render clocks --
-    /// Bumped every time the sidebar strip is rebuilt, so its cache entry is versioned by
-    /// the `sidebar_dirty` flag the event side maintains rather than by hashing every row.
-    pub(crate) sidebar_gen: u64,
-    // The `Painter` tile cache (`ui::cache::TileStore`) is owned by the render loop
-    // (`runtime::ui_flow`), not `App` — App keeps only screen state plus the render-facing
-    // derived values the event side also needs (see [`grid::GridState`]).
-    /// Sidebar row content changed — the sidebar strip must re-rasterize
-    /// (never set on focus movement).
-    pub(crate) sidebar_dirty: bool,
-    /// Tiles whose GPU texture should be released this frame — drained by `runtime`, which
-    /// owns the `Compositor`, before it uploads whatever the same pass rebuilt.
-    pub(crate) evicted_tiles: Vec<TileId>,
-    /// Everything that only exists while a modal is up — see [`modal::ModalState`].
-    pub(crate) modal: modal::ModalState,
-    /// The game grid: its tiles, its clocks, its eased scroll and its dirty flags — see
-    /// [`grid::GridState`].
-    pub(crate) grid: grid::GridState,
-    // ------------------------------------------------------------ animations --
-    /// When the current grid-focus pop started (card scales in over
-    /// `ui::animation::FOCUS_POP` — set on every d-pad focus move).
-    pub(crate) focus_anim: Option<Instant>,
     /// When `tick_animations` last ran, so the eased scroll can advance by real elapsed time
     /// instead of by a frame count (see `ui::animation::ease_scroll`). Every other animation
     /// here is already clocked off its own `Instant`.
     last_tick: Option<Instant>,
-    /// The pressed button's dip, if one is in flight — purely visual, and only for a
-    /// press that stayed on its screen (see `App::press`).
-    pub(crate) press: ui::animation::Press,
 }
 
 /// What a finished background pairing/request-access ceremony reports back —
@@ -248,6 +202,7 @@ impl App {
             },
             settings_ui: settingsui::SettingsUi::new(settings),
             screens: screens::slots::ScreenSlots::default(),
+            render: render::state::RenderState::default(),
             hosts: hosts::HostsState {
                 known: known_hosts,
                 entries,
@@ -257,7 +212,6 @@ impl App {
             home_focus: HomeFocus::Sidebar(0),
             home_status: None,
             home_status_sticky: false,
-            hero: hero::Hero::default(),
             launch_ready: None,
             launch_anim: None,
             launch_anim_idx: None,
@@ -265,22 +219,9 @@ impl App {
             intro_hint_owed: new_build,
             state_writer,
             detected_gamepad_type: None,
-            scroll: ui::scroll::ScrollWindow::new(),
-            settings_scroll: ui::scroll::ScrollWindow::new(),
-            content_window: ui::scroll::ContentWindow::new(),
             keyboard_shown: false,
-            about_lines: Vec::new(),
-            about_wrapped: None,
-            hover_close: false,
             identity,
-            sidebar_dirty: true,
-            evicted_tiles: Vec::new(),
-            sidebar_gen: 0,
-            grid: grid::GridState::default(),
-            modal: modal::ModalState::default(),
-            focus_anim: None,
             last_tick: None,
-            press: ui::animation::Press::default(),
         };
         // Restore the last-active sidebar host (if it's still known and paired)
         // so relaunching the app lands back on its game grid.
@@ -398,7 +339,7 @@ impl App {
     pub(crate) fn scroll_settings_into_view(&mut self, screen_h: u32) {
         let set = self.settings_scope();
         let visible = view::settings::visible_rows(set, screen_h);
-        self.scroll.scroll_into_view(
+        self.render.scroll.scroll_into_view(
             self.nav.cursor(ScreenKey::Settings),
             menu::settings_row_count(set),
             visible,
@@ -429,7 +370,7 @@ impl App {
             grid_x,
             available_w,
             self.grid_sections(columns),
-            self.grid.scroll,
+            self.render.grid.scroll,
         )
     }
 
@@ -447,7 +388,7 @@ impl App {
             grid_x,
             available_w,
             self.grid_sections(columns),
-            (x, y + self.grid.scroll),
+            (x, y + self.render.grid.scroll),
         )
     }
 
@@ -466,7 +407,7 @@ impl App {
         self.reanchor_sidebar_focus(before);
         // The sidebar layer is a cached tile keyed by nothing but this flag (see `prepare_tiles`),
         // so a rebuilt row list that doesn't set it leaves the previous host list on screen.
-        self.sidebar_dirty = true;
+        self.render.sidebar_dirty = true;
     }
 
     /// Keeps sidebar focus on the row the user is actually on after the host list changed
@@ -550,7 +491,7 @@ impl App {
         if changed {
             // Rows were appended, so the utility rows have moved.
             self.reanchor_sidebar_focus(before);
-            self.sidebar_dirty = true;
+            self.render.sidebar_dirty = true;
         }
         changed
     }
@@ -592,14 +533,14 @@ impl App {
                 crate::services::art::ArtLoaded::Card { game_id, pixmap } => {
                     // Layout is unchanged by art arriving — queue a repaint of just that
                     // card's tile (see `grid_cards_dirty`) rather than a full layer rebuild.
-                    self.grid.cards_dirty.push(game_id.clone());
+                    self.render.grid.cards_dirty.push(game_id.clone());
                     self.library.art.insert(game_id, pixmap);
                 }
                 crate::services::art::ArtLoaded::Hero { game_id, image } => {
                     // One that's no longer of use (focus moved on) is let go of in the
                     // loader too, so coming back to that card asks again — served from the
                     // disk cache by then, no round trip.
-                    if !self.hero.accept(game_id.clone(), image) {
+                    if !self.render.hero.accept(game_id.clone(), image) {
                         if let Some(loader) = &mut self.jobs.art {
                             loader.forget_hero(&game_id);
                         }
@@ -646,17 +587,17 @@ impl App {
         let now = Instant::now();
         let dt = self.last_tick.map_or(ui::animation::SCROLL_STEP_TICK, |t| now - t);
         self.last_tick = Some(now);
-        let mut animating = ui::animation::ease_scroll(&mut self.grid.scroll, self.grid.scroll_target, dt);
+        let mut animating = ui::animation::ease_scroll(&mut self.render.grid.scroll, self.render.grid.scroll_target, dt);
         // The scrolling modal's viewport, on the same ease-out as the grid. `scroll.offset`
         // has already jumped to its new row; this is only the rendered crop catching up.
-        animating |= ui::animation::ease_scroll(&mut self.modal.scroll_px, self.modal.scroll_target_px, dt);
-        if let Some(t) = self.focus_anim {
+        animating |= ui::animation::ease_scroll(&mut self.render.modal.scroll_px, self.render.modal.scroll_target_px, dt);
+        if let Some(t) = self.render.focus_anim {
             if t.elapsed() >= ui::animation::CARD_FOCUS_POP {
-                self.focus_anim = None;
+                self.render.focus_anim = None;
             }
             animating = true;
         }
-        if self.modal.fade.tick_split(MODAL_FADE, MODAL_FADE_OUT) {
+        if self.render.modal.fade.tick_split(MODAL_FADE, MODAL_FADE_OUT) {
             animating = true;
         }
         if self.settings_ui.dropdown_fade.tick(DROPDOWN_FADE) {
@@ -666,29 +607,29 @@ impl App {
         // which (unlike the fade) is however long the handshake takes.
         if self
             .launch_anim
-            .is_some_and(|t| t.elapsed() < hero::LAUNCH_FADE || self.hero.showing())
+            .is_some_and(|t| t.elapsed() < hero::LAUNCH_FADE || self.render.hero.showing())
         {
             animating = true;
         }
-        if let Some(t) = self.modal.focus_anim {
+        if let Some(t) = self.render.modal.focus_anim {
             if t.elapsed() >= ui::animation::FOCUS_POP {
-                self.modal.focus_anim = None;
+                self.render.modal.focus_anim = None;
             }
             animating = true;
         }
         // Disarmed by `poll_press` (the render loop retires the dip), not here.
-        if self.press.armed() {
+        if self.render.press.armed() {
             animating = true;
         }
-        if let Some((t, _, _)) = self.modal.switch_anim {
+        if let Some((t, _, _)) = self.render.modal.switch_anim {
             if t.elapsed() >= ui::animation::FOCUS_POP {
-                self.modal.switch_anim = None;
+                self.render.modal.switch_anim = None;
             }
             animating = true;
         }
-        if let Some(t) = self.scroll.shown_at {
+        if let Some(t) = self.render.scroll.shown_at {
             if t.elapsed() >= SCROLL_INDICATOR_LIFETIME {
-                self.scroll.shown_at = None;
+                self.render.scroll.shown_at = None;
             }
             animating = true;
         }
@@ -699,7 +640,7 @@ impl App {
         if self.card_menu.as_mut().is_some_and(state::cardmenu::CardMenu::tick) {
             animating = true;
         }
-        if self.grid.card_pops_running() {
+        if self.render.grid.card_pops_running() {
             animating = true;
         }
         animating
@@ -757,7 +698,7 @@ impl App {
     /// slide only plays for the row that actually flipped, not a same-valued
     /// neighbor focused mid-animation.
     pub(crate) fn toggle_frac(&self, target_on: bool, row: usize) -> f32 {
-        match self.modal.switch_anim {
+        match self.render.modal.switch_anim {
             Some((t, from_on, anim_row)) if anim_row == row && from_on != target_on => {
                 let f = ui::animation::anim_frac(Some(t), ui::animation::FOCUS_POP);
                 if target_on {
@@ -781,7 +722,7 @@ impl App {
     pub fn advance_frame(&mut self, screen_w: u32) -> bool {
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
-        self.grid.card_size = view::home::grid_card_size(available_w, columns);
+        self.render.grid.card_size = view::home::grid_card_size(available_w, columns);
 
         // Every screen transition triggers close-fade for the left screen and
         // open-fade for the entered screen, centralized here rather than at each
@@ -793,13 +734,13 @@ impl App {
             let left = self.nav.last_screen;
             self.nav.last_screen = self.nav.screen;
             if !matches!(left, Screen::Home) {
-                self.modal.fade.close(left);
+                self.render.modal.fade.close(left);
             }
             if !matches!(self.nav.screen, Screen::Home) {
-                self.modal.fade.open();
+                self.render.modal.fade.open();
                 // Reopening the same screen before its close-fade finished — the new
                 // open wins. A close-fade for a *different* screen is left alone.
-                self.modal.fade.cancel_closing(self.nav.screen);
+                self.render.modal.fade.cancel_closing(self.nav.screen);
             }
         }
         screen_changed

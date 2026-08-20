@@ -40,7 +40,7 @@ impl App {
         // Kept on the `sidebar_dirty` flag rather than a content version: the strip is
         // built from every entry plus its reachability, and hashing all of that once a
         // frame would cost more than the flag the event side already maintains.
-        if self.sidebar_dirty || !tiles.contains(tile::SIDEBAR) {
+        if self.render.sidebar_dirty || !tiles.contains(tile::SIDEBAR) {
             let selected = self.sidebar_index_of_selected_host();
             let entries = &self.hosts.entries;
             let reach = self.reachability_list();
@@ -49,10 +49,10 @@ impl App {
             // The outer condition has already decided this is stale, so the version just
             // has to differ from the last one — `ensure_in_place` would otherwise see an
             // unchanged `STATIC` and skip the rebuild it was called to do.
-            self.sidebar_gen = self.sidebar_gen.wrapping_add(1);
+            self.render.sidebar_gen = self.render.sidebar_gen.wrapping_add(1);
             tiles.ensure_in_place(
                 tile::SIDEBAR,
-                self.sidebar_gen,
+                self.render.sidebar_gen,
                 || Painter::new(ui::widgets::SIDEBAR_W, screen_h),
                 |layer| {
                     view::sidebar::draw(
@@ -71,7 +71,7 @@ impl App {
                     )
                 },
             )?;
-            self.sidebar_dirty = false;
+            self.render.sidebar_dirty = false;
             tiles.remove(tile::FOCUS_ROW); // row content may have changed under it
             updated.push(tile::SIDEBAR);
         }
@@ -105,9 +105,9 @@ impl App {
     /// grid has already revealed, and nothing has invalidated a card behind it.
     fn grid_window_frozen(&self) -> bool {
         !matches!(self.nav.screen, Screen::Home)
-            && self.grid.reveal.is_revealed()
-            && !self.grid.dirty
-            && self.grid.cards_dirty.is_empty()
+            && self.render.grid.reveal.is_revealed()
+            && !self.render.grid.dirty
+            && self.render.grid.cards_dirty.is_empty()
     }
 
     /// Grid family: windowed/budgeted card-tile building, eviction, the reveal
@@ -123,7 +123,7 @@ impl App {
             ..
         } = ctx;
         let (screen_w, screen_h) = (size.w, size.h);
-        // The same three numbers `advance_frame` sized `self.grid.card_size` from — the grid's
+        // The same three numbers `advance_frame` sized `self.render.grid.card_size` from — the grid's
         // whole geometry follows from the width it has to fill.
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
@@ -131,7 +131,7 @@ impl App {
         // Reset before the branch: it is only ever set inside it, and a stale `true` left
         // behind by a host that has since been deselected would spin the render loop at
         // full rate forever.
-        self.grid.tiles_pending = false;
+        self.render.grid.tiles_pending = false;
         if self.library.selected_host.is_some() {
             // Nothing behind an open modal can come into view: the grid neither scrolls nor
             // moves focus while a modal owns input, so the whole windowed pass — the one cost
@@ -144,24 +144,24 @@ impl App {
             let count = self.grid_len(columns);
             // Captured before it's cleared below: a fresh library load is the only
             // rebuild that also re-arms the spinner.
-            let full_reset = self.grid.dirty;
+            let full_reset = self.render.grid.dirty;
             if full_reset {
                 // Every existing texture is stale (different games, different host) —
                 // drop them rather than leaving them to be overwritten one by one,
                 // which would strand the tail of a longer previous library.
-                for id in self.grid.card_ids.release_all() {
+                for id in self.render.grid.card_ids.release_all() {
                     tiles.remove(id);
-                    self.evicted_tiles.push(id);
+                    self.render.evicted_tiles.push(id);
                 }
-                self.grid.card_pop_until = None;
-                self.grid.dirty = false;
-                self.grid.cards_dirty.clear();
+                self.render.grid.card_pop_until = None;
+                self.render.grid.dirty = false;
+                self.render.grid.cards_dirty.clear();
                 // Scrolling or re-pinning a card must not hide the already-visible
                 // grid behind the spinner again.
-                self.grid.reveal.restart();
+                self.render.grid.reveal.restart();
             } else {
-                for id in std::mem::take(&mut self.grid.cards_dirty) {
-                    if let Some(t) = self.grid.card_ids.release(&id) {
+                for id in std::mem::take(&mut self.render.grid.cards_dirty) {
+                    if let Some(t) = self.render.grid.card_ids.release(&id) {
                         tiles.remove(t);
                     }
                 }
@@ -171,7 +171,7 @@ impl App {
             // index ranges, so every pass below iterates the window rather than the library.
             let row_h = card_h as i32 + view::home::GRID_GAP;
             let visible_rows = (screen_h as i32 - view::home::GRID_TOP_Y).max(row_h) / row_h + 1;
-            let first_visible_row = (self.grid.scroll / row_h).max(0);
+            let first_visible_row = (self.render.grid.scroll / row_h).max(0);
             let rows = count.div_ceil(columns.max(1)) as i32;
             // Row band -> index range, clamped to the library. Deliberately ignores the
             // section headings' offsets: a row's worth of slack either way is what
@@ -207,32 +207,32 @@ impl App {
             // is a sorted window-sized vector and the test is a binary search — where a
             // `HashSet<&str>` re-hashed every resident card's id string every frame. Both
             // lists are `GridState` scratch, cleared and refilled rather than allocated.
-            let mut keep = std::mem::take(&mut self.grid.scratch.keep);
+            let mut keep = std::mem::take(&mut self.render.grid.scratch.keep);
             keep.clear();
             keep.extend(
                 keep_window
                     .filter_map(|idx| layout.pin_id_at(&self.library.games, idx))
-                    .filter_map(|id| self.grid.card_ids.get(id)),
+                    .filter_map(|id| self.render.grid.card_ids.get(id)),
             );
             keep.sort_unstable();
-            let mut dropped = std::mem::take(&mut self.grid.scratch.dropped);
+            let mut dropped = std::mem::take(&mut self.render.grid.scratch.dropped);
             dropped.clear();
             dropped.extend(
-                self.grid
+                self.render.grid
                     .card_ids
                     .entries()
                     .filter(|(_, t)| keep.binary_search(t).is_err())
                     .map(|(id, _)| id.to_string()),
             );
-            self.grid.scratch.keep = keep;
+            self.render.grid.scratch.keep = keep;
             for id in dropped.drain(..) {
-                if let Some(t) = self.grid.card_ids.release(&id) {
+                if let Some(t) = self.render.grid.card_ids.release(&id) {
                     // Kept for the cards built below: a scroll frees and needs the same
                     // card-sized pixmap in the same frame (see `GridState::free_cards`).
                     if let Some(painter) = tiles.take(t) {
-                        self.grid.free_cards.push(painter);
+                        self.render.grid.free_cards.push(painter);
                     }
-                    self.evicted_tiles.push(t);
+                    self.render.evicted_tiles.push(t);
                 }
                 // Drop the decoded cover too — it is several times the size of the tile it
                 // feeds. Re-requested from the disk cache on scroll back. (Nothing to drop for
@@ -256,8 +256,8 @@ impl App {
             // burns a second budget slot re-dirtying it once the cover shows up. Two lists
             // rather than one sorted one, and indices rather than ids: a candidate past the
             // budget is never built, so nothing should be copied on its behalf.
-            let mut ready = std::mem::take(&mut self.grid.scratch.ready);
-            let mut waiting = std::mem::take(&mut self.grid.scratch.waiting);
+            let mut ready = std::mem::take(&mut self.render.grid.scratch.ready);
+            let mut waiting = std::mem::take(&mut self.render.grid.scratch.waiting);
             ready.clear();
             waiting.clear();
             for idx in build_window.clone() {
@@ -271,7 +271,7 @@ impl App {
                 if let (Some(loader), Some(game)) = (&mut self.jobs.art, layout.game_at(&self.library.games, idx)) {
                     loader.request(game);
                 }
-                if self.grid.card_ids.get(id).is_some_and(|t| tiles.contains(t)) {
+                if self.render.grid.card_ids.get(id).is_some_and(|t| tiles.contains(t)) {
                     continue;
                 }
                 if art_ready(idx) {
@@ -295,7 +295,7 @@ impl App {
                     continue;
                 };
                 built += 1;
-                let recycled = self.grid.free_cards.pop();
+                let recycled = self.render.grid.free_cards.pop();
                 let tile = {
                     let (title, art) = self.grid_card_content(idx, columns);
                     ui::rasterize_into(
@@ -310,21 +310,21 @@ impl App {
                         fonts,
                     )?
                 };
-                let tile_id = self.grid.card_ids.id(&id);
+                let tile_id = self.render.grid.card_ids.id(&id);
                 tiles.put(tile_id, cache::STATIC, tile);
-                if self.grid.reveal.is_revealed() {
-                    self.grid.arm_card_pop(&id, Instant::now());
+                if self.render.grid.reveal.is_revealed() {
+                    self.render.grid.arm_card_pop(&id, Instant::now());
                 }
                 updated.push(tile_id);
             }
             // Anything still here evicted without a card being built in its place, so it is
             // surplus rather than churn — held past the frame it would just be a cache of
             // pixmaps nothing asked for.
-            self.grid.free_cards.clear();
-            self.grid.scratch.dropped = dropped;
-            self.grid.scratch.ready = ready;
-            self.grid.scratch.waiting = waiting;
-            self.grid.tiles_pending = pending;
+            self.render.grid.free_cards.clear();
+            self.render.grid.scratch.dropped = dropped;
+            self.render.grid.scratch.ready = ready;
+            self.render.grid.scratch.waiting = waiting;
+            self.render.grid.tiles_pending = pending;
 
             // Prefetch the focused card's hero, so the connecting screen has one ready the
             // moment OK is pressed. Deduped in the loader, and the fetched bytes are
@@ -333,13 +333,13 @@ impl App {
             // Only once the visible window has settled: the loader serves hero requests
             // ahead of card art, so queueing one mid-scroll would put the cards the user is
             // actually looking at behind a full-screen fetch and decode.
-            if self.grid.reveal.is_revealed() && !pending {
+            if self.render.grid.reveal.is_revealed() && !pending {
                 if let HomeFocus::Grid(focus_idx) = self.home_focus {
                     if let Some(game) = layout.game_at(&self.library.games, focus_idx) {
                         if let Some(loader) = &mut self.jobs.art {
                             loader.request_hero(game);
                         }
-                        self.hero.want(&game.id);
+                        self.render.hero.want(&game.id);
                     }
                 }
             }
@@ -380,7 +380,7 @@ impl App {
                     // scroll doesn't pay it per card, unless a menu is already up (which
                     // can only happen on a settled grid anyway).
                     let menu_open = self.card_menu.as_ref().is_some_and(|m| m.pin_id == pin_id);
-                    if menu_open || (self.grid.reveal.is_revealed() && !pending) {
+                    if menu_open || (self.render.grid.reveal.is_revealed() && !pending) {
                         let rows = self.card_menu_rows(pin_id);
                         // No focused row in the key: the selection is a `DrawCmd::Fill` laid
                         // over this tile, so moving between the menu's rows rebuilds nothing.
@@ -466,27 +466,27 @@ impl App {
                 updated.push(tile::PIN_BADGE);
             }
 
-            if !self.grid.reveal.is_revealed() {
+            if !self.render.grid.reveal.is_revealed() {
                 // Rechecks the whole window rather than trusting `!pending`, since a card built
                 // earlier can still be waiting behind a re-dirtied sibling; requires `art_ready`
                 // too so a placeholder built this tick can't count as revealed.
                 let window_ready = || {
                     build_window.all(|idx| {
                         layout.pin_id_at(&self.library.games, idx).is_none_or(|id| {
-                            self.grid.card_ids.get(id).is_some_and(|t| tiles.contains(t)) && art_ready(idx)
+                            self.render.grid.card_ids.get(id).is_some_and(|t| tiles.contains(t)) && art_ready(idx)
                         })
                     })
                 };
-                let next_frame = self.grid.reveal.advance(self.library_fetch_in_flight(), window_ready);
+                let next_frame = self.render.grid.reveal.advance(self.library_fetch_in_flight(), window_ready);
                 match next_frame {
                     Some(idx) => updated.push(tile::spinner(idx)),
                     // Everything built behind the spinner becomes visible in this one frame, so
                     // it all zooms in off a single clock.
-                    None if self.grid.reveal.is_revealed() => {
+                    None if self.render.grid.reveal.is_revealed() => {
                         let now = Instant::now();
-                        let ids: Vec<String> = self.grid.card_ids.pin_ids().map(str::to_string).collect();
+                        let ids: Vec<String> = self.render.grid.card_ids.pin_ids().map(str::to_string).collect();
                         for id in ids {
-                            self.grid.arm_card_pop_if_idle(&id, now);
+                            self.render.grid.arm_card_pop_if_idle(&id, now);
                         }
                     }
                     None => {}
@@ -512,7 +512,7 @@ impl App {
                 updated.push(tile::CARD_OUTLINE);
             }
         } else {
-            self.grid.reveal.reveal();
+            self.render.grid.reveal.reveal();
             if tiles.ensure_static(tile::NO_HOST, || {
                 ui::rasterize(
                     ui::tiles::TextTile {
@@ -539,10 +539,10 @@ impl App {
         if self.launch_anim.is_none() {
             return;
         }
-        let Some(id) = self.hero.pending_upload() else { return };
+        let Some(id) = self.render.hero.pending_upload() else { return };
         // One hero slot: the upload replaces whatever it held (`Compositor::upload_raw`),
         // reusing the texture when the two images happen to share a size.
-        self.hero.mark_uploaded(id);
+        self.render.hero.mark_uploaded(id);
         updated.push(tile::HERO);
     }
 
@@ -561,15 +561,15 @@ impl App {
         } = ctx;
         let screen_changed = *screen_changed;
         let (screen_w, screen_h) = (size.w, size.h);
-        let closing = self.modal.fade.closing_frame(MODAL_FADE_OUT);
+        let closing = self.render.modal.fade.closing_frame(MODAL_FADE_OUT);
         if closing.is_none() {
             // Fade over (or cancelled by reopening the same screen) — drop the copies
             // rather than keep two card-sized textures alive for nothing.
-            if self.modal.prev.take().is_some() {
+            if self.render.modal.prev.take().is_some() {
                 tiles.remove(tile::MODAL_PREV);
                 tiles.remove(tile::MODAL_PREV_CONTENT);
-                self.evicted_tiles.push(tile::MODAL_PREV);
-                self.evicted_tiles.push(tile::MODAL_PREV_CONTENT);
+                self.render.evicted_tiles.push(tile::MODAL_PREV);
+                self.render.evicted_tiles.push(tile::MODAL_PREV_CONTENT);
             }
             return;
         }
@@ -580,7 +580,7 @@ impl App {
             return;
         };
         // Still the left card's — `modal_painter` moves it on later in this same call.
-        let region = self.modal.tile_region;
+        let region = self.render.modal.tile_region;
         // The crop `compose_modal` was drawing for this screen last frame, frozen. Settings
         // has no single body tile to freeze — its rows are a tile each — so one is stitched
         // from them at the geometry they were just drawn at. That is a blit per row and no
@@ -601,7 +601,7 @@ impl App {
             updated.push(tile::MODAL_PREV_CONTENT);
             (src, dst)
         });
-        self.modal.prev = Some(crate::app::render::ModalSnapshot { region, content });
+        self.render.modal.prev = Some(crate::app::render::ModalSnapshot { region, content });
     }
 
     /// The settings list as one painter, at the full unscrolled height `scroll_src_rect`
@@ -713,7 +713,7 @@ impl App {
         };
         // Hashed with the key rather than carried inside it: the close-button hover changes
         // every shell alike (see `ModalShellKey`).
-        key.as_ref().map(|k| cache::version(&(self.hover_close, k)))
+        key.as_ref().map(|k| cache::version(&(self.render.hover_close, k)))
     }
 
     /// The version [`tile::MODAL_FOCUS`] is valid at — a hash of the open modal's focused
@@ -816,10 +816,10 @@ impl App {
             .unwrap_or_default();
         let shell_version = self.modal_shell_version(&host_menu_actions);
         let modal_stale = match shell_version {
-            Some(_) => !tiles.contains(tile::MODAL) || self.modal.shell_version != shell_version,
+            Some(_) => !tiles.contains(tile::MODAL) || self.render.modal.shell_version != shell_version,
             None => content_dirty || !tiles.contains(tile::MODAL),
         };
-        self.modal.shell_version = shell_version;
+        self.render.modal.shell_version = shell_version;
         if modal_open && (screen_changed || modal_stale) {
             // Sized to the card's bounding box, not the whole screen: the render fns
             // below draw at absolute, screen-centered coordinates, and the painter's
@@ -830,7 +830,7 @@ impl App {
             let recycled = tiles.take(tile::MODAL);
             let mut p = self.modal_painter(recycled, screen_w, screen_h, fonts);
             let c = &mut ui::Canvas::new(&mut p, text_cache, fonts, screen_w, screen_h);
-            let hover_close = self.hover_close;
+            let hover_close = self.render.hover_close;
             self.with_modal_screen(|s| s.render(c, hover_close)).transpose()?;
             // Staleness was already decided above, against `modal.shell_version` rather than
             // against the store — the keyless screens have no version to compare, so they turn
@@ -847,7 +847,7 @@ impl App {
             // Also stale on every tick of an in-flight `switch_anim`: the knob's
             // position depends on elapsed time, not on the key, which doesn't
             // change mid-flip.
-            let stale = self.modal.switch_anim.is_some() || !tiles.is_fresh(tile::MODAL_FOCUS, version);
+            let stale = self.render.modal.switch_anim.is_some() || !tiles.is_fresh(tile::MODAL_FOCUS, version);
             if stale {
                 // `None` where the screen turns out to have no focused widget after all —
                 // the descriptor that proves the arm reachable is the same value it draws
@@ -1030,7 +1030,7 @@ impl App {
         for i in first..tile::SETTINGS_ROW_SLOTS {
             let Some(id) = tile::settings_row(i) else { break };
             if tiles.remove(id) {
-                self.evicted_tiles.push(id);
+                self.render.evicted_tiles.push(id);
             }
         }
     }
@@ -1064,7 +1064,7 @@ impl App {
             self.ensure_about_wrapped(fonts, body.width());
         }
         if let Some((total, visible, _, content)) = self.scroll_geometry(screen_w, screen_h, fonts) {
-            let scroll = self.scroll.clamped(total, visible);
+            let scroll = self.render.scroll.clamped(total, visible);
             let ind = cache::version(&(self.nav.screen, total, visible, scroll, content.height()));
             if tiles.ensure(tile::SCROLL_INDICATOR, ind, || {
                 ui::rasterize(
@@ -1129,7 +1129,7 @@ impl App {
                         dropdown_row,
                         content.width(),
                     ));
-                    let cached = self.modal.settings_rows_version == Some(rows_version)
+                    let cached = self.render.modal.settings_rows_version == Some(rows_version)
                         && (0..row_count).all(|i| tile::settings_row(i).is_some_and(|id| tiles.contains(id)));
                     if !cached {
                         let rows = settings_rows.get_or_insert_with(|| self.settings_rows());
@@ -1158,17 +1158,17 @@ impl App {
                         // Slots past the end of a list that just got shorter (a sub-page is a
                         // shorter list on the same screen) would otherwise keep drawing.
                         self.evict_settings_rows_from(rows.len(), tiles);
-                        self.modal.settings_rows_version = Some(rows_version);
+                        self.render.modal.settings_rows_version = Some(rows_version);
                     }
                     // Every row is baked, so the window is the whole list — the crop
                     // rebase in `scroll_src_rect` has nothing to shift.
-                    self.content_window = ui::scroll::ContentWindow {
+                    self.render.content_window = ui::scroll::ContentWindow {
                         start: 0,
                         len: row_count,
                     };
                 }
                 Screen::About => {
-                    if let Some(new_start) = self.content_window.recenter_if_needed(
+                    if let Some(new_start) = self.render.content_window.recenter_if_needed(
                         scroll,
                         visible,
                         total,
@@ -1176,12 +1176,12 @@ impl App {
                         ABOUT_WINDOW_MARGIN,
                     ) {
                         let len = ABOUT_WINDOW_BUDGET.min(total.saturating_sub(new_start));
-                        if let Some((_, wrapped)) = &self.about_wrapped {
+                        if let Some((_, wrapped)) = &self.render.about_wrapped {
                             let stride = self.scroll_stride(fonts) as u32;
                             let mut p = Painter::new(content.width().max(1), (len as u32 * stride).max(1));
                             let mut c = ui::Canvas::tile(&mut p, text_cache, fonts);
                             view::about::draw_window(&mut c, fonts.value, wrapped, new_start, len)?;
-                            self.content_window = ui::scroll::ContentWindow { start: new_start, len };
+                            self.render.content_window = ui::scroll::ContentWindow { start: new_start, len };
                             let key = cache::version(&(Screen::About, ScrollContentKey::About(new_start)));
                             tiles.put(tile::SCROLL_CONTENT, key, p);
                             updated.push(tile::SCROLL_CONTENT);
@@ -1215,7 +1215,7 @@ impl App {
             &mut ui::Canvas::new(&mut scratch, text_cache, fonts, screen_w, screen_h),
             menu::SettingsScope::Global,
             None,
-            self.hover_close,
+            self.render.hover_close,
         )?;
         let (_, content) = view::settings::layout(menu::SettingsScope::Global, screen_w, screen_h);
         let rows = self.settings_rows();
@@ -1303,7 +1303,7 @@ impl App {
                 ctx.updated.len(),
                 started.elapsed()
             );
-            self.modal.fade.restart();
+            self.render.modal.fade.restart();
         }
         Ok(std::mem::take(&mut ctx.updated))
     }

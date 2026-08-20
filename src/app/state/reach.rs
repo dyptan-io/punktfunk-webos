@@ -70,7 +70,7 @@ impl App {
             self.jobs.reach = None;
         }
         if changed {
-            self.sidebar_dirty = true;
+            self.render.sidebar_dirty = true;
         }
         changed
     }

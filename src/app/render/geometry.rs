@@ -97,7 +97,7 @@ impl App {
             Screen::About => {
                 let card = view::about::card_rect(screen_w, screen_h);
                 let body = view::about::body_rect(card, fonts);
-                let total = self.about_wrapped.as_ref().map_or(0, |(_, v)| v.len());
+                let total = self.render.about_wrapped.as_ref().map_or(0, |(_, v)| v.len());
                 let visible = view::about::visible_lines(body, fonts.raster, fonts.value);
                 Some((total, visible, card, body))
             }
@@ -144,7 +144,7 @@ impl App {
     /// `modal.scroll_px` is the raw target the ease writes; every reader wants it clamped, and
     /// the clamp used to be spelled out at each of them.
     pub(crate) fn clamped_scroll_px(&self, total: usize, stride: i32, viewport_h: u32) -> i32 {
-        self.modal
+        self.render.modal
             .scroll_px
             .clamp(0, Self::max_scroll_px(total, stride, viewport_h))
     }
@@ -164,7 +164,7 @@ impl App {
         let (total, _, _, content) = self.scroll_geometry_for(screen, screen_w, screen_h, fonts)?;
         // About uses a bounded window; for other screens, window_start is 0.
         let window_start = match screen {
-            Screen::About => self.content_window.start,
+            Screen::About => self.render.content_window.start,
             _ => 0,
         };
         let stride = self.scroll_stride_for(screen, fonts);
@@ -196,7 +196,7 @@ impl App {
         viewport_h: u32,
         stride: i32,
     ) {
-        let offset = self.scroll.clamped(total, visible);
+        let offset = self.render.scroll.clamped(total, visible);
         // Biased back by one peek so the *top* edge also cuts mid-row: sitting on the row grid
         // would put nothing but the gap between rows under the top fade, which is invisible
         // (see `view::settings::PEEK`). The clamps then pin the first and last positions flush,
@@ -208,10 +208,10 @@ impl App {
         let target = (offset as i32 * stride - bias)
             .min(Self::max_scroll_px(total, stride, viewport_h))
             .max(0);
-        self.modal.scroll_target_px = target;
-        if self.modal.scroll_screen != Some(screen) {
-            self.modal.scroll_screen = Some(screen);
-            self.modal.scroll_px = target;
+        self.render.modal.scroll_target_px = target;
+        if self.render.modal.scroll_screen != Some(screen) {
+            self.render.modal.scroll_screen = Some(screen);
+            self.render.modal.scroll_px = target;
         }
     }
 
@@ -522,7 +522,7 @@ impl App {
         let card = self.modal_card_rect(screen_w, screen_h, fonts);
         let pad = MODAL_TILE_PAD;
         let region = card.map_or_else(|| Rect::new(0, 0, screen_w, screen_h), |c| c.inflate(pad));
-        self.modal.tile_region = region;
+        self.render.modal.tile_region = region;
         let mut p = match recycled {
             Some(mut p) if p.width() == region.width() && p.height() == region.height() => {
                 p.reset();
