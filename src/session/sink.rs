@@ -196,7 +196,7 @@ impl VideoPlayer {
     /// `run_clock_plane` stamps in the player clock directly.
     fn latch_pts_offset(&self, frame_pts_ns: u64, base_ns: u64) {
         if let Some(ndl) = self.audio_plane_ndl() {
-            ndl.latch_pts_offset(base_ns as i64 - frame_pts_ns as i64);
+            ndl.latch_pts_offset(base_ns as i64 - frame_pts_ns as i64, base_ns);
         }
     }
 

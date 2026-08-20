@@ -401,6 +401,23 @@ pub enum LogLevelOverride {
     Error,
 }
 
+/// Slider range, in 5 Mbps steps.
+pub const BITRATE_MIN_KBPS: u32 = 10_000;
+/// The one bitrate ceiling this client has. It bounds the manual slider AND, through `main`,
+/// `punktfunk_core::abr`'s automatic climb (`PUNKTFUNK_ABR_MAX_MBPS`) and the startup
+/// link-capacity probe's burst target (`PUNKTFUNK_ABR_PROBE_KBPS`) — an Automatic session that
+/// could climb past what the slider allows would just be a second, hidden setting.
+pub const BITRATE_MAX_KBPS: u32 = 200_000;
+/// Slider granularity — also the lattice of valid fixed-bitrate values.
+pub const BITRATE_STEP_KBPS: u32 = 5_000;
+/// Sentinel one notch below `BITRATE_MIN_KBPS` on the slider: `punktfunk_core::client::NativeClient`
+/// arms its own client-side AIMD bitrate controller (`punktfunk_core::abr`) precisely when it's
+/// asked to connect with `bitrate_kbps == 0` — it reacts to unrecoverable frames, heavy loss,
+/// one-way-delay rise, and (via `session.rs`'s `report_decode_us` call) decode latency, backing off
+/// or climbing every ~750ms. A fixed Mbps number, however carefully picked, never adapts to a link
+/// that degrades mid-session — this does.
+pub const BITRATE_AUTOMATIC: u32 = 0;
+
 /// Stream settings: resolution/framerate/bitrate/HDR/codec, plus the input and diagnostics
 /// toggles the Settings screens expose.
 ///
@@ -413,9 +430,8 @@ pub struct Settings {
     pub height: u32,
     /// Refresh rate (30/60/120) — sent to the host as the exact wire `Mode.refresh_hz`.
     pub refresh_hz: u32,
-    /// `0` (Automatic — `punktfunk_core`'s own client-side AIMD bitrate controller, see
-    /// `menu::BITRATE_AUTOMATIC`) or 10_000-150_000 (10-150 Mbps) fixed, adjusted via the settings
-    /// slider — see `menu::BITRATE_MIN_KBPS`/`BITRATE_MAX_KBPS`.
+    /// [`BITRATE_AUTOMATIC`] (`punktfunk_core`'s own client-side AIMD bitrate controller) or a
+    /// fixed [`BITRATE_MIN_KBPS`]..=[`BITRATE_MAX_KBPS`], adjusted via the settings slider.
     pub bitrate_kbps: u32,
     pub hdr_enabled: bool,
     /// Preferred session codec — see [`CodecPref`].
@@ -492,7 +508,7 @@ impl Default for Settings {
             // Automatic: a fixed number, however carefully picked (aurora-tv's own
             // moonlight-tv wiki calls ~35-40 Mbps the practical sweet spot for this decode
             // path), never adapts to a link that degrades mid-session the way punktfunk's
-            // own client-side AIMD controller does — see `menu::BITRATE_AUTOMATIC`.
+            // own client-side AIMD controller does — see [`BITRATE_AUTOMATIC`].
             bitrate_kbps: 0,
             hdr_enabled: true,
             stats_overlay: false,

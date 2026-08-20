@@ -18,6 +18,8 @@ mod services;
 mod session;
 mod ui;
 
+use crate::core::model::BITRATE_MAX_KBPS;
+
 #[cfg(target_os = "linux")]
 mod runtime;
 
@@ -31,20 +33,21 @@ mod runtime {
     }
 }
 
-/// Ceiling for `punktfunk-core`'s startup link-capacity probe, in kbps.
+/// [`BITRATE_MAX_KBPS`] in the Mbps unit `PUNKTFUNK_ABR_MAX_MBPS` is spelled in.
+const ABR_MAX_MBPS: u32 = BITRATE_MAX_KBPS / 1_000;
+
+/// Publishes the two automatic-bitrate knobs `punktfunk_core` reads from the environment, both
+/// derived from [`BITRATE_MAX_KBPS`] — the client has one bitrate ceiling, and the settings slider
+/// is where it is edited.
 ///
-/// Core bursts at 2 Gbps by default, deliberately far above any plausible link so the burst
-/// measures the link rather than itself. On a TV's Wi-Fi that backfires: measured on the G5,
-/// three back-to-back connects split two ways — the two whose probe finished in ~1-2 s had
-/// video within 2-4 s, the one that hit core's 6 s timeout showed **no video for 14 seconds**
-/// (a black screen the user reads as a failed connect), and even a "successful" probe on that
-/// link had the host dropping 20k packets.
-///
-/// 300 Mbps matches what this client already burst-tests its own speed probe at
-/// (`session::probe::run_speed_probe`, capped for the same reason: an unbounded firehose starves a
-/// 2-3 core TV), and still sits well above the ~245 Mbps airlink ceiling this hardware can
-/// reach — so it measures the link without knocking it over.
-const ABR_PROBE_KBPS: &str = "300000";
+/// `PUNKTFUNK_ABR_MAX_MBPS` clamps core's climb ceiling however it is learned;
+/// `PUNKTFUNK_ABR_PROBE_KBPS` shrinks the startup burst that measures it, whose 2 Gbps default
+/// knocks a TV's Wi-Fi over. See `docs/NOTES.md` § "ABR startup probe" for the measurements
+/// behind both, and why descent below the ceiling stays core's job.
+fn set_abr_env() {
+    std::env::set_var("PUNKTFUNK_ABR_PROBE_KBPS", BITRATE_MAX_KBPS.to_string());
+    std::env::set_var("PUNKTFUNK_ABR_MAX_MBPS", ABR_MAX_MBPS.to_string());
+}
 
 fn main() -> anyhow::Result<()> {
     // Load-bearing, not belt-and-braces: `ureq` is built without a backend feature
@@ -55,10 +58,9 @@ fn main() -> anyhow::Result<()> {
     // mTLS library agent is unaffected either way; it names its provider via
     // `builder_with_provider`. Must land before any thread that might issue a request.
     punktfunk_core::tls::install_default_provider();
-    // Set before anything spawns a thread: `set_var` is not thread-safe, and core reads this
-    // while building its data-plane pump during `connect`. An older core simply ignores it.
-    // Deliberately no `PUNKTFUNK_ABR_MAX_MBPS` alongside it — the probe measures this link's
-    // ceiling, and a compiled-in cap would override that measurement with a guess.
-    std::env::set_var("PUNKTFUNK_ABR_PROBE_KBPS", ABR_PROBE_KBPS);
+    // Set before anything spawns a thread: `set_var` is not thread-safe, and core reads these
+    // while building its data-plane pump and bitrate controller during `connect`. An older core
+    // simply ignores them.
+    set_abr_env();
     runtime::run()
 }

@@ -9,9 +9,9 @@
 //! link speed. Bounds useful for bitrate picking on this TV.
 //!
 //! Rendering lives in `app::view::speedtest`.
-use crate::app::menu;
 use crate::app::App;
 use crate::core::event::MenuEvent;
+use crate::core::model;
 use crate::core::screen::Screen;
 use std::time::Instant;
 
@@ -199,5 +199,5 @@ pub(crate) fn recommended_kbps(outcome: &ProbeOutcome) -> Option<u32> {
     let raw = outcome.throughput_kbps / RECOMMEND_DENOMINATOR * RECOMMEND_NUMERATOR;
     // Whole Mbps, clamped to slider bounds (BITRATE_STEP_KBPS steps).
     let whole_mbps = (raw / 1000).max(1) * 1000;
-    Some(whole_mbps.clamp(menu::BITRATE_MIN_KBPS, menu::BITRATE_MAX_KBPS))
+    Some(whole_mbps.clamp(model::BITRATE_MIN_KBPS, model::BITRATE_MAX_KBPS))
 }

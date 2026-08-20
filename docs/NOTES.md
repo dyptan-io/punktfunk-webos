@@ -208,6 +208,18 @@ the jump. `latch_pts_offset` takes only the first value after each `clear_pts_of
 resume, pacing off→on edge), and only off a frame NDL **accepted** — `play_audio` has no
 `ensure_loaded` guard of its own, so the latch doubles as the audio thread's start gate.
 
+⚠ **But flooring every packet on that ceiling is itself a mute.** A hold resume re-anchors the
+video plane onto the *current player clock*; when that maps the resumed audio BELOW the ceiling —
+the video plane was running ahead, or the clock plane bursted its `PRIME_LEAD` of silence during
+the gap — `fetch_max` pins every packet to one stamp, audio stops advancing, and nothing lifts it
+off again for the rest of the session. Field case (CX, 2026-08-20, offload on): the startup ABR
+probe at 300 Mbps saturated the airlink, one freeze-until-reanchor hold followed, and audio was
+gone from that point while video recovered normally. The fix is a per-latch `audio_skew_ms`: the
+first real packet after a re-latch shifts the whole stream to one packet above the ceiling and
+advances by its own cadence from there, leaving the floor as a defensive no-op. The drop path
+(`play_audio` with no latched offset) also **logs the gap on the packet that ends it** — silent, it
+cost a session its audio with nothing in the log to find.
+
 ⚠ The audio-enabled load returns success even on a TV that then plays nothing, so **no runtime
 probe can distinguish the two**. If a model regresses, the `NDL load state:`
 (`LOADCOMPLETED`/`PLAYING`) log says whether the pipeline ever started, and turning Experimental →
@@ -221,7 +233,9 @@ Don't read a slow *start* as this bug — a host compositor coming up has its ow
 
 This is `CAPACITY_PROBE_KBPS` in `punktfunk-core`'s `client/pump/data.rs` — a **hardcoded const with no cap knob** — directly at odds with this client capping its own speed test for the same "unbounded firehose starves the app" reason (below).
 
-**Fixed by capping the burst**: `main.rs` sets `PUNKTFUNK_ABR_PROBE_KBPS=300000` before anything spawns a thread (`setenv` isn't thread-safe, and core reads it while building its data-plane pump). Same order as the speed test's own cap, still above the airlink ceiling below — measures the link without knocking it over. Knob is core-side; **core v0.22.3 is the first release carrying it**, which is why the pin moved off v0.21.0. An older core ignores the variable.
+**Fixed by capping the burst**: `main.rs`'s `set_abr_env` sets `PUNKTFUNK_ABR_PROBE_KBPS` before anything spawns a thread (`setenv` isn't thread-safe, and core reads it while building its data-plane pump). Same order as the speed test's own cap, still above the airlink ceiling below — measures the link without knocking it over. Knob is core-side; **core v0.22.3 is the first release carrying it**, which is why the pin moved off v0.21.0. An older core ignores the variable.
+
+**300 was still too high on the CX** (2026-08-20): the probe saturated the airlink and opened a freeze-until-reanchor hold seconds into the session — the "Connection issues — recovering" toast — which on the offload path then cost the session its audio (see *NDL's audio plane*). Both knobs are now derived from `core::model::BITRATE_MAX_KBPS` — the settings slider's own ceiling, 200 Mbps, so there is one number to change: `PUNKTFUNK_ABR_MAX_MBPS` clamps the climb ceiling however it is learned (`abr::ceiling_cap_from_env`; the probe MEASURES that ceiling and `set_ceiling` is monotonic, so an over-read is otherwise permanent for the session), and the probe burst matches it — bursting above a ceiling the session can never use only buys loss. Descending below 200 stays core's job; its congestion signals walk the rate to their own 5 Mbps floor and **there is no client-side API to lower a ceiling mid-session**.
 
 That bump also brought a `connect` signature change — a `name: Option<String>` (label the host's pending-approval list shows) between `launch` and `pin`. All four call sites pass `None`, preserving fingerprint-derived label; sending a real TV name is a separate user-visible change.
 
