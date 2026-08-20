@@ -303,9 +303,19 @@ Pure optimization, no API churn. Measurable on armv7 softfloat, where a `FocusRo
 13. O6: pass-through hasher for `TextCache`.
 14. O7: replace the `card_pop` scan with a stored deadline.
 
-O8 (persist clone) and O9 (the hasher) are deliberately left out of this phase: O8 is not on a
-frame path, and O9 needs the `TextCache` identity-key question settled first. Both are one-file
-changes that can land any time.
+O8 (persist clone) and O9 (the hasher) were deliberately left out of this phase. **O9 has since
+landed**: `cache::version` hashes with `FxHasher`, and the identity caller the caveat is about
+moved to a new `cache::identity`, which keeps `SipHash`. Writing tests for it turned up a real
+defect in the first cut — a zero-padded tail made `"a"` and `"a\0"` collide, which for a tile
+keyed on a game title means drawing the wrong one — so `write` folds the byte length in.
+
+**O8 is not being done.** `persist()` clones a handful of hosts on a settings Back or a pin
+toggle; the `Arc<Persisted>` it would take is a change to `StateWriter`'s baseline comparison for
+a saving nothing on a frame path measures.
+
+**Phase 1.7's known-hosts index is not being done either**, beyond the note at Phase 6: the scans
+it would replace are over the hosts one household has (single digits), and an index would need a
+mutation funnel `known_hosts` does not have. Revisit only if a real list ever gets long.
 
 Exit criteria: zero allocations on `handle_mouse_motion`; at most one `Vec<FocusRow>` per frame
 in `prepare_tiles`; no pixmap allocation on a steady-state scroll frame. Verify with
