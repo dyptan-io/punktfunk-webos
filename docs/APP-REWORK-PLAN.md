@@ -1,6 +1,6 @@
 # `src/app` rework plan
 
-Status: phases 0-5 landed (see the per-phase notes below); 6-7 proposal. Scope: `src/app` (10.9k LOC, 56 files), plus the seams it forces open in
+Status: phases 0-6 landed (see the per-phase notes below); 7 proposal. Scope: `src/app` (10.9k LOC, 56 files), plus the seams it forces open in
 `src/core/screen.rs`, `src/ui/screen.rs` and `src/runtime`.
 
 ## 1. What is actually wrong
@@ -468,7 +468,7 @@ only exists to feed `drain_reachability`. Three cancel helpers: `cancel_pairing`
 switch would start art for the wrong library). `WakeState::probe_rx` stayed put: it is part of a
 payload that is `None` off-screen, like `Wake`'s cursor in Phase 3.
 
-### Phase 6 — split `App` (P1, P9)
+### Phase 6 — split `App` (P1, P9) — DONE
 
 Only after 2-5, which have already emptied most of it. Move the surviving fields into `Nav`,
 `HostsState`, `Library`, `SettingsUi`, `ScreenSlots`, `RenderState` as sketched in §2. Prefer
@@ -482,6 +482,19 @@ become each sub-struct's `Default`/`new`.
 
 Risk: high churn, low logic risk — the compiler finds every site. One commit per sub-struct so
 a bisect stays useful.
+
+Landed as five commits (`Library`, `HostsState`, `SettingsUi`, `ScreenSlots`, `RenderState`) plus
+one for P9. `App` is **19 fields**, all `pub(crate)` or tighter; the runtime writes through
+`set_gamepad_type`, `set_keyboard_shown`, `set_home_status` and `end_slider_drag`. Two departures
+from §2's sketch: `ScreenSlots` lives in `app::screens::slots` (next to the two families it holds
+payloads for) and `RenderState` in `app::render::state`, rather than at the top of `app`. The
+`HostsState` index deferred from Phase 1.7 was **not** done — the premise was wrong: `set_entries`
+funnels `entries`, not `known_hosts`, which is mutated by `retain`/push from six `state/*`
+modules. Funnelling those first is its own change.
+
+`App::new` is 68 lines, from 118. The remaining fields are genuinely app-level: nav, the six
+sub-structs, Home's focus and status, the launch handoff, the card menu, the state writer, the
+gamepad type, the keyboard flag and the identity.
 
 ### Phase 7 — file size
 
@@ -530,7 +543,7 @@ encode as much of it as possible in Phase 0.5's tests.
 | 3 Nav | yes | nested-menu round trip keeps its cursor (HostMenu → WakeSettings → Back) — **still owed** |
 | 4 families | per-commit | every list screen + every confirm dialog, on the TV — **still owed** |
 | 5 Jobs | yes | discovery, pairing, speed test, send-logs, root probe all still land — **still owed** |
-| 6 App split | per-sub-struct | full menu pass + one stream launch/return |
+| 6 App split | per-sub-struct | full menu pass + one stream launch/return — **still owed** |
 | 7 file size | yes | lint only |
 
 Phases 1, 2 and 5 are independent and can land in any order after 0.5. Phase 4 wants 3 done

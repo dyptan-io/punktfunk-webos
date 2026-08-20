@@ -36,9 +36,13 @@ machine) ← `runtime` (the two top-level loops).
 - **`app`** splits per screen by concern: `state::<screen>` (events, transitions) and
   `view::<screen>` (geometry, draw list). `app::render` holds `tile` (which tile is which),
   `key` (what its pixels depend on — hashed, never stored) and `ctx` (`RenderCtx`, threaded
-  through every `prepare_*`). State is grouped, not flat: `grid`, `modal`, `spinner`, `hero`,
-  `hosts`, `menu`. `nav` holds the screen, the previous screen and one focus cursor per
-  screen; `screens::{list,confirm}` hold what a whole family of screens shares.
+  through every `prepare_*`). `App` is 19 fields and owns almost nothing directly: `nav` (screen,
+  previous screen, one focus cursor per screen), `jobs` (every background receiver, one
+  `drain_jobs`), `library` (the selected host's games, art and pins), `hosts` (the known list,
+  reachability, rooted), `settings_ui` (the document plus its dropdown/override/slider),
+  `screens::slots` (per-screen payloads) and `render::state` (grid, modal, hero, press, scroll
+  windows, dirty flags). `screens::{list,confirm}` hold what a whole family of screens shares.
+  Every field is `pub(crate)`; `runtime` writes through named setters.
 - **`runtime`** alternates two phases: `ui_flow` (menu) and `stream`, on
   `StreamOutcome::ReturnToMenu` vs `Quit`.
 
