@@ -29,6 +29,11 @@ pub(crate) struct RenderCtx<'a> {
     /// Tiles rebuilt this frame, for the caller to re-upload. Drained by
     /// [`App::prepare_tiles`](crate::app::App::prepare_tiles).
     pub updated: Vec<TileId>,
+    /// The settings row list, built at most once per frame. Two passes want it — the row
+    /// tiles and the focused-row tile — and each used to build its own copy, which on
+    /// armv7 is `String` formatting per row twice over. Frame-scoped: nothing here is
+    /// carried between frames, so there is no staleness to reason about.
+    pub settings_rows: Option<Vec<crate::ui::widgets::FocusRow>>,
 }
 
 impl<'a> RenderCtx<'a> {
@@ -48,6 +53,7 @@ impl<'a> RenderCtx<'a> {
             content_dirty,
             screen_changed,
             updated: Vec::new(),
+            settings_rows: None,
         }
     }
 }

@@ -792,6 +792,7 @@ impl App {
             fonts,
             screen: size,
             updated,
+            settings_rows,
             ..
         } = ctx;
         let (screen_w, screen_h) = (size.w, size.h);
@@ -843,12 +844,12 @@ impl App {
                 let tile = match self.screen {
                     Screen::Settings(_) => {
                         let (_, content) = view::settings::layout(self.settings_scope(), screen_w, screen_h);
-                        let rows = self.settings_rows();
+                        let rows = settings_rows.get_or_insert_with(|| self.settings_rows());
                         let dropdown_open = self.dropdown.as_ref().is_some_and(|dd| dd.row == self.settings_focused);
                         let target_on = rows.get(self.settings_focused).is_some_and(|r| r.value == "On");
                         ui::rasterize(
                             ui::widgets::FocusRowTile {
-                                rows: &rows,
+                                rows,
                                 content_width: content.width(),
                                 index: self.settings_focused,
                                 dropdown_open,
@@ -1070,6 +1071,7 @@ impl App {
             fonts,
             screen: size,
             updated,
+            settings_rows,
             ..
         } = ctx;
         let (screen_w, screen_h) = (size.w, size.h);
@@ -1158,7 +1160,7 @@ impl App {
                     let cached = self.modal.settings_rows_version == Some(rows_version)
                         && (0..row_count).all(|i| tile::settings_row(i).is_some_and(|id| tiles.contains(id)));
                     if !cached {
-                        let rows = self.settings_rows();
+                        let rows = settings_rows.get_or_insert_with(|| self.settings_rows());
                         // One tile per row, each keyed on that row's own content. Rebuilding the
                         // whole list as one strip cost 25-60ms on armv7 every time a single value
                         // moved; this pays for the row that actually changed and reads the rest
