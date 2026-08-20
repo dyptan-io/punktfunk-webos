@@ -49,7 +49,7 @@ impl App {
             .fade
             .closing_frame(MODAL_FADE_OUT)
             .and_then(|(alpha, _)| Some((alpha, self.modal.prev?)));
-        let screen = self.screen;
+        let screen = self.nav.screen;
         let m = if matches!(screen, Screen::Home) {
             0.0
         } else {

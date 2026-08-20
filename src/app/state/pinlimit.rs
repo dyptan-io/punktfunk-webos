@@ -10,13 +10,13 @@ impl App {
 
     /// Enter `PinLimit` alert when pinning exceeds `MAX_PINNED_GAMES`.
     pub(crate) fn open_pin_limit(&mut self) {
-        self.screen = Screen::PinLimit;
+        self.nav.screen = Screen::PinLimit;
     }
 
     /// Handle `PinLimit`: OK and Back both dismiss the alert.
     pub fn handle_pin_limit_event(&mut self, ev: MenuEvent) {
         if matches!(ev, MenuEvent::Confirm | MenuEvent::Back) {
-            self.screen = Screen::Home;
+            self.nav.screen = Screen::Home;
         }
     }
 }

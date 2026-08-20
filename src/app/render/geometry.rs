@@ -4,14 +4,64 @@
 //! Shared on purpose — `prepare`'s staleness checks and `compose`'s GPU-crop math have to
 //! agree about a scrollable modal's extent, and deriving it twice is how they stop
 //! agreeing.
+use crate::app::nav::ScreenKey;
 use crate::app::{menu, view, App, PairingFocus, Screen, MODAL_TILE_PAD};
 use crate::ui;
 use crate::ui::render::Rect;
 use crate::ui::Painter;
 
+/// Whether `screen` is one of the two-button confirm dialogs — the family that shares a card
+/// (one subtitle sizes it), a button row and a focus cursor, differing only in its labels.
+///
+/// Exhaustive on purpose: a new screen has to say which family it joins rather than being
+/// absorbed by a `_ =>` arm into the wrong geometry.
+pub(crate) const fn is_confirm(screen: Screen) -> bool {
+    match screen {
+        Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest => true,
+        Screen::Home
+        | Screen::Pairing
+        | Screen::Settings(_)
+        | Screen::AddHost
+        | Screen::HostMenu
+        | Screen::EditHost
+        | Screen::About
+        | Screen::WakeSettings
+        | Screen::PinLimit
+        | Screen::Diagnostics
+        | Screen::Experimental
+        | Screen::CursorSettings(_) => false,
+    }
+}
+
+/// Whether `screen` is a plain list modal: a card holding one `FocusRow` per line, hit-tested
+/// and focused by row index. Same contract as [`is_confirm`], and the same reason it is
+/// exhaustive — `WakeSettings` silently missing from a table like this is the bug in
+/// `docs/APP-REWORK-PLAN.md` §1, P3.
+pub(crate) const fn is_list_modal(screen: Screen) -> bool {
+    match screen {
+        Screen::HostMenu
+        | Screen::WakeSettings
+        | Screen::Diagnostics
+        | Screen::Experimental
+        | Screen::CursorSettings(_) => true,
+        Screen::Home
+        | Screen::Pairing
+        // Settings is a list, but a scrolling one that owns its own geometry.
+        | Screen::Settings(_)
+        | Screen::AddHost
+        | Screen::Wake
+        | Screen::ForgetHost
+        | Screen::EditHost
+        | Screen::About
+        | Screen::SpeedTest
+        | Screen::PinLimit
+        | Screen::SendLogs => false,
+    }
+}
+
 impl App {
     /// `(total units, visible units, card rect, content/viewport rect)` for whichever
-    /// scrollable modal is open — `None` if `self.screen` has no overflowing content.
+    /// scrollable modal is open — `None` if `self.nav.screen` has no overflowing content.
     /// The one place this per-modal geometry lives, shared by `prepare_tiles`'s
     /// staleness checks and `draw_list`'s GPU-crop math so the two can't disagree.
     /// `About`'s `total` depends on `about_wrapped` already being fresh for this
@@ -23,11 +73,11 @@ impl App {
         screen_h: u32,
         fonts: &ui::text::Fonts,
     ) -> Option<(usize, usize, Rect, Rect)> {
-        self.scroll_geometry_for(self.screen, screen_w, screen_h, fonts)
+        self.scroll_geometry_for(self.nav.screen, screen_w, screen_h, fonts)
     }
 
     /// Same as `scroll_geometry`, but for an explicit screen — `snapshot_closing_modal`
-    /// needs the screen being *left*, which `self.screen` has already moved off.
+    /// needs the screen being *left*, which `self.nav.screen` has already moved off.
     pub(crate) fn scroll_geometry_for(
         &self,
         screen: Screen,
@@ -36,8 +86,8 @@ impl App {
         fonts: &ui::text::Fonts,
     ) -> Option<(usize, usize, Rect, Rect)> {
         match screen {
-            // The scope comes off the passed screen, not `self.screen`: a closing Settings(Game)
-            // is asked about after `self.screen` has moved on, and reading the live scope there
+            // The scope comes off the passed screen, not `self.nav.screen`: a closing Settings(Game)
+            // is asked about after `self.nav.screen` has moved on, and reading the live scope there
             // measures the global list instead of the one being faded out.
             Screen::Settings(set) => {
                 let (card, content) = view::settings::layout(set, screen_w, screen_h);
@@ -169,7 +219,7 @@ impl App {
     /// Settings' fixed row height, or About's wrapped-line height. Only meaningful
     /// when `scroll_geometry` returns `Some`.
     pub(crate) fn scroll_stride(&self, fonts: &ui::text::Fonts) -> i32 {
-        self.scroll_stride_for(self.screen, fonts)
+        self.scroll_stride_for(self.nav.screen, fonts)
     }
 
     /// Same as `scroll_stride`, but for an explicit screen — see `scroll_geometry_for`.
@@ -184,7 +234,7 @@ impl App {
     /// Title and subtitle of the address form, which serves both Add host and Edit
     /// address — the only difference between the two screens.
     pub(crate) fn address_copy(&self) -> (&'static str, String) {
-        match self.screen {
+        match self.nav.screen {
             Screen::EditHost => {
                 let name = self
                     .edit_host_index
@@ -232,7 +282,7 @@ impl App {
     /// yet: a Wake with no MAC on record is a button-less message, and a speed test still
     /// running has nothing to apply.
     pub(crate) fn confirm_subtitle(&self) -> Option<String> {
-        Some(match self.screen {
+        Some(match self.nav.screen {
             Screen::ForgetHost => view::forget::subtitle(self.host_menu_host_name().unwrap_or_default()),
             Screen::SendLogs => view::sendlogs::SUBTITLE.to_string(),
             Screen::Wake => view::wake::status_text(self.wake.as_ref().filter(|w| !w.mac.is_empty())?),
@@ -244,26 +294,26 @@ impl App {
         })
     }
 
-    /// Which of the open confirm dialog's two buttons has focus. A field per screen so
-    /// each remembers its own answer; `None` on a screen that isn't one.
+    /// Which of the open confirm dialog's two buttons has focus; `None` on a screen that
+    /// isn't one, and on a `Wake` with no payload yet.
+    ///
+    /// Every screen's cursor is `nav`'s (see [`nav::Nav`](crate::app::nav::Nav)) — this only
+    /// says which screens are confirm dialogs. Wake is the exception: its cursor rides in the
+    /// payload that is `None` off-screen, so it has nowhere else to live.
     pub(crate) fn confirm_focused(&self) -> Option<usize> {
-        Some(match self.screen {
-            Screen::ForgetHost => self.host_menu_focused,
-            Screen::SendLogs => self.send_logs_focused,
-            Screen::Wake => self.wake.as_ref()?.focused,
-            Screen::SpeedTest => self.speed_test_focused,
-            _ => return None,
-        })
+        match self.nav.screen {
+            Screen::Wake => Some(self.wake.as_ref()?.focused),
+            screen if is_confirm(screen) => Some(self.nav.cursor(ScreenKey::of(screen))),
+            _ => None,
+        }
     }
 
     /// Moves the open confirm dialog's focus onto button `index`, reporting whether it
     /// actually moved — the hover/click contract every focus setter here follows.
     pub(crate) fn set_confirm_focused(&mut self, index: usize) -> bool {
-        let Some(focused) = (match self.screen {
-            Screen::ForgetHost => Some(&mut self.host_menu_focused),
-            Screen::SendLogs => Some(&mut self.send_logs_focused),
+        let Some(focused) = (match self.nav.screen {
             Screen::Wake => self.wake.as_mut().map(|w| &mut w.focused),
-            Screen::SpeedTest => Some(&mut self.speed_test_focused),
+            screen if is_confirm(screen) => Some(self.nav.cursor_mut(ScreenKey::of(screen))),
             _ => None,
         }) else {
             return false;
@@ -293,7 +343,11 @@ impl App {
                 // content twice, in two places, for the length of every scroll.
                 let stride = ui::widgets::focus_row_stride() as i32;
                 let px = self.clamped_scroll_px(total, stride, content.height());
-                Some(ui::widgets::focus_row_rect_at_px(content, self.settings_focused, px))
+                Some(ui::widgets::focus_row_rect_at_px(
+                    content,
+                    self.nav.cursor(ScreenKey::Settings),
+                    px,
+                ))
             }
             // Every two-button confirm dialog: one subtitle drives the card, so one
             // button-row geometry serves all four.
@@ -323,30 +377,19 @@ impl App {
     }
 
     /// The open list modal's focused row index — the cursor `focus_row_rect` indexes with.
-    /// One field per screen so a nested menu keeps its place on the way back; `None` on a
-    /// screen that has no plain row list (Settings scrolls, and owns its own geometry).
+    /// `None` on a screen that has no plain row list (Settings scrolls, and owns its own
+    /// geometry).
+    ///
+    /// One cursor per screen, so a nested menu keeps its place on the way back; which cursor
+    /// is `nav`'s business, and this only says which screens are plain lists.
     pub(crate) fn list_modal_focused(&self) -> Option<usize> {
-        Some(match self.screen {
-            Screen::HostMenu => self.menu_focused,
-            Screen::WakeSettings => self.wake_settings_focused,
-            Screen::Diagnostics => self.diagnostics_focused,
-            Screen::Experimental => self.experimental_focused,
-            Screen::CursorSettings(_) => self.cursor_settings_focused,
-            _ => return None,
-        })
+        is_list_modal(self.nav.screen).then(|| self.nav.cursor(ScreenKey::of(self.nav.screen)))
     }
 
-    /// [`list_modal_focused`](Self::list_modal_focused)'s field itself, for the pointer's
-    /// click-moves-focus rule — same table, so the two can't name different fields.
+    /// [`list_modal_focused`](Self::list_modal_focused)'s cursor itself, for the pointer's
+    /// click-moves-focus rule — same predicate, so the two cannot name different rows.
     pub(crate) fn list_modal_focused_mut(&mut self) -> Option<&mut usize> {
-        Some(match self.screen {
-            Screen::HostMenu => &mut self.menu_focused,
-            Screen::WakeSettings => &mut self.wake_settings_focused,
-            Screen::Diagnostics => &mut self.diagnostics_focused,
-            Screen::Experimental => &mut self.experimental_focused,
-            Screen::CursorSettings(_) => &mut self.cursor_settings_focused,
-            _ => return None,
-        })
+        is_list_modal(self.nav.screen).then(|| self.nav.cursor_mut(ScreenKey::of(self.nav.screen)))
     }
 
     /// The open list modal's focused-row rect, positioned on screen. `None` unless the
@@ -359,7 +402,7 @@ impl App {
     /// How many options the open dropdown lists. Read by both the overlay's drawn height
     /// and its hit test, so the two can't disagree about where the last option ends.
     pub(crate) fn dropdown_options_len(&self, row: usize) -> usize {
-        match self.screen {
+        match self.nav.screen {
             Screen::Diagnostics => menu::LOG_LEVEL_OPTIONS.len(),
             _ => menu::settings_logical_row(self.settings_scope(), row).map_or(0, menu::dropdown_option_count),
         }
@@ -380,7 +423,7 @@ impl App {
     /// menu's rows are owned `String`s built per call, and this runs on every Magic Remote
     /// `MouseMotion`.
     pub(crate) fn with_modal_metrics<R>(&self, f: impl FnOnce(&dyn ui::ModalMetrics) -> R) -> Option<R> {
-        if matches!(self.screen, Screen::HostMenu) {
+        if matches!(self.nav.screen, Screen::HostMenu) {
             return Some(f(&view::hostmenu::Metrics {
                 subtitle: &self.host_menu_subtitle(),
                 rows: self.host_menu_actions().len(),
@@ -390,7 +433,7 @@ impl App {
     }
 
     pub(crate) fn with_modal_screen<R>(&self, f: impl FnOnce(&dyn ui::ModalScreen) -> R) -> Option<R> {
-        Some(match self.screen {
+        Some(match self.nav.screen {
             Screen::Home => return None,
             // One screen, two scopes: the dim title suffix is the only thing the per-game
             // one adds, and it comes from the scratch copy that scope implies.

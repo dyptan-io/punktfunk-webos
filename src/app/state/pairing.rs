@@ -13,7 +13,7 @@ impl App {
         self.pin_digits = [0; 4];
         self.pin_digit_index = 0;
         self.pairing_status = None;
-        self.screen = Screen::Pairing;
+        self.nav.screen = Screen::Pairing;
         // Request access is the default: it is the path that always works, whereas the PIN
         // additionally needs the host's pairing page open and armed.
         self.pairing_focus = PairingFocus::RequestAccess;
@@ -28,7 +28,7 @@ impl App {
                 self.pairing_rx = None;
                 self.pairing_busy = false;
                 self.pairing_status = None;
-                self.screen = Screen::Home;
+                self.nav.screen = Screen::Home;
             }
             return;
         }
@@ -36,7 +36,7 @@ impl App {
         // shortcut — both work from either focus zone.
         match ev {
             MenuEvent::Back => {
-                self.screen = Screen::Home;
+                self.nav.screen = Screen::Home;
                 return;
             }
             MenuEvent::Secondary => {
@@ -154,7 +154,7 @@ impl App {
                 self.persist();
                 self.rebuild_entries();
                 self.sidebar_dirty = true;
-                self.screen = Screen::Home;
+                self.nav.screen = Screen::Home;
                 self.select_host(outcome.host, outcome.port, outcome.mgmt_port);
             }
             Err(e) => {

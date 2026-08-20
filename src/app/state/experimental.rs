@@ -1,5 +1,6 @@
 //! Experimental screen logic. Rendering lives in `app::view::experimental`.
 use crate::app::menu;
+use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::{Screen, SettingsScope};
@@ -59,22 +60,24 @@ impl App {
     /// off-by-default toggles (the software-audio override, Game mode on rooted sets).
     pub(crate) fn open_experimental(&mut self) {
         self.start_root_probe();
-        self.experimental_focused = 0;
-        self.screen = Screen::Experimental;
+        self.nav.enter(Screen::Experimental, 0);
     }
 
     /// All rows are plain Left/Right/Confirm toggles. Back saves and returns to Settings.
     pub(crate) fn handle_experimental_event(&mut self, ev: MenuEvent) {
         let len = menu::EXP_ROWS.len();
-        if ui::widgets::list_nav(&mut self.experimental_focused, len, menu::nav_dir(ev)) {
+        if ui::widgets::list_nav(self.nav.cursor_mut(ScreenKey::Experimental), len, menu::nav_dir(ev)) {
             self.modal.focus_anim = Some(Instant::now());
             return;
         }
-        match (menu::EXP_ROWS.get(self.experimental_focused).copied(), ev) {
+        match (
+            menu::EXP_ROWS.get(self.nav.cursor(ScreenKey::Experimental)).copied(),
+            ev,
+        ) {
             (Some(menu::ExpRow::HwAudio), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
                 let from = self.settings.ndl_audio_offload;
                 self.settings.ndl_audio_offload = !from;
-                self.modal.switch_anim = Some((Instant::now(), from, self.experimental_focused));
+                self.modal.switch_anim = Some((Instant::now(), from, self.nav.cursor(ScreenKey::Experimental)));
             }
             // A locked row (see `menu::exp_row_lock`) rejects the press — the greyed control
             // already says the value is fixed.
@@ -83,11 +86,11 @@ impl App {
             {
                 let from = self.settings.game_mode;
                 self.settings.game_mode = !from;
-                self.modal.switch_anim = Some((Instant::now(), from, self.experimental_focused));
+                self.modal.switch_anim = Some((Instant::now(), from, self.nav.cursor(ScreenKey::Experimental)));
             }
             (_, MenuEvent::Back) => {
                 self.persist();
-                self.screen = Screen::Settings(SettingsScope::Global);
+                self.nav.resume(Screen::Settings(SettingsScope::Global));
             }
             _ => {}
         }

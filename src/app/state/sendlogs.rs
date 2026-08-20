@@ -8,6 +8,7 @@
 //! result lands in the Home status bar. Nothing here blocks the UI thread.
 //!
 //! Rendering lives in `app::view::sendlogs`.
+use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
@@ -27,8 +28,7 @@ pub(crate) enum SendLogsMsg {
 impl App {
     /// Open the confirmation modal, defaulting focus to Cancel.
     pub(crate) fn open_send_logs(&mut self) {
-        self.send_logs_focused = 1;
-        self.screen = Screen::SendLogs;
+        self.nav.enter(Screen::SendLogs, 1);
     }
 
     /// Left/Right toggle Cancel/Send; Confirm acts on the focused button. Both
@@ -37,11 +37,12 @@ impl App {
     pub(crate) fn handle_send_logs_event(&mut self, ev: MenuEvent) {
         match ev {
             MenuEvent::Left | MenuEvent::Right => {
-                self.send_logs_focused = 1 - self.send_logs_focused;
+                self.nav
+                    .set_cursor(ScreenKey::SendLogs, 1 - self.nav.cursor(ScreenKey::SendLogs));
                 self.modal.focus_anim = Some(Instant::now());
             }
             MenuEvent::Confirm => {
-                if self.send_logs_focused == 0 {
+                if self.nav.cursor(ScreenKey::SendLogs) == 0 {
                     self.start_log_upload();
                 }
                 self.close_send_logs();
@@ -52,8 +53,8 @@ impl App {
     }
 
     fn close_send_logs(&mut self) {
-        self.send_logs_focused = 0;
-        self.screen = Screen::Home;
+        // No cursor reset needed: `open_send_logs` enters at Cancel every time.
+        self.nav.resume(Screen::Home);
     }
 
     /// Spawn the background upload of the on-disk log file. Sets an immediate

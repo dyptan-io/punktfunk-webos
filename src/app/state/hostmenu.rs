@@ -5,6 +5,7 @@
 //! else — card geometry, the unfocused shell, the focused-row tile, the focus pop — is
 //! `ui::widgets::ListModal`'s, shared with any future list screen.
 use crate::app::hosts::HostEntry;
+use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
@@ -104,14 +105,13 @@ impl App {
     /// Opens host menu for sidebar row `idx` (⋯ button, pointer, or Right key).
     pub(crate) fn open_host_menu(&mut self, idx: usize) {
         self.host_menu_index = Some(idx);
-        self.menu_focused = 0;
         self.host_menu_dots = false;
-        self.screen = Screen::HostMenu;
+        self.nav.enter(Screen::HostMenu, 0);
     }
 
     /// Whether focused row's ⋯ button exists (only "Wake host" has one).
     pub(crate) fn host_menu_row_has_dots(&self) -> bool {
-        self.host_menu_actions().get(self.menu_focused) == Some(&HostAction::Wake)
+        self.host_menu_actions().get(self.nav.cursor(ScreenKey::HostMenu)) == Some(&HostAction::Wake)
     }
 
     /// The actions offered; conditional on host state (saved/discovered, has MAC).
@@ -160,7 +160,11 @@ impl App {
     /// Handles host menu events.
     pub(crate) fn handle_host_menu_event(&mut self, ev: MenuEvent) {
         let len = self.host_menu_actions().len();
-        if crate::ui::widgets::list_nav(&mut self.menu_focused, len, crate::app::menu::nav_dir(ev)) {
+        if crate::ui::widgets::list_nav(
+            self.nav.cursor_mut(ScreenKey::HostMenu),
+            len,
+            crate::app::menu::nav_dir(ev),
+        ) {
             // Vertical movement always lands on the row body — a ⋯ belongs to the row
             // it's on, so leaving that row leaves the button too.
             self.host_menu_dots = false;
@@ -182,7 +186,7 @@ impl App {
             MenuEvent::Confirm => self.confirm_host_menu_row(),
             MenuEvent::Back => {
                 self.host_menu_index = None;
-                self.screen = Screen::Home;
+                self.nav.screen = Screen::Home;
             }
             MenuEvent::Up | MenuEvent::Down | MenuEvent::Left | MenuEvent::Right | MenuEvent::Secondary => {}
         }
@@ -191,14 +195,14 @@ impl App {
     /// Runs focused row's action; every arm navigates away or closes menu.
     pub(crate) fn confirm_host_menu_row(&mut self) {
         let actions = self.host_menu_actions();
-        let Some(action) = actions.get(self.menu_focused) else {
+        let Some(action) = actions.get(self.nav.cursor(ScreenKey::HostMenu)) else {
             return;
         };
         let Some(idx) = self.host_menu_index else { return };
         match action {
             HostAction::Connect => {
                 self.host_menu_index = None;
-                self.screen = Screen::Home;
+                self.nav.screen = Screen::Home;
                 self.confirm_sidebar_host(idx);
             }
             // Straight to the PIN ceremony, even for an already-paired host: re-pairing
@@ -214,7 +218,7 @@ impl App {
                 let mac = entry.mac().to_vec();
                 let name = entry.name().to_string();
                 self.host_menu_index = None;
-                self.screen = Screen::Home;
+                self.nav.screen = Screen::Home;
                 self.start_wake(host, port, mac, format!("Waking {name}…"));
             }
             HostAction::Edit => self.open_edit_host(idx),

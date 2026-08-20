@@ -14,7 +14,7 @@ impl App {
             MenuEvent::Right => self.add_host.advance_field(),
             MenuEvent::Up | MenuEvent::Down | MenuEvent::Secondary => {}
             MenuEvent::Confirm => self.confirm_add_host(),
-            MenuEvent::Back => self.screen = Screen::Home,
+            MenuEvent::Back => self.nav.screen = Screen::Home,
         }
     }
 
@@ -56,7 +56,7 @@ impl App {
                 .position(|e| e.host() == host && e.port() == port)
                 .unwrap_or(0),
         );
-        self.screen = Screen::Home;
+        self.nav.screen = Screen::Home;
     }
     /// Shared by `AddHost` and `EditHost`.
     pub(crate) fn enter_host_address_char(&mut self, c: char) {

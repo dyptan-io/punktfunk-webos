@@ -15,6 +15,7 @@ use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
 use std::time::Instant;
 
+use crate::app::nav::ScreenKey;
 use punktfunk_core::client::ProbeOutcome;
 
 /// Fraction of the measured goodput to recommend as a bitrate, leaving headroom for
@@ -67,8 +68,7 @@ impl App {
 
         self.speed_test_name = name;
         self.speed_test = Some(SpeedTestState::Connecting);
-        self.speed_test_focused = 0;
-        self.screen = Screen::SpeedTest;
+        self.nav.enter(Screen::SpeedTest, 0);
         tracing::info!("speed test: connecting to {host}:{port}");
 
         let identity = (self.identity.0.clone(), self.identity.1.clone());
@@ -120,7 +120,7 @@ impl App {
                         outcome: *outcome,
                         confirmed,
                     });
-                    self.speed_test_focused = 0;
+                    self.nav.set_cursor(ScreenKey::SpeedTest, 0);
                     self.speed_test_rx = None;
                     break;
                 }
@@ -145,11 +145,12 @@ impl App {
             MenuEvent::Back => self.close_speed_test(),
             _ if !done => {}
             MenuEvent::Left | MenuEvent::Right => {
-                self.speed_test_focused = 1 - self.speed_test_focused;
+                self.nav
+                    .set_cursor(ScreenKey::SpeedTest, 1 - self.nav.cursor(ScreenKey::SpeedTest));
                 self.modal.focus_anim = Some(Instant::now());
             }
             MenuEvent::Confirm => {
-                if self.speed_test_focused != 0 {
+                if self.nav.cursor(ScreenKey::SpeedTest) != 0 {
                     self.close_speed_test();
                     return;
                 }

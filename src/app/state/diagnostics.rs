@@ -1,5 +1,6 @@
 //! Diagnostics screen logic. Rendering lives in `app::view::diagnostics`.
 use crate::app::menu;
+use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::app::DropdownState;
 use crate::core::event::MenuEvent;
@@ -12,13 +13,12 @@ impl App {
     /// Opens the Diagnostics screen — reached from the "Diagnostics" row at the
     /// bottom of Settings (`menu::ROW_DIAGNOSTICS`), not a hidden/remote-button menu.
     pub(crate) fn open_diagnostics(&mut self) {
-        self.diagnostics_focused = 0;
-        self.screen = Screen::Diagnostics;
+        self.nav.enter(Screen::Diagnostics, 0);
     }
 
     /// `menu::DIAG_ROW_*` rows: Log level opens the same dropdown picker every
     /// `Settings` dropdown uses (its row `0` is disambiguated from `Settings`' row 0
-    /// by `self.screen`, see `dropdown_overlay_tile`'s docs); the rest are plain
+    /// by `self.nav.screen`, see `dropdown_overlay_tile`'s docs); the rest are plain
     /// Left/Right/Confirm toggles. Back saves and returns to Settings.
     pub(crate) fn handle_diagnostics_event(&mut self, ev: MenuEvent) {
         if let Some(dd) = self.dropdown.as_mut() {
@@ -42,11 +42,11 @@ impl App {
             return;
         }
         let len = crate::app::menu::DIAGNOSTICS_ROW_COUNT;
-        if ui::widgets::list_nav(&mut self.diagnostics_focused, len, menu::nav_dir(ev)) {
+        if ui::widgets::list_nav(self.nav.cursor_mut(ScreenKey::Diagnostics), len, menu::nav_dir(ev)) {
             self.modal.focus_anim = Some(Instant::now());
             return;
         }
-        match (self.diagnostics_focused, ev) {
+        match (self.nav.cursor(ScreenKey::Diagnostics), ev) {
             (menu::DIAG_ROW_LOG_LEVEL, MenuEvent::Left | MenuEvent::Right) => self.cycle_log_level(),
             (menu::DIAG_ROW_LOG_LEVEL, MenuEvent::Confirm) => {
                 self.dropdown = Some(DropdownState {
@@ -58,13 +58,13 @@ impl App {
             (menu::DIAG_ROW_STATS_OVERLAY, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
                 let from = self.settings.stats_overlay;
                 self.settings.stats_overlay = !from;
-                self.modal.switch_anim = Some((Instant::now(), from, self.diagnostics_focused));
+                self.modal.switch_anim = Some((Instant::now(), from, self.nav.cursor(ScreenKey::Diagnostics)));
             }
             (menu::DIAG_ROW_SHOW_LOGS, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
                 let from = self.settings.show_logs;
                 self.settings.show_logs = !from;
                 crate::runtime::set_log_overlay_enabled(!from);
-                self.modal.switch_anim = Some((Instant::now(), from, self.diagnostics_focused));
+                self.modal.switch_anim = Some((Instant::now(), from, self.nav.cursor(ScreenKey::Diagnostics)));
             }
             (menu::DIAG_ROW_SEND_LOGS, MenuEvent::Confirm) => {
                 // Persist any pending diagnostics changes before leaving the screen —
@@ -74,7 +74,7 @@ impl App {
             }
             (_, MenuEvent::Back) => {
                 self.persist();
-                self.screen = Screen::Settings(SettingsScope::Global);
+                self.nav.resume(Screen::Settings(SettingsScope::Global));
             }
             _ => {}
         }

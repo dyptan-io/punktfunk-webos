@@ -17,7 +17,7 @@ impl App {
         self.add_host = AddHostState::from_host_port(&h.host, h.port);
         self.edit_host_index = Some(idx);
         self.host_menu_index = None;
-        self.screen = Screen::EditHost;
+        self.nav.screen = Screen::EditHost;
     }
 
     /// Handle menu event. Left/Right stand in for backspace; Confirm commits with 4 octets.
@@ -28,7 +28,7 @@ impl App {
             MenuEvent::Confirm => self.confirm_edit_host(),
             MenuEvent::Back => {
                 self.edit_host_index = None;
-                self.screen = Screen::Home;
+                self.nav.screen = Screen::Home;
             }
             MenuEvent::Up | MenuEvent::Down | MenuEvent::Secondary => {}
         }
@@ -46,7 +46,7 @@ impl App {
         let (host, port) = self.add_host.host_and_port();
         if host == old.host && port == old.port {
             self.edit_host_index = None;
-            self.screen = Screen::Home;
+            self.nav.screen = Screen::Home;
             return;
         }
 
@@ -83,6 +83,6 @@ impl App {
         self.edit_host_index = None;
         self.sidebar_dirty = true;
         self.grid.dirty = true;
-        self.screen = Screen::Home;
+        self.nav.screen = Screen::Home;
     }
 }

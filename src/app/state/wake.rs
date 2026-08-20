@@ -39,7 +39,7 @@ impl App {
             // stale "Loading library…" until the host came back (or didn't).
             self.home_status = Some(Self::wake_home_status(&wake));
         } else {
-            self.screen = Screen::Wake;
+            self.nav.screen = Screen::Wake;
         }
         self.wake = Some(wake);
     }
@@ -115,7 +115,7 @@ impl App {
             wake.last_probe = Some(now);
         }
         if reveal {
-            self.screen = Screen::Wake;
+            self.nav.screen = Screen::Wake;
         }
         if let Some(status) = new_status {
             self.home_status = Some(status);
@@ -167,7 +167,7 @@ impl App {
     /// Closes Wake modal. Sent wakes keep running in background (timers bring host back).
     /// Unsent wakes drop entirely, leaving error text behind.
     fn dismiss_wake(&mut self) {
-        self.screen = Screen::Home;
+        self.nav.screen = Screen::Home;
         match self.wake.as_mut() {
             Some(wake) if wake.sent => {
                 // WHY: set silent=false so tick_wake won't re-pop the prompt after user dismisses.

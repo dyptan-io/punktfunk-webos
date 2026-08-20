@@ -9,6 +9,7 @@ pub(crate) mod hero;
 pub(crate) mod hosts;
 pub(crate) mod menu;
 pub(crate) mod modal;
+pub(crate) mod nav;
 pub(crate) mod pointer;
 pub(crate) mod press;
 pub(crate) mod render;
@@ -25,6 +26,7 @@ use tiny_skia::Pixmap;
 
 use crate::app::grid::GridCard;
 use crate::app::hosts::HostEntry;
+use crate::app::nav::ScreenKey;
 use crate::app::state::addhost::AddHostState;
 use crate::core::event::MenuEvent;
 pub use crate::core::model::ConnectTarget;
@@ -102,7 +104,9 @@ pub struct DropdownState {
 }
 
 pub struct App {
-    pub screen: Screen,
+    /// Which screen is up, which was before it, and where the cursor sits on each — see
+    /// [`nav::Nav`].
+    pub nav: nav::Nav,
     pub known_hosts: Vec<KnownHost>,
     /// `None` if the mDNS daemon didn't start. Owned here so it stops with the menu.
     pub(crate) discovery: Option<crate::services::discovery::Discovery>,
@@ -158,7 +162,6 @@ pub struct App {
     /// when `settings.gamepad_type` is `Auto` — an explicit pick doesn't need this to know what
     /// it's driving, but the Controller row's `DualSense` caption does (see `settings_rows`).
     pub(crate) detected_gamepad_type: Option<store::GamepadType>,
-    pub settings_focused: usize,
     /// Whether the mouse button is down on the Settings screen's slider row (Bitrate) with
     /// the press having landed on the track itself — while `true`, `MouseMotion` drags the
     /// thumb to the pointer's x instead of just moving hover focus. Cleared on
@@ -181,34 +184,10 @@ pub struct App {
     /// alongside `screen = Screen::ForgetHost` (see `App::open_forget_host`),
     /// `None` otherwise.
     pub host_menu_index: Option<usize>,
-    /// Which `Screen::ForgetHost` button has focus: `0` = "Forget", `1` =
-    /// "Cancel". Defaults to Cancel (see `open_forget_host`) — a destructive
-    /// action shouldn't be one more accidental OK press away.
-    pub host_menu_focused: usize,
-    /// Focused row of whichever `ListModal`-based screen is open (currently
-    /// `Screen::HostMenu`). Separate from `host_menu_focused`, which is the
-    /// Forget confirmation's two-button focus — the two screens can be open in
-    /// sequence and must not share a cursor.
-    pub menu_focused: usize,
     /// Whether focus is on the ⋯ button of the host menu's focused row rather than on
     /// the row body — the list-modal counterpart of `HomeFocus::SidebarMenu`. Only the
     /// "Wake host" row has one (see `host_menu_actions`).
     pub host_menu_dots: bool,
-    /// Focused row of `Screen::WakeSettings`. Its own cursor rather than `menu_focused`:
-    /// that screen sits *over* the host menu and Back returns there, so the menu's
-    /// cursor has to survive the round trip.
-    pub wake_settings_focused: usize,
-    /// Focused row of `Screen::Diagnostics`; kept as its own cursor
-    /// (like `wake_settings_focused`) to survive nested menu traversal.
-    pub diagnostics_focused: usize,
-    /// Focused row of `Screen::Experimental`; its own cursor for the same reason.
-    pub experimental_focused: usize,
-    /// Focused row of `Screen::CursorSettings`; its own cursor for the same reason.
-    pub cursor_settings_focused: usize,
-    /// Which `Screen::SendLogs` button has focus: `0` = "Cancel", `1` = "Send".
-    /// Defaults to Cancel (see `open_send_logs`) — sending logs off-device is a
-    /// privacy-relevant action, so it shouldn't be one accidental OK press away.
-    pub send_logs_focused: usize,
     /// Delivers the background log upload's result; `None` when no upload is in
     /// flight. Drained each tick by `drain_send_logs`.
     pub(crate) send_logs_rx: Option<std::sync::mpsc::Receiver<crate::app::state::sendlogs::SendLogsMsg>>,
@@ -218,8 +197,6 @@ pub struct App {
     pub(crate) speed_test: Option<crate::app::state::speedtest::SpeedTestState>,
     /// Delivers the background probe's progress/result — dropping it cancels.
     pub(crate) speed_test_rx: Option<std::sync::mpsc::Receiver<crate::app::state::speedtest::SpeedTestMsg>>,
-    /// Which of the finished test's two buttons has focus.
-    pub speed_test_focused: usize,
     /// The host being measured, for the status line.
     pub speed_test_name: String,
     /// Last known reachability per `(host, port)` — see `app::reach`.
@@ -285,10 +262,6 @@ pub struct App {
     /// The pressed button's dip, if one is in flight — purely visual, and only for a
     /// press that stayed on its screen (see `App::press`).
     pub(crate) press: ui::animation::Press,
-    /// Last screen `prepare_tiles` saw — a change triggers the modal-open
-    /// animation and a modal re-rasterize without every transition site
-    /// needing to remember to.
-    pub(crate) last_screen: Screen,
     /// In-flight PIN-pairing / request-access ceremony, delivering its outcome
     /// from a background thread — the ceremony blocks for up to minutes
     /// (request-access parks until a human approves it on the host), which used
@@ -337,7 +310,7 @@ impl App {
         crate::services::art::reconcile_host_caches(&known_hosts);
         let discovery = crate::services::discovery::Discovery::start();
         let mut app = Self {
-            screen: Screen::Home,
+            nav: nav::Nav::default(),
             known_hosts,
             discovery,
             entries,
@@ -364,7 +337,6 @@ impl App {
             intro_hint_owed: new_build,
             state_writer,
             detected_gamepad_type: None,
-            settings_focused: 0,
             slider_drag: false,
             scroll: ui::scroll::ScrollWindow::new(),
             settings_scroll: ui::scroll::ScrollWindow::new(),
@@ -372,19 +344,11 @@ impl App {
             dropdown: None,
             dropdown_fade: ui::fade::ModalFade::new(),
             host_menu_index: None,
-            host_menu_focused: 1,
-            menu_focused: 0,
             host_menu_dots: false,
-            wake_settings_focused: 0,
-            diagnostics_focused: 0,
-            experimental_focused: 0,
-            cursor_settings_focused: 0,
-            send_logs_focused: 0,
             send_logs_rx: None,
             edit_host_index: None,
             speed_test: None,
             speed_test_rx: None,
-            speed_test_focused: 0,
             speed_test_name: String::new(),
             reachable: Self::new_reachability(),
             reach_rx: None,
@@ -410,7 +374,6 @@ impl App {
             focus_anim: None,
             last_tick: None,
             press: ui::animation::Press::default(),
-            last_screen: Screen::Home,
             pairing_rx: None,
         };
         // Restore the last-active sidebar host (if it's still known and paired)
@@ -445,7 +408,7 @@ impl App {
     /// itself — it and the Cursor sub-screen both carry their scope — so a scratch copy that
     /// outlives its flow can't redirect the global screen's edits into it.
     pub(crate) fn settings_scope(&self) -> menu::SettingsScope {
-        match self.screen {
+        match self.nav.screen {
             Screen::Settings(scope) | Screen::CursorSettings(scope) => scope,
             _ => menu::SettingsScope::Global,
         }
@@ -514,7 +477,7 @@ impl App {
             webos_major,
         );
         let over = self.editing_override();
-        let focused = self.settings_focused;
+        let focused = self.nav.cursor(ScreenKey::Settings);
         for (display, (row, logical)) in rows
             .iter_mut()
             .zip(menu::settings_visible_logical_rows(set))
@@ -529,8 +492,11 @@ impl App {
     pub(crate) fn scroll_settings_into_view(&mut self, screen_h: u32) {
         let set = self.settings_scope();
         let visible = view::settings::visible_rows(set, screen_h);
-        self.scroll
-            .scroll_into_view(self.settings_focused, menu::settings_row_count(set), visible);
+        self.scroll.scroll_into_view(
+            self.nav.cursor(ScreenKey::Settings),
+            menu::settings_row_count(set),
+            visible,
+        );
     }
 
     /// `(row, focused, alpha)` for the open dropdown or its close-fade; `None` if neither.
@@ -694,8 +660,8 @@ impl App {
         // an open modal: the one that writes per-host state off the selection pins its target
         // at open time (`GameSettingsState::host`), and the rest key off `host_menu_index`,
         // which nothing in the background reorders (`drain_discovery` only appends).
-        if matches!(self.screen, Screen::Wake) {
-            self.screen = Screen::Home;
+        if matches!(self.nav.screen, Screen::Wake) {
+            self.nav.screen = Screen::Home;
         }
         self.select_host(host, port, mgmt_port);
         // Overrides `select_host`'s plain "Loading library…": after a wait that may
@@ -747,7 +713,7 @@ impl App {
         // Back steps focus out of the game grid (and the ⋯ column) back onto the
         // host sidebar first. Only a Back from the sidebar itself is a no-op here
         // — the menu loop turns that into the quit dialog.
-        if matches!(self.screen, Screen::Home) {
+        if matches!(self.nav.screen, Screen::Home) {
             // A held card's submenu is up: Back dismisses it rather than stepping focus
             // out from under it.
             if self.card_menu.take().is_some() {
@@ -916,18 +882,18 @@ impl App {
         // dispatch site. Every modal exit fades, modal-to-modal included: the leaving
         // card's pixels go to `tile::MODAL_PREV` (see `snapshot_closing_modal`), so the
         // entering screen taking over `tile::MODAL` no longer forces the close to be a cut.
-        let screen_changed = self.screen != self.last_screen;
+        let screen_changed = self.nav.screen != self.nav.last_screen;
         if screen_changed {
-            let left = self.last_screen;
-            self.last_screen = self.screen;
+            let left = self.nav.last_screen;
+            self.nav.last_screen = self.nav.screen;
             if !matches!(left, Screen::Home) {
                 self.modal.fade.close(left);
             }
-            if !matches!(self.screen, Screen::Home) {
+            if !matches!(self.nav.screen, Screen::Home) {
                 self.modal.fade.open();
                 // Reopening the same screen before its close-fade finished — the new
                 // open wins. A close-fade for a *different* screen is left alone.
-                self.modal.fade.cancel_closing(self.screen);
+                self.modal.fade.cancel_closing(self.nav.screen);
             }
         }
         screen_changed

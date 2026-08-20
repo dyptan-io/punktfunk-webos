@@ -452,7 +452,7 @@ fn card_hold_gate(
         // A press while the menu is up belongs to the menu, not to a fresh gesture — the
         // hold fires on elapsed (see `ui_flow`'s `CARD_HOLD` check), so the panel is already
         // open with OK still down, and re-arming here would re-open it from row 0.
-        if !matches!(app.screen, Screen::Home) || app.card_menu.is_some() {
+        if !matches!(app.nav.screen, Screen::Home) || app.card_menu.is_some() {
             return None;
         }
         // Land hover focus on the press point first — a button press can jostle the
@@ -505,7 +505,7 @@ fn card_hold_gate(
         if input.card_held.is_some() {
             return Some(EventAction::Next);
         }
-        if matches!(app.screen, Screen::Home)
+        if matches!(app.nav.screen, Screen::Home)
             && app.card_menu.is_none()
             && arm_card_hold(input, app, display_mode.w as u32)
         {
@@ -527,7 +527,7 @@ fn card_hold_gate(
     *dirty = true;
     // A quick tap: the press never dispatched, so do it now. A hold that already opened its
     // menu, or one whose screen/focus moved out from under it, resolves to nothing.
-    let tapped = !hold.fired && matches!(app.screen, Screen::Home) && hold.focus == app.home_focus;
+    let tapped = !hold.fired && matches!(app.nav.screen, Screen::Home) && hold.focus == app.home_focus;
     let launched = tapped && app.press(display_mode.w as u32, display_mode.h as u32, fonts).is_some();
     Some(if launched {
         EventAction::Launch
@@ -593,7 +593,7 @@ pub(super) fn handle_ui_event(
     // redraws when the offset actually moved (a wheel tick at either clamp
     // edge is a no-op).
     if let Event::MouseWheel { y: wheel_y, .. } = event {
-        match app.screen {
+        match app.nav.screen {
             Screen::About => {
                 /// Licence-wall px per wheel detent — a few lines at a time.
                 const ABOUT_WHEEL_STEP: i32 = 90;
@@ -660,10 +660,10 @@ pub(super) fn handle_ui_event(
         // Direct digit entry via the remote's number buttons — PIN entry on the
         // pairing screen, IP entry on the add/edit-host screens.
         Event::KeyDown { keycode: Some(k), .. }
-            if matches!(app.screen, Screen::Pairing | Screen::AddHost | Screen::EditHost) =>
+            if matches!(app.nav.screen, Screen::Pairing | Screen::AddHost | Screen::EditHost) =>
         {
             if let Some(digit) = crate::platform::webos::input::digit_key_value(k) {
-                match app.screen {
+                match app.nav.screen {
                     Screen::Pairing => app.enter_pin_digit(digit),
                     Screen::AddHost | Screen::EditHost => app.enter_add_host_digit(digit),
                     _ => unreachable!(),
@@ -678,7 +678,7 @@ pub(super) fn handle_ui_event(
         // state machine, so typing "192.168.1.5" on the keyboard and tapping it
         // out on the remote produce identical results.
         Event::TextInput { ref text, .. } => {
-            match app.screen {
+            match app.nav.screen {
                 Screen::Pairing => {
                     for d in text.chars().filter_map(|c| c.to_digit(10)) {
                         app.enter_pin_digit(d as u8);

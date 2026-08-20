@@ -183,7 +183,7 @@ pub(super) fn run_ui_flow(
         }
         // Controller quit shortcut: held long enough on Home,
         // then forgotten so it fires once per hold rather than repeatedly while held.
-        if !quit_dialog.is_open() && matches!(app.screen, Screen::Home) && chord.held_for(EXIT_HOLD) {
+        if !quit_dialog.is_open() && matches!(app.nav.screen, Screen::Home) && chord.held_for(EXIT_HOLD) {
             tracing::info!("quit shortcut held — opening quit dialog");
             chord.clear();
             quit_dialog.open(1);
@@ -206,7 +206,7 @@ pub(super) fn run_ui_flow(
             .filter(|h| !h.fired && h.since.elapsed() >= CARD_HOLD)
         {
             hold.fired = true;
-            let still_there = matches!(app.screen, Screen::Home) && hold.focus == app.home_focus;
+            let still_there = matches!(app.nav.screen, Screen::Home) && hold.focus == app.home_focus;
             if still_there {
                 // The hold's whole effect. It no longer pins — pinning is one of the two
                 // rows the menu it raises offers, and the only way to reach it.
@@ -320,7 +320,7 @@ pub(super) fn run_ui_flow(
             // Short Back tap on Home with sidebar focus opens the quit dialog. From a
             // game card / the ⋯ column, Back first steps focus back to the sidebar
             // (see `App::back`), so it falls through to normal dispatch instead.
-            if matches!(app.screen, Screen::Home)
+            if matches!(app.nav.screen, Screen::Home)
                 && matches!(app.home_focus, HomeFocus::Sidebar(_))
                 && matches!(&event, Event::KeyDown { keycode: Some(k), repeat: false, .. }
                     if crate::platform::webos::input::menu_event_for_key(*k) == Some(MenuEvent::Back))
@@ -343,7 +343,7 @@ pub(super) fn run_ui_flow(
             tracing::debug!("on-screen keyboard shown: {keyboard_shown}");
         }
         // Toggle text input (edge-triggered; SDL doesn't tolerate repeated calls).
-        let wants_text = text_input_screen(app.screen);
+        let wants_text = text_input_screen(app.nav.screen);
         if wants_text != text_input_active {
             text_input_active = wants_text;
             if wants_text {
@@ -515,7 +515,7 @@ pub(super) fn run_ui_flow(
         frame.report(
             TICK_BUDGET,
             &FrameStats {
-                screen: app.screen,
+                screen: app.nav.screen,
                 rebuilt,
                 tiles: &tiles,
                 text: text_cache.len(),

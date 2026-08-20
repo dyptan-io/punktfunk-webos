@@ -1,4 +1,5 @@
 //! Per-host Wake-on-LAN settings — logic. Rendering lives in `app::view::wakesettings`.
+use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
@@ -8,8 +9,7 @@ use std::time::Instant;
 impl App {
     /// Open Wake settings for host menu's current host.
     pub(crate) fn open_wake_settings(&mut self) {
-        self.wake_settings_focused = 0;
-        self.screen = Screen::WakeSettings;
+        self.nav.enter(Screen::WakeSettings, 0);
     }
 
     /// Host being edited (always from host menu).
@@ -22,13 +22,17 @@ impl App {
     /// Left/Right/Confirm flip toggle; Back returns to host menu.
     pub(crate) fn handle_wake_settings_event(&mut self, ev: MenuEvent) {
         let len = crate::app::view::wakesettings::ROW_COUNT;
-        if crate::ui::widgets::list_nav(&mut self.wake_settings_focused, len, crate::app::menu::nav_dir(ev)) {
+        if crate::ui::widgets::list_nav(
+            self.nav.cursor_mut(ScreenKey::WakeSettings),
+            len,
+            crate::app::menu::nav_dir(ev),
+        ) {
             self.modal.focus_anim = Some(Instant::now());
             return;
         }
         match ev {
             MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm => self.toggle_wol_auto(),
-            MenuEvent::Back => self.screen = Screen::HostMenu,
+            MenuEvent::Back => self.nav.screen = Screen::HostMenu,
             MenuEvent::Up | MenuEvent::Down | MenuEvent::Secondary => {}
         }
     }
@@ -47,6 +51,6 @@ impl App {
         self.persist();
         // Captures the value it's flipping *from*, so the knob slides rather than
         // snapping — same contract as the Settings modal's switch rows.
-        self.modal.switch_anim = Some((Instant::now(), from, self.wake_settings_focused));
+        self.modal.switch_anim = Some((Instant::now(), from, self.nav.cursor(ScreenKey::WakeSettings)));
     }
 }

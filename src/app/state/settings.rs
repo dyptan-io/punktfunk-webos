@@ -7,6 +7,7 @@
 //! `menu::SettingsScope`'s answer, and every mutator below is indexed by logical `ROW_*`, so the
 //! two screens can't drift apart.
 use crate::app::menu;
+use crate::app::nav::ScreenKey;
 use crate::app::{App, DropdownState};
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
@@ -53,22 +54,22 @@ impl App {
             // No wraparound here (unlike most other row lists) — wrapping a scrolled
             // list would silently jump the scroll position across the whole card.
             MenuEvent::Up => {
-                if self.settings_focused > 0 {
-                    self.settings_focused -= 1;
+                if self.nav.cursor(ScreenKey::Settings) > 0 {
+                    *self.nav.cursor_mut(ScreenKey::Settings) -= 1;
                     self.modal.focus_anim = Some(Instant::now());
                     self.scroll_settings_into_view(screen_h);
                 }
             }
             MenuEvent::Down => {
-                if self.settings_focused + 1 < total {
-                    self.settings_focused += 1;
+                if self.nav.cursor(ScreenKey::Settings) + 1 < total {
+                    *self.nav.cursor_mut(ScreenKey::Settings) += 1;
                     self.modal.focus_anim = Some(Instant::now());
                     self.scroll_settings_into_view(screen_h);
                 }
             }
-            MenuEvent::Left => self.apply_setting_adjust(self.settings_focused, false),
-            MenuEvent::Right => self.apply_setting_adjust(self.settings_focused, true),
-            MenuEvent::Confirm => match menu::settings_logical_row(set, self.settings_focused) {
+            MenuEvent::Left => self.apply_setting_adjust(self.nav.cursor(ScreenKey::Settings), false),
+            MenuEvent::Right => self.apply_setting_adjust(self.nav.cursor(ScreenKey::Settings), true),
+            MenuEvent::Confirm => match menu::settings_logical_row(set, self.nav.cursor(ScreenKey::Settings)) {
                 // Focus past the end of the list: nothing to confirm.
                 None => {}
                 // Not a setting — a link out to the About screen (see `menu::SettingsRow::About`).
@@ -112,12 +113,12 @@ impl App {
                     // `row` is the display position (what the overlay is drawn against);
                     // the logical row is recovered on lookup via `settings_logical_row`.
                     self.dropdown = Some(DropdownState {
-                        row: self.settings_focused,
+                        row: self.nav.cursor(ScreenKey::Settings),
                         focused,
                     });
                     self.dropdown_fade.reopen();
                 }
-                Some(_) => self.apply_setting_adjust(self.settings_focused, true),
+                Some(_) => self.apply_setting_adjust(self.nav.cursor(ScreenKey::Settings), true),
             },
             // Leaving Settings (Back key or the modal's close-X, both funnel
             // through `App::back`) — save once for whatever changed during
@@ -130,7 +131,7 @@ impl App {
                     menu::SettingsScope::Global => self.persist(),
                     menu::SettingsScope::Game => self.persist_game_settings(),
                 }
-                self.screen = Screen::Home;
+                self.nav.screen = Screen::Home;
             }
             // Per-game only — there is nothing above the global document to fall back to,
             // and `clear_focused_override` gates on the scope anyway.

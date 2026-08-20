@@ -1,5 +1,6 @@
 //! Cursor screen logic. Rendering lives in `app::view::cursorsettings`.
 use crate::app::menu;
+use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
@@ -11,8 +12,7 @@ impl App {
     /// toggles: capture mode and the OK-button gestures. `scope` is the caller's, carried on
     /// the screen so the sub-screen keeps editing the same document.
     pub(crate) fn open_cursor_settings(&mut self, scope: menu::SettingsScope) {
-        self.cursor_settings_focused = 0;
-        self.screen = Screen::CursorSettings(scope);
+        self.nav.enter(Screen::CursorSettings(scope), 0);
     }
 
     /// All rows are plain Left/Right/Confirm toggles. Back saves and returns to whichever
@@ -20,14 +20,14 @@ impl App {
     /// (see `App::settings_target`), so only where the save lands differs.
     pub(crate) fn handle_cursor_settings_event(&mut self, ev: MenuEvent) {
         if ui::widgets::list_nav(
-            &mut self.cursor_settings_focused,
+            self.nav.cursor_mut(ScreenKey::CursorSettings),
             menu::CURSOR_ROWS.len(),
             menu::nav_dir(ev),
         ) {
             self.modal.focus_anim = Some(Instant::now());
             return;
         }
-        let row = self.cursor_settings_focused;
+        let row = self.nav.cursor(ScreenKey::CursorSettings);
         match (menu::CURSOR_ROWS.get(row).copied(), ev) {
             // Both rows are plain toggles, so they go through the same mutator every other
             // settings row uses — they are `menu::SettingsRow`s like any other.
@@ -51,7 +51,8 @@ impl App {
                 if scope == menu::SettingsScope::Global {
                     self.persist();
                 }
-                self.screen = Screen::Settings(scope);
+                // Back into the list this was opened from: it keeps its place.
+                self.nav.resume(Screen::Settings(scope));
             }
             _ => {}
         }

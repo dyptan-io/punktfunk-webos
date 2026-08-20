@@ -2,6 +2,7 @@
 //! launching. Grid pixel geometry (rect helpers) lives in `app::view::home`.
 use crate::app::grid::{GridCard, GridLayout};
 use crate::app::hosts::HostEntry;
+use crate::app::nav::ScreenKey;
 use crate::app::state::addhost::AddHostState;
 use crate::app::view;
 use crate::app::App;
@@ -200,12 +201,12 @@ impl App {
                 }
                 HomeFocus::Sidebar(i) if i == self.entries.len() => {
                     self.add_host = AddHostState::default();
-                    self.screen = Screen::AddHost;
+                    self.nav.screen = Screen::AddHost;
                 }
                 HomeFocus::Sidebar(_) => {
-                    self.screen = Screen::Settings(SettingsScope::Global);
+                    self.nav.screen = Screen::Settings(SettingsScope::Global);
                     self.dropdown = None;
-                    self.settings_focused = 0;
+                    self.nav.set_cursor(ScreenKey::Settings, 0);
                     self.scroll = ui::scroll::ScrollWindow::new();
                     self.content_window = ui::scroll::ContentWindow::new();
                 }

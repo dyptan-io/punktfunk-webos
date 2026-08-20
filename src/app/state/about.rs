@@ -15,7 +15,7 @@ impl App {
         self.settings_scroll = self.scroll;
         self.scroll = ui::scroll::ScrollWindow::new();
         self.content_window = ui::scroll::ContentWindow::new();
-        self.screen = Screen::About;
+        self.nav.screen = Screen::About;
     }
 
     /// Navigate: Up/Down scroll by line, Left/Right by page.
@@ -36,7 +36,7 @@ impl App {
             }
             // Return to Settings (not Home) to preserve settings context
             MenuEvent::Back | MenuEvent::Confirm => {
-                self.screen = Screen::Settings(SettingsScope::Global);
+                self.nav.resume(Screen::Settings(SettingsScope::Global));
                 self.scroll = self.settings_scroll;
             }
             MenuEvent::Secondary => {}

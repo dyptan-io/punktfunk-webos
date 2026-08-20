@@ -10,6 +10,7 @@ use anyhow::Result;
 
 use crate::app::grid::{CARD_BUILD_BUDGET, CARD_BUILD_BURST, CARD_KEEP_ROWS, CARD_PREFETCH_ROWS};
 use crate::app::hosts::HostEntry;
+use crate::app::nav::ScreenKey;
 use crate::app::render::ctx::RenderCtx;
 use crate::app::render::key::{ModalFocusKey, ModalShellKey, ScrollContentKey};
 use crate::app::render::tile;
@@ -103,7 +104,7 @@ impl App {
     /// Whether this frame's grid pass can be skipped outright: a modal owns the screen, the
     /// grid has already revealed, and nothing has invalidated a card behind it.
     fn grid_window_frozen(&self) -> bool {
-        !matches!(self.screen, Screen::Home)
+        !matches!(self.nav.screen, Screen::Home)
             && self.grid.reveal.is_revealed()
             && !self.grid.dirty
             && self.grid.cards_dirty.is_empty()
@@ -607,7 +608,7 @@ impl App {
     /// crops against — the single body tile the row band deliberately does not keep. Built
     /// only when a settings screen is being left (see `snapshot_closing_modal`).
     ///
-    /// `screen` is the one being *left*, not `self.screen` — that has already moved on, and
+    /// `screen` is the one being *left*, not `self.nav.screen` — that has already moved on, and
     /// asking it for this geometry answers `None` (or the wrong scope's row count), which
     /// drops the row list out of the fade instead of freezing it.
     fn stitch_settings_body(
@@ -641,19 +642,19 @@ impl App {
     fn modal_shell_version(&self, host_menu_actions: &[crate::app::state::hostmenu::HostAction]) -> Option<u64> {
         // The derived strings the key borrows — bound here so they outlive it, and built only
         // on the screen that actually reads each one.
-        let host_menu_title = matches!(self.screen, Screen::HostMenu)
+        let host_menu_title = matches!(self.nav.screen, Screen::HostMenu)
             .then(|| self.host_menu_title())
             .unwrap_or_default();
-        let host_menu_subtitle = matches!(self.screen, Screen::HostMenu)
+        let host_menu_subtitle = matches!(self.nav.screen, Screen::HostMenu)
             .then(|| self.host_menu_subtitle())
             .unwrap_or_default();
-        let wake_settings_title = matches!(self.screen, Screen::WakeSettings)
+        let wake_settings_title = matches!(self.nav.screen, Screen::WakeSettings)
             .then(|| view::wakesettings::title(&self.host_menu_title()))
             .unwrap_or_default();
-        let speed_test_status = matches!(self.screen, Screen::SpeedTest)
+        let speed_test_status = matches!(self.nav.screen, Screen::SpeedTest)
             .then(|| view::speedtest::status(self.speed_test.as_ref(), &self.speed_test_name))
             .unwrap_or_default();
-        let key = match self.screen {
+        let key = match self.nav.screen {
             Screen::Settings(_) => Some(ModalShellKey::Settings {
                 game: self.editing_game().map(|gs| gs.title.as_str()),
             }),
@@ -721,12 +722,12 @@ impl App {
     /// [`modal_shell_version`](Self::modal_shell_version), and for the same reason.
     fn modal_focus_version(&self, host_menu_actions: &[crate::app::state::hostmenu::HostAction]) -> Option<u64> {
         // Borrowed by the key below, so it outlives it.
-        let speed_test_label = matches!(self.screen, Screen::SpeedTest)
+        let speed_test_label = matches!(self.nav.screen, Screen::SpeedTest)
             .then(|| view::speedtest::apply_label(view::speedtest::recommendation(self.speed_test.as_ref())))
             .unwrap_or_default();
-        let key = match self.screen {
+        let key = match self.nav.screen {
             Screen::Settings(_) => Some(ModalFocusKey::SettingsRow(
-                self.settings_focused,
+                self.nav.cursor(ScreenKey::Settings),
                 *self.settings_target(),
                 self.editing_override(),
                 self.detected_gamepad_type,
@@ -742,36 +743,43 @@ impl App {
                 }
                 PairingFocus::RequestAccess => ModalFocusKey::PairingButton,
             }),
-            Screen::ForgetHost => Some(ModalFocusKey::ForgetButton(self.host_menu_focused)),
-            Screen::HostMenu => host_menu_actions.get(self.menu_focused).map(|&action| {
-                ModalFocusKey::MenuRow(self.menu_focused, action, self.host_menu_paired(), self.host_menu_dots)
-            }),
+            Screen::ForgetHost => Some(ModalFocusKey::ForgetButton(self.nav.cursor(ScreenKey::ForgetHost))),
+            Screen::HostMenu => host_menu_actions
+                .get(self.nav.cursor(ScreenKey::HostMenu))
+                .map(|&action| {
+                    ModalFocusKey::MenuRow(
+                        self.nav.cursor(ScreenKey::HostMenu),
+                        action,
+                        self.host_menu_paired(),
+                        self.host_menu_dots,
+                    )
+                }),
             Screen::WakeSettings => Some(ModalFocusKey::WakeToggle(
                 self.wake_settings_host().is_some_and(|h| h.wol_auto),
             )),
             // Only once there are buttons to focus — while measuring there is nothing
             // on the card but text.
             Screen::SpeedTest => view::speedtest::finished(self.speed_test.as_ref())
-                .then(|| ModalFocusKey::SpeedTestButton(self.speed_test_focused, &speed_test_label)),
+                .then(|| ModalFocusKey::SpeedTestButton(self.nav.cursor(ScreenKey::SpeedTest), &speed_test_label)),
             Screen::Diagnostics => Some(ModalFocusKey::DiagnosticsRow(
-                self.diagnostics_focused,
+                self.nav.cursor(ScreenKey::Diagnostics),
                 self.settings.log_level_override,
                 self.settings.stats_overlay,
                 self.settings.show_logs,
             )),
             Screen::Experimental => Some(ModalFocusKey::ExperimentalRow(
-                self.experimental_focused,
+                self.nav.cursor(ScreenKey::Experimental),
                 self.settings.ndl_audio_offload,
                 self.settings.game_mode,
                 self.rooted,
             )),
             Screen::CursorSettings(_) => Some(ModalFocusKey::CursorSettingsRow(
-                self.cursor_settings_focused,
+                self.nav.cursor(ScreenKey::CursorSettings),
                 self.settings_target().cursor_capture,
                 self.settings_target().cursor_gestures,
                 self.editing_override(),
             )),
-            Screen::SendLogs => Some(ModalFocusKey::SendLogsButton(self.send_logs_focused)),
+            Screen::SendLogs => Some(ModalFocusKey::SendLogsButton(self.nav.cursor(ScreenKey::SendLogs))),
             // Neither has a single focused widget: the address form is one always-active
             // field, About is a scrolling document, and `PinLimit`'s one button is
             // always drawn focused directly in `render_pin_limit`.
@@ -796,14 +804,14 @@ impl App {
             ..
         } = ctx;
         let (screen_w, screen_h) = (size.w, size.h);
-        let modal_open = !matches!(self.screen, Screen::Home);
+        let modal_open = !matches!(self.nav.screen, Screen::Home);
         // Every modal's shell only reacts to *content* changes — not to
         // `content_dirty`, which is also `true` on plain focus movement (see
         // `ModalShellKey`'s docs). `AddHost` has no `ModalShellKey` variant
         // (no split focus tile to protect) and just redraws on any
         // `content_dirty` tick, same as every modal did before this split.
         // Built once for both version fns rather than per call.
-        let host_menu_actions = matches!(self.screen, Screen::HostMenu)
+        let host_menu_actions = matches!(self.nav.screen, Screen::HostMenu)
             .then(|| self.host_menu_actions())
             .unwrap_or_default();
         let shell_version = self.modal_shell_version(&host_menu_actions);
@@ -841,19 +849,24 @@ impl App {
             // change mid-flip.
             let stale = self.modal.switch_anim.is_some() || !tiles.is_fresh(tile::MODAL_FOCUS, version);
             if stale {
-                let tile = match self.screen {
+                let tile = match self.nav.screen {
                     Screen::Settings(_) => {
                         let (_, content) = view::settings::layout(self.settings_scope(), screen_w, screen_h);
                         let rows = settings_rows.get_or_insert_with(|| self.settings_rows());
-                        let dropdown_open = self.dropdown.as_ref().is_some_and(|dd| dd.row == self.settings_focused);
-                        let target_on = rows.get(self.settings_focused).is_some_and(|r| r.value == "On");
+                        let dropdown_open = self
+                            .dropdown
+                            .as_ref()
+                            .is_some_and(|dd| dd.row == self.nav.cursor(ScreenKey::Settings));
+                        let target_on = rows
+                            .get(self.nav.cursor(ScreenKey::Settings))
+                            .is_some_and(|r| r.value == "On");
                         ui::rasterize(
                             ui::widgets::FocusRowTile {
                                 rows,
                                 content_width: content.width(),
-                                index: self.settings_focused,
+                                index: self.nav.cursor(ScreenKey::Settings),
                                 dropdown_open,
-                                switch_frac: self.toggle_frac(target_on, self.settings_focused),
+                                switch_frac: self.toggle_frac(target_on, self.nav.cursor(ScreenKey::Settings)),
                             },
                             text_cache,
                             fonts,
@@ -874,13 +887,13 @@ impl App {
                         // SpeedTest is the only one whose primary button has a dynamic label
                         // (the bitrate it would apply); bound out here so the borrow below
                         // outlives the array.
-                        let speed_test_label = match self.screen {
+                        let speed_test_label = match self.nav.screen {
                             Screen::SpeedTest => {
                                 view::speedtest::apply_label(view::speedtest::recommendation(self.speed_test.as_ref()))
                             }
                             _ => String::new(),
                         };
-                        let buttons = match self.screen {
+                        let buttons = match self.nav.screen {
                             Screen::Wake => view::wake::buttons(),
                             Screen::ForgetHost => view::forget::buttons(),
                             Screen::SendLogs => view::sendlogs::buttons(),
@@ -926,7 +939,7 @@ impl App {
                     Screen::HostMenu => {
                         let mut rows = self.host_menu_rows();
                         // The only place a row's ⋯ is drawn lit — see `host_menu_actions`.
-                        if let Some(row) = rows.get_mut(self.menu_focused) {
+                        if let Some(row) = rows.get_mut(self.nav.cursor(ScreenKey::HostMenu)) {
                             row.menu = row.menu.map(|_| self.host_menu_dots);
                         }
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
@@ -934,7 +947,7 @@ impl App {
                             ui::widgets::FocusRowTile {
                                 rows: &rows,
                                 content_width: content.width(),
-                                index: self.menu_focused,
+                                index: self.nav.cursor(ScreenKey::HostMenu),
                                 dropdown_open: false,
                                 switch_frac: 0.0,
                             },
@@ -945,7 +958,7 @@ impl App {
                     // The plain list modals: same tile, same geometry, built from whichever
                     // rows this screen shows. Only Diagnostics can have a dropdown open.
                     Screen::WakeSettings | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
-                        let rows = match self.screen {
+                        let rows = match self.nav.screen {
                             Screen::WakeSettings => {
                                 view::wakesettings::rows(self.wake_settings_host().is_some_and(|h| h.wol_auto))
                             }
@@ -954,7 +967,7 @@ impl App {
                             _ => view::cursorsettings::rows(
                                 self.settings_target(),
                                 &self.editing_override(),
-                                Some(self.cursor_settings_focused),
+                                Some(self.nav.cursor(ScreenKey::CursorSettings)),
                             ),
                         };
                         let focused = self
@@ -1000,7 +1013,7 @@ impl App {
         } = ctx;
         let (screen_w, screen_h) = (size.w, size.h);
         if let Some(dd) = &self.dropdown {
-            let (options, content_w) = match self.screen {
+            let (options, content_w) = match self.nav.screen {
                 Screen::Diagnostics => {
                     let content = self.modal_list_content(screen_w, screen_h, fonts);
                     (menu::log_level_dropdown_options(), content.width())
@@ -1015,7 +1028,7 @@ impl App {
 
             // Keyed by screen as well as row: row 0 means a different setting on Settings
             // than it does on Diagnostics.
-            let overlay = cache::version(&(self.screen, dd.row));
+            let overlay = cache::version(&(self.nav.screen, dd.row));
             if tiles.ensure(tile::DROPDOWN_OVERLAY, overlay, || {
                 let overlay_h = options.len() as u32 * ui::widgets::DROPDOWN_OPTION_H;
                 let mut p = Painter::new(content_w, overlay_h.max(1));
@@ -1027,7 +1040,7 @@ impl App {
                 updated.push(tile::DROPDOWN_OVERLAY);
             }
 
-            let focused = cache::version(&(self.screen, dd.row, dd.focused));
+            let focused = cache::version(&(self.nav.screen, dd.row, dd.focused));
             if tiles.ensure(tile::DROPDOWN_FOCUS, focused, || {
                 let option = options.get(dd.focused).map_or("", String::as_str);
                 ui::rasterize(
@@ -1075,14 +1088,14 @@ impl App {
         let (screen_w, screen_h) = (size.w, size.h);
         // The settings-row band belongs to the settings screens alone; leaving them releases
         // it rather than holding a list's worth of textures behind whatever is on screen now.
-        if !matches!(self.screen, Screen::Settings(_)) {
+        if !matches!(self.nav.screen, Screen::Settings(_)) {
             self.evict_settings_rows_from(0, tiles);
         }
         // Whichever modal's content overflows its viewport (Settings' rows, About's
         // document) gets its scroll indicator and content tile refreshed here — see
         // `scroll_geometry`'s docs for why this one block covers every such modal
         // instead of being hand-copied per screen.
-        if matches!(self.screen, Screen::About) {
+        if matches!(self.nav.screen, Screen::About) {
             // Mutates `about_wrapped` only — must happen before `scroll_geometry`
             // (a `&self` read) can report a non-zero total for this frame.
             let card = view::about::card_rect(screen_w, screen_h);
@@ -1091,7 +1104,7 @@ impl App {
         }
         if let Some((total, visible, _, content)) = self.scroll_geometry(screen_w, screen_h, fonts) {
             let scroll = self.scroll.clamped(total, visible);
-            let ind = cache::version(&(self.screen, total, visible, scroll, content.height()));
+            let ind = cache::version(&(self.nav.screen, total, visible, scroll, content.height()));
             if tiles.ensure(tile::SCROLL_INDICATOR, ind, || {
                 ui::rasterize(
                     ui::widgets::ListScrollbarTile {
@@ -1132,9 +1145,9 @@ impl App {
                 updated.push(tile::SCROLL_FADE_TOP);
             }
             let stride = self.scroll_stride(fonts);
-            self.sync_modal_scroll(self.screen, total, visible, content.height(), stride);
+            self.sync_modal_scroll(self.nav.screen, total, visible, content.height(), stride);
 
-            match self.screen {
+            match self.nav.screen {
                 Screen::Settings(_) => {
                     let dropdown_row = self.dropdown.as_ref().map(|dd| dd.row);
                     let row_count = menu::settings_row_count(self.settings_scope());
@@ -1143,7 +1156,7 @@ impl App {
                     // which row rebuilds, but on a pure animation frame — the common case
                     // while Settings is open — this comparison is the entire cost.
                     let rows_version = cache::version(&(
-                        self.screen,
+                        self.nav.screen,
                         *self.settings_target(),
                         self.editing_override(),
                         self.detected_gamepad_type,
@@ -1151,7 +1164,7 @@ impl App {
                         // bound to hid-playstation, which a hotplug can change on its own.
                         crate::platform::webos::dualsense::hid_playstation_bound(),
                         // The focused row carries the override-clear hint (`decorate_override`).
-                        self.settings_focused,
+                        self.nav.cursor(ScreenKey::Settings),
                         dropdown_row,
                         content.width(),
                     ));
@@ -1165,7 +1178,7 @@ impl App {
                         // straight out of the cache.
                         for (i, row) in rows.iter().enumerate() {
                             let Some(id) = tile::settings_row(i) else { break };
-                            let key = cache::version(&(self.screen, i, row.key(), dropdown_row == Some(i)));
+                            let key = cache::version(&(self.nav.screen, i, row.key(), dropdown_row == Some(i)));
                             if tiles.is_fresh(id, key) {
                                 continue;
                             }
@@ -1325,7 +1338,7 @@ impl App {
         if let Some(started) = started {
             tracing::debug!(
                 "entered {:?}: {} tiles rasterized in {:?}",
-                self.screen,
+                self.nav.screen,
                 ctx.updated.len(),
                 started.elapsed()
             );

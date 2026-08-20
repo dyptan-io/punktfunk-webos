@@ -3,6 +3,7 @@
 //! dropdowns are the global Settings screen's — see `app::state::settings`, which both
 //! screens share via `menu::SettingsScope`.
 use crate::app::menu;
+use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::core::screen::Screen;
 use crate::services::store::{Settings, SettingsOverride};
@@ -41,12 +42,12 @@ impl App {
             merged: over.merge_into(self.settings).presentable(),
             over,
         });
-        self.settings_focused = 0;
+        self.nav.set_cursor(ScreenKey::Settings, 0);
         self.dropdown = None;
         // Its own scroll position, like every other modal list — and Settings' is stashed
         // the same way About stashes it.
         self.scroll = crate::ui::scroll::ScrollWindow::new();
-        self.screen = Screen::Settings(menu::SettingsScope::Game);
+        self.nav.screen = Screen::Settings(menu::SettingsScope::Game);
     }
 
     /// Records `row`'s freshly edited value into the override, then re-derives `merged` so a
@@ -68,9 +69,11 @@ impl App {
     /// Resolves the row here rather than at each binding: which list the focus indexes is the
     /// only thing the flow's two screens differ in.
     pub(crate) fn clear_focused_override(&mut self) {
-        let row = match self.screen {
-            Screen::CursorSettings(_) => menu::CURSOR_ROWS.get(self.cursor_settings_focused).copied(),
-            _ => menu::settings_logical_row(self.settings_scope(), self.settings_focused),
+        let row = match self.nav.screen {
+            Screen::CursorSettings(_) => menu::CURSOR_ROWS
+                .get(self.nav.cursor(ScreenKey::CursorSettings))
+                .copied(),
+            _ => menu::settings_logical_row(self.settings_scope(), self.nav.cursor(ScreenKey::Settings)),
         };
         let Some(row) = row else { return };
         self.edit_game_override(|over, _| menu::override_clear(over, row));
