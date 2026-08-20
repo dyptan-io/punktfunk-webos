@@ -5,9 +5,9 @@
 //! `platform::webos::compositor`). Split out of `app/mod.rs` alongside `prepare`.
 use crate::app::render::tile;
 use crate::app::{
-    hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP_SHRINK, LAUNCH_GROWTH, MODAL_FADE,
-    MODAL_FADE_OUT, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD, SCROLL_INDICATOR_TILE_W,
-    STATUS_BG_PAD,
+    hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP, CARD_POP_SHRINK, LAUNCH_GROWTH,
+    MODAL_FADE, MODAL_FADE_OUT, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD,
+    SCROLL_INDICATOR_TILE_W, STATUS_BG_PAD,
 };
 use crate::ui;
 use crate::ui::cache::TileStore;
@@ -347,11 +347,13 @@ impl App {
                 continue;
             };
             let r = card_rect(idx);
-            let Some(card) = self.grid.card_ids.get(pin_id) else {
+            // Tile and pop clock in one lookup — this runs per visible card per frame.
+            let Some(slot) = self.grid.card_ids.slot(pin_id) else {
                 continue; // not rasterized yet — outside the build window
             };
+            let card = slot.id;
             // A card that just landed is still zooming up to full size.
-            let pop = self.card_pop_frac(pin_id);
+            let pop = ui::animation::anim_frac(slot.pop, CARD_POP);
             let alpha = (255.0 * pop) as u8;
             cmds.push(DrawCmd::Tex {
                 tile: tile::CARD_SHADOW,
@@ -404,10 +406,11 @@ impl App {
                 // tile fading in behind it at the same scale.
                 let f = ui::animation::anim_frac_smooth(self.focus_anim, ui::animation::CARD_FOCUS_POP);
                 let r = card_rect(idx);
-                let Some(card) = self.grid.card_ids.get(pin_id) else {
+                let Some(slot) = self.grid.card_ids.slot(pin_id) else {
                     return; // not rasterized yet
                 };
-                let pop = self.card_pop_frac(pin_id);
+                let card = slot.id;
+                let pop = ui::animation::anim_frac(slot.pop, CARD_POP);
                 let popped = |base: Rect| ui::animation::pop_in_rect(base, pop, CARD_POP_SHRINK);
                 // The card's total scale, for anything composited on top of it that has to
                 // fold in the same transform about the card's centre rather than its own.

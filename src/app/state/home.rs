@@ -285,9 +285,8 @@ impl App {
         let layout = self.grid_layout(columns);
         // Driven off what is rasterized, not off the library: a card outside the scroll window
         // has no pop on screen to replay, and `prepare_grid` arms its clock when it is built.
-        // Off the whole library this put one entry per game into `card_pop` — a map
-        // `tick_animations` scans every frame, and which eviction never reaches for a card it
-        // holds no tile for. The pinned block is the grid's first `front_count` indices, so
+        // Off the whole library this armed a clock per game, for cards with no tile to show
+        // one on. The pinned block is the grid's first `front_count` indices, so
         // "in the rest section" is decidable from a set bounded by `MAX_PINNED_GAMES`.
         let pinned: std::collections::HashSet<&str> = (0..layout.front_count)
             .filter_map(|idx| layout.pin_id_at(&self.games, idx))
@@ -303,10 +302,10 @@ impl App {
         // per-`CardTile` clock): a not-yet-built card has no visible pop to replay, and
         // its clock is overwritten with a fresh one when `prepare_grid` builds it.
         if !was_pinned {
-            self.grid.arm_card_pop(id.to_string(), now);
+            self.grid.arm_card_pop(id, now);
         }
         for pin_id in rest_ids {
-            self.grid.arm_card_pop(pin_id, now);
+            self.grid.arm_card_pop(&pin_id, now);
         }
     }
 
@@ -367,10 +366,13 @@ impl App {
             .and_then(|(h, p)| self.known_hosts.iter().position(|k| k.host == *h && k.port == *p))
     }
 
-    /// Eased 0..=1 progress of pin id `id`'s zoom-in (see `card_pop`)
+    /// Eased 0..=1 progress of pin id `id`'s zoom-in (see `tile::CardSlot::pop`)
     /// — 1.0, full size, for anything not animating.
     pub(crate) fn card_pop_frac(&self, id: &str) -> f32 {
-        ui::animation::anim_frac(self.grid.card_pop.get(id).copied(), crate::app::CARD_POP)
+        ui::animation::anim_frac(
+            self.grid.card_ids.slot(id).and_then(|slot| slot.pop),
+            crate::app::CARD_POP,
+        )
     }
 
     /// The largest useful `grid_scroll` for the current library/layout — 0 when

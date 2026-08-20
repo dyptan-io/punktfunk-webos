@@ -124,9 +124,21 @@ pub fn spinner_index(id: TileId) -> Option<usize> {
 /// Slots are recycled, so a library refresh reuses the same small band rather than growing
 /// the id space for the life of the process.
 pub struct CardIds {
-    slots: std::collections::HashMap<String, TileId>,
+    slots: std::collections::HashMap<String, CardSlot>,
     free: Vec<TileId>,
     next: u32,
+}
+
+/// What one resident card holds: its tile, and when its zoom-in started.
+///
+/// The pop clock lives here rather than in a second map keyed by the same string, because
+/// `compose_grid` asks for both for every visible card on every frame — two hashes of one
+/// game id, where the card is resident or neither answer exists.
+#[derive(Clone, Copy)]
+pub struct CardSlot {
+    pub id: TileId,
+    /// `None` for a card that is not animating; see `App::card_pop_frac`.
+    pub pop: Option<std::time::Instant>,
 }
 
 /// Hand-written rather than derived: a derived `Default` would start `next` at 0, handing the
@@ -144,33 +156,63 @@ impl Default for CardIds {
 impl CardIds {
     /// `pin_id`'s tile, assigning a slot if it has none.
     pub fn id(&mut self, pin_id: &str) -> TileId {
-        if let Some(id) = self.slots.get(pin_id) {
-            return *id;
+        if let Some(slot) = self.slots.get(pin_id) {
+            return slot.id;
         }
         let id = self.free.pop().unwrap_or_else(|| {
             let id = TileId(self.next);
             self.next += 1;
             id
         });
-        self.slots.insert(pin_id.to_string(), id);
+        self.slots.insert(pin_id.to_string(), CardSlot { id, pop: None });
         id
     }
 
     /// `pin_id`'s tile if it already has one. Read-only, for the paint path.
     pub fn get(&self, pin_id: &str) -> Option<TileId> {
+        self.slots.get(pin_id).map(|slot| slot.id)
+    }
+
+    /// `pin_id`'s tile *and* pop clock in one lookup — what the per-card composite path
+    /// wants, and the reason the two live together.
+    pub fn slot(&self, pin_id: &str) -> Option<CardSlot> {
         self.slots.get(pin_id).copied()
+    }
+
+    /// Starts `pin_id`'s zoom at `at`, reporting whether it took — a card with no slot is
+    /// not on screen, and gets its clock from [`id`](Self::id) when it is built.
+    pub fn arm_pop(&mut self, pin_id: &str, at: std::time::Instant) -> bool {
+        match self.slots.get_mut(pin_id) {
+            Some(slot) => {
+                slot.pop = Some(at);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// [`arm_pop`](Self::arm_pop) for a card that may already be popping — the reveal, which
+    /// must not restart a zoom already under way.
+    pub fn arm_pop_if_idle(&mut self, pin_id: &str, at: std::time::Instant) -> bool {
+        match self.slots.get_mut(pin_id) {
+            Some(slot) if slot.pop.is_none() => {
+                slot.pop = Some(at);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Releases `pin_id`'s slot for reuse, returning the tile to drop.
     pub fn release(&mut self, pin_id: &str) -> Option<TileId> {
-        let id = self.slots.remove(pin_id)?;
-        self.free.push(id);
-        Some(id)
+        let slot = self.slots.remove(pin_id)?;
+        self.free.push(slot.id);
+        Some(slot.id)
     }
 
     /// Releases every slot, returning the tiles to drop — a fresh library.
     pub fn release_all(&mut self) -> Vec<TileId> {
-        let ids: Vec<TileId> = self.slots.values().copied().collect();
+        let ids: Vec<TileId> = self.slots.values().map(|slot| slot.id).collect();
         self.slots.clear();
         self.free.extend(ids.iter().copied());
         ids
@@ -183,7 +225,7 @@ impl CardIds {
 
     /// Every resident card, as `(pin id, tile)` — what the eviction pass walks, so it can
     /// test the tile it already holds instead of re-hashing the id string.
-    pub fn entries(&self) -> impl Iterator<Item = (&str, &TileId)> {
-        self.slots.iter().map(|(id, t)| (id.as_str(), t))
+    pub fn entries(&self) -> impl Iterator<Item = (&str, TileId)> {
+        self.slots.iter().map(|(id, slot)| (id.as_str(), slot.id))
     }
 }

@@ -7,7 +7,6 @@
 //!
 //! Pixel geometry (card rects, the visible band) is `app::view::home`; navigation is
 //! `app::state::home`.
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::app::render::tile;
@@ -151,16 +150,9 @@ pub(crate) struct GridState {
     /// than by grid position because pinning a game reorders the grid, and keying by index would
     /// rebuild every tile after the moved one.
     pub card_ids: tile::CardIds,
-    /// Per-card zoom-in start clock, keyed by pin id — set when a card first appears or reveals,
-    /// read by `App::card_pop_frac`. Animation state (the event side re-arms it on reorder), kept
-    /// off the tile cache so that cache is touched only by the render loop.
-    ///
-    /// Bounded by the scroll window: eviction drops an entry with its tile, and the reorder replay
-    /// only re-arms cards that are actually resident. `App::tick_animations` scans this every
-    /// frame, so an entry per game in the library would be a per-frame cost of library size.
-    pub card_pop: HashMap<String, Instant>,
     /// When the last-armed card pop finishes — the one comparison `App::tick_animations`
-    /// needs, instead of walking [`Self::card_pop`] every frame to ask the same question.
+    /// needs, instead of walking every resident card's clock each frame to ask the same
+    /// question.
     /// Never lowered by an eviction: a deadline that is merely late costs one extra frame
     /// of the redraw loop, where one that is early would freeze a zoom mid-way.
     pub card_pop_until: Option<Instant>,
@@ -214,17 +206,18 @@ pub(crate) struct GridScratch {
 }
 
 impl GridState {
-    /// Starts (or restarts) `pin_id`'s zoom at `at`.
-    pub fn arm_card_pop(&mut self, pin_id: String, at: Instant) {
-        self.card_pop.insert(pin_id, at);
-        self.extend_pop_deadline(at);
+    /// Starts (or restarts) `pin_id`'s zoom at `at`. A card with no tile is not on screen
+    /// and has no pop to show; it gets its clock when `prepare_grid` builds it.
+    pub fn arm_card_pop(&mut self, pin_id: &str, at: Instant) {
+        if self.card_ids.arm_pop(pin_id, at) {
+            self.extend_pop_deadline(at);
+        }
     }
 
     /// [`arm_card_pop`](Self::arm_card_pop) for a card that may already be popping — a
     /// reveal, which must not restart a zoom already under way.
-    pub fn arm_card_pop_if_idle(&mut self, pin_id: String, at: Instant) {
-        if let std::collections::hash_map::Entry::Vacant(slot) = self.card_pop.entry(pin_id) {
-            slot.insert(at);
+    pub fn arm_card_pop_if_idle(&mut self, pin_id: &str, at: Instant) {
+        if self.card_ids.arm_pop_if_idle(pin_id, at) {
             self.extend_pop_deadline(at);
         }
     }
@@ -249,7 +242,6 @@ impl Default for GridState {
     fn default() -> Self {
         Self {
             card_ids: tile::CardIds::default(),
-            card_pop: HashMap::new(),
             card_pop_until: None,
             card_size: (0, 0),
             dirty: true,

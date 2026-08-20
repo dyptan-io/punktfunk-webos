@@ -152,7 +152,6 @@ impl App {
                     tiles.remove(id);
                     self.evicted_tiles.push(id);
                 }
-                self.grid.card_pop.clear();
                 self.grid.card_pop_until = None;
                 self.grid.dirty = false;
                 self.grid.cards_dirty.clear();
@@ -164,7 +163,6 @@ impl App {
                     if let Some(t) = self.grid.card_ids.release(&id) {
                         tiles.remove(t);
                     }
-                    self.grid.card_pop.remove(&id);
                 }
             }
 
@@ -235,7 +233,6 @@ impl App {
                     }
                     self.evicted_tiles.push(t);
                 }
-                self.grid.card_pop.remove(&id);
                 // Drop the decoded cover too — it is several times the size of the tile it
                 // feeds. Re-requested from the disk cache on scroll back. (Nothing to drop for
                 // the pinned "Desktop" entry, which has no art at all.)
@@ -315,7 +312,7 @@ impl App {
                 let tile_id = self.grid.card_ids.id(&id);
                 tiles.put(tile_id, cache::STATIC, tile);
                 if self.grid.reveal.is_revealed() {
-                    self.grid.arm_card_pop(id.clone(), Instant::now());
+                    self.grid.arm_card_pop(&id, Instant::now());
                 }
                 updated.push(tile_id);
             }
@@ -488,7 +485,7 @@ impl App {
                         let now = Instant::now();
                         let ids: Vec<String> = self.grid.card_ids.pin_ids().map(str::to_string).collect();
                         for id in ids {
-                            self.grid.arm_card_pop_if_idle(id, now);
+                            self.grid.arm_card_pop_if_idle(&id, now);
                         }
                     }
                     None => {}
