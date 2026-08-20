@@ -65,7 +65,7 @@ impl App {
             return;
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        self.send_logs_rx = Some(rx);
+        self.jobs.send_logs = Some(rx);
         self.home_status = Some("Sending logs to the developer…".into());
         tracing::info!("send logs: uploading {}", path.display());
         std::thread::spawn(move || {
@@ -76,7 +76,7 @@ impl App {
     /// Drain the upload worker's result, if it has landed — called each tick
     /// alongside the other `drain_*`s. Returns whether anything changed.
     pub(crate) fn drain_send_logs(&mut self) -> bool {
-        let Some(rx) = &self.send_logs_rx else { return false };
+        let Some(rx) = &self.jobs.send_logs else { return false };
         match rx.try_recv() {
             Ok(msg) => {
                 match msg {
@@ -89,12 +89,12 @@ impl App {
                         self.home_status = Some(s);
                     }
                 }
-                self.send_logs_rx = None;
+                self.jobs.send_logs = None;
                 true
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => false,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.send_logs_rx = None;
+                self.jobs.send_logs = None;
                 false
             }
         }

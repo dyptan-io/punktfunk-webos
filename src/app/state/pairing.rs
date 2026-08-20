@@ -25,7 +25,7 @@ impl App {
             // Mid-ceremony, Back cancels (dropping the receiver orphans the
             // worker — its send fails and it exits); everything else is ignored.
             if ev == MenuEvent::Back {
-                self.pairing_rx = None;
+                self.jobs.cancel_pairing();
                 self.pairing_busy = false;
                 self.pairing_status = None;
                 self.nav.screen = Screen::Home;
@@ -111,7 +111,7 @@ impl App {
 
         let identity = (self.identity.0.clone(), self.identity.1.clone());
         let (tx, rx) = std::sync::mpsc::channel();
-        self.pairing_rx = Some(rx);
+        self.jobs.pairing = Some(rx);
         std::thread::spawn(move || {
             let result =
                 crate::session::probe::request_access(&host, port, identity, crate::services::budget::HOST_WAIT)
@@ -129,9 +129,9 @@ impl App {
 
     /// Drain finished pairing; persist on success, show error on failure.
     pub fn drain_pairing(&mut self) -> bool {
-        let Some(rx) = &self.pairing_rx else { return false };
+        let Some(rx) = &self.jobs.pairing else { return false };
         let Ok(outcome) = rx.try_recv() else { return false };
-        self.pairing_rx = None;
+        self.jobs.pairing = None;
         self.pairing_busy = false;
         match outcome.result {
             Ok(fingerprint) => {
@@ -197,7 +197,7 @@ impl App {
 
         let identity = (self.identity.0.clone(), self.identity.1.clone());
         let (tx, rx) = std::sync::mpsc::channel();
-        self.pairing_rx = Some(rx);
+        self.jobs.pairing = Some(rx);
         std::thread::spawn(move || {
             let result = punktfunk_core::client::NativeClient::pair(
                 &host,

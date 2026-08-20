@@ -73,7 +73,7 @@ impl App {
 
         let identity = (self.identity.0.clone(), self.identity.1.clone());
         let (tx, rx) = std::sync::mpsc::channel();
-        self.speed_test_rx = Some(rx);
+        self.jobs.speed_test = Some(rx);
         std::thread::spawn(move || {
             let progress_tx = tx.clone();
             let result = crate::session::probe::run_speed_probe(
@@ -99,7 +99,7 @@ impl App {
     /// Drains the worker's updates, if any — called each tick alongside the other
     /// `drain_*`s. Returns whether anything changed.
     pub(crate) fn drain_speed_test(&mut self) -> bool {
-        let Some(rx) = &self.speed_test_rx else { return false };
+        let Some(rx) = &self.jobs.speed_test else { return false };
         let mut changed = false;
         // WHY: keep only latest; burst between ticks costs one redraw, not per-message.
         while let Ok(msg) = rx.try_recv() {
@@ -121,13 +121,13 @@ impl App {
                         confirmed,
                     });
                     self.nav.set_cursor(ScreenKey::SpeedTest, 0);
-                    self.speed_test_rx = None;
+                    self.jobs.speed_test = None;
                     break;
                 }
                 SpeedTestMsg::Failed(e) => {
                     tracing::warn!("speed test failed: {e}");
                     self.speed_test = Some(SpeedTestState::Failed(e));
-                    self.speed_test_rx = None;
+                    self.jobs.speed_test = None;
                     break;
                 }
             }
@@ -185,7 +185,7 @@ impl App {
     /// Leaves the screen, abandoning any in-flight probe.
     pub(crate) fn close_speed_test(&mut self) {
         self.speed_test = None;
-        self.speed_test_rx = None;
+        self.jobs.cancel_speed_test();
         self.back_to_host_menu();
     }
 }

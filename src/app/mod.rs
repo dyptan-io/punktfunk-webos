@@ -7,6 +7,7 @@
 pub(crate) mod grid;
 pub(crate) mod hero;
 pub(crate) mod hosts;
+pub(crate) mod jobs;
 pub(crate) mod menu;
 pub(crate) mod modal;
 pub(crate) mod nav;
@@ -108,14 +109,13 @@ pub struct App {
     /// Which screen is up, which was before it, and where the cursor sits on each — see
     /// [`nav::Nav`].
     pub nav: nav::Nav,
+    /// Every background job in flight — see [`jobs::Jobs`].
+    pub(crate) jobs: jobs::Jobs,
     pub known_hosts: Vec<KnownHost>,
-    /// `None` if the mDNS daemon didn't start. Owned here so it stops with the menu.
-    pub(crate) discovery: Option<crate::services::discovery::Discovery>,
     pub entries: Vec<HostEntry>,
     pub home_focus: HomeFocus,
     /// Whether this TV is webosbrew-rooted — `None` until [`App::start_root_probe`] answers.
     pub(crate) rooted: Option<bool>,
-    pub(crate) rooted_rx: Option<std::sync::mpsc::Receiver<bool>>,
     pub selected_host: Option<(String, u16)>,
     pub games: Vec<GameEntry>,
     /// Leading pinned-game entries; kept in pin order.
@@ -129,7 +129,6 @@ pub struct App {
     pub(crate) desktop_pin: bool,
     /// Host answered library fetch (gates Desktop card).
     pub(crate) games_loaded: bool,
-    pub(crate) games_rx: Option<std::sync::mpsc::Receiver<crate::services::library::GamesLoaded>>,
     pub home_status: Option<String>,
     /// Whether `home_status` is the reason the last launch bounced back to the menu, and so must
     /// survive the library reload a fresh menu entry starts — that reload clears the status on
@@ -138,7 +137,6 @@ pub struct App {
     pub(crate) home_status_sticky: bool,
     /// Cover art pixmaps by game id.
     pub art: std::collections::HashMap<String, Pixmap>,
-    pub(crate) art_loader: Option<crate::services::art::ArtLoader>,
     /// The connecting screen's backdrop, and every clock it runs on.
     pub(crate) hero: hero::Hero,
     pub(crate) launch_ready: Option<ConnectTarget>,
@@ -189,20 +187,14 @@ pub struct App {
     /// the row body — the list-modal counterpart of `HomeFocus::SidebarMenu`. Only the
     /// "Wake host" row has one (see `host_menu_actions`).
     pub host_menu_dots: bool,
-    /// Delivers the background log upload's result; `None` when no upload is in
-    /// flight. Drained each tick by `drain_send_logs`.
-    pub(crate) send_logs_rx: Option<std::sync::mpsc::Receiver<crate::app::state::sendlogs::SendLogsMsg>>,
     /// The sidebar row `Screen::EditHost` is editing, `None` otherwise.
     pub edit_host_index: Option<usize>,
     /// The in-flight/finished speed test, `None` when that screen isn't open.
     pub(crate) speed_test: Option<crate::app::state::speedtest::SpeedTestState>,
-    /// Delivers the background probe's progress/result — dropping it cancels.
-    pub(crate) speed_test_rx: Option<std::sync::mpsc::Receiver<crate::app::state::speedtest::SpeedTestMsg>>,
     /// The host being measured, for the status line.
     pub speed_test_name: String,
     /// Last known reachability per `(host, port)` — see `app::reach`.
     pub(crate) reachable: std::collections::HashMap<(String, u16), bool>,
-    pub(crate) reach_rx: Option<std::sync::mpsc::Receiver<crate::app::state::reach::Reachability>>,
     pub(crate) reach_last: Option<Instant>,
     /// Whether webOS's on-screen keyboard is currently up, polled from
     /// `SDL_IsScreenKeyboardShown` each tick by `main.rs` — it moves the address form out
@@ -263,13 +255,6 @@ pub struct App {
     /// The pressed button's dip, if one is in flight — purely visual, and only for a
     /// press that stayed on its screen (see `App::press`).
     pub(crate) press: ui::animation::Press,
-    /// In-flight PIN-pairing / request-access ceremony, delivering its outcome
-    /// from a background thread — the ceremony blocks for up to minutes
-    /// (request-access parks until a human approves it on the host), which used
-    /// to freeze the whole UI when run inline on this thread. Drained by
-    /// `drain_pairing` each tick; dropping the receiver (Back while busy)
-    /// cancels: the worker's send fails and it exits.
-    pub(crate) pairing_rx: Option<std::sync::mpsc::Receiver<PairingOutcome>>,
 }
 
 /// What a finished background pairing/request-access ceremony reports back —
@@ -309,25 +294,24 @@ impl App {
         // Catches hosts that left the list while the app was closed (migration, torn document);
         // in-session removals reconcile at their own sites.
         crate::services::art::reconcile_host_caches(&known_hosts);
-        let discovery = crate::services::discovery::Discovery::start();
         let mut app = Self {
             nav: nav::Nav::default(),
+            jobs: jobs::Jobs {
+                discovery: crate::services::discovery::Discovery::start(),
+                ..Default::default()
+            },
             known_hosts,
-            discovery,
             entries,
             home_focus: HomeFocus::Sidebar(0),
             rooted: None,
-            rooted_rx: None,
             selected_host: None,
             games: Vec::new(),
             pinned_count: 0,
             desktop_pin: false,
             games_loaded: false,
-            games_rx: None,
             home_status: None,
             home_status_sticky: false,
             art: std::collections::HashMap::new(),
-            art_loader: None,
             hero: hero::Hero::default(),
             launch_ready: None,
             launch_anim: None,
@@ -346,13 +330,10 @@ impl App {
             dropdown_fade: ui::fade::ModalFade::new(),
             host_menu_index: None,
             host_menu_dots: false,
-            send_logs_rx: None,
             edit_host_index: None,
             speed_test: None,
-            speed_test_rx: None,
             speed_test_name: String::new(),
             reachable: Self::new_reachability(),
-            reach_rx: None,
             reach_last: None,
             keyboard_shown: false,
             about_lines: Vec::new(),
@@ -375,7 +356,6 @@ impl App {
             focus_anim: None,
             last_tick: None,
             press: ui::animation::Press::default(),
-            pairing_rx: None,
         };
         // Restore the last-active sidebar host (if it's still known and paired)
         // so relaunching the app lands back on its game grid.
@@ -611,7 +591,7 @@ impl App {
         // `found.addr` throughout this loop is deliberate, not a typo for a nonexistent
         // `found.host` — `DiscoveredHost` (discovery.rs) only has `addr`, `WakeState`/
         // `KnownHost` only have `host`; both hold the same kind of value (network address).
-        let polled = self.discovery.as_mut().map(Discovery::poll).unwrap_or_default();
+        let polled = self.jobs.discovery.as_mut().map(Discovery::poll).unwrap_or_default();
         for found in polled {
             #[allow(clippy::suspicious_operation_groupings)]
             if let Some(w) = &self.wake {
@@ -677,7 +657,7 @@ impl App {
     /// alongside `drain_discovery`. Returns whether any new art actually arrived
     /// (see `drain_discovery`'s docs on why).
     pub fn drain_art(&mut self) -> bool {
-        let Some(loader) = &self.art_loader else { return false };
+        let Some(loader) = &self.jobs.art else { return false };
         let loaded = loader.drain();
         if loaded.is_empty() {
             return false;
@@ -695,7 +675,7 @@ impl App {
                     // loader too, so coming back to that card asks again — served from the
                     // disk cache by then, no round trip.
                     if !self.hero.accept(game_id.clone(), image) {
-                        if let Some(loader) = &mut self.art_loader {
+                        if let Some(loader) = &mut self.jobs.art {
                             loader.forget_hero(&game_id);
                         }
                     }

@@ -18,7 +18,7 @@ pub(crate) struct Reachability {
 impl App {
     /// Kick off reachability sweep if one is due and none is in flight.
     pub(crate) fn tick_reachability(&mut self) {
-        if self.reach_rx.is_some() {
+        if self.jobs.reach.is_some() {
             return; // a sweep is still running
         }
         if self.reach_last.is_some_and(|t| t.elapsed() < REACH_INTERVAL) {
@@ -30,7 +30,7 @@ impl App {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
-        self.reach_rx = Some(rx);
+        self.jobs.reach = Some(rx);
         // One thread for the whole sweep, probing sequentially: the host count here is a
         // handful, and a thread per host would spike this SoC's 3 cores for a cosmetic
         // indicator. Each send failing (the receiver replaced by a newer sweep, or the app
@@ -47,7 +47,7 @@ impl App {
 
     /// Drain finished probes. Returns true if sidebar changed.
     pub(crate) fn drain_reachability(&mut self) -> bool {
-        let Some(rx) = &self.reach_rx else { return false };
+        let Some(rx) = &self.jobs.reach else { return false };
         let mut changed = false;
         let mut finished = false;
         loop {
@@ -67,7 +67,7 @@ impl App {
             }
         }
         if finished {
-            self.reach_rx = None;
+            self.jobs.reach = None;
         }
         if changed {
             self.sidebar_dirty = true;

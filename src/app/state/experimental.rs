@@ -10,14 +10,14 @@ impl App {
     /// between boots, so it is never persisted, and no screen but this one needs the answer.
     /// Off-thread: a luna round-trip has no business blocking the modal's open frame.
     fn start_root_probe(&mut self) {
-        if self.rooted.is_some() || self.rooted_rx.is_some() {
+        if self.rooted.is_some() || self.jobs.rooted.is_some() {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
         match std::thread::Builder::new().name("root-probe".into()).spawn(move || {
             let _ = tx.send(crate::platform::webos::game_mode::probe_rooted());
         }) {
-            Ok(_) => self.rooted_rx = Some(rx),
+            Ok(_) => self.jobs.rooted = Some(rx),
             // Nothing will ever answer, so settle on "not rooted" rather than leaving the row
             // stuck on its checking caption.
             Err(e) => {
@@ -41,7 +41,7 @@ impl App {
     /// Picks up the probe's verdict, unlocking the Game mode row (or explaining why not).
     /// Reports whether anything changed, so the open screen redraws.
     pub(crate) fn drain_rooted(&mut self) -> bool {
-        let Some(rx) = &self.rooted_rx else { return false };
+        let Some(rx) = &self.jobs.rooted else { return false };
         let rooted = match rx.try_recv() {
             Ok(rooted) => rooted,
             // A probe thread that died without sending would otherwise leave the row on its
@@ -49,7 +49,7 @@ impl App {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
             Err(std::sync::mpsc::TryRecvError::Empty) => return false,
         };
-        self.rooted_rx = None;
+        self.jobs.rooted = None;
         self.settle_rooted(rooted);
         true
     }

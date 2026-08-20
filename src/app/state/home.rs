@@ -444,8 +444,7 @@ impl App {
         self.games_loaded = false;
         self.clear_grid_pins();
         self.art.clear();
-        self.art_loader = None;
-        self.games_rx = None;
+        self.jobs.cancel_library();
         self.home_status = None;
         self.home_status_sticky = false;
         self.home_focus = HomeFocus::Sidebar(0);
@@ -473,7 +472,7 @@ impl App {
         self.art.clear();
         // Dropping the loader stops its worker (its request channel closes), so a host
         // switch abandons in-flight fetches for the previous library.
-        self.art_loader = None;
+        self.jobs.art = None;
         // Focus stays on the sidebar until `drain_games` has cards to land on: `navigate`
         // can't move off a key with no rect, so an empty grid would kill the d-pad.
         self.grid.focus_last = 0;
@@ -487,7 +486,7 @@ impl App {
         let fingerprint = known.and_then(|k| k.fingerprint);
         let mgmt_port = mgmt_port.unwrap_or(crate::services::library::DEFAULT_MGMT_PORT);
         tracing::debug!("library: fetching from {host}:{mgmt_port}…");
-        self.games_rx = Some(crate::services::library::load_games_async(
+        self.jobs.games = Some(crate::services::library::load_games_async(
             host,
             port,
             mgmt_port,
@@ -500,14 +499,14 @@ impl App {
     /// that stays `false` down the `Unreachable` path too, which would leave the grid's
     /// loading spinner running forever behind the Wake dialog.
     pub(crate) fn library_fetch_in_flight(&self) -> bool {
-        self.games_rx.is_some()
+        self.jobs.games.is_some()
     }
 
     /// Drains `select_host`'s library fetch; switching hosts aborts old fetches safely.
     pub fn drain_games(&mut self) -> bool {
-        let Some(rx) = &self.games_rx else { return false };
+        let Some(rx) = &self.jobs.games else { return false };
         let Ok(loaded) = rx.try_recv() else { return false };
-        self.games_rx = None;
+        self.jobs.games = None;
         let crate::services::library::GamesLoaded {
             host,
             port,
@@ -528,7 +527,7 @@ impl App {
                 let fingerprint = known.and_then(|k| k.fingerprint);
                 // Covers are requested per card as the grid window reaches them (see
                 // `App::prepare_tiles`), not fetched for the whole library up front.
-                self.art_loader = Some(crate::services::art::ArtLoader::spawn(
+                self.jobs.art = Some(crate::services::art::ArtLoader::spawn(
                     host,
                     port,
                     mgmt_port,
@@ -618,7 +617,7 @@ impl App {
         // to this launch even if the focus prefetch never ran.
         let game = launch.as_ref().and_then(|id| self.games.iter().find(|g| &g.id == id));
         self.hero.arm(launch.clone());
-        if let (Some(game), Some(loader)) = (game, &mut self.art_loader) {
+        if let (Some(game), Some(loader)) = (game, &mut self.jobs.art) {
             // The disk is only touched when the focus prefetch hasn't already decoded this
             // hero — re-reading it would be several MB of nothing, and that is the common case.
             let in_hand = self.hero.image_for(&game.id).is_some()

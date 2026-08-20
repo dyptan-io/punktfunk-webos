@@ -193,7 +193,7 @@ impl App {
 
             // Held by value, not re-derived per index — and, unlike the `App`
             // helpers, it maps indices without borrowing all of `self`, so the art
-            // lookups below can sit next to `&mut self.art_loader`.
+            // lookups below can sit next to `&mut self.jobs.art`.
             let layout = self.grid_layout(columns);
 
             // Evict first, so a long scroll frees textures in the same frame it needs new
@@ -238,7 +238,7 @@ impl App {
                 // feeds. Re-requested from the disk cache on scroll back. (Nothing to drop for
                 // the pinned "Desktop" entry, which has no art at all.)
                 self.art.remove(&id);
-                if let Some(loader) = &mut self.art_loader {
+                if let Some(loader) = &mut self.jobs.art {
                     loader.forget(&id);
                 }
             }
@@ -268,7 +268,7 @@ impl App {
                 };
                 // Ask for this card's cover as it enters the window, not for the whole
                 // library at once (see `art::ArtLoader`).
-                if let (Some(loader), Some(game)) = (&mut self.art_loader, layout.game_at(&self.games, idx)) {
+                if let (Some(loader), Some(game)) = (&mut self.jobs.art, layout.game_at(&self.games, idx)) {
                     loader.request(game);
                 }
                 if self.grid.card_ids.get(id).is_some_and(|t| tiles.contains(t)) {
@@ -336,7 +336,7 @@ impl App {
             if self.grid.reveal.is_revealed() && !pending {
                 if let HomeFocus::Grid(focus_idx) = self.home_focus {
                     if let Some(game) = layout.game_at(&self.games, focus_idx) {
-                        if let Some(loader) = &mut self.art_loader {
+                        if let Some(loader) = &mut self.jobs.art {
                             loader.request_hero(game);
                         }
                         self.hero.want(&game.id);

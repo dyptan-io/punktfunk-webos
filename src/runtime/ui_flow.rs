@@ -189,15 +189,7 @@ pub(super) fn run_ui_flow(
             quit_dialog.open(1);
             dirty = true;
         }
-        dirty |= app.drain_discovery();
-        dirty |= app.drain_art();
-        dirty |= app.drain_games();
-        dirty |= app.drain_pairing();
-        dirty |= app.drain_rooted();
-        dirty |= app.drain_speed_test();
-        dirty |= app.drain_send_logs();
-        app.tick_reachability();
-        dirty |= app.drain_reachability();
+        dirty |= app.drain_jobs();
         dirty |= app.tick_wake();
         // Fire on hold elapsed, not release, so user sees it before letting go.
         if let Some(hold) = input

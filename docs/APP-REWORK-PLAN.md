@@ -1,6 +1,6 @@
 # `src/app` rework plan
 
-Status: phases 0-4 landed (see the per-phase notes below); 5-7 proposal. Scope: `src/app` (10.9k LOC, 56 files), plus the seams it forces open in
+Status: phases 0-5 landed (see the per-phase notes below); 6-7 proposal. Scope: `src/app` (10.9k LOC, 56 files), plus the seams it forces open in
 `src/core/screen.rs`, `src/ui/screen.rs` and `src/runtime`.
 
 ## 1. What is actually wrong
@@ -440,7 +440,7 @@ focused-widget match yields `Option<Painter>`.
 Count after 4c: 22 `match self.nav.screen` sites, and the fallback arms that remain are over
 row indices or animation state rather than over `Screen`.
 
-### Phase 5 — `Jobs` (P5)
+### Phase 5 — `Jobs` (P5) — DONE
 
 ```rust
 pub(crate) struct Jobs {
@@ -460,6 +460,13 @@ calls one `App::drain_jobs() -> bool` instead of eight. Cancellation stays "drop
 now via `jobs.cancel_speed_test()` rather than raw field writes scattered across `state/*`.
 
 Risk: low, mechanical.
+
+Landed as designed. Field names lost their `_rx` suffix (`jobs.games`, `jobs.rooted`), the eight
+`App` fields became one `jobs: Jobs`, and `drain_jobs` also absorbed `tick_reachability` since it
+only exists to feed `drain_reachability`. Three cancel helpers: `cancel_pairing`,
+`cancel_speed_test`, `cancel_library` (games + art together — a stale fetch landing after a host
+switch would start art for the wrong library). `WakeState::probe_rx` stayed put: it is part of a
+payload that is `None` off-screen, like `Wake`'s cursor in Phase 3.
 
 ### Phase 6 — split `App` (P1, P9)
 
@@ -522,7 +529,7 @@ encode as much of it as possible in Phase 0.5's tests.
 | 2 SettingsRow enum | yes | every settings row, both scopes, plus both sub-screens — **still owed** |
 | 3 Nav | yes | nested-menu round trip keeps its cursor (HostMenu → WakeSettings → Back) — **still owed** |
 | 4 families | per-commit | every list screen + every confirm dialog, on the TV — **still owed** |
-| 5 Jobs | yes | discovery, pairing, speed test, send-logs, root probe all still land |
+| 5 Jobs | yes | discovery, pairing, speed test, send-logs, root probe all still land — **still owed** |
 | 6 App split | per-sub-struct | full menu pass + one stream launch/return |
 | 7 file size | yes | lint only |
 
