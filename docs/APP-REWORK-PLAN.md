@@ -1,6 +1,8 @@
 # `src/app` rework plan
 
-Status: phases 0-7 landed; see the per-phase notes below. Scope: `src/app` (10.9k LOC, 56 files), plus the seams it forces open in
+Status: every phase (0-7) has landed; see the per-phase notes below. What is left is **not code**:
+none of phases 2-7 has been checked on the TV, and Phase 1's exit criteria still want
+`frame_timer` numbers from one. See §5. Scope: `src/app` (10.9k LOC, 56 files), plus the seams it forces open in
 `src/core/screen.rs`, `src/ui/screen.rs` and `src/runtime`.
 
 ## 1. What is actually wrong
@@ -563,6 +565,18 @@ encode as much of it as possible in Phase 0.5's tests.
    start touching it — including Phase 2, which moves `row_lock` but must not move the
    `video_caps()` calls inside it.
 
+### Out of scope, found on the way
+
+Not plan items, recorded here because they came out of this work and touch the same paths.
+
+- **The root probe stuttered the Experimental modal's open animation.** It was already
+  off-thread, but the thread's first act is to fork `luna-send-pub`, which wakes the Homebrew
+  Channel's service on demand (and on a non-rooted set waits out a 4s timeout); starting that on
+  the frame the modal opens costs the software rasterizer beside it. `open_experimental` now
+  marks the probe owed and `App::tick_root_probe` starts it once `modal.fade` has settled.
+  **Unverified on the TV** — if it still stutters, the cost is CPU contention that no deferral
+  removes and the probe itself has to get cheaper.
+
 ## 5. Sequencing and verification
 
 | Phase | Reversible | Verify |
@@ -576,6 +590,12 @@ encode as much of it as possible in Phase 0.5's tests.
 | 5 Jobs | yes | discovery, pairing, speed test, send-logs, root probe all still land — **still owed** |
 | 6 App split | per-sub-struct | full menu pass + one stream launch/return — **still owed** |
 | 7 file size | yes | lint only — done, plus `cargo test` |
+
+Everything in that column marked **still owed** is owed as one pass: `task deploy TELEMETRY=auto`,
+then every list screen, every confirm dialog, a HostMenu → WakeSettings → Back cursor round trip,
+the Experimental modal's open animation, and one stream launch and return. Per `docs/NOTES.md`,
+that is the only evidence this hardware accepts — clippy and 65 host tests say the refactors
+compile and the pure arithmetic still holds, which is not the same claim.
 
 Phases 1, 2 and 5 are independent and can land in any order after 0.5. Phase 4 wants 3 done
 first (its handlers read `nav.cursor`) and is much cheaper after 2. Phase 6 wants everything
