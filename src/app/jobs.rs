@@ -30,6 +30,11 @@ pub(crate) struct Jobs {
     pub(crate) send_logs: Option<Receiver<SendLogsMsg>>,
     /// Answers [`App::start_root_probe`].
     pub(crate) rooted: Option<Receiver<bool>>,
+    /// Whether the Experimental screen still owes its root probe. The probe forks
+    /// `luna-send-pub` and wakes the Homebrew Channel's service, and on this hardware that
+    /// costs enough CPU to drop frames out of whatever is animating — so it is held until the
+    /// modal it belongs to has finished opening rather than started on the open frame.
+    pub(crate) root_probe_owed: bool,
 }
 
 impl Jobs {
@@ -53,6 +58,7 @@ impl crate::app::App {
     /// One tick's worth of background results, applied in the order the runtime used to call
     /// them in. Returns whether anything changed and so a redraw is owed.
     pub fn drain_jobs(&mut self) -> bool {
+        self.tick_root_probe();
         let mut dirty = self.drain_discovery();
         dirty |= self.drain_art();
         dirty |= self.drain_games();

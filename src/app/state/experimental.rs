@@ -8,7 +8,11 @@ use crate::core::screen::{Screen, SettingsScope};
 impl App {
     /// Probes root access for the Game mode row, once per launch — rooting can come and go
     /// between boots, so it is never persisted, and no screen but this one needs the answer.
-    /// Off-thread: a luna round-trip has no business blocking the modal's open frame.
+    ///
+    /// Off-thread, and deliberately not on the frame the modal opens: the probe forks
+    /// `luna-send-pub`, which in turn launches the Homebrew Channel's service on demand, and
+    /// that costs enough CPU on this hardware to show as a stutter in the open animation
+    /// running beside it. [`App::tick_root_probe`] starts it once that animation is over.
     fn start_root_probe(&mut self) {
         if self.hosts.rooted.is_some() || self.jobs.rooted.is_some() {
             return;
@@ -38,6 +42,21 @@ impl App {
         }
     }
 
+    /// Starts an owed root probe once the modal that wants it has finished opening. Called
+    /// each tick alongside the `drain_*`s.
+    pub(crate) fn tick_root_probe(&mut self) {
+        // Still on Experimental: leaving before the animation settles defers the probe to the
+        // next visit rather than paying for it behind a screen that no longer asks.
+        if !self.jobs.root_probe_owed
+            || !matches!(self.nav.screen, Screen::Experimental)
+            || self.render.modal.fade.is_animating(crate::app::MODAL_FADE)
+        {
+            return;
+        }
+        self.jobs.root_probe_owed = false;
+        self.start_root_probe();
+    }
+
     /// Picks up the probe's verdict, unlocking the Game mode row (or explaining why not).
     /// Reports whether anything changed, so the open screen redraws.
     pub(crate) fn drain_rooted(&mut self) -> bool {
@@ -57,7 +76,8 @@ impl App {
     /// Opens the Experimental screen (Settings → `menu::SettingsRow::Experimental`). Holds unstable,
     /// off-by-default toggles (the software-audio override, Game mode on rooted sets).
     pub(crate) fn open_experimental(&mut self) {
-        self.start_root_probe();
+        // Owed, not started — see `start_root_probe`.
+        self.jobs.root_probe_owed = self.hosts.rooted.is_none() && self.jobs.rooted.is_none();
         self.nav.enter(Screen::Experimental, 0);
     }
 
