@@ -849,6 +849,9 @@ impl App {
             // change mid-flip.
             let stale = self.modal.switch_anim.is_some() || !tiles.is_fresh(tile::MODAL_FOCUS, version);
             if stale {
+                // `None` where the screen turns out to have no focused widget after all —
+                // the descriptor that proves the arm reachable is the same value it draws
+                // from, so an arm cannot assert its way past a `None` any more.
                 let tile = match self.nav.screen {
                     Screen::Settings(_) => {
                         let (_, content) = view::settings::layout(self.settings_scope(), screen_w, screen_h);
@@ -860,7 +863,7 @@ impl App {
                         let target_on = rows
                             .get(self.nav.cursor(ScreenKey::Settings))
                             .is_some_and(|r| r.value == "On");
-                        ui::rasterize(
+                        Some(ui::rasterize(
                             ui::widgets::FocusRowTile {
                                 rows,
                                 content_width: content.width(),
@@ -870,46 +873,30 @@ impl App {
                             },
                             text_cache,
                             fonts,
-                        )?
+                        )?)
                     }
                     // Every two-button confirm dialog shares the button geometry (one subtitle
-                    // sizes the card, so one button row falls out of it); the button *labels*
-                    // stay with the screen that owns them. `focus_key` is only `Some` here for
-                    // a variant that has its buttons up, so both lookups resolve.
+                    // sizes the card, so one button row falls out of it) and describes its own
+                    // labels — one value, not a match arm per screen.
                     Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest => {
-                        let subtitle = self
-                            .confirm_subtitle()
-                            .expect("focus_key is Some only for a confirm dialog showing buttons");
-                        let i = self
-                            .confirm_focused()
-                            .expect("focus_key is Some only for a confirm dialog showing buttons");
-                        let rect = Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &subtitle, i);
-                        // SpeedTest is the only one whose primary button has a dynamic label
-                        // (the bitrate it would apply); bound out here so the borrow below
-                        // outlives the array.
-                        let speed_test_label = match self.nav.screen {
-                            Screen::SpeedTest => {
-                                view::speedtest::apply_label(view::speedtest::recommendation(self.speed_test.as_ref()))
+                        match (self.confirm_of(), self.confirm_focused()) {
+                            (Some(confirm), Some(i)) => {
+                                let rect =
+                                    Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &confirm.subtitle, i);
+                                Some(ui::rasterize(
+                                    ui::widgets::ConfirmButtonTile {
+                                        button: &confirm.widgets()[i],
+                                        w: rect.width(),
+                                        h: rect.height(),
+                                    },
+                                    text_cache,
+                                    fonts,
+                                )?)
                             }
-                            _ => String::new(),
-                        };
-                        let buttons = match self.nav.screen {
-                            Screen::Wake => view::wake::buttons(),
-                            Screen::ForgetHost => view::forget::buttons(),
-                            Screen::SendLogs => view::sendlogs::buttons(),
-                            _ => view::speedtest::buttons(&speed_test_label),
-                        };
-                        ui::rasterize(
-                            ui::widgets::ConfirmButtonTile {
-                                button: &buttons[i],
-                                w: rect.width(),
-                                h: rect.height(),
-                            },
-                            text_cache,
-                            fonts,
-                        )?
+                            _ => None,
+                        }
                     }
-                    Screen::Pairing => match self.pairing_focus {
+                    Screen::Pairing => Some(match self.pairing_focus {
                         PairingFocus::Pin => {
                             let digit = self.pin_digits[self.pin_digit_index].to_string();
                             ui::rasterize(
@@ -935,7 +922,7 @@ impl App {
                                 fonts,
                             )?
                         }
-                    },
+                    }),
                     Screen::HostMenu => {
                         let mut rows = self.host_menu_rows();
                         // The only place a row's ⋯ is drawn lit — see `host_menu_actions`.
@@ -943,7 +930,7 @@ impl App {
                             row.menu = row.menu.map(|_| self.host_menu_dots);
                         }
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
-                        ui::rasterize(
+                        Some(ui::rasterize(
                             ui::widgets::FocusRowTile {
                                 rows: &rows,
                                 content_width: content.width(),
@@ -953,7 +940,7 @@ impl App {
                             },
                             text_cache,
                             fonts,
-                        )?
+                        )?)
                     }
                     // The plain list modals: same tile, same geometry, built from whichever
                     // rows this screen shows. Only Diagnostics can have a dropdown open.
@@ -970,30 +957,33 @@ impl App {
                                 Some(self.nav.cursor(ScreenKey::CursorSettings)),
                             ),
                         };
-                        let focused = self
-                            .list_modal_focused()
-                            .expect("focus_key is Some only for a screen with a focused row");
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
-                        let dropdown_open = self.dropdown.as_ref().is_some_and(|dd| dd.row == focused);
-                        let target_on = rows.get(focused).is_some_and(|r| r.value == "On");
-                        ui::rasterize(
-                            ui::widgets::FocusRowTile {
-                                rows: &rows,
-                                content_width: content.width(),
-                                index: focused,
-                                dropdown_open,
-                                switch_frac: self.toggle_frac(target_on, focused),
-                            },
-                            text_cache,
-                            fonts,
-                        )?
+                        self.list_modal_focused()
+                            .map(|focused| {
+                                let dropdown_open = self.dropdown.as_ref().is_some_and(|dd| dd.row == focused);
+                                let target_on = rows.get(focused).is_some_and(|r| r.value == "On");
+                                ui::rasterize(
+                                    ui::widgets::FocusRowTile {
+                                        rows: &rows,
+                                        content_width: content.width(),
+                                        index: focused,
+                                        dropdown_open,
+                                        switch_frac: self.toggle_frac(target_on, focused),
+                                    },
+                                    text_cache,
+                                    fonts,
+                                )
+                            })
+                            .transpose()?
                     }
-                    Screen::Home | Screen::AddHost | Screen::EditHost | Screen::About | Screen::PinLimit => {
-                        unreachable!("modal_focus_version is None on these screens")
-                    }
+                    // No single focused widget to draw — `modal_focus_version` is `None` on
+                    // these, so this is the arm that never runs rather than one that panics.
+                    Screen::Home | Screen::AddHost | Screen::EditHost | Screen::About | Screen::PinLimit => None,
                 };
-                tiles.put(tile::MODAL_FOCUS, version, tile);
-                updated.push(tile::MODAL_FOCUS);
+                if let Some(tile) = tile {
+                    tiles.put(tile::MODAL_FOCUS, version, tile);
+                    updated.push(tile::MODAL_FOCUS);
+                }
             }
         } else {
             tiles.remove(tile::MODAL_FOCUS);

@@ -279,19 +279,9 @@ impl App {
     /// button-row rect are both measured from, so one value drives the whole dialog.
     ///
     /// `None` on any other screen, and on the two confirm screens whose buttons aren't up
-    /// yet: a Wake with no MAC on record is a button-less message, and a speed test still
-    /// running has nothing to apply.
+    /// yet (see [`App::confirm_of`](crate::app::screens::confirm)).
     pub(crate) fn confirm_subtitle(&self) -> Option<String> {
-        Some(match self.nav.screen {
-            Screen::ForgetHost => view::forget::subtitle(self.host_menu_host_name().unwrap_or_default()),
-            Screen::SendLogs => view::sendlogs::SUBTITLE.to_string(),
-            Screen::Wake => view::wake::status_text(self.wake.as_ref().filter(|w| !w.mac.is_empty())?),
-            Screen::SpeedTest => {
-                let state = self.speed_test.as_ref();
-                view::speedtest::finished(state).then(|| view::speedtest::status(state, &self.speed_test_name))?
-            }
-            _ => return None,
-        })
+        self.confirm_of().map(|c| c.subtitle)
     }
 
     /// Which of the open confirm dialog's two buttons has focus; `None` on a screen that
@@ -433,6 +423,9 @@ impl App {
     }
 
     pub(crate) fn with_modal_screen<R>(&self, f: impl FnOnce(&dyn ui::ModalScreen) -> R) -> Option<R> {
+        // The dialogs' labels and subtitle, from the one place that knows them. Bound here so
+        // the borrowed `ConfirmButton`s below outlive the call.
+        let confirm = self.confirm_of();
         Some(match self.nav.screen {
             Screen::Home => return None,
             // One screen, two scopes: the dim title suffix is the only thing the per-game
@@ -457,9 +450,11 @@ impl App {
             }
             Screen::Wake => f(&view::wake::Modal {
                 wake: self.wake.as_ref()?,
+                confirm: confirm.as_ref(),
             }),
-            Screen::ForgetHost => f(&view::forget::Modal {
-                host_name: self.host_menu_host_name().unwrap_or_default(),
+            Screen::ForgetHost => f(&view::confirm::Modal {
+                title: view::forget::TITLE,
+                confirm: confirm.as_ref()?,
             }),
             Screen::HostMenu => f(&view::hostmenu::Modal {
                 title: self.host_menu_host_name().unwrap_or_default(),
@@ -474,6 +469,7 @@ impl App {
             Screen::SpeedTest => f(&view::speedtest::Modal {
                 state: self.speed_test.as_ref(),
                 host_name: &self.speed_test_name,
+                confirm: confirm.as_ref(),
             }),
             Screen::PinLimit => f(&view::pinlimit::Modal {
                 message: Self::PIN_LIMIT_MESSAGE,
@@ -489,7 +485,10 @@ impl App {
                 settings: self.settings_target(),
                 over: &self.editing_override(),
             }),
-            Screen::SendLogs => f(&view::sendlogs::Modal),
+            Screen::SendLogs => f(&view::confirm::Modal {
+                title: view::sendlogs::TITLE,
+                confirm: confirm.as_ref()?,
+            }),
         })
     }
 

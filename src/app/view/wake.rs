@@ -3,7 +3,6 @@ use crate::app::WakeState;
 use crate::ui;
 use crate::ui::render::Rect;
 use crate::ui::text::Fonts;
-use crate::ui::widgets::ConfirmButton;
 use crate::ui::Canvas;
 use crate::ui::ModalMetrics;
 use crate::ui::ModalScreen;
@@ -25,15 +24,6 @@ pub(crate) fn card_rect(screen_w: u32, screen_h: u32, wake: &WakeState, fonts: &
     } else {
         ui::tiles::confirm_dialog_card(screen_w, screen_h, fonts, &status)
     }
-}
-
-/// Wake/Cancel pair — shared by the shell and the focused-button tile.
-pub(crate) fn buttons() -> [ConfirmButton<'static>; 2] {
-    ui::widgets::confirm_buttons(
-        Some(crate::app::view::icons::ICON_POWER),
-        "Wake host",
-        ui::style::theme().accent_bright,
-    )
 }
 
 /// Title varies: with a MAC it's an action ("Wake this host?"), without it it's state.
@@ -65,6 +55,10 @@ pub(crate) fn status_text(wake: &WakeState) -> String {
 /// The wake-on-LAN modal as a [`ModalScreen`].
 pub(crate) struct Modal<'a> {
     pub wake: &'a WakeState,
+    /// `None` while there is nothing to press — a wake with no MAC on record is an
+    /// informational card, since `drain_discovery` reconnects on its own once the host
+    /// reappears on mDNS.
+    pub confirm: Option<&'a crate::app::screens::confirm::Confirm>,
 }
 
 impl ModalMetrics for Modal<'_> {
@@ -80,11 +74,12 @@ impl ModalScreen for Modal<'_> {
         // With a MAC it's the shared confirmation dialog (card + Wake/Cancel row); without one
         // it's a button-less informational card — `drain_discovery` reconnects automatically
         // once the host reappears on mDNS, so there is nothing for the user to do.
-        let (card, button_row) = if wake.mac.is_empty() {
-            (message_card(c.screen_w, c.screen_h, c.fonts, &status), None)
-        } else {
-            let (card, content) = ui::tiles::confirm_dialog_layout(c.screen_w, c.screen_h, c.fonts, &status);
-            (card, Some(content))
+        let (card, button_row) = match self.confirm {
+            Some(confirm) => {
+                let (card, content) = ui::tiles::confirm_dialog_layout(c.screen_w, c.screen_h, c.fonts, &status);
+                (card, Some((content, confirm)))
+            }
+            None => (message_card(c.screen_w, c.screen_h, c.fonts, &status), None),
         };
         c.modal_shell(card, hover_close)?;
         c.modal_header(
@@ -94,9 +89,9 @@ impl ModalScreen for Modal<'_> {
             &status,
             ui::style::theme().muted,
         )?;
-        if let Some(content) = button_row {
-            // `usize::MAX` = nothing focused; the focused button is its own tile.
-            c.render(ui::widgets::ConfirmButtons::new(&buttons()), content)?;
+        if let Some((content, confirm)) = button_row {
+            // Every button drawn unfocused; the focused one is its own tile.
+            c.render(ui::widgets::ConfirmButtons::new(&confirm.widgets()), content)?;
         }
         Ok(())
     }
