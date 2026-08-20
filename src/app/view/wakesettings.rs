@@ -4,6 +4,7 @@ use crate::ui::render::Rect;
 use crate::ui::text::Fonts;
 use crate::ui::widgets::FocusRow;
 use crate::ui::Canvas;
+use crate::ui::ModalMetrics;
 use crate::ui::ModalScreen;
 use anyhow::Result;
 
@@ -35,7 +36,7 @@ pub(crate) struct Modal<'a> {
     pub auto_send: bool,
 }
 
-impl ModalScreen for Modal<'_> {
+impl ModalMetrics for Modal<'_> {
     fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
         card_rect(screen_w, screen_h, fonts)
     }
@@ -43,7 +44,9 @@ impl ModalScreen for Modal<'_> {
     fn content_rect(&self, card: Rect, fonts: &Fonts) -> Option<Rect> {
         Some(ui::widgets::list_modal_content_rect(card, fonts, SUBTITLE, ROW_COUNT))
     }
+}
 
+impl ModalScreen for Modal<'_> {
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
         let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
         let title = title(self.host_name);

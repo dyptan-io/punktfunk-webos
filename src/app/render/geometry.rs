@@ -201,7 +201,7 @@ impl App {
     /// [`ui::ModalScreen`] value the renderer draws, so hover, click and the
     /// close-button hit-test can never drift from what is on screen.
     pub(crate) fn modal_card_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<Rect> {
-        self.with_modal_screen(|s| s.card_rect(screen_w, screen_h, fonts))
+        self.with_modal_metrics(|s| s.card_rect(screen_w, screen_h, fonts))
     }
 
     /// The open modal's row-list viewport, or an empty rect on a screen without one —
@@ -219,7 +219,7 @@ impl App {
         screen_h: u32,
         fonts: &ui::text::Fonts,
     ) -> Option<(Rect, Rect)> {
-        self.with_modal_screen(|s| {
+        self.with_modal_metrics(|s| {
             let card = s.card_rect(screen_w, screen_h, fonts);
             s.content_rect(card, fonts).map(|content| (card, content))
         })?
@@ -372,6 +372,23 @@ impl App {
     /// By closure rather than by return value: the hit tests below run this on every Magic
     /// Remote `MouseMotion`, and a returned `Box<dyn ModalScreen>` would put a heap
     /// allocation on that path for what is a geometry query.
+    /// Calls `f` with the open modal's *geometry* — [`ui::ModalMetrics`], the half of a modal
+    /// screen that says where its card and rows are without saying what is written on them.
+    ///
+    /// Every screen but the host menu measures off values it already holds, so this is
+    /// [`with_modal_screen`](Self::with_modal_screen) with one arm taken early: the host
+    /// menu's rows are owned `String`s built per call, and this runs on every Magic Remote
+    /// `MouseMotion`.
+    pub(crate) fn with_modal_metrics<R>(&self, f: impl FnOnce(&dyn ui::ModalMetrics) -> R) -> Option<R> {
+        if matches!(self.screen, Screen::HostMenu) {
+            return Some(f(&view::hostmenu::Metrics {
+                subtitle: &self.host_menu_subtitle(),
+                rows: self.host_menu_actions().len(),
+            }));
+        }
+        self.with_modal_screen(|s| f(s))
+    }
+
     pub(crate) fn with_modal_screen<R>(&self, f: impl FnOnce(&dyn ui::ModalScreen) -> R) -> Option<R> {
         Some(match self.screen {
             Screen::Home => return None,

@@ -3,6 +3,7 @@ use crate::ui;
 use crate::ui::render::Rect;
 use crate::ui::widgets::ConfirmButton;
 use crate::ui::Canvas;
+use crate::ui::ModalMetrics;
 use crate::ui::ModalScreen;
 use anyhow::Result;
 
@@ -24,11 +25,13 @@ pub fn buttons() -> [ConfirmButton<'static>; 2] {
 /// The send-logs confirmation as a [`ModalScreen`].
 pub(crate) struct Modal;
 
-impl ModalScreen for Modal {
+impl ModalMetrics for Modal {
     fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Rect {
         ui::tiles::confirm_dialog_card(screen_w, screen_h, fonts, SUBTITLE)
     }
+}
 
+impl ModalScreen for Modal {
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
         let (card, content) = ui::tiles::confirm_dialog_layout(c.screen_w, c.screen_h, c.fonts, SUBTITLE);
         c.modal_shell(card, hover_close)?;

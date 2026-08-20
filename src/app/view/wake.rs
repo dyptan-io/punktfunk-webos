@@ -5,6 +5,7 @@ use crate::ui::render::Rect;
 use crate::ui::text::Fonts;
 use crate::ui::widgets::ConfirmButton;
 use crate::ui::Canvas;
+use crate::ui::ModalMetrics;
 use crate::ui::ModalScreen;
 use anyhow::Result;
 
@@ -66,11 +67,13 @@ pub(crate) struct Modal<'a> {
     pub wake: &'a WakeState,
 }
 
-impl ModalScreen for Modal<'_> {
+impl ModalMetrics for Modal<'_> {
     fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
         card_rect(screen_w, screen_h, self.wake, fonts)
     }
+}
 
+impl ModalScreen for Modal<'_> {
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
         let wake = self.wake;
         let status = status_text(wake);

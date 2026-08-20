@@ -41,7 +41,7 @@ impl App {
             }
             return;
         }
-        let len = crate::app::view::diagnostics::rows(&self.settings).len();
+        let len = crate::app::menu::DIAGNOSTICS_ROW_COUNT;
         if ui::widgets::list_nav(&mut self.diagnostics_focused, len, menu::nav_dir(ev)) {
             self.modal.focus_anim = Some(Instant::now());
             return;

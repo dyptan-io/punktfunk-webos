@@ -17,6 +17,7 @@ use crate::ui::text::FontId;
 use crate::ui::text::Fonts;
 use crate::ui::text::TextRaster;
 use crate::ui::Canvas;
+use crate::ui::ModalMetrics;
 use crate::ui::ModalScreen;
 use anyhow::Result;
 
@@ -148,11 +149,13 @@ pub fn draw_window(c: &mut Canvas, font: FontId, lines: &[String], start: usize,
 /// tile (see the module docs), so the shell is chrome plus header only.
 pub(crate) struct Modal;
 
-impl ModalScreen for Modal {
+impl ModalMetrics for Modal {
     fn card_rect(&self, screen_w: u32, screen_h: u32, _fonts: &Fonts) -> Rect {
         card_rect(screen_w, screen_h)
     }
+}
 
+impl ModalScreen for Modal {
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
         let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
         c.modal_shell(card, hover_close)?;

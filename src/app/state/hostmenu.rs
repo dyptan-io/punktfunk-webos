@@ -12,7 +12,7 @@ use crate::ui::widgets::FocusRow;
 use std::time::Instant;
 
 /// Host action (enum instead of bare index so conditional rows don't silently shift indices).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum HostAction {
     Connect,
     Pair,
@@ -22,10 +22,83 @@ pub(crate) enum HostAction {
     Forget,
 }
 
+/// Every action the menu can offer — the capacity [`HostActions`] is sized to.
+const MAX_HOST_ACTIONS: usize = 6;
+
+/// The actions one host's menu offers, in display order.
+///
+/// A fixed array rather than a `Vec`: the row count is what the card's height is measured
+/// from, so the pointer path asks for this on every Magic Remote `MouseMotion`, and an
+/// allocation per motion event is what it cost when the labels came with it.
+pub(crate) struct HostActions {
+    items: [HostAction; MAX_HOST_ACTIONS],
+    len: usize,
+}
+
+impl HostActions {
+    fn push(&mut self, action: HostAction) {
+        self.items[self.len] = action;
+        self.len += 1;
+    }
+}
+
+impl Default for HostActions {
+    fn default() -> Self {
+        Self {
+            items: [HostAction::Connect; MAX_HOST_ACTIONS],
+            len: 0,
+        }
+    }
+}
+
+impl std::ops::Deref for HostActions {
+    type Target = [HostAction];
+
+    fn deref(&self) -> &[HostAction] {
+        &self.items[..self.len]
+    }
+}
+
+/// One action's row. Split from [`App::host_menu_actions`] so the geometry path can have the
+/// list's shape without its labels — every label here is an owned `String` in the `FocusRow`.
+/// `paired` is the host's pairing state: the only thing a label varies on.
+fn host_menu_row(action: HostAction, paired: bool) -> FocusRow {
+    use crate::app::view::icons;
+    match action {
+        HostAction::Connect if paired => FocusRow::action(icons::ICON_TV, "Connect"),
+        // The hint goes in the value column like every other Action row's, rather than
+        // being parenthesised into the label.
+        HostAction::Connect => FocusRow::action_with_value(icons::ICON_TV, "Connect", "pairs first"),
+        HostAction::Pair => FocusRow::action(icons::ICON_LOCK, "Pair with PIN…"),
+        HostAction::SpeedTest => FocusRow::action(icons::ICON_SIGNAL, "Test network speed…"),
+        // The one row with a ⋯: Confirm wakes now, the button holds the per-host wake
+        // settings (`Screen::WakeSettings`). Same affordance and the same Right-to-reach-it
+        // gesture as a sidebar host row's. Always built *un*focused — whether the button is
+        // lit is `host_menu_dots`, applied by the focused-row tile alone (see
+        // `App::modal_focus_tile`), so the shell underneath can't bake in a highlight that
+        // outlives it.
+        HostAction::Wake => FocusRow::action(icons::ICON_POWER, "Wake host").with_menu(false),
+        HostAction::Edit => FocusRow::action(icons::ICON_EDIT, "Edit address…"),
+        HostAction::Forget => FocusRow::action(icons::ICON_DELETE, "Forget host").danger(),
+    }
+}
+
 impl App {
-    /// The action rows, stripped of the events they map to — what the view paints.
-    pub(crate) fn host_menu_rows(&self) -> Vec<crate::ui::widgets::FocusRow> {
-        self.host_menu_actions().into_iter().map(|(_, r)| r).collect()
+    /// The action rows, as the view paints them.
+    pub(crate) fn host_menu_rows(&self) -> Vec<FocusRow> {
+        let paired = self.host_menu_paired();
+        self.host_menu_actions()
+            .iter()
+            .map(|&a| host_menu_row(a, paired))
+            .collect()
+    }
+
+    /// Whether the menu's host is paired — what half the actions are conditional on, and
+    /// the one thing a row label varies on.
+    pub(crate) fn host_menu_paired(&self) -> bool {
+        self.host_menu_index
+            .and_then(|i| self.entries.get(i))
+            .is_some_and(HostEntry::is_paired)
     }
 
     /// Opens host menu for sidebar row `idx` (⋯ button, pointer, or Right key).
@@ -38,66 +111,33 @@ impl App {
 
     /// Whether focused row's ⋯ button exists (only "Wake host" has one).
     pub(crate) fn host_menu_row_has_dots(&self) -> bool {
-        self.host_menu_actions()
-            .get(self.menu_focused)
-            .is_some_and(|(a, _)| *a == HostAction::Wake)
+        self.host_menu_actions().get(self.menu_focused) == Some(&HostAction::Wake)
     }
 
-    /// Menu rows and actions; conditional on host state (saved/discovered, has MAC).
-    pub(crate) fn host_menu_actions(&self) -> Vec<(HostAction, FocusRow)> {
+    /// The actions offered; conditional on host state (saved/discovered, has MAC).
+    pub(crate) fn host_menu_actions(&self) -> HostActions {
+        let mut actions = HostActions::default();
         let Some(entry) = self.host_menu_index.and_then(|i| self.entries.get(i)) else {
-            return Vec::new();
+            return actions;
         };
         let saved = matches!(entry, HostEntry::Known(_));
         let paired = entry.is_paired();
-        let mut rows = vec![
-            (
-                HostAction::Connect,
-                if paired {
-                    FocusRow::action(crate::app::view::icons::ICON_TV, "Connect")
-                } else {
-                    // The hint goes in the value column like every other Action row's,
-                    // rather than being parenthesised into the label.
-                    FocusRow::action_with_value(crate::app::view::icons::ICON_TV, "Connect", "pairs first")
-                },
-            ),
-            (
-                HostAction::Pair,
-                FocusRow::action(crate::app::view::icons::ICON_LOCK, "Pair with PIN…"),
-            ),
-        ];
+        actions.push(HostAction::Connect);
+        actions.push(HostAction::Pair);
         // Both this and "Wake host" below need a paired host: the probe runs over the real
         // data plane (so it needs the host to accept this client's certificate), and waking a
         // host we can't then connect to is a dead end.
         if paired {
-            rows.push((
-                HostAction::SpeedTest,
-                FocusRow::action(crate::app::view::icons::ICON_SIGNAL, "Test network speed…"),
-            ));
+            actions.push(HostAction::SpeedTest);
         }
         if paired && !entry.mac().is_empty() {
-            // The one row with a ⋯: Confirm wakes now, the button holds the per-host
-            // wake settings (`Screen::WakeSettings`). Same affordance and the same
-            // Right-to-reach-it gesture as a sidebar host row's. Always built
-            // *un*focused — whether the button is lit is `host_menu_dots`, applied by
-            // the focused-row tile alone (see `App::modal_focus_tile`), so the shell
-            // underneath can't bake in a highlight that outlives it.
-            rows.push((
-                HostAction::Wake,
-                FocusRow::action(crate::app::view::icons::ICON_POWER, "Wake host").with_menu(false),
-            ));
+            actions.push(HostAction::Wake);
         }
         if saved {
-            rows.push((
-                HostAction::Edit,
-                FocusRow::action(crate::app::view::icons::ICON_EDIT, "Edit address…"),
-            ));
-            rows.push((
-                HostAction::Forget,
-                FocusRow::action(crate::app::view::icons::ICON_DELETE, "Forget host").danger(),
-            ));
+            actions.push(HostAction::Edit);
+            actions.push(HostAction::Forget);
         }
-        rows
+        actions
     }
 
     /// The host's name — the menu's title.
@@ -151,7 +191,7 @@ impl App {
     /// Runs focused row's action; every arm navigates away or closes menu.
     pub(crate) fn confirm_host_menu_row(&mut self) {
         let actions = self.host_menu_actions();
-        let Some((action, _)) = actions.get(self.menu_focused) else {
+        let Some(action) = actions.get(self.menu_focused) else {
             return;
         };
         let Some(idx) = self.host_menu_index else { return };

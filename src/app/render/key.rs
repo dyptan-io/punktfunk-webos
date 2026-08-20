@@ -10,6 +10,7 @@
 //! Every key here is hashed the moment it is built and then dropped — nothing stores one (see
 //! `App::modal_shell_version`). The borrowed `&str` fields say so in the type: a key that could
 //! outlive the state it describes would have to own a copy of every label, once per frame.
+use crate::app::state::hostmenu::HostAction;
 use crate::core::model::{GamepadType, LogLevelOverride, Settings, SettingsOverride};
 
 /// Focused widget in the open modal. Each variant carries its content,
@@ -28,8 +29,10 @@ pub enum ModalFocusKey<'a> {
     ForgetButton(usize),
     /// Carries label to prevent stale tiles across screen changes.
     SpeedTestButton(usize, &'a str),
-    /// Carries label+menu flag for row list shape changes and ⋯ state.
-    MenuRow(usize, &'a str, bool),
+    /// (focused row, its action, the host's pairing state, ⋯ focused). The action and the
+    /// pairing state are what the row's label is derived from, so they stand in for it —
+    /// see `app::state::hostmenu::host_menu_row`.
+    MenuRow(usize, HostAction, bool, bool),
     /// (focused row, log level, stats-overlay on, show-logs on) — any change invalidates the tile.
     DiagnosticsRow(usize, LogLevelOverride, bool, bool),
     ExperimentalRow(usize, bool, bool, Option<bool>),

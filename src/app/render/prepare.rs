@@ -614,7 +614,7 @@ impl App {
     /// differs by version rather than by a stored clone of every string it draws.
     fn modal_shell_version(
         &self,
-        host_menu_actions: &[(crate::app::state::hostmenu::HostAction, ui::widgets::FocusRow)],
+        host_menu_actions: &[crate::app::state::hostmenu::HostAction],
     ) -> Option<u64> {
         // The derived strings the key borrows — bound here so they outlive it, and built only
         // on the screen that actually reads each one.
@@ -698,7 +698,7 @@ impl App {
     /// [`modal_shell_version`](Self::modal_shell_version), and for the same reason.
     fn modal_focus_version(
         &self,
-        host_menu_actions: &[(crate::app::state::hostmenu::HostAction, ui::widgets::FocusRow)],
+        host_menu_actions: &[crate::app::state::hostmenu::HostAction],
     ) -> Option<u64> {
         // Borrowed by the key below, so it outlives it.
         let speed_test_label = matches!(self.screen, Screen::SpeedTest)
@@ -723,9 +723,14 @@ impl App {
                 PairingFocus::RequestAccess => ModalFocusKey::PairingButton,
             }),
             Screen::ForgetHost => Some(ModalFocusKey::ForgetButton(self.host_menu_focused)),
-            Screen::HostMenu => host_menu_actions
-                .get(self.menu_focused)
-                .map(|(_, row)| ModalFocusKey::MenuRow(self.menu_focused, &row.label, self.host_menu_dots)),
+            Screen::HostMenu => host_menu_actions.get(self.menu_focused).map(|&action| {
+                ModalFocusKey::MenuRow(
+                    self.menu_focused,
+                    action,
+                    self.host_menu_paired(),
+                    self.host_menu_dots,
+                )
+            }),
             Screen::WakeSettings => Some(ModalFocusKey::WakeToggle(
                 self.wake_settings_host().is_some_and(|h| h.wol_auto),
             )),
@@ -781,8 +786,7 @@ impl App {
         // `ModalShellKey`'s docs). `AddHost` has no `ModalShellKey` variant
         // (no split focus tile to protect) and just redraws on any
         // `content_dirty` tick, same as every modal did before this split.
-        // Built once for both version fns — it is a `Vec` of owned rows, and each of them
-        // used to build its own copy every frame the host menu was up.
+        // Built once for both version fns rather than per call.
         let host_menu_actions = matches!(self.screen, Screen::HostMenu)
             .then(|| self.host_menu_actions())
             .unwrap_or_default();
