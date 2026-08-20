@@ -32,8 +32,8 @@ impl App {
     /// again, and every stream start would keep paying for luna calls that can only fail.
     fn settle_rooted(&mut self, rooted: bool) {
         self.hosts.rooted = Some(rooted);
-        if !rooted && self.settings.game_mode {
-            self.settings.game_mode = false;
+        if !rooted && self.settings_ui.settings.game_mode {
+            self.settings_ui.settings.game_mode = false;
             self.persist();
         }
     }
@@ -71,8 +71,8 @@ impl App {
             ev,
         ) {
             (Some(menu::ExpRow::HwAudio), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
-                let from = self.settings.ndl_audio_offload;
-                self.settings.ndl_audio_offload = !from;
+                let from = self.settings_ui.settings.ndl_audio_offload;
+                self.settings_ui.settings.ndl_audio_offload = !from;
                 self.arm_switch_anim(from);
             }
             // A locked row (see `menu::exp_row_lock`) rejects the press — the greyed control
@@ -80,8 +80,8 @@ impl App {
             (Some(menu::ExpRow::GameMode), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm)
                 if menu::exp_row_lock(menu::ExpRow::GameMode, self.hosts.rooted).is_none() =>
             {
-                let from = self.settings.game_mode;
-                self.settings.game_mode = !from;
+                let from = self.settings_ui.settings.game_mode;
+                self.settings_ui.settings.game_mode = !from;
                 self.arm_switch_anim(from);
             }
             (_, MenuEvent::Back) => {

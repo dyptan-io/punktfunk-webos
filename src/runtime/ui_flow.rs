@@ -31,7 +31,7 @@ fn launch_settings(app: &App, target: &crate::core::model::ConnectTarget) -> cra
     let over = app
         .known_host(&target.host, target.port)
         .map_or_else(SettingsOverride::default, |h| h.overrides(id));
-    let mut settings = over.merge_into(app.settings);
+    let mut settings = over.merge_into(app.settings_ui.settings);
     settings.clamp_to_caps();
     settings
 }
@@ -214,7 +214,7 @@ pub(super) fn run_ui_flow(
                 // In-memory settings, not `store::load_settings()`: a just-flipped
                 // toggle (e.g. audio offload) is persisted asynchronously by
                 // `StateWriter`, so re-reading disk here could race the write and
-                // connect with the stale value. `app.settings` is updated synchronously.
+                // connect with the stale value. `app.settings_ui.settings` is updated synchronously.
                 // Per-game overrides merge over the global document here — the single
                 // point where the game being launched is known and the settings copy that
                 // rides the whole session is made. Clamped to caps like any global value.

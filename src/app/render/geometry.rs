@@ -485,10 +485,10 @@ impl App {
                 message: Self::PIN_LIMIT_MESSAGE,
             }),
             Screen::Diagnostics => f(&view::diagnostics::Modal {
-                settings: &self.settings,
+                settings: &self.settings_ui.settings,
             }),
             Screen::Experimental => f(&view::experimental::Modal {
-                settings: &self.settings,
+                settings: &self.settings_ui.settings,
                 rooted: self.hosts.rooted,
             }),
             Screen::CursorSettings(_) => f(&view::cursorsettings::Modal {

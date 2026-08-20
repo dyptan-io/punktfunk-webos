@@ -17,6 +17,7 @@ pub(crate) mod press;
 pub(crate) mod render;
 pub(crate) mod render_input;
 pub(crate) mod screens;
+pub(crate) mod settingsui;
 pub(crate) mod spinner;
 pub(crate) mod state;
 pub(crate) mod view;
@@ -115,6 +116,8 @@ pub struct App {
     pub(crate) library: library::Library,
     /// Every host the menu knows about — see [`hosts::HostsState`].
     pub(crate) hosts: hosts::HostsState,
+    /// The settings document and the UI editing it — see [`settingsui::SettingsUi`].
+    pub(crate) settings_ui: settingsui::SettingsUi,
     pub home_focus: HomeFocus,
     pub home_status: Option<String>,
     /// Whether `home_status` is the reason the last launch bounced back to the menu, and so must
@@ -127,10 +130,6 @@ pub struct App {
     pub(crate) launch_ready: Option<ConnectTarget>,
     pub(crate) launch_anim: Option<Instant>,
     pub(crate) launch_anim_idx: Option<usize>,
-    pub settings: Settings,
-    /// What `Screen::GameSettings` is editing, `None` when it isn't up — see
-    /// `app::state::gamesettings`.
-    pub(crate) game_settings: Option<state::gamesettings::GameSettingsState>,
     /// The submenu raised over a held grid card's title strip (Pin/Unpin + Settings), and
     /// the only way to `Screen::GameSettings`. `None` when no card is held open.
     pub card_menu: Option<state::cardmenu::CardMenu>,
@@ -146,12 +145,6 @@ pub struct App {
     /// when `settings.gamepad_type` is `Auto` — an explicit pick doesn't need this to know what
     /// it's driving, but the Controller row's `DualSense` caption does (see `settings_rows`).
     pub(crate) detected_gamepad_type: Option<store::GamepadType>,
-    /// Whether the mouse button is down on the Settings screen's slider row (Bitrate) with
-    /// the press having landed on the track itself — while `true`, `MouseMotion` drags the
-    /// thumb to the pointer's x instead of just moving hover focus. Cleared on
-    /// `MouseButtonUp`; never survives a screen change since the button can't be released
-    /// on another screen from webOS's own D-pad OK -> click translation.
-    pub(crate) slider_drag: bool,
     /// Scroll state for overflowing modal content.
     pub(crate) scroll: ui::scroll::ScrollWindow,
     /// Settings' scroll position, stashed while About borrows `scroll` for its
@@ -160,10 +153,6 @@ pub struct App {
     pub(crate) settings_scroll: ui::scroll::ScrollWindow,
     /// Window slice of baked About document.
     pub(crate) content_window: ui::scroll::ContentWindow,
-    pub dropdown: Option<DropdownState>,
-    /// Dropdown overlay's own open/close fade, payload `(row, focused)` so the
-    /// close-fade can still draw it after `dropdown` goes `None`.
-    pub(crate) dropdown_fade: ui::fade::ModalFade<(usize, usize)>,
     /// The sidebar row `Screen::ForgetHost` is confirming forgetting — set
     /// alongside `screen = Screen::ForgetHost` (see `App::open_forget_host`),
     /// `None` otherwise.
@@ -283,6 +272,7 @@ impl App {
                 discovery: crate::services::discovery::Discovery::start(),
                 ..Default::default()
             },
+            settings_ui: settingsui::SettingsUi::new(settings),
             hosts: hosts::HostsState {
                 known: known_hosts,
                 entries,
@@ -296,18 +286,13 @@ impl App {
             launch_ready: None,
             launch_anim: None,
             launch_anim_idx: None,
-            settings,
-            game_settings: None,
             card_menu: None,
             intro_hint_owed: new_build,
             state_writer,
             detected_gamepad_type: None,
-            slider_drag: false,
             scroll: ui::scroll::ScrollWindow::new(),
             settings_scroll: ui::scroll::ScrollWindow::new(),
             content_window: ui::scroll::ContentWindow::new(),
-            dropdown: None,
-            dropdown_fade: ui::fade::ModalFade::new(),
             host_menu_index: None,
             host_menu_dots: false,
             edit_host_index: None,
@@ -349,7 +334,7 @@ impl App {
         }
         // Rasterizes the spinner's frames off the render thread (OnceLock warm-up).
         // Applies the persisted "Show logs" preference to the otherwise-ephemeral overlay.
-        if app.settings.show_logs {
+        if app.settings_ui.settings.show_logs {
             crate::runtime::set_log_overlay_enabled(true);
         }
         std::thread::spawn(crate::assets::spinner_frames);
@@ -377,14 +362,14 @@ impl App {
     /// gate every accessor below shares, in the two forms borrowck needs.
     pub(crate) fn editing_game(&self) -> Option<&state::gamesettings::GameSettingsState> {
         match self.settings_scope() {
-            menu::SettingsScope::Game => self.game_settings.as_ref(),
+            menu::SettingsScope::Game => self.settings_ui.game_settings.as_ref(),
             menu::SettingsScope::Global => None,
         }
     }
 
     pub(crate) fn editing_game_mut(&mut self) -> Option<&mut state::gamesettings::GameSettingsState> {
         match self.settings_scope() {
-            menu::SettingsScope::Game => self.game_settings.as_mut(),
+            menu::SettingsScope::Game => self.settings_ui.game_settings.as_mut(),
             menu::SettingsScope::Global => None,
         }
     }
@@ -395,7 +380,7 @@ impl App {
     pub(crate) fn settings_target(&self) -> &Settings {
         match self.editing_game() {
             Some(gs) => &gs.merged,
-            None => &self.settings,
+            None => &self.settings_ui.settings,
         }
     }
 
@@ -403,9 +388,9 @@ impl App {
     /// `self` back, which borrowck won't grant while a returned `Option<&mut _>` is in scope.
     pub(crate) fn settings_target_mut(&mut self) -> &mut Settings {
         let scope = self.settings_scope();
-        match &mut self.game_settings {
+        match &mut self.settings_ui.game_settings {
             Some(gs) if scope == menu::SettingsScope::Game => &mut gs.merged,
-            _ => &mut self.settings,
+            _ => &mut self.settings_ui.settings,
         }
     }
 
@@ -460,10 +445,10 @@ impl App {
 
     /// `(row, focused, alpha)` for the open dropdown or its close-fade; `None` if neither.
     pub(crate) fn dropdown_draw_state(&self) -> Option<(usize, usize, f32)> {
-        if let Some(dd) = &self.dropdown {
-            Some((dd.row, dd.focused, self.dropdown_fade.open_alpha(DROPDOWN_FADE)))
+        if let Some(dd) = &self.settings_ui.dropdown {
+            Some((dd.row, dd.focused, self.settings_ui.dropdown_fade.open_alpha(DROPDOWN_FADE)))
         } else {
-            self.dropdown_fade
+            self.settings_ui.dropdown_fade
                 .closing_frame(DROPDOWN_FADE)
                 .map(|(alpha, (row, focused))| (row, focused, alpha))
         }
@@ -712,7 +697,7 @@ impl App {
         if self.modal.fade.tick_split(MODAL_FADE, MODAL_FADE_OUT) {
             animating = true;
         }
-        if self.dropdown_fade.tick(DROPDOWN_FADE) {
+        if self.settings_ui.dropdown_fade.tick(DROPDOWN_FADE) {
             animating = true;
         }
         // The hero loading screen keeps panning for as long as the launch is on screen,
@@ -762,7 +747,7 @@ impl App {
     /// selection comes through here rather than writing its own slice.
     pub(crate) fn persist(&self) {
         self.state_writer.save(store::Persisted {
-            settings: self.settings,
+            settings: self.settings_ui.settings,
             known_hosts: self.hosts.known.clone(),
             selected_host: self.library.selected_host.clone(),
             // Always this build's version: whatever wrote the document last is what a future

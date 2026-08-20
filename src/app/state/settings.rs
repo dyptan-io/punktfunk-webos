@@ -21,7 +21,7 @@ impl App {
         // An open Resolution/Frame rate dropdown intercepts all input until it's
         // closed (by picking an option or backing out) — it's a modal overlay on
         // top of the settings row list.
-        if let Some(dd) = self.dropdown.as_mut() {
+        if let Some(dd) = self.settings_ui.dropdown.as_mut() {
             // `dd.row` is the display position; setting lookups need the logical row.
             let row = dd.row;
             let logical = menu::settings_logical_row(set, row);
@@ -31,11 +31,11 @@ impl App {
                     crate::ui::widgets::list_nav(&mut dd.focused, len, menu::nav_dir(ev));
                 }
                 // Applied after the borrow ends: the pick has to reach `self` beyond
-                // `self.dropdown`, and the fade needs `dd.focused` either way.
+                // `self.settings_ui.dropdown`, and the fade needs `dd.focused` either way.
                 MenuEvent::Confirm | MenuEvent::Back => {
                     let choice = (ev == MenuEvent::Confirm).then_some(dd.focused);
-                    self.dropdown_fade.close((row, dd.focused));
-                    self.dropdown = None;
+                    self.settings_ui.dropdown_fade.close((row, dd.focused));
+                    self.settings_ui.dropdown = None;
                     if let (Some(choice), Some(logical)) = (choice, logical) {
                         let detected = self.detected_gamepad_type;
                         // Not persisted here — `MenuEvent::Back` on the row list (leaving
@@ -112,11 +112,11 @@ impl App {
                     let focused = menu::dropdown_current_index(self.settings_target(), logical);
                     // `row` is the display position (what the overlay is drawn against);
                     // the logical row is recovered on lookup via `settings_logical_row`.
-                    self.dropdown = Some(DropdownState {
+                    self.settings_ui.dropdown = Some(DropdownState {
                         row: self.nav.cursor(ScreenKey::Settings),
                         focused,
                     });
-                    self.dropdown_fade.reopen();
+                    self.settings_ui.dropdown_fade.reopen();
                 }
                 Some(_) => self.apply_setting_adjust(self.nav.cursor(ScreenKey::Settings), true),
             },
@@ -145,7 +145,7 @@ impl App {
     /// Per-game only: the row appears on `SettingsScope::Game` alone (see
     /// `menu::settings_visible_logical_rows`), so a global screen can never reach here.
     fn reset_settings(&mut self) {
-        let inherited = self.settings.presentable();
+        let inherited = self.settings_ui.settings.presentable();
         if let Some(gs) = self.editing_game_mut() {
             gs.over = crate::services::store::SettingsOverride::default();
             gs.merged = inherited;

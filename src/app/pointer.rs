@@ -46,7 +46,7 @@ impl App {
         // A press already landed on the Bitrate track (see `handle_mouse_click`) — every
         // motion until release drags the thumb, rather than re-hit-testing the row list
         // under a pointer that may have wandered off it.
-        if self.slider_drag {
+        if self.settings_ui.slider_drag {
             self.drag_bitrate_slider(x, screen_w, screen_h);
             return true;
         }
@@ -55,7 +55,7 @@ impl App {
         // (and shows the new row's caption). Home drives its own `focus_anim` instead, so
         // it's excluded. An open dropdown is excluded too — hover there only moves the
         // option cursor, so popping the parent row (as the D-pad also declines to) is wrong.
-        if focus_changed && self.dropdown.is_none() && !matches!(self.nav.screen, Screen::Home) {
+        if focus_changed && self.settings_ui.dropdown.is_none() && !matches!(self.nav.screen, Screen::Home) {
             self.modal.focus_anim = Some(Instant::now());
         }
         let close_changed = self.hover_close_at(x, y, screen_w, screen_h, fonts);
@@ -102,7 +102,7 @@ impl App {
         // Diagnostics), and uses the same overlay geometry the renderer draws against.
         if let Some(i) = self.dropdown_option_at(x, y, screen_w, screen_h, fonts) {
             let dd = self
-                .dropdown
+                .settings_ui.dropdown
                 .as_mut()
                 .expect("dropdown_option_at yields Some only when one is open");
             let changed = dd.focused != i;
@@ -111,7 +111,7 @@ impl App {
         }
         // A dropdown open but not hovered still swallows hover — the row list behind
         // it must not take the selection.
-        if self.dropdown.is_some() {
+        if self.settings_ui.dropdown.is_some() {
             return false;
         }
         match self.nav.screen {
@@ -311,7 +311,7 @@ impl App {
         screen_h: u32,
         fonts: &ui::text::Fonts,
     ) -> Option<usize> {
-        let dd = self.dropdown.as_ref()?;
+        let dd = self.settings_ui.dropdown.as_ref()?;
         let (content, scroll_px) = self.dropdown_geom(screen_w, screen_h, fonts)?;
         let overlay = view::settings::dropdown_overlay_rect_at_px(content, dd.row, scroll_px);
         let options_len = self.dropdown_len(dd.row);
@@ -413,7 +413,7 @@ impl App {
         }
         // An open dropdown owns the click wherever it landed: an option, or outside it,
         // which closes it. Same as hover.
-        if self.dropdown.is_some() {
+        if self.settings_ui.dropdown.is_some() {
             let ev = self.dropdown_click_event(x, y, screen_w, screen_h, fonts);
             self.handle_menu_event(ev, screen_w, screen_h, fonts);
             return None;
@@ -482,7 +482,7 @@ impl App {
                     // slider isn't worth demanding of a Magic Remote pointer.
                     let in_track = x >= track.x() && x < track.right() && y >= row_rect.y() && y < row_rect.bottom();
                     if in_track {
-                        self.slider_drag = true;
+                        self.settings_ui.slider_drag = true;
                         self.set_bitrate_from_x(x, track);
                         return None;
                     }

@@ -690,13 +690,13 @@ impl App {
                 status: &speed_test_status,
             }),
             Screen::Diagnostics => Some(ModalShellKey::Diagnostics {
-                log_level: self.settings.log_level_override,
-                stats_overlay: self.settings.stats_overlay,
-                show_logs: self.settings.show_logs,
+                log_level: self.settings_ui.settings.log_level_override,
+                stats_overlay: self.settings_ui.settings.stats_overlay,
+                show_logs: self.settings_ui.settings.show_logs,
             }),
             Screen::Experimental => Some(ModalShellKey::Experimental {
-                ndl_audio_offload: self.settings.ndl_audio_offload,
-                game_mode: self.settings.game_mode,
+                ndl_audio_offload: self.settings_ui.settings.ndl_audio_offload,
+                game_mode: self.settings_ui.settings.game_mode,
                 rooted: self.hosts.rooted,
             }),
             Screen::CursorSettings(_) => Some(ModalShellKey::CursorSettings {
@@ -763,14 +763,14 @@ impl App {
                 .then(|| ModalFocusKey::SpeedTestButton(self.nav.cursor(ScreenKey::SpeedTest), &speed_test_label)),
             Screen::Diagnostics => Some(ModalFocusKey::DiagnosticsRow(
                 self.nav.cursor(ScreenKey::Diagnostics),
-                self.settings.log_level_override,
-                self.settings.stats_overlay,
-                self.settings.show_logs,
+                self.settings_ui.settings.log_level_override,
+                self.settings_ui.settings.stats_overlay,
+                self.settings_ui.settings.show_logs,
             )),
             Screen::Experimental => Some(ModalFocusKey::ExperimentalRow(
                 self.nav.cursor(ScreenKey::Experimental),
-                self.settings.ndl_audio_offload,
-                self.settings.game_mode,
+                self.settings_ui.settings.ndl_audio_offload,
+                self.settings_ui.settings.game_mode,
                 self.hosts.rooted,
             )),
             Screen::CursorSettings(_) => Some(ModalFocusKey::CursorSettingsRow(
@@ -857,7 +857,7 @@ impl App {
                         let (_, content) = view::settings::layout(self.settings_scope(), screen_w, screen_h);
                         let rows = settings_rows.get_or_insert_with(|| self.settings_rows());
                         let dropdown_open = self
-                            .dropdown
+                            .settings_ui.dropdown
                             .as_ref()
                             .is_some_and(|dd| dd.row == self.nav.cursor(ScreenKey::Settings));
                         let target_on = rows
@@ -935,7 +935,7 @@ impl App {
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
                         self.list_modal_focused()
                             .map(|focused| {
-                                let dropdown_open = self.dropdown.as_ref().is_some_and(|dd| dd.row == focused);
+                                let dropdown_open = self.settings_ui.dropdown.as_ref().is_some_and(|dd| dd.row == focused);
                                 let target_on = rows.get(focused).is_some_and(|r| r.value == "On");
                                 ui::rasterize(
                                     ui::widgets::FocusRowTile {
@@ -977,7 +977,7 @@ impl App {
             ..
         } = ctx;
         let (screen_w, screen_h) = (size.w, size.h);
-        if let Some(dd) = &self.dropdown {
+        if let Some(dd) = &self.settings_ui.dropdown {
             let options = self.dropdown_options(dd.row);
             // The overlay hangs inside whichever viewport its list is drawn in.
             let content_w = match self.nav.screen {
@@ -1015,7 +1015,7 @@ impl App {
             })? {
                 updated.push(tile::DROPDOWN_FOCUS);
             }
-        } else if self.dropdown_fade.closing_frame(DROPDOWN_FADE).is_none() {
+        } else if self.settings_ui.dropdown_fade.closing_frame(DROPDOWN_FADE).is_none() {
             // Keep the tiles cached while a close-fade is in flight — `draw_list`
             // still composites them at falling alpha.
             tiles.remove(tile::DROPDOWN_OVERLAY);
@@ -1110,7 +1110,7 @@ impl App {
 
             match self.nav.screen {
                 Screen::Settings(_) => {
-                    let dropdown_row = self.dropdown.as_ref().map(|dd| dd.row);
+                    let dropdown_row = self.settings_ui.dropdown.as_ref().map(|dd| dd.row);
                     let row_count = menu::settings_row_count(self.settings_scope());
                     // What the whole list is derived from (see `App::settings_rows`). Checked
                     // before the list is built at all: the per-row keys below still arbitrate

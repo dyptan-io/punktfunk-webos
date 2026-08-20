@@ -82,7 +82,7 @@ impl App {
     fn pressable(&self) -> bool {
         // Focus is on a dropdown option, which has its own tile — the row behind the
         // overlay is not what was pressed.
-        if self.dropdown.is_some() {
+        if self.settings_ui.dropdown.is_some() {
             return false;
         }
         match self.nav.screen {

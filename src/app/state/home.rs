@@ -205,7 +205,7 @@ impl App {
                 }
                 HomeFocus::Sidebar(_) => {
                     self.nav.screen = Screen::Settings(SettingsScope::Global);
-                    self.dropdown = None;
+                    self.settings_ui.dropdown = None;
                     self.nav.set_cursor(ScreenKey::Settings, 0);
                     self.scroll = ui::scroll::ScrollWindow::new();
                     self.content_window = ui::scroll::ContentWindow::new();

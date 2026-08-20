@@ -35,15 +35,15 @@ impl App {
         let over = self
             .known_host(&host.0, host.1)
             .map_or_else(SettingsOverride::default, |h| h.overrides(pin_id));
-        self.game_settings = Some(GameSettingsState {
+        self.settings_ui.game_settings = Some(GameSettingsState {
             host,
             pin_id: pin_id.to_string(),
             title: title.to_string(),
-            merged: over.merge_into(self.settings).presentable(),
+            merged: over.merge_into(self.settings_ui.settings).presentable(),
             over,
         });
         self.nav.set_cursor(ScreenKey::Settings, 0);
-        self.dropdown = None;
+        self.settings_ui.dropdown = None;
         // Its own scroll position, like every other modal list — and Settings' is stashed
         // the same way About stashes it.
         self.scroll = crate::ui::scroll::ScrollWindow::new();
@@ -58,7 +58,7 @@ impl App {
     /// genuinely differs is cleared by `clear_game_override` instead. Both rules, and why
     /// only *this* row is judged against the global, are on `store::SettingsOverride`.
     pub(crate) fn capture_game_override(&mut self, row: menu::SettingsRow) {
-        let global = self.settings;
+        let global = self.settings_ui.settings;
         self.edit_game_override(|over, merged| menu::override_capture(over, row, merged, &global));
     }
 
@@ -83,7 +83,7 @@ impl App {
     /// mutators just ran against, then re-derives `merged`. The one place the two halves of
     /// the scratch state are kept in step, and gated by `editing_game_mut`.
     fn edit_game_override(&mut self, edit: impl FnOnce(&mut SettingsOverride, &Settings)) {
-        let global = self.settings;
+        let global = self.settings_ui.settings;
         let Some(gs) = self.editing_game_mut() else {
             return;
         };
@@ -95,7 +95,7 @@ impl App {
     /// Writes the edited override back onto the host record and persists. Called on the way
     /// out, like the global screen's single save per visit.
     pub(crate) fn persist_game_settings(&mut self) {
-        let Some(gs) = self.game_settings.take() else {
+        let Some(gs) = self.settings_ui.game_settings.take() else {
             return;
         };
         let Some(known) = self.known_host_mut(&gs.host.0, gs.host.1) else {

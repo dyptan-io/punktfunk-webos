@@ -19,7 +19,7 @@ impl App {
     /// by `self.nav.screen`, see `dropdown_overlay_tile`'s docs); the rest are plain
     /// Left/Right/Confirm toggles. Back saves and returns to Settings.
     pub(crate) fn handle_diagnostics_event(&mut self, ev: MenuEvent) {
-        if let Some(dd) = self.dropdown.as_mut() {
+        if let Some(dd) = self.settings_ui.dropdown.as_mut() {
             let len = menu::LOG_LEVEL_OPTIONS.len();
             match ev {
                 MenuEvent::Up | MenuEvent::Down => {
@@ -27,13 +27,13 @@ impl App {
                 }
                 MenuEvent::Confirm => {
                     let choice = dd.focused;
-                    self.dropdown_fade.close((menu::DIAG_ROW_LOG_LEVEL, choice));
-                    self.dropdown = None;
+                    self.settings_ui.dropdown_fade.close((menu::DIAG_ROW_LOG_LEVEL, choice));
+                    self.settings_ui.dropdown = None;
                     self.set_log_level(menu::LOG_LEVEL_OPTIONS[choice]);
                 }
                 MenuEvent::Back => {
-                    self.dropdown_fade.close((menu::DIAG_ROW_LOG_LEVEL, dd.focused));
-                    self.dropdown = None;
+                    self.settings_ui.dropdown_fade.close((menu::DIAG_ROW_LOG_LEVEL, dd.focused));
+                    self.settings_ui.dropdown = None;
                 }
                 MenuEvent::Left | MenuEvent::Right | MenuEvent::Secondary => {}
             }
@@ -45,20 +45,20 @@ impl App {
         match (self.nav.cursor(ScreenKey::Diagnostics), ev) {
             (menu::DIAG_ROW_LOG_LEVEL, MenuEvent::Left | MenuEvent::Right) => self.cycle_log_level(),
             (menu::DIAG_ROW_LOG_LEVEL, MenuEvent::Confirm) => {
-                self.dropdown = Some(DropdownState {
+                self.settings_ui.dropdown = Some(DropdownState {
                     row: menu::DIAG_ROW_LOG_LEVEL,
-                    focused: menu::log_level_dropdown_current_index(self.settings.log_level_override),
+                    focused: menu::log_level_dropdown_current_index(self.settings_ui.settings.log_level_override),
                 });
-                self.dropdown_fade.reopen();
+                self.settings_ui.dropdown_fade.reopen();
             }
             (menu::DIAG_ROW_STATS_OVERLAY, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
-                let from = self.settings.stats_overlay;
-                self.settings.stats_overlay = !from;
+                let from = self.settings_ui.settings.stats_overlay;
+                self.settings_ui.settings.stats_overlay = !from;
                 self.arm_switch_anim(from);
             }
             (menu::DIAG_ROW_SHOW_LOGS, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
-                let from = self.settings.show_logs;
-                self.settings.show_logs = !from;
+                let from = self.settings_ui.settings.show_logs;
+                self.settings_ui.settings.show_logs = !from;
                 crate::runtime::set_log_overlay_enabled(!from);
                 self.arm_switch_anim(from);
             }
@@ -77,12 +77,12 @@ impl App {
     }
 
     fn set_log_level(&mut self, level: store::LogLevelOverride) {
-        self.settings.log_level_override = level;
+        self.settings_ui.settings.log_level_override = level;
         crate::logger::set_level_override(level);
     }
 
     fn cycle_log_level(&mut self) {
-        let idx = menu::log_level_dropdown_current_index(self.settings.log_level_override);
+        let idx = menu::log_level_dropdown_current_index(self.settings_ui.settings.log_level_override);
         let next = menu::cycle_index(idx, menu::LOG_LEVEL_OPTIONS.len(), true);
         self.set_log_level(menu::LOG_LEVEL_OPTIONS[next]);
     }

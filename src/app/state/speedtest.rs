@@ -160,7 +160,7 @@ impl App {
                 };
                 match applied {
                     Some(kbps) => {
-                        self.settings.bitrate_kbps = kbps;
+                        self.settings_ui.settings.bitrate_kbps = kbps;
                         self.persist();
                         self.close_speed_test();
                     }

@@ -23,8 +23,8 @@ impl App {
         Some(match self.nav.screen {
             Screen::HostMenu => self.host_menu_rows(),
             Screen::WakeSettings => view::wakesettings::rows(self.wake_settings_host().is_some_and(|h| h.wol_auto)),
-            Screen::Diagnostics => view::diagnostics::rows(&self.settings),
-            Screen::Experimental => view::experimental::rows(&self.settings, self.hosts.rooted),
+            Screen::Diagnostics => view::diagnostics::rows(&self.settings_ui.settings),
+            Screen::Experimental => view::experimental::rows(&self.settings_ui.settings, self.hosts.rooted),
             Screen::CursorSettings(_) => view::cursorsettings::rows(
                 self.settings_target(),
                 &self.editing_override(),
