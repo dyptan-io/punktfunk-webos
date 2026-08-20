@@ -1,5 +1,5 @@
 //! Per-screen app-state logic (event handling, state transitions). Split out of the
-//! former fused `app/<screen>.rs` modules — see `docs/REFACTOR_PLAN.md` §5.
+//! former fused `app/<screen>.rs` modules — see `docs/APP-REWORK-PLAN.md`.
 //! Rendering counterparts live in `app::view`.
 mod about;
 pub(crate) mod addhost;

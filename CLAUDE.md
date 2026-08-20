@@ -42,9 +42,10 @@ machine) ← `runtime` (the two top-level loops).
   `StreamOutcome::ReturnToMenu` vs `Quit`.
 
 Rendering is a `tiny_skia` software framebuffer composited by SDL, redrawn on change.
-Add a screen: build on `ui::widgets::ListModal` (copy `app/{state,view}/hostmenu.rs`); ~8
-`Screen` match sites, all found by the compiler at once. A `ScreenView` trait to collapse them
-was evaluated and rejected — see R6 in `docs/UI-PIPELINE-PLAN.md`.
+Add a screen: build on `ui::widgets::ListModal` (copy `app/{state,view}/hostmenu.rs`); ~24
+`Screen` match sites, most but not all exhaustive — the `_ =>` arms absorb a new variant
+silently, so grep for them too. A `ScreenView` trait to collapse them was evaluated and
+rejected (R6) — see "Explicitly not doing" under Phase 4 in `docs/APP-REWORK-PLAN.md`.
 
 ## Invariants worth knowing before you edit
 
