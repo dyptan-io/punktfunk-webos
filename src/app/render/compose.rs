@@ -94,8 +94,6 @@ impl App {
         }
     }
 
-    /// The settings list: each row's tile placed at its scrolled position and clipped to the
-    /// viewport. Pure placement — scrolling re-rasterizes nothing.
     /// The open modal itself: its card, its scrollable content, an open dropdown and the
     /// focused widget composited on top. `m` is the modal layer's own fade/rise progress —
     /// everything here rides it rather than animating separately.
@@ -108,6 +106,7 @@ impl App {
         m: f32,
         cmds: &mut Vec<DrawCmd>,
     ) {
+        // Paired as one argument to stay inside clippy's `too_many_arguments` limit.
         let (screen_w, screen_h) = (size.w, size.h);
         let dy = ((1.0 - m) * MODAL_RISE) as i32;
         // The tile now covers only the card region (see `prepare_modal`), so it

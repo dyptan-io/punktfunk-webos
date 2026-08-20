@@ -145,6 +145,21 @@ impl Painter {
         }
     }
 
+    /// `new(width, height)`, but reusing `recycled`'s pixmap when it is already that size —
+    /// wiped, since a recycled surface holds the previous tile's pixels and neither a rounded
+    /// card nor a rounded cover draws over its own corners. A buffer of the wrong size is
+    /// dropped. The one place a tile surface is recycled; every caller that hands back an
+    /// evicted pixmap goes through here.
+    pub fn recycle(recycled: Option<Self>, width: u32, height: u32) -> Self {
+        match recycled {
+            Some(mut p) if p.width() == width.max(1) && p.height() == height.max(1) => {
+                p.reset();
+                p
+            }
+            _ => Self::new(width, height),
+        }
+    }
+
     /// Shifts all subsequent drawing so `(x, y)` in caller (screen) space maps to
     /// this buffer's top-left — see the `origin` field. Set once, right after
     /// `new`, for a sub-region tile.

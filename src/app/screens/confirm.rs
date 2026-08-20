@@ -11,12 +11,14 @@ use crate::core::screen::Screen;
 use crate::ui::render::Color;
 use crate::ui::style::theme;
 use crate::ui::widgets::ConfirmButton;
+use std::borrow::Cow;
 
-/// One button of a [`Confirm`]. Owns its label because a speed test's primary button names
-/// the bitrate it would apply, which is derived rather than static.
+/// One button of a [`Confirm`]. `Cow` because a speed test's primary button names the bitrate
+/// it would apply, which is derived — every other label is static, and this dialog is rebuilt
+/// per frame and per pointer motion for its geometry alone (see `App::confirm_of`).
 pub(crate) struct Button {
     pub icon: Option<&'static str>,
-    pub label: String,
+    pub label: Cow<'static, str>,
     pub color: Color,
 }
 
@@ -27,18 +29,24 @@ pub(crate) struct Confirm {
 }
 
 impl Confirm {
-    fn new(icon: Option<&'static str>, label: &str, color: Color, cancel: &str, subtitle: String) -> Self {
+    fn new(
+        icon: Option<&'static str>,
+        label: impl Into<Cow<'static, str>>,
+        color: Color,
+        cancel: &'static str,
+        subtitle: String,
+    ) -> Self {
         Self {
             subtitle,
             buttons: [
                 Button {
                     icon,
-                    label: label.to_string(),
+                    label: label.into(),
                     color,
                 },
                 Button {
                     icon: None,
-                    label: cancel.to_string(),
+                    label: Cow::Borrowed(cancel),
                     color: theme().text,
                 },
             ],
@@ -95,7 +103,7 @@ impl App {
                 }
                 Confirm::new(
                     Some(view::icons::ICON_SIGNAL),
-                    &view::speedtest::apply_label(view::speedtest::recommendation(state)),
+                    view::speedtest::apply_label(view::speedtest::recommendation(state)),
                     theme().accent_bright,
                     // "Close" rather than "Cancel": the test has already run, so there is
                     // nothing left to call off.

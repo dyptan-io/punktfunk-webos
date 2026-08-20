@@ -74,15 +74,7 @@ pub fn rasterize_into<W: TileWidget>(
 ) -> Result<Painter> {
     let (w, h) = widget.size(fonts);
     let (w, h) = (w.max(1), h.max(1));
-    let mut painter = match recycled {
-        // Reused pixels are the previous card's, so the wipe is not optional: a card is
-        // rounded, and its corners are never drawn over.
-        Some(mut p) if p.width() == w && p.height() == h => {
-            p.reset();
-            p
-        }
-        _ => Painter::new(w, h),
-    };
+    let mut painter = Painter::recycle(recycled, w, h);
     widget.render(
         Rect::new(0, 0, w, h),
         &mut Canvas::tile(&mut painter, text_cache, fonts),

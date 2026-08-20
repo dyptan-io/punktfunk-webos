@@ -414,9 +414,6 @@ impl App {
     /// shows. `None` on Home, and on a screen whose payload isn't set yet (Wake before its
     /// host is known).
     ///
-    /// By closure rather than by return value: the hit tests below run this on every Magic
-    /// Remote `MouseMotion`, and a returned `Box<dyn ModalScreen>` would put a heap
-    /// allocation on that path for what is a geometry query.
     /// Calls `f` with the open modal's *geometry* — [`ui::ModalMetrics`], the half of a modal
     /// screen that says where its card and rows are without saying what is written on them.
     ///
@@ -434,6 +431,9 @@ impl App {
         self.with_modal_screen(|s| f(s))
     }
 
+    /// By closure rather than by return value: the hit tests run this on every Magic Remote
+    /// `MouseMotion`, and a returned `Box<dyn ModalScreen>` would put a heap allocation on
+    /// that path for what is a geometry query.
     pub(crate) fn with_modal_screen<R>(&self, f: impl FnOnce(&dyn ui::ModalScreen) -> R) -> Option<R> {
         // The dialogs' labels and subtitle, from the one place that knows them. Bound here so
         // the borrowed `ConfirmButton`s below outlive the call.
@@ -525,13 +525,7 @@ impl App {
         let pad = MODAL_TILE_PAD;
         let region = card.map_or_else(|| Rect::new(0, 0, screen_w, screen_h), |c| c.inflate(pad));
         self.render.modal.tile_region = region;
-        let mut p = match recycled {
-            Some(mut p) if p.width() == region.width() && p.height() == region.height() => {
-                p.reset();
-                p
-            }
-            _ => Painter::new(region.width(), region.height()),
-        };
+        let mut p = Painter::recycle(recycled, region.width(), region.height());
         p.set_origin(region.x(), region.y());
         p
     }

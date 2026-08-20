@@ -33,6 +33,11 @@ pub(crate) const INTRO_HINT: &str =
 pub struct CardMenu {
     /// The card it belongs to (a `GameEntry::id`, or `store::DESKTOP_PIN_ID`).
     pub pin_id: String,
+    /// That card's grid index, as it was when the menu opened. Latched rather than looked up
+    /// per frame: `idx_for_pin_id` scans the whole library, and the pointer path would pay
+    /// that on every `MouseMotion`. Safe to latch because every action below closes the menu
+    /// before it can reorder the grid.
+    pub idx: usize,
     /// That card's title — reused as the per-game settings screen's dim title suffix.
     pub title: String,
     pub focused: usize,
@@ -97,6 +102,7 @@ impl App {
         let title = self.grid_card_content(idx, columns).0.to_string();
         self.card_menu = Some(CardMenu {
             pin_id,
+            idx,
             title,
             focused: ROW_PIN,
             leaving: None,

@@ -57,7 +57,20 @@ impl App {
             Screen::Diagnostics => crate::app::menu::DIAGNOSTICS_ROW_COUNT,
             Screen::Experimental => crate::app::menu::EXP_ROWS.len(),
             Screen::CursorSettings(_) => crate::app::menu::CURSOR_ROWS.len(),
-            _ => 0,
+            // Exhaustive for the same reason `list_modal_rows` is: this is the second half of
+            // the family's table — the labels there, the count here — and a screen listed by
+            // one but missed by the other navigates a list it cannot draw.
+            Screen::Home
+            | Screen::Pairing
+            | Screen::Settings(_)
+            | Screen::AddHost
+            | Screen::Wake
+            | Screen::ForgetHost
+            | Screen::EditHost
+            | Screen::About
+            | Screen::SpeedTest
+            | Screen::PinLimit
+            | Screen::SendLogs => 0,
         }
     }
 
