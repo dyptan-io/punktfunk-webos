@@ -130,7 +130,7 @@ impl App {
                 // The ⋯ button sits inside its row, so it's tested first — same order
                 // as `handle_mouse_click`, so hover previews exactly what a click hits.
                 if let Some(idx) =
-                    view::sidebar::hit_test_menu_button(x, y, self.entries.len(), self.sidebar_len(), screen_h)
+                    view::sidebar::hit_test_menu_button(x, y, self.hosts.entries.len(), self.sidebar_len(), screen_h)
                 {
                     return self.set_home_focus(HomeFocus::SidebarMenu(idx));
                 }
@@ -439,7 +439,7 @@ impl App {
                 // The ⋯ button sits inside its row, so it has to be tested first or the
                 // click just reads as a click on the host.
                 if let Some(idx) =
-                    view::sidebar::hit_test_menu_button(x, y, self.entries.len(), self.sidebar_len(), screen_h)
+                    view::sidebar::hit_test_menu_button(x, y, self.hosts.entries.len(), self.sidebar_len(), screen_h)
                 {
                     self.home_focus = HomeFocus::SidebarMenu(idx);
                     self.open_host_menu(idx);

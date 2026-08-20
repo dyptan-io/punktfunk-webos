@@ -10,7 +10,7 @@ impl App {
     /// Enters the WOL flow. With `wol_auto` off, shows prompt immediately.
     /// With it on, fires packet silently, shows prompt only after `WAKE_RETRY_INTERVAL`.
     pub(crate) fn start_wake(&mut self, host: String, port: u16, mac: Vec<String>, reason: String) {
-        let known = self.known_hosts.iter().find(|h| h.host == host && h.port == port);
+        let known = self.hosts.known.iter().find(|h| h.host == host && h.port == port);
         let name = known.map_or_else(|| host.clone(), |h| h.name.clone());
         // WHY: without a MAC, don't auto-send — show interactive explanation instead.
         let auto = known.is_some_and(|h| h.wol_auto) && !mac.is_empty();
@@ -76,7 +76,7 @@ impl App {
                 if loaded.result.is_ok() {
                     let (host, port) = (wake.host.clone(), wake.port);
                     let mgmt_port = self
-                        .known_hosts
+                        .hosts.known
                         .iter()
                         .find(|h| h.host == host && h.port == port)
                         .and_then(|h| h.mgmt_port);
@@ -111,7 +111,7 @@ impl App {
                 .is_some_and(|t| now.duration_since(t) >= crate::app::WAKE_PROBE_INTERVAL)
         {
             let (host, port) = (wake.host.clone(), wake.port);
-            wake.probe_rx = Some(Self::wake_probe(&self.known_hosts, &self.identity, &host, port));
+            wake.probe_rx = Some(Self::wake_probe(&self.hosts.known, &self.identity, &host, port));
             wake.last_probe = Some(now);
         }
         if reveal {

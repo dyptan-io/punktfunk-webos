@@ -113,11 +113,9 @@ pub struct App {
     pub(crate) jobs: jobs::Jobs,
     /// The selected host's games, art and pin bookkeeping — see [`library::Library`].
     pub(crate) library: library::Library,
-    pub known_hosts: Vec<KnownHost>,
-    pub entries: Vec<HostEntry>,
+    /// Every host the menu knows about — see [`hosts::HostsState`].
+    pub(crate) hosts: hosts::HostsState,
     pub home_focus: HomeFocus,
-    /// Whether this TV is webosbrew-rooted — `None` until [`App::start_root_probe`] answers.
-    pub(crate) rooted: Option<bool>,
     pub home_status: Option<String>,
     /// Whether `home_status` is the reason the last launch bounced back to the menu, and so must
     /// survive the library reload a fresh menu entry starts — that reload clears the status on
@@ -180,9 +178,6 @@ pub struct App {
     pub(crate) speed_test: Option<crate::app::state::speedtest::SpeedTestState>,
     /// The host being measured, for the status line.
     pub speed_test_name: String,
-    /// Last known reachability per `(host, port)` — see `app::reach`.
-    pub(crate) reachable: std::collections::HashMap<(String, u16), bool>,
-    pub(crate) reach_last: Option<Instant>,
     /// Whether webOS's on-screen keyboard is currently up, polled from
     /// `SDL_IsScreenKeyboardShown` each tick by `main.rs` — it moves the address form out
     /// from under the panel (see `App::keyboard_modal_card`).
@@ -288,10 +283,13 @@ impl App {
                 discovery: crate::services::discovery::Discovery::start(),
                 ..Default::default()
             },
-            known_hosts,
-            entries,
+            hosts: hosts::HostsState {
+                known: known_hosts,
+                entries,
+                reachable: Self::new_reachability(),
+                ..Default::default()
+            },
             home_focus: HomeFocus::Sidebar(0),
-            rooted: None,
             home_status: None,
             home_status_sticky: false,
             hero: hero::Hero::default(),
@@ -315,8 +313,6 @@ impl App {
             edit_host_index: None,
             speed_test: None,
             speed_test_name: String::new(),
-            reachable: Self::new_reachability(),
-            reach_last: None,
             keyboard_shown: false,
             about_lines: Vec::new(),
             about_wrapped: None,
@@ -343,7 +339,7 @@ impl App {
         // so relaunching the app lands back on its game grid.
         if let Some((host, port)) = selected_host {
             if let Some(h) = app
-                .known_hosts
+                .hosts.known
                 .iter()
                 .find(|h| h.host == host && h.port == port && h.is_paired())
             {
@@ -363,7 +359,7 @@ impl App {
     /// Name of the host whichever host-scoped modal (Forget, Wake settings) is acting on.
     pub(crate) fn host_menu_host_name(&self) -> Option<&str> {
         self.host_menu_index
-            .and_then(|i| self.entries.get(i))
+            .and_then(|i| self.hosts.entries.get(i))
             .map(HostEntry::name)
     }
 
@@ -512,14 +508,14 @@ impl App {
     /// caller that mutates `known_hosts` goes through this rather than collecting the list
     /// itself, so no site has to remember to re-anchor focus.
     pub(crate) fn rebuild_entries(&mut self) {
-        self.set_entries(known_entries(&self.known_hosts));
+        self.set_entries(known_entries(&self.hosts.known));
     }
 
     /// The one place the sidebar row list is replaced: keeps focus on the row the user is on and
     /// marks the layer dirty, neither of which any caller should have to remember.
     fn set_entries(&mut self, entries: Vec<HostEntry>) {
-        let before = self.entries.len();
-        self.entries = entries;
+        let before = self.hosts.entries.len();
+        self.hosts.entries = entries;
         self.reanchor_sidebar_focus(before);
         // The sidebar layer is a cached tile keyed by nothing but this flag (see `prepare_tiles`),
         // so a rebuilt row list that doesn't set it leaves the previous host list on screen.
@@ -532,7 +528,7 @@ impl App {
     /// `compose_sidebar_focus`, which only draws the bottom-pinned highlight for
     /// `entries.len() + 1` — so leaving a stale index there puts "Settings" mid-list.
     fn reanchor_sidebar_focus(&mut self, before: usize) {
-        let now = self.entries.len();
+        let now = self.hosts.entries.len();
         let (HomeFocus::Sidebar(i) | HomeFocus::SidebarMenu(i)) = self.home_focus else {
             return; // grid focus doesn't index the sidebar
         };
@@ -551,9 +547,9 @@ impl App {
 
     /// Whether `addr:port` already has a sidebar row, saved or merely discovered.
     pub(crate) fn host_listed(&self, addr: &str, port: u16) -> bool {
-        self.known_hosts.iter().any(|h| h.host == addr && h.port == port)
+        self.hosts.known.iter().any(|h| h.host == addr && h.port == port)
             || self
-                .entries
+                .hosts.entries
                 .iter()
                 .any(|e| matches!(e, HostEntry::Discovered(d) if d.addr == addr && d.port == port))
     }
@@ -566,7 +562,7 @@ impl App {
     /// actually changed — `main.rs`'s render loop uses this to skip a redraw when a
     /// discovery tick found nothing new (see its dirty-flag docs).
     pub fn drain_discovery(&mut self) -> bool {
-        let before = self.entries.len();
+        let before = self.hosts.entries.len();
         let mut changed = false;
         let mut mac_learned = false;
         let mut woke = None;
@@ -583,7 +579,7 @@ impl App {
             }
             #[allow(clippy::suspicious_operation_groupings)]
             let known = self
-                .known_hosts
+                .hosts.known
                 .iter_mut()
                 .find(|h| h.host == found.addr && h.port == found.port);
             if let Some(known) = known {
@@ -593,7 +589,7 @@ impl App {
                 }
             }
             if !self.host_listed(&found.addr, found.port) {
-                self.entries.push(HostEntry::Discovered(found));
+                self.hosts.entries.push(HostEntry::Discovered(found));
                 changed = true;
             }
         }
@@ -767,7 +763,7 @@ impl App {
     pub(crate) fn persist(&self) {
         self.state_writer.save(store::Persisted {
             settings: self.settings,
-            known_hosts: self.known_hosts.clone(),
+            known_hosts: self.hosts.known.clone(),
             selected_host: self.library.selected_host.clone(),
             // Always this build's version: whatever wrote the document last is what a future
             // migration needs to know, and that is now us.
@@ -777,7 +773,7 @@ impl App {
 
     /// The known-host record for an address — the one place `(host, port)` is matched.
     pub(crate) fn known_host(&self, host: &str, port: u16) -> Option<&KnownHost> {
-        self.known_hosts.iter().find(|h| h.host == host && h.port == port)
+        self.hosts.known.iter().find(|h| h.host == host && h.port == port)
     }
 
     /// The `KnownHost` record backing `selected_host`, if any — shared by every
@@ -788,7 +784,7 @@ impl App {
     }
 
     pub(crate) fn known_host_mut(&mut self, host: &str, port: u16) -> Option<&mut KnownHost> {
-        self.known_hosts.iter_mut().find(|h| h.host == host && h.port == port)
+        self.hosts.known.iter_mut().find(|h| h.host == host && h.port == port)
     }
 
     pub(crate) fn selected_known_host_mut(&mut self) -> Option<&mut KnownHost> {

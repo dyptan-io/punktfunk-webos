@@ -42,7 +42,7 @@ impl App {
         // frame would cost more than the flag the event side already maintains.
         if self.sidebar_dirty || !tiles.contains(tile::SIDEBAR) {
             let selected = self.sidebar_index_of_selected_host();
-            let entries = &self.entries;
+            let entries = &self.hosts.entries;
             let reach = self.reachability_list();
             // Reuses the existing full-height strip as its own scratch surface — several MB
             // that would otherwise be reallocated on every host list change.
@@ -82,11 +82,11 @@ impl App {
             HomeFocus::Grid(_) => None,
         };
         if let Some(key) = sidebar_focus {
-            let online = self.entries.get(key.0).and_then(|e| self.entry_online(e));
+            let online = self.hosts.entries.get(key.0).and_then(|e| self.entry_online(e));
             if tiles.ensure(tile::FOCUS_ROW, cache::version(&key), || {
                 ui::rasterize(
                     view::sidebar::FocusedRowTile {
-                        entries: &self.entries,
+                        entries: &self.hosts.entries,
                         index: key.0,
                         menu_focused: key.1,
                         online,
@@ -671,7 +671,7 @@ impl App {
             Screen::ForgetHost => Some(ModalShellKey::ForgetHost {
                 name: self
                     .host_menu_index
-                    .and_then(|i| self.entries.get(i))
+                    .and_then(|i| self.hosts.entries.get(i))
                     .map(HostEntry::name),
             }),
             Screen::HostMenu => Some(ModalShellKey::HostMenu {
@@ -697,7 +697,7 @@ impl App {
             Screen::Experimental => Some(ModalShellKey::Experimental {
                 ndl_audio_offload: self.settings.ndl_audio_offload,
                 game_mode: self.settings.game_mode,
-                rooted: self.rooted,
+                rooted: self.hosts.rooted,
             }),
             Screen::CursorSettings(_) => Some(ModalShellKey::CursorSettings {
                 cursor_capture: self.settings_target().cursor_capture,
@@ -771,7 +771,7 @@ impl App {
                 self.nav.cursor(ScreenKey::Experimental),
                 self.settings.ndl_audio_offload,
                 self.settings.game_mode,
-                self.rooted,
+                self.hosts.rooted,
             )),
             Screen::CursorSettings(_) => Some(ModalFocusKey::CursorSettingsRow(
                 self.nav.cursor(ScreenKey::CursorSettings),

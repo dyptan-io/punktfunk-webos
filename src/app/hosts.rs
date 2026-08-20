@@ -1,4 +1,8 @@
 //! The sidebar's host-list model: one entry per known or discovered host.
+//!
+//! [`HostsState`] holds the list itself plus everything learned about those hosts at runtime —
+//! reachability and whether this TV is rooted. Per-host *library* state lives in
+//! [`crate::app::library::Library`] instead; this is the part that outlives a host switch.
 use crate::services::discovery::DiscoveredHost;
 use crate::services::store::KnownHost;
 
@@ -49,4 +53,18 @@ impl HostEntry {
             Self::Discovered(h) => &h.mac,
         }
     }
+}
+
+/// Every host the menu knows about, and what it has learned about them.
+#[derive(Default)]
+pub(crate) struct HostsState {
+    pub(crate) known: Vec<KnownHost>,
+    /// The sidebar's rows: known hosts first, then anything discovery has turned up since.
+    pub(crate) entries: Vec<HostEntry>,
+    /// Last known reachability per `(host, port)` — see `app::state::reach`.
+    pub(crate) reachable: std::collections::HashMap<(String, u16), bool>,
+    /// When the last reachability sweep ran, so `tick_reachability` can pace itself.
+    pub(crate) reach_last: Option<std::time::Instant>,
+    /// Whether this TV is webosbrew-rooted — `None` until `App::start_root_probe` answers.
+    pub(crate) rooted: Option<bool>,
 }

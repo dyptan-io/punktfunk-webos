@@ -256,7 +256,7 @@ impl App {
             Screen::EditHost => {
                 let name = self
                     .edit_host_index
-                    .and_then(|i| self.entries.get(i))
+                    .and_then(|i| self.hosts.entries.get(i))
                     .map_or_else(String::new, |e| e.name().to_string());
                 (view::addhost::EDIT_TITLE, view::addhost::edit_subtitle(&name))
             }
@@ -489,7 +489,7 @@ impl App {
             }),
             Screen::Experimental => f(&view::experimental::Modal {
                 settings: &self.settings,
-                rooted: self.rooted,
+                rooted: self.hosts.rooted,
             }),
             Screen::CursorSettings(_) => f(&view::cursorsettings::Modal {
                 settings: self.settings_target(),

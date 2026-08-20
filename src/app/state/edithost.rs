@@ -11,7 +11,7 @@ use crate::services::store;
 impl App {
     /// Open `EditHost` for sidebar row; pre-filled with current address. No-op for unsaved entries.
     pub(crate) fn open_edit_host(&mut self, idx: usize) {
-        let Some(HostEntry::Known(h)) = self.entries.get(idx) else {
+        let Some(HostEntry::Known(h)) = self.hosts.entries.get(idx) else {
             return;
         };
         self.add_host = AddHostState::from_host_port(&h.host, h.port);
@@ -40,7 +40,7 @@ impl App {
             return;
         }
         let Some(idx) = self.edit_host_index else { return };
-        let Some(HostEntry::Known(old)) = self.entries.get(idx).cloned() else {
+        let Some(HostEntry::Known(old)) = self.hosts.entries.get(idx).cloned() else {
             return;
         };
         let (host, port) = self.add_host.host_and_port();
@@ -51,9 +51,9 @@ impl App {
         }
 
         // Drop old record before upsert to avoid stale entry (upsert_known_host keys on (host, port))
-        self.known_hosts.retain(|k| !(k.host == old.host && k.port == old.port));
+        self.hosts.known.retain(|k| !(k.host == old.host && k.port == old.port));
         store::upsert_known_host(
-            &mut self.known_hosts,
+            &mut self.hosts.known,
             store::KnownHost {
                 name: old.name.clone(),
                 host: host.clone(),
@@ -66,7 +66,7 @@ impl App {
             },
         );
         // The address is the cache key, so the old one's art is now orphaned.
-        crate::services::art::reconcile_host_caches(&self.known_hosts);
+        crate::services::art::reconcile_host_caches(&self.hosts.known);
         self.persist();
         self.rebuild_entries();
 
@@ -75,7 +75,7 @@ impl App {
             self.library.selected_host = Some((host.clone(), port));
         }
         self.home_focus = HomeFocus::Sidebar(
-            self.entries
+            self.hosts.entries
                 .iter()
                 .position(|e| e.host() == host && e.port() == port)
                 .unwrap_or(0),

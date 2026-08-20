@@ -22,7 +22,7 @@ impl App {
     pub fn render_input(&self) -> render_input::RenderInput<'_> {
         render_input::RenderInput {
             home_focus: self.home_focus,
-            entries: &self.entries,
+            entries: &self.hosts.entries,
             host_selected: self.library.selected_host.is_some(),
             has_status: self.home_status.is_some(),
             grid_reveal_ready: self.grid.reveal.is_revealed(),

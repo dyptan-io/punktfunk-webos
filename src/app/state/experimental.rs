@@ -10,7 +10,7 @@ impl App {
     /// between boots, so it is never persisted, and no screen but this one needs the answer.
     /// Off-thread: a luna round-trip has no business blocking the modal's open frame.
     fn start_root_probe(&mut self) {
-        if self.rooted.is_some() || self.jobs.rooted.is_some() {
+        if self.hosts.rooted.is_some() || self.jobs.rooted.is_some() {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
@@ -31,7 +31,7 @@ impl App {
     /// go with it: the row is locked once the verdict is in, so nothing could switch it off
     /// again, and every stream start would keep paying for luna calls that can only fail.
     fn settle_rooted(&mut self, rooted: bool) {
-        self.rooted = Some(rooted);
+        self.hosts.rooted = Some(rooted);
         if !rooted && self.settings.game_mode {
             self.settings.game_mode = false;
             self.persist();
@@ -78,7 +78,7 @@ impl App {
             // A locked row (see `menu::exp_row_lock`) rejects the press — the greyed control
             // already says the value is fixed.
             (Some(menu::ExpRow::GameMode), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm)
-                if menu::exp_row_lock(menu::ExpRow::GameMode, self.rooted).is_none() =>
+                if menu::exp_row_lock(menu::ExpRow::GameMode, self.hosts.rooted).is_none() =>
             {
                 let from = self.settings.game_mode;
                 self.settings.game_mode = !from;

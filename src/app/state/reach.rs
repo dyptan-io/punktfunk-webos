@@ -21,11 +21,11 @@ impl App {
         if self.jobs.reach.is_some() {
             return; // a sweep is still running
         }
-        if self.reach_last.is_some_and(|t| t.elapsed() < REACH_INTERVAL) {
+        if self.hosts.reach_last.is_some_and(|t| t.elapsed() < REACH_INTERVAL) {
             return;
         }
-        self.reach_last = Some(Instant::now());
-        let targets: Vec<(String, u16)> = self.entries.iter().map(|e| (e.host().to_string(), e.port())).collect();
+        self.hosts.reach_last = Some(Instant::now());
+        let targets: Vec<(String, u16)> = self.hosts.entries.iter().map(|e| (e.host().to_string(), e.port())).collect();
         if targets.is_empty() {
             return;
         }
@@ -54,8 +54,8 @@ impl App {
             match rx.try_recv() {
                 Ok(r) => {
                     let key = (r.host, r.port);
-                    if self.reachable.get(&key) != Some(&r.online) {
-                        self.reachable.insert(key, r.online);
+                    if self.hosts.reachable.get(&key) != Some(&r.online) {
+                        self.hosts.reachable.insert(key, r.online);
                         changed = true;
                     }
                 }
@@ -77,12 +77,12 @@ impl App {
 
     /// Last known reachability (None until first probe).
     pub(crate) fn entry_online(&self, entry: &crate::app::hosts::HostEntry) -> Option<bool> {
-        self.reachable.get(&(entry.host().to_string(), entry.port())).copied()
+        self.hosts.reachable.get(&(entry.host().to_string(), entry.port())).copied()
     }
 
     /// All reachability states, index-aligned with entries.
     pub(crate) fn reachability_list(&self) -> Vec<Option<bool>> {
-        self.entries.iter().map(|e| self.entry_online(e)).collect()
+        self.hosts.entries.iter().map(|e| self.entry_online(e)).collect()
     }
 
     /// Initialize empty reachability map.

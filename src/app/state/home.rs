@@ -23,7 +23,7 @@ const GROUP_GRID: u8 = 1;
 impl App {
     /// Total sidebar nav positions: host rows + "+ Add host" + "Settings".
     pub(crate) fn sidebar_len(&self) -> usize {
-        self.entries.len() + 2
+        self.hosts.entries.len() + 2
     }
 
     /// Grid shape at `columns` columns — plain field reads (see [`App::desktop_pin`]), so a
@@ -79,7 +79,7 @@ impl App {
     /// highlighting the active row must not fall back to row 0 in that case.
     pub(crate) fn sidebar_index_of_selected_host(&self) -> Option<usize> {
         let (h, p) = self.library.selected_host.as_ref()?;
-        self.entries.iter().position(|e| e.host() == h && e.port() == *p)
+        self.hosts.entries.iter().position(|e| e.host() == h && e.port() == *p)
     }
     /// Everything focusable on Home, as rects in screen space at the *target* scroll
     /// (not the eased `grid_scroll` — navigation should chase where the grid is going,
@@ -87,7 +87,7 @@ impl App {
     /// draw path uses, so a layout hole simply has no item and no direction can land
     /// on it.
     fn home_focus_map(&self, columns: usize, screen_w: u32, screen_h: u32) -> ui::focus::FocusMap<HomeFocus> {
-        let host_count = self.entries.len();
+        let host_count = self.hosts.entries.len();
         let sidebar_len = self.sidebar_len();
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
 
@@ -196,10 +196,10 @@ impl App {
         }
         match ev {
             MenuEvent::Confirm => match self.home_focus {
-                HomeFocus::Sidebar(i) if i < self.entries.len() => {
+                HomeFocus::Sidebar(i) if i < self.hosts.entries.len() => {
                     self.confirm_sidebar_host(i);
                 }
-                HomeFocus::Sidebar(i) if i == self.entries.len() => {
+                HomeFocus::Sidebar(i) if i == self.hosts.entries.len() => {
                     self.add_host = AddHostState::default();
                     self.nav.screen = Screen::AddHost;
                 }
@@ -217,7 +217,7 @@ impl App {
             // it'll reappear as "not paired" if still discoverable on the LAN).
             MenuEvent::Secondary => {
                 if let HomeFocus::Sidebar(i) = self.home_focus {
-                    if i < self.entries.len() {
+                    if i < self.hosts.entries.len() {
                         self.forget_host(i);
                     }
                 }
@@ -319,8 +319,8 @@ impl App {
             self.clear_grid_pins();
             return;
         };
-        self.library.desktop_pin = self.known_hosts[known_idx].is_pinned(store::DESKTOP_PIN_ID);
-        let pinned_ids: Vec<String> = self.known_hosts[known_idx]
+        self.library.desktop_pin = self.hosts.known[known_idx].is_pinned(store::DESKTOP_PIN_ID);
+        let pinned_ids: Vec<String> = self.hosts.known[known_idx]
             .pinned_ids()
             .into_iter()
             .map(str::to_string)
@@ -356,7 +356,7 @@ impl App {
             return;
         };
         let live: std::collections::HashSet<&str> = self.library.games.iter().map(|g| g.id.as_str()).collect();
-        if self.known_hosts[known_idx].prune_games(|id| live.contains(id)) {
+        if self.hosts.known[known_idx].prune_games(|id| live.contains(id)) {
             self.persist();
         }
     }
@@ -364,7 +364,7 @@ impl App {
     fn selected_known_host_idx(&self) -> Option<usize> {
         self.library.selected_host
             .as_ref()
-            .and_then(|(h, p)| self.known_hosts.iter().position(|k| k.host == *h && k.port == *p))
+            .and_then(|(h, p)| self.hosts.known.iter().position(|k| k.host == *h && k.port == *p))
     }
 
     /// Eased 0..=1 progress of pin id `id`'s zoom-in (see `tile::CardSlot::pop`)
@@ -422,7 +422,7 @@ impl App {
         changed
     }
     pub(crate) fn confirm_sidebar_host(&mut self, idx: usize) {
-        let entry = self.entries[idx].clone();
+        let entry = self.hosts.entries[idx].clone();
         match entry {
             HostEntry::Known(h) if h.is_paired() => {
                 let (host, port, mgmt_port) = (h.host, h.port, h.mgmt_port);
@@ -457,7 +457,7 @@ impl App {
         self.library.selected_host = Some((host.clone(), port));
         self.persist();
         let name = self
-            .known_hosts
+            .hosts.known
             .iter()
             .find(|h| h.host == host && h.port == port)
             .map_or_else(|| host.clone(), |h| h.name.clone());
@@ -482,7 +482,7 @@ impl App {
         self.grid.scroll_target = 0;
 
         let identity = (self.identity.0.clone(), self.identity.1.clone());
-        let known = self.known_hosts.iter().find(|h| h.host == host && h.port == port);
+        let known = self.hosts.known.iter().find(|h| h.host == host && h.port == port);
         let fingerprint = known.and_then(|k| k.fingerprint);
         let mgmt_port = mgmt_port.unwrap_or(crate::services::library::DEFAULT_MGMT_PORT);
         tracing::debug!("library: fetching from {host}:{mgmt_port}…");
@@ -523,7 +523,7 @@ impl App {
                 games.sort_by_key(|g| g.title.to_lowercase());
                 tracing::info!("library: {} games from {host}:{mgmt_port}", games.len());
                 let identity = (self.identity.0.clone(), self.identity.1.clone());
-                let known = self.known_hosts.iter().find(|h| h.host == host && h.port == port);
+                let known = self.hosts.known.iter().find(|h| h.host == host && h.port == port);
                 let fingerprint = known.and_then(|k| k.fingerprint);
                 // Covers are requested per card as the grid window reaches them (see
                 // `App::prepare_tiles`), not fetched for the whole library up front.
@@ -574,7 +574,7 @@ impl App {
         self.home_status_sticky = false;
         if matches!(e, crate::services::library::LibraryError::Unreachable(_)) {
             let mac = self
-                .known_hosts
+                .hosts.known
                 .iter()
                 .find(|h| h.host == host && h.port == port)
                 .map(|h| h.mac.clone())
@@ -598,7 +598,7 @@ impl App {
         let Some((host, port)) = self.library.selected_host.clone() else {
             return;
         };
-        let Some(known) = self.known_hosts.iter().find(|h| h.host == host && h.port == port) else {
+        let Some(known) = self.hosts.known.iter().find(|h| h.host == host && h.port == port) else {
             return;
         };
         // The pin is also the pair state: no pin means the host was never paired, so there is
@@ -656,12 +656,12 @@ impl App {
         self.launch_ready.take()
     }
     pub(crate) fn forget_host(&mut self, idx: usize) {
-        let HostEntry::Known(h) = &self.entries[idx] else {
+        let HostEntry::Known(h) = &self.hosts.entries[idx] else {
             return;
         };
         let (host, port) = (h.host.clone(), h.port);
-        self.known_hosts.retain(|k| !(k.host == host && k.port == port));
-        crate::services::art::reconcile_host_caches(&self.known_hosts);
+        self.hosts.known.retain(|k| !(k.host == host && k.port == port));
+        crate::services::art::reconcile_host_caches(&self.hosts.known);
         self.rebuild_entries();
         if self.library.selected_host.as_ref() == Some(&(host, port)) {
             self.clear_selected_host();

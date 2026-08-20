@@ -99,7 +99,7 @@ impl App {
 
     /// No-PIN path: request access (park), then pin fingerprint. 185s timeout.
     pub(crate) fn try_request_access(&mut self) {
-        let entry = &self.entries[self.pairing_entry];
+        let entry = &self.hosts.entries[self.pairing_entry];
         let host = entry.host().to_string();
         let port = entry.port();
         let name = entry.name().to_string();
@@ -137,7 +137,7 @@ impl App {
             Ok(fingerprint) => {
                 tracing::info!("paired ok ({}:{})", outcome.host, outcome.port);
                 store::upsert_known_host(
-                    &mut self.known_hosts,
+                    &mut self.hosts.known,
                     KnownHost {
                         name: outcome.name,
                         host: outcome.host.clone(),
@@ -184,7 +184,7 @@ impl App {
 
     /// Start PIN pairing on background thread (30s timeout).
     pub(crate) fn try_pair(&mut self) {
-        let entry = &self.entries[self.pairing_entry];
+        let entry = &self.hosts.entries[self.pairing_entry];
         let host = entry.host().to_string();
         let port = entry.port();
         let name = entry.name().to_string();

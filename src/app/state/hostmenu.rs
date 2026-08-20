@@ -98,7 +98,7 @@ impl App {
     /// the one thing a row label varies on.
     pub(crate) fn host_menu_paired(&self) -> bool {
         self.host_menu_index
-            .and_then(|i| self.entries.get(i))
+            .and_then(|i| self.hosts.entries.get(i))
             .is_some_and(HostEntry::is_paired)
     }
 
@@ -117,7 +117,7 @@ impl App {
     /// The actions offered; conditional on host state (saved/discovered, has MAC).
     pub(crate) fn host_menu_actions(&self) -> HostActions {
         let mut actions = HostActions::default();
-        let Some(entry) = self.host_menu_index.and_then(|i| self.entries.get(i)) else {
+        let Some(entry) = self.host_menu_index.and_then(|i| self.hosts.entries.get(i)) else {
             return actions;
         };
         let saved = matches!(entry, HostEntry::Known(_));
@@ -143,14 +143,14 @@ impl App {
     /// The host's name — the menu's title.
     pub(crate) fn host_menu_title(&self) -> String {
         self.host_menu_index
-            .and_then(|i| self.entries.get(i))
+            .and_then(|i| self.hosts.entries.get(i))
             .map_or_else(String::new, |e| e.name().to_string())
     }
 
     /// `address:port` and the pairing state — the menu's subtitle.
     pub(crate) fn host_menu_subtitle(&self) -> String {
         self.host_menu_index
-            .and_then(|i| self.entries.get(i))
+            .and_then(|i| self.hosts.entries.get(i))
             .map_or_else(String::new, |e| {
                 let paired = if e.is_paired() { "paired" } else { "not paired" };
                 format!("{}:{} · {paired}", e.host(), e.port())
@@ -207,7 +207,7 @@ impl App {
             }
             HostAction::SpeedTest => self.open_speed_test(idx),
             HostAction::Wake => {
-                let Some(entry) = self.entries.get(idx) else { return };
+                let Some(entry) = self.hosts.entries.get(idx) else { return };
                 let (host, port) = (entry.host().to_string(), entry.port());
                 let mac = entry.mac().to_vec();
                 let name = entry.name().to_string();
