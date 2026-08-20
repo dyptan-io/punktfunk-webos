@@ -107,7 +107,7 @@ pub struct DropdownState {
 pub struct App {
     /// Which screen is up, which was before it, and where the cursor sits on each — see
     /// [`nav::Nav`].
-    pub nav: nav::Nav,
+    pub(crate) nav: nav::Nav,
     /// Every background job in flight — see [`jobs::Jobs`].
     pub(crate) jobs: jobs::Jobs,
     /// The selected host's games, art and pin bookkeeping — see [`library::Library`].
@@ -120,8 +120,8 @@ pub struct App {
     pub(crate) screens: screens::slots::ScreenSlots,
     /// Tiles, clocks, scroll windows and dirty flags — see [`render::state::RenderState`].
     pub(crate) render: render::state::RenderState,
-    pub home_focus: HomeFocus,
-    pub home_status: Option<String>,
+    pub(crate) home_focus: HomeFocus,
+    pub(crate) home_status: Option<String>,
     /// Whether `home_status` is the reason the last launch bounced back to the menu, and so must
     /// survive the library reload a fresh menu entry starts — that reload clears the status on
     /// success, which wiped the error a second after the user landed back on the grid. Anything
@@ -132,7 +132,7 @@ pub struct App {
     pub(crate) launch_anim_idx: Option<usize>,
     /// The submenu raised over a held grid card's title strip (Pin/Unpin + Settings), and
     /// the only way to `Screen::GameSettings`. `None` when no card is held open.
-    pub card_menu: Option<state::cardmenu::CardMenu>,
+    pub(crate) card_menu: Option<state::cardmenu::CardMenu>,
     /// Whether the card submenu's introduction (`state::cardmenu::INTRO_HINT`) is still owed —
     /// set on the first launch of a build that stamped a new version into the document, spent
     /// on the status line as soon as a library has actually landed to hold the cards it talks
@@ -148,7 +148,7 @@ pub struct App {
     /// Whether webOS's on-screen keyboard is currently up, polled from
     /// `SDL_IsScreenKeyboardShown` each tick by `main.rs` — it moves the address form out
     /// from under the panel (see `App::keyboard_modal_card`).
-    pub keyboard_shown: bool,
+    pub(crate) keyboard_shown: bool,
     pub(crate) identity: (String, String),
     /// When `tick_animations` last ran, so the eased scroll can advance by real elapsed time
     /// instead of by a frame count (see `ui::animation::ease_scroll`). Every other animation
@@ -175,6 +175,32 @@ fn known_entries(known_hosts: &[store::KnownHost]) -> Vec<HostEntry> {
 }
 
 impl App {
+    // ------------------------------------------------------ what `runtime` may write --
+    // The menu owns its own state; these are the four things only the outer loop can know.
+
+    /// The attached pad's type per `gamepad::detect_type`, refreshed on hotplug.
+    pub fn set_gamepad_type(&mut self, kind: Option<store::GamepadType>) {
+        self.detected_gamepad_type = kind;
+    }
+
+    /// Whether webOS's on-screen keyboard is up, polled from `SDL_IsScreenKeyboardShown`.
+    pub fn set_keyboard_shown(&mut self, shown: bool) {
+        self.keyboard_shown = shown;
+    }
+
+    /// The Home status line. `sticky` marks a line that must survive the library reload a
+    /// fresh menu entry starts — that reload clears the status on success, which otherwise
+    /// wiped a launch error a second after the user landed back on the grid.
+    pub fn set_home_status(&mut self, status: Option<String>, sticky: bool) {
+        self.home_status = status;
+        self.home_status_sticky = sticky;
+    }
+
+    /// Ends a bitrate-slider drag; the button can only come up on the loop that owns events.
+    pub fn end_slider_drag(&mut self) {
+        self.settings_ui.slider_drag = false;
+    }
+
     pub fn new(identity: (String, String)) -> Self {
         let store::Loaded {
             state: loaded,

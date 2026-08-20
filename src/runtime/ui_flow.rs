@@ -67,7 +67,7 @@ pub(super) fn run_ui_flow(
     let mut app = App::new(identity.clone());
     // `ControllerDeviceAdded` fires once per connect, not per menu entry, so re-poll here
     // or the Controller row stays stale after the first menu.
-    app.detected_gamepad_type = gamepad::detect_type(game_controller);
+    app.set_gamepad_type(gamepad::detect_type(game_controller));
     // The GPU tile cache is the render loop's, not App's — App holds only screen state
     // Recreated per menu entry, same as `app`.
     let mut tiles = crate::ui::cache::TileStore::new();
@@ -87,8 +87,7 @@ pub(super) fn run_ui_flow(
     if initial_status.is_some() {
         // Set after `App::new`, which has already kicked off the library reload for the
         // restored host — sticky so that reload's own progress line doesn't erase it.
-        app.home_status = initial_status;
-        app.home_status_sticky = true;
+        app.set_home_status(initial_status, true);
     }
     // Same toast widget as the streaming loop's (`ui::widgets::Notification`);
     // shown once, right as the Home screen re-appears.
@@ -276,13 +275,13 @@ pub(super) fn run_ui_flow(
                     }
                     // Outside the open: only the first pad becomes `controller`, but a second one
                     // plugged in after it can still be the pad `detect_type` names.
-                    app.detected_gamepad_type = gamepad::detect_type(game_controller);
+                    app.set_gamepad_type(gamepad::detect_type(game_controller));
                     continue;
                 }
                 Event::ControllerDeviceRemoved { .. } => {
                     *controller = None;
                     // Re-poll rather than clearing: another pad may still be attached.
-                    app.detected_gamepad_type = gamepad::detect_type(game_controller);
+                    app.set_gamepad_type(gamepad::detect_type(game_controller));
                     // An unplugged pad sends no releases — drop any armed chord.
                     chord.clear();
                     continue;
@@ -330,7 +329,7 @@ pub(super) fn run_ui_flow(
         // Track actual keyboard state (user can dismiss while field focused; moves card).
         let keyboard_shown = text_input.is_screen_keyboard_shown(canvas.window());
         if keyboard_shown != app.keyboard_shown {
-            app.keyboard_shown = keyboard_shown;
+            app.set_keyboard_shown(keyboard_shown);
             dirty = true;
             tracing::debug!("on-screen keyboard shown: {keyboard_shown}");
         }

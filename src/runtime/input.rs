@@ -655,7 +655,7 @@ pub(super) fn handle_ui_event(
             mouse_btn: sdl2::mouse::MouseButton::Left,
             ..
         } => {
-            app.settings_ui.slider_drag = false;
+            app.end_slider_drag();
         }
         // Direct digit entry via the remote's number buttons — PIN entry on the
         // pairing screen, IP entry on the add/edit-host screens.
