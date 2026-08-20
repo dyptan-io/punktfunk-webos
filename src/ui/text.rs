@@ -112,7 +112,7 @@ impl TextCache {
     /// a screen draws, in a 64-bit space, it is not a risk this app will meet.
     fn key(font: FontId, text: &str, color: Color) -> u64 {
         let packed_color = u32::from_be_bytes([color.r, color.g, color.b, color.a]);
-        crate::ui::cache::version(&(text, packed_color, font))
+        crate::ui::cache::identity(&(text, packed_color, font))
     }
 
     /// Returns the cached `Pixmap` for `(font, text, color)`, rasterizing (and

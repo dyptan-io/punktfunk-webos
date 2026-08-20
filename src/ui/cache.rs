@@ -30,13 +30,89 @@ pub const STATIC: u64 = 0;
 /// every frame, which is the one thing this cache exists to prevent — animate by
 /// compositing the tile differently instead.
 pub fn version(key: &impl Hash) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut h = FxHasher::default();
     key.hash(&mut h);
     // `STATIC` is reserved for "depends on nothing"; nudge the one key that would collide
     // with it so a real dependency can never be mistaken for a build-once tile.
     match h.finish() {
         STATIC => 1,
         v => v,
+    }
+}
+
+/// Hashes a key that is used as an *identity* rather than as a change detector — where two
+/// different values colliding shows the wrong pixels rather than merely a stale tile.
+///
+/// `SipHash`, deliberately: [`version`]'s hasher trades collision resistance for speed, which is
+/// the right trade when the answer only ever decides "rebuild or not" and the wrong answer costs
+/// one redundant raster. [`crate::ui::text::TextCache`] is the one caller that cannot take that
+/// trade — its key names the glyph run to draw.
+pub fn identity(key: &impl Hash) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    h.finish()
+}
+
+/// `FxHash`: multiply-xor, one 64-bit word at a time.
+///
+/// [`version`] runs dozens of times a frame, over whole `Settings` and `SettingsOverride`
+/// structs in the modal keys — and `SipHash`'s per-call setup and finalization dominate at
+/// those key sizes, on a CPU with no 64-bit multiplier to spare. Nothing here is persisted or
+/// compared across processes, so the hash is free to change with the build.
+#[derive(Default)]
+struct FxHasher(u64);
+
+/// The 64-bit fractional constant `FxHash` uses — an odd multiplier, so the map is a bijection.
+const FX_SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+
+impl FxHasher {
+    #[inline]
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(FX_SEED);
+    }
+}
+
+impl Hasher for FxHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        // Length first, and not for free: the tail of a partial word is zero-padded, and
+        // `Hash for str` writes only a `0xff` terminator after the bytes — so without this,
+        // "a" and "a\0" pad to the same word and hash identically. A tile keyed on a title
+        // would then be reused for a different one.
+        self.add(bytes.len() as u64);
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            self.add(u64::from_ne_bytes(c.try_into().expect("chunks_exact(8)")));
+        }
+        let tail = chunks.remainder();
+        if !tail.is_empty() {
+            let mut buf = [0u8; 8];
+            buf[..tail.len()].copy_from_slice(tail);
+            self.add(u64::from_ne_bytes(buf));
+        }
+    }
+
+    fn write_u8(&mut self, v: u8) {
+        self.add(u64::from(v));
+    }
+
+    fn write_u16(&mut self, v: u16) {
+        self.add(u64::from(v));
+    }
+
+    fn write_u32(&mut self, v: u32) {
+        self.add(u64::from(v));
+    }
+
+    fn write_u64(&mut self, v: u64) {
+        self.add(v);
+    }
+
+    fn write_usize(&mut self, v: usize) {
+        self.add(v as u64);
     }
 }
 
@@ -166,5 +242,43 @@ impl TileStore {
     /// the caller's to release, exactly as with [`remove`](Self::remove).
     pub fn take(&mut self, id: TileId) -> Option<Painter> {
         self.slots.get_mut(id.0 as usize)?.take().map(|e| e.painter)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_key_hashes_the_same_every_time() {
+        let key = ("settings", 3u32, true, Some(7u64));
+        assert_eq!(version(&key), version(&key));
+    }
+
+    #[test]
+    fn keys_that_differ_in_one_field_get_different_versions() {
+        assert_ne!(version(&("row", 1u32)), version(&("row", 2u32)));
+        assert_ne!(version(&("row", 1u32)), version(&("rov", 1u32)));
+        assert_ne!(version(&(1u8, 2u8)), version(&(2u8, 1u8)));
+    }
+
+    #[test]
+    fn a_string_key_is_not_aliased_by_its_zero_padding() {
+        // The tail of a partial word is zero-filled, so "a" and "a\0" would collide on the
+        // word alone — `Hash for str` writing the length is what separates them.
+        assert_ne!(version(&"a"), version(&"a\0"));
+        assert_ne!(version(&"abcdefgh"), version(&"abcdefgh\0"));
+    }
+
+    #[test]
+    fn no_real_key_is_mistaken_for_a_build_once_tile() {
+        // `version` remaps the one input that would hash to `STATIC`; nothing else may return it.
+        let colliding = (0..5000u32).find(|i| {
+            let mut h = FxHasher::default();
+            i.hash(&mut h);
+            h.finish() == STATIC
+        });
+        assert!(colliding.is_none_or(|i| version(&i) != STATIC));
+        assert!((0..5000u32).all(|i| version(&i) != STATIC));
     }
 }
