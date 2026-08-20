@@ -37,15 +37,17 @@ machine) ← `runtime` (the two top-level loops).
   `view::<screen>` (geometry, draw list). `app::render` holds `tile` (which tile is which),
   `key` (what its pixels depend on — hashed, never stored) and `ctx` (`RenderCtx`, threaded
   through every `prepare_*`). State is grouped, not flat: `grid`, `modal`, `spinner`, `hero`,
-  `hosts`, `menu`.
+  `hosts`, `menu`. `nav` holds the screen, the previous screen and one focus cursor per
+  screen; `screens::{list,confirm}` hold what a whole family of screens shares.
 - **`runtime`** alternates two phases: `ui_flow` (menu) and `stream`, on
   `StreamOutcome::ReturnToMenu` vs `Quit`.
 
 Rendering is a `tiny_skia` software framebuffer composited by SDL, redrawn on change.
-Add a screen: build on `ui::widgets::ListModal` (copy `app/{state,view}/hostmenu.rs`); ~24
-`Screen` match sites, most but not all exhaustive — the `_ =>` arms absorb a new variant
-silently, so grep for them too. A `ScreenView` trait to collapse them was evaluated and
-rejected (R6) — see "Explicitly not doing" under Phase 4 in `docs/APP-REWORK-PLAN.md`.
+Add a screen: build on `ui::widgets::ListModal` (copy `app/{state,view}/hostmenu.rs`) and say
+which family it joins in `app::screens` — `list` (rows) or `confirm` (two buttons); both tables
+are exhaustive over `Screen`, so the compiler asks. ~22 `Screen` match sites otherwise. A
+`ScreenView` trait to collapse them was evaluated and rejected (R6) — see "Explicitly not
+doing" under Phase 4 in `docs/APP-REWORK-PLAN.md`.
 
 ## Invariants worth knowing before you edit
 

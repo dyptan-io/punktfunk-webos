@@ -1,6 +1,6 @@
 # `src/app` rework plan
 
-Status: phases 0, 0.5 and 1 landed (see below); 2-7 proposal. Scope: `src/app` (10.9k LOC, 56 files), plus the seams it forces open in
+Status: phases 0-4 landed (see the per-phase notes below); 5-7 proposal. Scope: `src/app` (10.9k LOC, 56 files), plus the seams it forces open in
 `src/core/screen.rs`, `src/ui/screen.rs` and `src/runtime`.
 
 ## 1. What is actually wrong
@@ -312,7 +312,7 @@ in `prepare_tiles`; no pixmap allocation on a steady-state scroll frame. Verify 
 `runtime::frame_timer` on the TV, on a library large enough to scroll — this is the one phase
 whose whole point is measurable, so measure it rather than assuming.
 
-### Phase 2 — `SettingsRow` enum (P7)
+### Phase 2 — `SettingsRow` enum (P7) — DONE
 
 ```rust
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -341,7 +341,15 @@ share the lock/toggle machinery.
 
 Risk: low. Large diff, no logic change, every site compiler-found.
 
-### Phase 3 — `Nav`: screen + cursors (P2)
+Landed as designed, with two notes. `settings_logical_row` returns `Option<SettingsRow>`
+rather than falling back to the display index — with rows as a type there is no "the position
+itself" to return, which is what let an out-of-range focus address a row. `DisplayRow` was
+**not** introduced: it would have to cross into `ui::widgets::list_nav` and `FocusRowsState`,
+which are library types shared with screens that have no logical rows at all. The confusion it
+was meant to prevent (`DropdownState.row` being a display index) is now contained instead —
+the only conversions left are inside `App::dropdown_options`/`dropdown_len`.
+
+### Phase 3 — `Nav`: screen + cursors (P2) — DONE
 
 ```rust
 pub struct Nav {
@@ -365,7 +373,13 @@ a `const fn`, no new dependency.
 - `Wake`'s cursor stays in `WakeState` (it is part of a payload that is `None` off-screen);
   `Nav` exposes it through the same accessor so callers do not care.
 
-### Phase 4 — the two screen families (P4, P3)
+Landed. `focus_anim` stayed on `ModalState` rather than moving into `Nav` — it is a modal
+animation clock, and every other clock beside it is there. The four match tables became
+`nav.cursor(ScreenKey::of(screen))` plus one predicate per family (`is_confirm`,
+`is_list_modal`), both exhaustive over `Screen`, which is what makes the P3 bug class
+non-recurring rather than merely fixed.
+
+### Phase 4 — the two screen families (P4, P3) — DONE
 
 **4a. `ListScreen`.** One descriptor per plain list modal, in `screens/list.rs`:
 
@@ -406,6 +420,25 @@ and buys nothing for Home — the one screen with real complexity and no peer to
 Risk: medium. Behaviour-preserving but touches every list screen. Land 4a, 4b, 4c as separate
 commits and verify each on the TV (`task deploy TELEMETRY=auto`) before the next — per
 `docs/NOTES.md`, code-only confidence about this device is usually misplaced.
+
+Landed as two commits (4b, then 4a+4c), **not yet verified on the TV** — that check is still
+owed, and it is the one this plan says not to skip.
+
+`ListScreen` is not a trait. The parts the five list screens actually shared were the row
+table, the row count, the nav preamble and the switch-anim tail, and those are free methods on
+`App` in `app::screens::list`; what differs (which rows, what a press means) stayed in each
+screen's own `state`/`view` module, where a descriptor would only have re-indirected it. The
+structural result the trait was for is there: one `prepare_modal` arm for all five, one
+`pointer.rs` arm each for hover and click, one table naming the family.
+
+`Confirm` is a value as designed (`app::screens::confirm`), and the shells read their buttons
+from it — so the predicate deciding whether buttons are up is the same one in the shell, the
+focused-button tile and the pointer. Forget and SendLogs lost their own `Modal` for a shared
+`view::confirm` one. All four `expect`/`unreachable!` in `prepare_modal` are gone: its
+focused-widget match yields `Option<Painter>`.
+
+Count after 4c: 22 `match self.nav.screen` sites, and the fallback arms that remain are over
+row indices or animation state rather than over `Screen`.
 
 ### Phase 5 — `Jobs` (P5)
 
@@ -486,9 +519,9 @@ encode as much of it as possible in Phase 0.5's tests.
 | 0 hygiene + WakeSettings fix | trivially | hover + click a Wake settings row on the TV |
 | 0.5 tests | n/a | `cargo test` green, and red when an invariant is deliberately broken |
 | 1 allocations + caches | yes | `frame_timer` before/after on a long scroll; hover feel |
-| 2 SettingsRow enum | yes | every settings row, both scopes, plus both sub-screens |
-| 3 Nav | yes | nested-menu round trip keeps its cursor (HostMenu → WakeSettings → Back) |
-| 4 families | per-commit | every list screen + every confirm dialog, on the TV |
+| 2 SettingsRow enum | yes | every settings row, both scopes, plus both sub-screens — **still owed** |
+| 3 Nav | yes | nested-menu round trip keeps its cursor (HostMenu → WakeSettings → Back) — **still owed** |
+| 4 families | per-commit | every list screen + every confirm dialog, on the TV — **still owed** |
 | 5 Jobs | yes | discovery, pairing, speed test, send-logs, root probe all still land |
 | 6 App split | per-sub-struct | full menu pass + one stream launch/return |
 | 7 file size | yes | lint only |
