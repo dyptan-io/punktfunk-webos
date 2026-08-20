@@ -132,7 +132,7 @@ impl App {
         // behind by a host that has since been deselected would spin the render loop at
         // full rate forever.
         self.grid.tiles_pending = false;
-        if self.selected_host.is_some() {
+        if self.library.selected_host.is_some() {
             // Nothing behind an open modal can come into view: the grid neither scrolls nor
             // moves focus while a modal owns input, so the whole windowed pass — the one cost
             // here that scales with the window — is skipped unless a card was actually
@@ -211,7 +211,7 @@ impl App {
             keep.clear();
             keep.extend(
                 keep_window
-                    .filter_map(|idx| layout.pin_id_at(&self.games, idx))
+                    .filter_map(|idx| layout.pin_id_at(&self.library.games, idx))
                     .filter_map(|id| self.grid.card_ids.get(id)),
             );
             keep.sort_unstable();
@@ -237,18 +237,18 @@ impl App {
                 // Drop the decoded cover too — it is several times the size of the tile it
                 // feeds. Re-requested from the disk cache on scroll back. (Nothing to drop for
                 // the pinned "Desktop" entry, which has no art at all.)
-                self.art.remove(&id);
+                self.library.art.remove(&id);
                 if let Some(loader) = &mut self.jobs.art {
                     loader.forget(&id);
                 }
             }
 
-            // Ready once nothing more can arrive: cover already in `self.art`, or the game
-            // never had one to fetch (no `self.art` entry either way). "Desktop" and the
+            // Ready once nothing more can arrive: cover already in `self.library.art`, or the game
+            // never had one to fetch (no `self.library.art` entry either way). "Desktop" and the
             // padding after a partial pinned row have no `games` entry and are always ready.
             let art_ready = |idx: usize| {
-                layout.game_at(&self.games, idx).is_none_or(|game| {
-                    self.art.contains_key(&game.id) || (game.art.portrait.is_none() && game.art.header.is_none())
+                layout.game_at(&self.library.games, idx).is_none_or(|game| {
+                    self.library.art.contains_key(&game.id) || (game.art.portrait.is_none() && game.art.header.is_none())
                 })
             };
 
@@ -263,12 +263,12 @@ impl App {
             for idx in build_window.clone() {
                 // Nothing to build or fetch art for in the padding after a partial
                 // pinned row.
-                let Some(id) = layout.pin_id_at(&self.games, idx) else {
+                let Some(id) = layout.pin_id_at(&self.library.games, idx) else {
                     continue;
                 };
                 // Ask for this card's cover as it enters the window, not for the whole
                 // library at once (see `art::ArtLoader`).
-                if let (Some(loader), Some(game)) = (&mut self.jobs.art, layout.game_at(&self.games, idx)) {
+                if let (Some(loader), Some(game)) = (&mut self.jobs.art, layout.game_at(&self.library.games, idx)) {
                     loader.request(game);
                 }
                 if self.grid.card_ids.get(id).is_some_and(|t| tiles.contains(t)) {
@@ -291,7 +291,7 @@ impl App {
                     pending = true;
                     break;
                 }
-                let Some(id) = layout.pin_id_at(&self.games, idx).map(str::to_string) else {
+                let Some(id) = layout.pin_id_at(&self.library.games, idx).map(str::to_string) else {
                     continue;
                 };
                 built += 1;
@@ -335,7 +335,7 @@ impl App {
             // actually looking at behind a full-screen fetch and decode.
             if self.grid.reveal.is_revealed() && !pending {
                 if let HomeFocus::Grid(focus_idx) = self.home_focus {
-                    if let Some(game) = layout.game_at(&self.games, focus_idx) {
+                    if let Some(game) = layout.game_at(&self.library.games, focus_idx) {
                         if let Some(loader) = &mut self.jobs.art {
                             loader.request_hero(game);
                         }
@@ -348,7 +348,7 @@ impl App {
             // a moving source/destination rect — one small blur per focus move instead of
             // re-rasterizing the card every animation frame.
             if let HomeFocus::Grid(idx) = self.home_focus {
-                if let Some(pin_id) = layout.pin_id_at(&self.games, idx) {
+                if let Some(pin_id) = layout.pin_id_at(&self.library.games, idx) {
                     let (title, art) = self.grid_card_content(idx, columns);
                     // Keyed by card identity like the card tiles themselves (`CardIds`),
                     // not by title — two games can share one.
@@ -472,7 +472,7 @@ impl App {
                 // too so a placeholder built this tick can't count as revealed.
                 let window_ready = || {
                     build_window.all(|idx| {
-                        layout.pin_id_at(&self.games, idx).is_none_or(|id| {
+                        layout.pin_id_at(&self.library.games, idx).is_none_or(|id| {
                             self.grid.card_ids.get(id).is_some_and(|t| tiles.contains(t)) && art_ready(idx)
                         })
                     })

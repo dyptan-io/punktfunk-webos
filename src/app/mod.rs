@@ -8,6 +8,7 @@ pub(crate) mod grid;
 pub(crate) mod hero;
 pub(crate) mod hosts;
 pub(crate) mod jobs;
+pub(crate) mod library;
 pub(crate) mod menu;
 pub(crate) mod modal;
 pub(crate) mod nav;
@@ -32,7 +33,6 @@ use crate::app::nav::ScreenKey;
 use crate::app::state::addhost::AddHostState;
 use crate::core::event::MenuEvent;
 pub use crate::core::model::ConnectTarget;
-use crate::core::model::GameEntry;
 pub use crate::core::screen::{HomeFocus, PairingFocus, Screen};
 use crate::services::discovery::Discovery;
 use crate::services::store::{self, KnownHost, Settings};
@@ -111,32 +111,19 @@ pub struct App {
     pub nav: nav::Nav,
     /// Every background job in flight — see [`jobs::Jobs`].
     pub(crate) jobs: jobs::Jobs,
+    /// The selected host's games, art and pin bookkeeping — see [`library::Library`].
+    pub(crate) library: library::Library,
     pub known_hosts: Vec<KnownHost>,
     pub entries: Vec<HostEntry>,
     pub home_focus: HomeFocus,
     /// Whether this TV is webosbrew-rooted — `None` until [`App::start_root_probe`] answers.
     pub(crate) rooted: Option<bool>,
-    pub selected_host: Option<(String, u16)>,
-    pub games: Vec<GameEntry>,
-    /// Leading pinned-game entries; kept in pin order.
-    pub(crate) pinned_count: usize,
-    /// Whether the selected host has its Desktop card pinned. Maintained next to
-    /// `pinned_count` by [`App::reorder_games_by_pin`] rather than read back out of the host's
-    /// pin map on demand: `grid_layout` is asked for a card rect on every frame and every
-    /// pointer motion, and deriving this meant scanning `known_hosts` and a map lookup each
-    /// time. Every path that changes a pin, the selected host, or the library goes through that
-    /// one function (or clears the grid via [`App::clear_grid_pins`]).
-    pub(crate) desktop_pin: bool,
-    /// Host answered library fetch (gates Desktop card).
-    pub(crate) games_loaded: bool,
     pub home_status: Option<String>,
     /// Whether `home_status` is the reason the last launch bounced back to the menu, and so must
     /// survive the library reload a fresh menu entry starts — that reload clears the status on
     /// success, which wiped the error a second after the user landed back on the grid. Anything
     /// the user's own actions produce replaces it as usual.
     pub(crate) home_status_sticky: bool,
-    /// Cover art pixmaps by game id.
-    pub art: std::collections::HashMap<String, Pixmap>,
     /// The connecting screen's backdrop, and every clock it runs on.
     pub(crate) hero: hero::Hero,
     pub(crate) launch_ready: Option<ConnectTarget>,
@@ -296,6 +283,7 @@ impl App {
         crate::services::art::reconcile_host_caches(&known_hosts);
         let mut app = Self {
             nav: nav::Nav::default(),
+            library: library::Library::default(),
             jobs: jobs::Jobs {
                 discovery: crate::services::discovery::Discovery::start(),
                 ..Default::default()
@@ -304,14 +292,8 @@ impl App {
             entries,
             home_focus: HomeFocus::Sidebar(0),
             rooted: None,
-            selected_host: None,
-            games: Vec::new(),
-            pinned_count: 0,
-            desktop_pin: false,
-            games_loaded: false,
             home_status: None,
             home_status_sticky: false,
-            art: std::collections::HashMap::new(),
             hero: hero::Hero::default(),
             launch_ready: None,
             launch_anim: None,
@@ -668,7 +650,7 @@ impl App {
                     // Layout is unchanged by art arriving — queue a repaint of just that
                     // card's tile (see `grid_cards_dirty`) rather than a full layer rebuild.
                     self.grid.cards_dirty.push(game_id.clone());
-                    self.art.insert(game_id, pixmap);
+                    self.library.art.insert(game_id, pixmap);
                 }
                 crate::services::art::ArtLoaded::Hero { game_id, image } => {
                     // One that's no longer of use (focus moved on) is let go of in the
@@ -786,7 +768,7 @@ impl App {
         self.state_writer.save(store::Persisted {
             settings: self.settings,
             known_hosts: self.known_hosts.clone(),
-            selected_host: self.selected_host.clone(),
+            selected_host: self.library.selected_host.clone(),
             // Always this build's version: whatever wrote the document last is what a future
             // migration needs to know, and that is now us.
             version: Some(store::VERSION.to_string()),
@@ -801,7 +783,7 @@ impl App {
     /// The `KnownHost` record backing `selected_host`, if any — shared by every
     /// pin-related lookup (the focused card's badge, `toggle_focused_pin`).
     pub(crate) fn selected_known_host(&self) -> Option<&KnownHost> {
-        let (host, port) = self.selected_host.as_ref()?;
+        let (host, port) = self.library.selected_host.as_ref()?;
         self.known_host(host, *port)
     }
 
@@ -810,7 +792,7 @@ impl App {
     }
 
     pub(crate) fn selected_known_host_mut(&mut self) -> Option<&mut KnownHost> {
-        let (host, port) = self.selected_host.clone()?;
+        let (host, port) = self.library.selected_host.clone()?;
         self.known_host_mut(&host, port)
     }
 
@@ -820,7 +802,7 @@ impl App {
     pub(crate) fn grid_card_content(&self, idx: usize, columns: usize) -> (&str, Option<&Pixmap>) {
         match self.grid_card_at(idx, columns) {
             Some(GridCard::Desktop) => ("Desktop", None),
-            Some(GridCard::Game(game)) => (game.title.as_str(), self.art.get(&game.id)),
+            Some(GridCard::Game(game)) => (game.title.as_str(), self.library.art.get(&game.id)),
             None => unreachable!("idx filtered to a real card before building"),
         }
     }

@@ -23,7 +23,7 @@ impl App {
         render_input::RenderInput {
             home_focus: self.home_focus,
             entries: &self.entries,
-            host_selected: self.selected_host.is_some(),
+            host_selected: self.library.selected_host.is_some(),
             has_status: self.home_status.is_some(),
             grid_reveal_ready: self.grid.reveal.is_revealed(),
             press: self.press_dip(Screen::Home),
@@ -324,7 +324,7 @@ impl App {
         let layout = self.grid_layout(columns);
         // One layout and one section shape for the whole frame: both rescan the host's pin
         // list, and every card rect below would otherwise rebuild them (see `home_focus_map`).
-        let sections = layout.sections(self.games.len());
+        let sections = layout.sections(self.library.games.len());
         let card_rect =
             |idx| view::home::scrolled_card_rect(idx, columns, grid_x, available_w, sections, self.grid.scroll);
         // The on-screen window, computed rather than found by testing every card in the
@@ -343,7 +343,7 @@ impl App {
                 continue; // drawn last, on top of its neighbors
             }
             // padding after a partial pinned row — nothing to draw
-            let Some(pin_id) = layout.pin_id_at(&self.games, idx) else {
+            let Some(pin_id) = layout.pin_id_at(&self.library.games, idx) else {
                 continue;
             };
             let r = card_rect(idx);
@@ -400,7 +400,7 @@ impl App {
             });
         }
         if let Some(idx) = focused {
-            if let Some(pin_id) = layout.pin_id_at(&self.games, idx) {
+            if let Some(pin_id) = layout.pin_id_at(&self.library.games, idx) {
                 // The focus pop: the GPU scales the (unfocused) card tile up
                 // around its center as the pop progresses, with the shared glow
                 // tile fading in behind it at the same scale.

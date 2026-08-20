@@ -71,8 +71,8 @@ impl App {
         self.rebuild_entries();
 
         // Keep selection updated to new address
-        if self.selected_host.as_ref() == Some(&(old.host.clone(), old.port)) {
-            self.selected_host = Some((host.clone(), port));
+        if self.library.selected_host.as_ref() == Some(&(old.host.clone(), old.port)) {
+            self.library.selected_host = Some((host.clone(), port));
         }
         self.home_focus = HomeFocus::Sidebar(
             self.entries

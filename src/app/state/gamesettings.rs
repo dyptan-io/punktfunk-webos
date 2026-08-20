@@ -29,7 +29,7 @@ pub(crate) struct GameSettingsState {
 impl App {
     /// Opens the per-game screen for `pin_id`. Only the card submenu calls this.
     pub(crate) fn open_game_settings(&mut self, pin_id: &str, title: &str) {
-        let Some(host) = self.selected_host.clone() else {
+        let Some(host) = self.library.selected_host.clone() else {
             return;
         };
         let over = self
