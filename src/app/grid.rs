@@ -159,6 +159,11 @@ pub(crate) struct GridState {
     /// only re-arms cards that are actually resident. `App::tick_animations` scans this every
     /// frame, so an entry per game in the library would be a per-frame cost of library size.
     pub card_pop: HashMap<String, Instant>,
+    /// When the last-armed card pop finishes — the one comparison `App::tick_animations`
+    /// needs, instead of walking [`Self::card_pop`] every frame to ask the same question.
+    /// Never lowered by an eviction: a deadline that is merely late costs one extra frame
+    /// of the redraw loop, where one that is early would freeze a zoom mid-way.
+    pub card_pop_until: Option<Instant>,
     /// Current card size, derived from screen width in `App::advance_frame`. Screen geometry (the
     /// event side reads it to size cover-art requests), not a rasterized tile.
     pub card_size: (u32, u32),
@@ -183,6 +188,58 @@ pub(crate) struct GridState {
     /// Whether the initial build for the current library has finished, and the spinner shown until
     /// it has.
     pub reveal: GridReveal,
+    /// `prepare_grid`'s per-frame working lists, kept across frames and cleared on entry.
+    /// All three are window-bounded, so this is not a scaling fix — it is the armv7 softfloat
+    /// allocator not being asked for three fresh collections on every frame of every scroll.
+    pub scratch: GridScratch,
+    /// Card pixmaps freed by eviction, held for the next card built this frame. A scroll
+    /// evicts and builds in the same frame (see `prepare_grid`), and every card is exactly
+    /// [`Self::card_size`], so a recycled buffer never needs resizing — at 1080p each one is
+    /// ~360KB that would otherwise be freed and immediately reallocated.
+    pub free_cards: Vec<crate::ui::Painter>,
+}
+
+/// The lists `prepare_grid` refills each frame. Indices and ids only — nothing here borrows
+/// `games`, since it lives on `App` alongside it.
+#[derive(Default)]
+pub(crate) struct GridScratch {
+    /// Tiles inside the keep window, sorted, for the eviction test.
+    pub keep: Vec<crate::ui::render::TileId>,
+    /// Pin ids evicted this frame — owned, because releasing them mutates the map they
+    /// were read from.
+    pub dropped: Vec<String>,
+    /// Build candidates whose cover art has already arrived, and those still waiting.
+    pub ready: Vec<usize>,
+    pub waiting: Vec<usize>,
+}
+
+impl GridState {
+    /// Starts (or restarts) `pin_id`'s zoom at `at`.
+    pub fn arm_card_pop(&mut self, pin_id: String, at: Instant) {
+        self.card_pop.insert(pin_id, at);
+        self.extend_pop_deadline(at);
+    }
+
+    /// [`arm_card_pop`](Self::arm_card_pop) for a card that may already be popping — a
+    /// reveal, which must not restart a zoom already under way.
+    pub fn arm_card_pop_if_idle(&mut self, pin_id: String, at: Instant) {
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.card_pop.entry(pin_id) {
+            slot.insert(at);
+            self.extend_pop_deadline(at);
+        }
+    }
+
+    fn extend_pop_deadline(&mut self, at: Instant) {
+        let end = at + crate::app::CARD_POP;
+        if self.card_pop_until.is_none_or(|until| until < end) {
+            self.card_pop_until = Some(end);
+        }
+    }
+
+    /// Whether any card is still zooming in.
+    pub fn card_pops_running(&self) -> bool {
+        self.card_pop_until.is_some_and(|until| Instant::now() < until)
+    }
 }
 
 /// Hand-written rather than derived, because two of these fields do not want their type's zero
@@ -193,6 +250,7 @@ impl Default for GridState {
         Self {
             card_ids: tile::CardIds::default(),
             card_pop: HashMap::new(),
+            card_pop_until: None,
             card_size: (0, 0),
             dirty: true,
             cards_dirty: Vec::new(),
@@ -201,6 +259,8 @@ impl Default for GridState {
             scroll_target: 0,
             focus_last: 0,
             reveal: GridReveal::revealed(),
+            scratch: GridScratch::default(),
+            free_cards: Vec::new(),
         }
     }
 }

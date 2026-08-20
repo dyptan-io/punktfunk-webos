@@ -220,7 +220,7 @@ pub(crate) fn row_lock(row: usize, settings: &Settings, detected: Option<Gamepad
         ROW_HDR if !caps.hdr => Some(RowLock::NoHdr),
         ROW_HDR if settings.codec == CodecPref::H264 => Some(RowLock::HdrNeedsHevc),
         ROW_CODEC if caps.codec_prefs().len() < 2 => Some(RowLock::OneCodec),
-        ROW_AUDIO if audio_option_count() < 2 => Some(RowLock::StereoOnly),
+        ROW_AUDIO if audio_channel_options().len() < 2 => Some(RowLock::StereoOnly),
         ROW_GAMEPAD if detected.is_none() => Some(RowLock::NoGamepad),
         _ => None,
     }
@@ -429,16 +429,14 @@ pub fn gamepad_auto_label(detected: Option<GamepadType>) -> String {
 const AUDIO_CHANNELS: [(u8, &str); 3] = [(2, "Stereo"), (6, "5.1 surround"), (8, "7.1 surround")];
 
 /// The channel counts offered, filtered to what the active backend can present.
-pub fn audio_channel_options() -> Vec<(u8, &'static str)> {
+///
+/// A prefix of [`AUDIO_CHANNELS`] rather than a fresh `Vec`, because the list is ascending and
+/// the filter is a ceiling — and because the callers that only want the count ask on every
+/// settings-geometry query, which is several times a frame.
+pub fn audio_channel_options() -> &'static [(u8, &'static str)] {
     let max = video_caps().max_channels;
-    AUDIO_CHANNELS.iter().copied().filter(|(c, _)| *c <= max).collect()
-}
-
-/// How many channel counts are offered, without building the list — `row_shown` asks this
-/// once per row on every settings-geometry query, which is several times a frame.
-pub fn audio_option_count() -> usize {
-    let max = video_caps().max_channels;
-    AUDIO_CHANNELS.iter().filter(|(c, _)| *c <= max).count()
+    let offered = AUDIO_CHANNELS.iter().take_while(|(c, _)| *c <= max).count();
+    &AUDIO_CHANNELS[..offered]
 }
 
 pub(crate) fn audio_label(channels: u8) -> String {
@@ -499,7 +497,7 @@ pub fn dropdown_option_count(row_index: usize) -> usize {
         ROW_RESOLUTION => RESOLUTIONS.len(),
         ROW_FRAMERATE => REFRESH_RATES.len(),
         ROW_CODEC => video_caps().codec_prefs().len(),
-        ROW_AUDIO => audio_option_count(),
+        ROW_AUDIO => audio_channel_options().len(),
         ROW_GAMEPAD => GAMEPAD_TYPES.len(),
         _ => 0,
     }
@@ -751,11 +749,13 @@ mod tests {
         assert_eq!(bitrate_at(2.0), BITRATE_MAX_KBPS);
     }
 
-    /// `audio_option_count` exists to answer this without building the list; if the two ever
-    /// disagree the Audio row locks against a list it is not showing.
+    /// The offered list is a prefix, so it must stay ascending — a ceiling filter over an
+    /// unsorted table would silently drop a middle entry.
     #[test]
-    fn the_audio_option_count_matches_the_option_list() {
-        assert_eq!(audio_option_count(), audio_channel_options().len());
+    fn the_channel_table_is_ascending_so_the_offered_list_is_a_prefix() {
+        assert!(AUDIO_CHANNELS.windows(2).all(|w| w[0].0 < w[1].0));
+        let offered = audio_channel_options();
+        assert_eq!(offered, &AUDIO_CHANNELS[..offered.len()]);
     }
 
     #[test]

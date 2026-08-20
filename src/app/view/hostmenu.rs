@@ -27,7 +27,12 @@ impl ModalMetrics for Metrics<'_> {
     }
 
     fn content_rect(&self, card: Rect, fonts: &Fonts) -> Option<Rect> {
-        Some(ui::widgets::list_modal_content_rect(card, fonts, self.subtitle, self.rows))
+        Some(ui::widgets::list_modal_content_rect(
+            card,
+            fonts,
+            self.subtitle,
+            self.rows,
+        ))
     }
 }
 

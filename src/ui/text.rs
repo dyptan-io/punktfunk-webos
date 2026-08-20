@@ -49,8 +49,36 @@ struct Entry {
 /// [capacity](TEXT_CACHE_CAP) bounds the map: on reaching it, a second-chance sweep drops
 /// every entry not drawn since the previous sweep. Steady-state text is drawn every frame
 /// and so is never the entry that goes.
+/// Hasher for a map whose keys are already hashes.
+///
+/// [`TextCache::key`] hands the map a `cache::version` output; running `SipHash` over that is
+/// a second hash of a hash, once per text draw. `write_u64` is the only method a `u64` key
+/// reaches, and it takes the value as it stands.
+#[derive(Default)]
+struct PassThroughHasher(u64);
+
+impl std::hash::Hasher for PassThroughHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        // Not reached with a `u64` key; folded rather than ignored so a future key type
+        // cannot silently collapse every entry onto one bucket.
+        for &b in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(b);
+        }
+    }
+}
+
+type KeyedEntries = HashMap<u64, Entry, std::hash::BuildHasherDefault<PassThroughHasher>>;
+
 pub struct TextCache {
-    entries: HashMap<u64, Entry>,
+    entries: KeyedEntries,
     cap: usize,
 }
 
@@ -63,7 +91,7 @@ impl TextCache {
     /// dynamic (the log overlay's tail), which wants a tighter bound than the menu's.
     pub fn with_capacity(cap: usize) -> Self {
         Self {
-            entries: HashMap::new(),
+            entries: KeyedEntries::default(),
             cap: cap.max(1),
         }
     }

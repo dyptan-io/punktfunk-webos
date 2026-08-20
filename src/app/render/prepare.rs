@@ -153,6 +153,7 @@ impl App {
                     self.evicted_tiles.push(id);
                 }
                 self.grid.card_pop.clear();
+                self.grid.card_pop_until = None;
                 self.grid.dirty = false;
                 self.grid.cards_dirty.clear();
                 // Scrolling or re-pinning a card must not hide the already-visible
@@ -202,19 +203,36 @@ impl App {
             // Driven off what is resident (`CardIds`) against the keep window, not off a scan
             // of the whole library: the resident set is bounded by the window, so this costs
             // the window twice over however large the library gets.
-            let keep: std::collections::HashSet<&str> = keep_window
-                .filter_map(|idx| layout.pin_id_at(&self.games, idx))
-                .collect();
-            let dropped: Vec<String> = self
-                .grid
-                .card_ids
-                .pin_ids()
-                .filter(|id| !keep.contains(id))
-                .map(str::to_string)
-                .collect();
-            for id in dropped {
+            //
+            // By tile id rather than by pin id: the ids are `Copy` integers, so the keep set
+            // is a sorted window-sized vector and the test is a binary search — where a
+            // `HashSet<&str>` re-hashed every resident card's id string every frame. Both
+            // lists are `GridState` scratch, cleared and refilled rather than allocated.
+            let mut keep = std::mem::take(&mut self.grid.scratch.keep);
+            keep.clear();
+            keep.extend(
+                keep_window
+                    .filter_map(|idx| layout.pin_id_at(&self.games, idx))
+                    .filter_map(|id| self.grid.card_ids.get(id)),
+            );
+            keep.sort_unstable();
+            let mut dropped = std::mem::take(&mut self.grid.scratch.dropped);
+            dropped.clear();
+            dropped.extend(
+                self.grid
+                    .card_ids
+                    .entries()
+                    .filter(|(_, t)| keep.binary_search(t).is_err())
+                    .map(|(id, _)| id.to_string()),
+            );
+            self.grid.scratch.keep = keep;
+            for id in dropped.drain(..) {
                 if let Some(t) = self.grid.card_ids.release(&id) {
-                    tiles.remove(t);
+                    // Kept for the cards built below: a scroll frees and needs the same
+                    // card-sized pixmap in the same frame (see `GridState::free_cards`).
+                    if let Some(painter) = tiles.take(t) {
+                        self.grid.free_cards.push(painter);
+                    }
                     self.evicted_tiles.push(t);
                 }
                 self.grid.card_pop.remove(&id);
@@ -240,8 +258,10 @@ impl App {
             // burns a second budget slot re-dirtying it once the cover shows up. Two lists
             // rather than one sorted one, and indices rather than ids: a candidate past the
             // budget is never built, so nothing should be copied on its behalf.
-            let mut ready = Vec::new();
-            let mut waiting = Vec::new();
+            let mut ready = std::mem::take(&mut self.grid.scratch.ready);
+            let mut waiting = std::mem::take(&mut self.grid.scratch.waiting);
+            ready.clear();
+            waiting.clear();
             for idx in build_window.clone() {
                 // Nothing to build or fetch art for in the padding after a partial
                 // pinned row.
@@ -266,7 +286,7 @@ impl App {
             let mut pending = false;
             let budget_from = Instant::now();
             let mut built = 0usize;
-            for idx in ready.into_iter().chain(waiting) {
+            for idx in ready.iter().copied().chain(waiting.iter().copied()) {
                 // Counted on cards actually rasterized, not on candidates seen: the budget is
                 // a time budget, and skipping a padding slot costs none of it.
                 if built >= CARD_BUILD_BURST || (built > 0 && budget_from.elapsed() >= CARD_BUILD_BUDGET) {
@@ -277,15 +297,17 @@ impl App {
                     continue;
                 };
                 built += 1;
+                let recycled = self.grid.free_cards.pop();
                 let tile = {
                     let (title, art) = self.grid_card_content(idx, columns);
-                    ui::rasterize(
+                    ui::rasterize_into(
                         ui::tiles::CardTile {
                             w: card_w,
                             h: card_h,
                             title,
                             art,
                         },
+                        recycled,
                         text_cache,
                         fonts,
                     )?
@@ -293,10 +315,17 @@ impl App {
                 let tile_id = self.grid.card_ids.id(&id);
                 tiles.put(tile_id, cache::STATIC, tile);
                 if self.grid.reveal.is_revealed() {
-                    self.grid.card_pop.insert(id.clone(), Instant::now());
+                    self.grid.arm_card_pop(id.clone(), Instant::now());
                 }
                 updated.push(tile_id);
             }
+            // Anything still here evicted without a card being built in its place, so it is
+            // surplus rather than churn — held past the frame it would just be a cache of
+            // pixmaps nothing asked for.
+            self.grid.free_cards.clear();
+            self.grid.scratch.dropped = dropped;
+            self.grid.scratch.ready = ready;
+            self.grid.scratch.waiting = waiting;
             self.grid.tiles_pending = pending;
 
             // Prefetch the focused card's hero, so the connecting screen has one ready the
@@ -459,7 +488,7 @@ impl App {
                         let now = Instant::now();
                         let ids: Vec<String> = self.grid.card_ids.pin_ids().map(str::to_string).collect();
                         for id in ids {
-                            self.grid.card_pop.entry(id).or_insert(now);
+                            self.grid.arm_card_pop_if_idle(id, now);
                         }
                     }
                     None => {}
@@ -612,10 +641,7 @@ impl App {
     /// The key never leaves this function, which is what lets it borrow labels straight out of
     /// `App`: only the hash is kept, so a shell that is re-entered with different content
     /// differs by version rather than by a stored clone of every string it draws.
-    fn modal_shell_version(
-        &self,
-        host_menu_actions: &[crate::app::state::hostmenu::HostAction],
-    ) -> Option<u64> {
+    fn modal_shell_version(&self, host_menu_actions: &[crate::app::state::hostmenu::HostAction]) -> Option<u64> {
         // The derived strings the key borrows — bound here so they outlive it, and built only
         // on the screen that actually reads each one.
         let host_menu_title = matches!(self.screen, Screen::HostMenu)
@@ -696,10 +722,7 @@ impl App {
     /// widget *and its value*, so a value change invalidates the tile just as a focus move
     /// does. `None` for a screen with no single focused widget. Borrowed like
     /// [`modal_shell_version`](Self::modal_shell_version), and for the same reason.
-    fn modal_focus_version(
-        &self,
-        host_menu_actions: &[crate::app::state::hostmenu::HostAction],
-    ) -> Option<u64> {
+    fn modal_focus_version(&self, host_menu_actions: &[crate::app::state::hostmenu::HostAction]) -> Option<u64> {
         // Borrowed by the key below, so it outlives it.
         let speed_test_label = matches!(self.screen, Screen::SpeedTest)
             .then(|| view::speedtest::apply_label(view::speedtest::recommendation(self.speed_test.as_ref())))
@@ -724,12 +747,7 @@ impl App {
             }),
             Screen::ForgetHost => Some(ModalFocusKey::ForgetButton(self.host_menu_focused)),
             Screen::HostMenu => host_menu_actions.get(self.menu_focused).map(|&action| {
-                ModalFocusKey::MenuRow(
-                    self.menu_focused,
-                    action,
-                    self.host_menu_paired(),
-                    self.host_menu_dots,
-                )
+                ModalFocusKey::MenuRow(self.menu_focused, action, self.host_menu_paired(), self.host_menu_dots)
             }),
             Screen::WakeSettings => Some(ModalFocusKey::WakeToggle(
                 self.wake_settings_host().is_some_and(|h| h.wol_auto),
@@ -801,7 +819,10 @@ impl App {
             // below draw at absolute, screen-centered coordinates, and the painter's
             // origin shift (see `Painter::set_origin`) maps that geometry into the
             // smaller buffer.
-            let mut p = self.modal_painter(screen_w, screen_h, fonts);
+            // Taken, not left to be dropped when the rebuilt tile replaces it: the modal is
+            // re-rasterized at the same size every time, so its pixmap is reusable.
+            let recycled = tiles.take(tile::MODAL);
+            let mut p = self.modal_painter(recycled, screen_w, screen_h, fonts);
             let c = &mut ui::Canvas::new(&mut p, text_cache, fonts, screen_w, screen_h);
             let hover_close = self.hover_close;
             self.with_modal_screen(|s| s.render(c, hover_close)).transpose()?;
@@ -1119,37 +1140,60 @@ impl App {
             match self.screen {
                 Screen::Settings(_) => {
                     let dropdown_row = self.dropdown.as_ref().map(|dd| dd.row);
-                    let rows = self.settings_rows();
-                    // One tile per row, each keyed on that row's own content. Rebuilding the
-                    // whole list as one strip cost 25-60ms on armv7 every time a single value
-                    // moved; this pays for the row that actually changed and reads the rest
-                    // straight out of the cache.
-                    for (i, row) in rows.iter().enumerate() {
-                        let Some(id) = tile::settings_row(i) else { break };
-                        let key = cache::version(&(self.screen, i, row.key(), dropdown_row == Some(i)));
-                        if tiles.is_fresh(id, key) {
-                            continue;
+                    let row_count = menu::settings_row_count(self.settings_scope());
+                    // What the whole list is derived from (see `App::settings_rows`). Checked
+                    // before the list is built at all: the per-row keys below still arbitrate
+                    // which row rebuilds, but on a pure animation frame — the common case
+                    // while Settings is open — this comparison is the entire cost.
+                    let rows_version = cache::version(&(
+                        self.screen,
+                        *self.settings_target(),
+                        self.editing_override(),
+                        self.detected_gamepad_type,
+                        // The Controller row's caption turns on whether the pad is actually
+                        // bound to hid-playstation, which a hotplug can change on its own.
+                        crate::platform::webos::dualsense::hid_playstation_bound(),
+                        // The focused row carries the override-clear hint (`decorate_override`).
+                        self.settings_focused,
+                        dropdown_row,
+                        content.width(),
+                    ));
+                    let cached = self.modal.settings_rows_version == Some(rows_version)
+                        && (0..row_count).all(|i| tile::settings_row(i).is_some_and(|id| tiles.contains(id)));
+                    if !cached {
+                        let rows = self.settings_rows();
+                        // One tile per row, each keyed on that row's own content. Rebuilding the
+                        // whole list as one strip cost 25-60ms on armv7 every time a single value
+                        // moved; this pays for the row that actually changed and reads the rest
+                        // straight out of the cache.
+                        for (i, row) in rows.iter().enumerate() {
+                            let Some(id) = tile::settings_row(i) else { break };
+                            let key = cache::version(&(self.screen, i, row.key(), dropdown_row == Some(i)));
+                            if tiles.is_fresh(id, key) {
+                                continue;
+                            }
+                            let tile = ui::rasterize(
+                                ui::widgets::RowTile {
+                                    row,
+                                    width: content.width(),
+                                    dropdown_open: dropdown_row == Some(i),
+                                },
+                                text_cache,
+                                fonts,
+                            )?;
+                            tiles.put(id, key, tile);
+                            updated.push(id);
                         }
-                        let tile = ui::rasterize(
-                            ui::widgets::RowTile {
-                                row,
-                                width: content.width(),
-                                dropdown_open: dropdown_row == Some(i),
-                            },
-                            text_cache,
-                            fonts,
-                        )?;
-                        tiles.put(id, key, tile);
-                        updated.push(id);
+                        // Slots past the end of a list that just got shorter (a sub-page is a
+                        // shorter list on the same screen) would otherwise keep drawing.
+                        self.evict_settings_rows_from(rows.len(), tiles);
+                        self.modal.settings_rows_version = Some(rows_version);
                     }
-                    // Slots past the end of a list that just got shorter (a sub-page is a
-                    // shorter list on the same screen) would otherwise keep drawing.
-                    self.evict_settings_rows_from(rows.len(), tiles);
                     // Every row is baked, so the window is the whole list — the crop
                     // rebase in `scroll_src_rect` has nothing to shift.
                     self.content_window = ui::scroll::ContentWindow {
                         start: 0,
-                        len: menu::settings_row_count(self.settings_scope()),
+                        len: row_count,
                     };
                 }
                 Screen::About => {

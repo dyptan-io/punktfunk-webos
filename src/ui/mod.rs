@@ -34,7 +34,7 @@ mod widget;
 pub use canvas::Canvas;
 pub use painter::Painter;
 pub use screen::{ModalMetrics, ModalScreen};
-pub use widget::{rasterize, StatefulWidget, TileWidget, Widget};
+pub use widget::{rasterize, rasterize_into, StatefulWidget, TileWidget, Widget};
 
 /// Every `ui` name, flat — for `ui`'s own modules only. A widget reaches for the theme, the
 /// text cache, the layout solver and two neighbouring widgets in the same function; making

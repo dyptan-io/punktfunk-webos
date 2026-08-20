@@ -827,8 +827,7 @@ impl App {
         if self.card_menu.as_mut().is_some_and(state::cardmenu::CardMenu::tick) {
             animating = true;
         }
-        // A scan, not one clock: every card zooms on its own (see `card_pop`).
-        if self.grid.card_pop.values().any(|t| t.elapsed() < CARD_POP) {
+        if self.grid.card_pops_running() {
             animating = true;
         }
         animating

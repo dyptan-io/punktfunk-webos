@@ -59,9 +59,30 @@ pub trait TileWidget: Widget {
 /// Rasterizes a [`TileWidget`] into its own painter, sized by the widget and handed to it as
 /// the whole area. The one place a standalone tile's surface is created.
 pub fn rasterize<W: TileWidget>(widget: W, text_cache: &mut TextCache, fonts: &Fonts) -> Result<Painter> {
+    rasterize_into(widget, None, text_cache, fonts)
+}
+
+/// [`rasterize`] onto a surface the caller already has, when it is the right size — the grid
+/// hands back the pixmap of a card it evicted this frame rather than freeing one and
+/// allocating an identical one a few lines later (see `GridState::free_cards`). A `recycled`
+/// buffer of the wrong size is simply dropped.
+pub fn rasterize_into<W: TileWidget>(
+    widget: W,
+    recycled: Option<Painter>,
+    text_cache: &mut TextCache,
+    fonts: &Fonts,
+) -> Result<Painter> {
     let (w, h) = widget.size(fonts);
     let (w, h) = (w.max(1), h.max(1));
-    let mut painter = Painter::new(w, h);
+    let mut painter = match recycled {
+        // Reused pixels are the previous card's, so the wipe is not optional: a card is
+        // rounded, and its corners are never drawn over.
+        Some(mut p) if p.width() == w && p.height() == h => {
+            p.reset();
+            p
+        }
+        _ => Painter::new(w, h),
+    };
     widget.render(
         Rect::new(0, 0, w, h),
         &mut Canvas::tile(&mut painter, text_cache, fonts),

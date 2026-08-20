@@ -180,4 +180,10 @@ impl CardIds {
     pub fn pin_ids(&self) -> impl Iterator<Item = &str> {
         self.slots.keys().map(String::as_str)
     }
+
+    /// Every resident card, as `(pin id, tile)` — what the eviction pass walks, so it can
+    /// test the tile it already holds instead of re-hashing the id string.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &TileId)> {
+        self.slots.iter().map(|(id, t)| (id.as_str(), t))
+    }
 }

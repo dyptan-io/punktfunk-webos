@@ -455,12 +455,29 @@ impl App {
     /// to the whole screen. Records the region in `modal_tile_region`, which is where
     /// `compose_modal` composites the tile. Falls back to full-screen on a screen with
     /// no card (shouldn't happen with one open).
-    pub(crate) fn modal_painter(&mut self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Painter {
+    /// `recycled` is the tile's own previous surface, when it had one: a modal with no
+    /// version key (`AddHost`) rebuilds on every keystroke, and its card is large enough that
+    /// allocating a fresh pixmap per character was the cost of the rebuild. Reused only at
+    /// the same size, and wiped first — the card is rounded, so its corners are never drawn
+    /// over.
+    pub(crate) fn modal_painter(
+        &mut self,
+        recycled: Option<Painter>,
+        screen_w: u32,
+        screen_h: u32,
+        fonts: &ui::text::Fonts,
+    ) -> Painter {
         let card = self.modal_card_rect(screen_w, screen_h, fonts);
         let pad = MODAL_TILE_PAD;
         let region = card.map_or_else(|| Rect::new(0, 0, screen_w, screen_h), |c| c.inflate(pad));
         self.modal.tile_region = region;
-        let mut p = Painter::new(region.width(), region.height());
+        let mut p = match recycled {
+            Some(mut p) if p.width() == region.width() && p.height() == region.height() => {
+                p.reset();
+                p
+            }
+            _ => Painter::new(region.width(), region.height()),
+        };
         p.set_origin(region.x(), region.y());
         p
     }

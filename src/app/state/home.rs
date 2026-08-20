@@ -303,10 +303,10 @@ impl App {
         // per-`CardTile` clock): a not-yet-built card has no visible pop to replay, and
         // its clock is overwritten with a fresh one when `prepare_grid` builds it.
         if !was_pinned {
-            self.grid.card_pop.insert(id.to_string(), now);
+            self.grid.arm_card_pop(id.to_string(), now);
         }
         for pin_id in rest_ids {
-            self.grid.card_pop.insert(pin_id, now);
+            self.grid.arm_card_pop(pin_id, now);
         }
     }
 

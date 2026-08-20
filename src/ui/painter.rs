@@ -173,6 +173,14 @@ impl Painter {
         self.pixmap.height()
     }
 
+    /// Wipes the whole surface back to transparent and drops any origin shift — what a
+    /// recycled buffer needs before it is drawn into again (see
+    /// [`rasterize_into`](crate::ui::rasterize_into)).
+    pub fn reset(&mut self) {
+        self.pixmap.fill(tiny_skia::Color::TRANSPARENT);
+        self.origin = (0, 0);
+    }
+
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         self.fill_rounded_rect(rect, 0, color);
     }
