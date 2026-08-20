@@ -459,6 +459,43 @@ impl App {
             dst: popped(ui::animation::zoom_rect(r, f, CARD_GROWTH)),
             alpha: (255.0 * pop) as u8,
         });
+        self.compose_card_strip(tiles, cmds, r, pop, card_scale);
+        // The lit edge last, over the art *and* the strip, so the card ends on one
+        // unbroken line. It gives the glow behind a hard boundary to end on, so
+        // the halo reads as light off the edge rather than a smudge fading into
+        // the art. `CARD_RADIUS`-rounded like the rest of the stack.
+        cmds.push(DrawCmd::Tex {
+            tile: tile::CARD_OUTLINE,
+            dst: popped(ui::animation::zoom_rect(
+                r.inflate(ui::tiles::CARD_OUTLINE_PAD),
+                f,
+                CARD_GROWTH,
+            )),
+            alpha: (255.0 * f * pop) as u8,
+        });
+        if self.selected_known_host().is_some_and(|h| h.is_pinned(pin_id)) {
+            let badge = ui::tiles::PIN_BADGE_SIZE;
+            let badge_base = Rect::new(
+                r.right() - badge as i32 - PIN_BADGE_MARGIN,
+                r.y() + PIN_BADGE_MARGIN,
+                badge,
+                badge,
+            );
+            // Corner-anchored, so it only fades — scaling it around its
+            // own center would drift it off the shrunken card.
+            cmds.push(DrawCmd::Tex {
+                tile: tile::PIN_BADGE,
+                dst: ui::animation::zoom_rect(badge_base, f, CARD_GROWTH),
+                alpha: (255.0 * pop) as u8,
+            });
+        }
+    }
+
+
+    /// The focused card's title strip, or the taller submenu panel a hold grew out of it.
+    /// `pop` and `card_scale` are the card's own transform: everything here rides the card
+    /// rather than animating on its own, or the frost drifts off the cover baked into it.
+    fn compose_card_strip(&self, tiles: &TileStore, cmds: &mut Vec<DrawCmd>, r: Rect, pop: f32, card_scale: f32) {
         // The title strip wipes up the card's bottom edge — a wipe, not a slide:
         // the tile's bottom `shown` rows go to the card's bottom `shown` rows, so
         // the frosted art baked into it stays registered with the art beneath.
@@ -585,37 +622,7 @@ impl App {
             }
             (_, None) => {}
         }
-        // The lit edge last, over the art *and* the strip, so the card ends on one
-        // unbroken line. It gives the glow behind a hard boundary to end on, so
-        // the halo reads as light off the edge rather than a smudge fading into
-        // the art. `CARD_RADIUS`-rounded like the rest of the stack.
-        cmds.push(DrawCmd::Tex {
-            tile: tile::CARD_OUTLINE,
-            dst: popped(ui::animation::zoom_rect(
-                r.inflate(ui::tiles::CARD_OUTLINE_PAD),
-                f,
-                CARD_GROWTH,
-            )),
-            alpha: (255.0 * f * pop) as u8,
-        });
-        if self.selected_known_host().is_some_and(|h| h.is_pinned(pin_id)) {
-            let badge = ui::tiles::PIN_BADGE_SIZE;
-            let badge_base = Rect::new(
-                r.right() - badge as i32 - PIN_BADGE_MARGIN,
-                r.y() + PIN_BADGE_MARGIN,
-                badge,
-                badge,
-            );
-            // Corner-anchored, so it only fades — scaling it around its
-            // own center would drift it off the shrunken card.
-            cmds.push(DrawCmd::Tex {
-                tile: tile::PIN_BADGE,
-                dst: ui::animation::zoom_rect(badge_base, f, CARD_GROWTH),
-                alpha: (255.0 * pop) as u8,
-            });
-        }
     }
-
 
     /// Builds this frame's draw list (paint order) from the current state and animation
     /// clocks — pure bookkeeping, no rasterization. The font params are geometry only
