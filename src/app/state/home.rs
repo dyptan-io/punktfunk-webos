@@ -28,21 +28,7 @@ impl App {
     /// Grid shape at `columns` columns — plain field reads (see [`App::desktop_pin`]), so a
     /// caller in a loop may still prefer to hoist it.
     pub(crate) fn grid_layout(&self, columns: usize) -> GridLayout {
-        let desktop_pinned = self.games_loaded && self.desktop_pin;
-        let front_count = self.pinned_count + usize::from(desktop_pinned);
-        let pinned_rows = if front_count == 0 {
-            0
-        } else {
-            front_count.div_ceil(columns.max(1))
-        };
-        GridLayout {
-            pinned_count: self.pinned_count,
-            desktop_pinned,
-            desktop_in_rest: self.games_loaded && !desktop_pinned,
-            front_count,
-            pinned_rows,
-            unpinned_start: pinned_rows * columns.max(1),
-        }
+        GridLayout::new(self.pinned_count, self.desktop_pin, self.games_loaded, columns)
     }
 
     /// Total grid nav positions — `0` (no cards at all) only when no host is

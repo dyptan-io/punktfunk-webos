@@ -51,6 +51,27 @@ pub(crate) struct GridLayout {
 }
 
 impl GridLayout {
+    /// The shape `pinned_count` pinned games and the Desktop pin imply at `columns` columns.
+    /// Pure arithmetic over counts the caller already keeps — `App::grid_layout` supplies them
+    /// from its fields, tests supply them directly.
+    pub(crate) fn new(pinned_count: usize, desktop_pin: bool, games_loaded: bool, columns: usize) -> Self {
+        let desktop_pinned = games_loaded && desktop_pin;
+        let front_count = pinned_count + usize::from(desktop_pinned);
+        let pinned_rows = if front_count == 0 {
+            0
+        } else {
+            front_count.div_ceil(columns.max(1))
+        };
+        Self {
+            pinned_count,
+            desktop_pinned,
+            desktop_in_rest: games_loaded && !desktop_pinned,
+            front_count,
+            pinned_rows,
+            unpinned_start: pinned_rows * columns.max(1),
+        }
+    }
+
     /// The vertical section shape this layout implies: the pinned block's row count, and one
     /// heading per section that actually has cards — so neither names an empty block, and the
     /// gap between them only exists when both do.
@@ -181,5 +202,136 @@ impl Default for GridState {
             focus_last: 0,
             reveal: GridReveal::revealed(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::model::{Artwork, GameEntry};
+
+    fn games(n: usize) -> Vec<GameEntry> {
+        (0..n)
+            .map(|i| GameEntry {
+                id: format!("steam:{i}"),
+                title: format!("Game {i}"),
+                art: Artwork::default(),
+            })
+            .collect()
+    }
+
+    fn pin_ids(layout: &GridLayout, games: &[GameEntry]) -> Vec<Option<String>> {
+        (0..layout.len(games.len()))
+            .map(|i| layout.pin_id_at(games, i).map(str::to_owned))
+            .collect()
+    }
+
+    /// Every arrangement the grid can be in: pin counts either side of a row boundary,
+    /// the Desktop pinned or in the rest section, and an empty library.
+    fn arrangements() -> Vec<(usize, bool, bool, usize, usize)> {
+        let mut out = Vec::new();
+        for &columns in &[1usize, 3, 5] {
+            for &desktop_pin in &[false, true] {
+                for &games in &[0usize, 1, 7, 12] {
+                    for pinned in 0..=games.min(6) {
+                        out.push((pinned, desktop_pin, true, columns, games));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn pin_id_round_trips_through_idx_for_every_arrangement() {
+        for (pinned, desktop_pin, loaded, columns, count) in arrangements() {
+            let games = games(count);
+            let layout = GridLayout::new(pinned, desktop_pin, loaded, columns);
+            for idx in 0..layout.len(games.len()) {
+                let Some(id) = layout.pin_id_at(&games, idx) else {
+                    continue; // padding after a partial pinned row
+                };
+                let id = id.to_owned();
+                assert_eq!(
+                    layout.idx_for_pin_id(&games, &id),
+                    Some(idx),
+                    "idx {idx} id {id} pinned {pinned} desktop {desktop_pin} cols {columns} games {count}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_card_appears_exactly_once() {
+        for (pinned, desktop_pin, loaded, columns, count) in arrangements() {
+            let games = games(count);
+            let layout = GridLayout::new(pinned, desktop_pin, loaded, columns);
+            let mut seen: Vec<String> = pin_ids(&layout, &games).into_iter().flatten().collect();
+            let total = seen.len();
+            seen.sort();
+            seen.dedup();
+            assert_eq!(seen.len(), total, "duplicate card in the grid");
+            let mut expected: Vec<String> = games.iter().map(|g| g.id.clone()).collect();
+            expected.push(store::DESKTOP_PIN_ID.to_owned());
+            expected.sort();
+            assert_eq!(seen, expected);
+        }
+    }
+
+    #[test]
+    fn holes_are_only_the_padding_after_a_partial_pinned_row() {
+        let games = games(12);
+        // 4 pinned games + Desktop = 5 cards in a 3-wide pinned block of 6 slots.
+        let layout = GridLayout::new(4, true, true, 3);
+        assert_eq!(layout.pinned_rows, 2);
+        assert_eq!(layout.unpinned_start, 6);
+        let ids = pin_ids(&layout, &games);
+        let holes: Vec<usize> = ids
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| id.is_none().then_some(i))
+            .collect();
+        assert_eq!(holes, vec![5]);
+    }
+
+    #[test]
+    fn desktop_sits_at_index_zero_when_pinned_and_heads_the_rest_when_not() {
+        let games = games(5);
+        let pinned = GridLayout::new(2, true, true, 5);
+        assert_eq!(pinned.pin_id_at(&games, 0), Some(store::DESKTOP_PIN_ID));
+        let unpinned = GridLayout::new(2, false, true, 5);
+        assert_eq!(
+            unpinned.pin_id_at(&games, unpinned.unpinned_start),
+            Some(store::DESKTOP_PIN_ID)
+        );
+    }
+
+    #[test]
+    fn an_unloaded_library_has_no_desktop_card_at_all() {
+        let layout = GridLayout::new(0, true, false, 5);
+        assert_eq!(layout.len(0), 0);
+        assert!(layout.pin_id_at(&[], 0).is_none());
+    }
+
+    #[test]
+    fn sections_never_name_an_empty_block() {
+        let empty = GridLayout::new(0, false, true, 5);
+        let s = empty.sections(0);
+        assert!(!s.pinned_heading);
+        // Desktop alone still lives in the rest section, so the Library heading stands.
+        assert!(s.library_heading);
+
+        let all_pinned = GridLayout::new(3, true, true, 5);
+        let s = all_pinned.sections(3);
+        assert!(s.pinned_heading);
+        assert!(!s.library_heading, "nothing left under Library");
+    }
+
+    #[test]
+    fn game_at_skips_the_desktop_card() {
+        let games = games(3);
+        let layout = GridLayout::new(1, true, true, 5);
+        assert!(layout.game_at(&games, 0).is_none());
+        assert_eq!(layout.game_at(&games, 1).map(|g| g.id.as_str()), Some("steam:0"));
     }
 }

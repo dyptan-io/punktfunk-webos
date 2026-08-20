@@ -282,3 +282,84 @@ pub(crate) fn card_at_point(
             .find(|&idx| unscrolled_card_rect(idx, columns, grid_x, available_w, sections).contains_point((x, y)))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const COLUMNS: usize = 5;
+    const AVAILABLE_W: u32 = 1920 - crate::ui::widgets::SIDEBAR_W;
+    const SCREEN_H: i32 = 1080;
+
+    fn sections() -> GridSections {
+        GridSections {
+            pinned_rows: 1,
+            pinned_heading: true,
+            library_heading: true,
+        }
+    }
+
+    fn window(count: usize, scroll: i32, focus: Option<usize>) -> std::ops::Range<usize> {
+        focus_window(count, COLUMNS, AVAILABLE_W, sections(), scroll, SCREEN_H, focus)
+    }
+
+    /// The invariant that silently freezes focus when broken: `FocusMap::navigate` needs the
+    /// current focus in the map to have an origin to move from.
+    #[test]
+    fn the_window_always_contains_the_current_focus() {
+        for count in [1usize, 5, 6, 23, 200] {
+            for scroll in [-500, 0, 137, 4000, 100_000] {
+                for focus in 0..count {
+                    let w = window(count, scroll, Some(focus));
+                    assert!(
+                        w.contains(&focus),
+                        "focus {focus} outside {w:?} (count {count}, scroll {scroll})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_window_is_row_aligned_and_inside_the_grid() {
+        for count in [1usize, 7, 23, 200] {
+            for scroll in [0, 300, 4000] {
+                let w = window(count, scroll, Some(count / 2));
+                assert_eq!(w.start % COLUMNS, 0, "start {} not row-aligned", w.start);
+                assert!(w.end == count || w.end % COLUMNS == 0, "end {} not row-aligned", w.end);
+                assert!(w.end <= count);
+                assert!(w.start <= w.end);
+            }
+        }
+    }
+
+    /// O(visible), not O(library): the window a keypress builds must not grow with the
+    /// library behind it.
+    #[test]
+    fn the_window_does_not_grow_with_the_library() {
+        let small = window(60, 0, Some(0)).len();
+        let large = window(5_000, 0, Some(0)).len();
+        assert_eq!(small, large);
+    }
+
+    #[test]
+    fn a_focus_past_the_end_is_ignored_rather_than_widening_the_window() {
+        let w = window(20, 0, Some(9_999));
+        assert!(w.end <= 20);
+    }
+
+    #[test]
+    fn an_empty_grid_has_nothing_to_navigate() {
+        assert_eq!(window(0, 0, None), 0..0);
+    }
+
+    /// Scrolled clear of the viewport there is no visible band, so the focused card is the
+    /// only anchor left — and with no focus, nothing at all.
+    #[test]
+    fn a_grid_scrolled_off_screen_keeps_only_the_focused_card() {
+        let far = 1_000_000;
+        let w = window(200, far, Some(100));
+        assert!(w.contains(&100));
+        assert!(window(200, far, None).is_empty());
+    }
+}

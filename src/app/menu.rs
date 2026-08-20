@@ -660,3 +660,109 @@ pub fn set_bitrate_fraction(settings: &mut Settings, fraction: f32) {
         stepped.clamp(BITRATE_MIN_KBPS, BITRATE_MAX_KBPS)
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SCOPES: [SettingsScope; 2] = [SettingsScope::Global, SettingsScope::Game];
+
+    #[test]
+    fn display_to_logical_is_a_bijection_over_the_visible_range() {
+        for set in SCOPES {
+            let visible: Vec<usize> = settings_visible_logical_rows(set).collect();
+            assert_eq!(visible.len(), settings_row_count(set));
+            for (display, &logical) in visible.iter().enumerate() {
+                assert_eq!(settings_logical_row(set, display), logical);
+            }
+            let mut sorted = visible.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), visible.len(), "a logical row is listed twice");
+        }
+    }
+
+    #[test]
+    fn only_shown_rows_are_reachable_from_a_display_position() {
+        for set in SCOPES {
+            for display in 0..settings_row_count(set) {
+                assert!(row_shown(settings_logical_row(set, display)));
+            }
+        }
+    }
+
+    /// The per-game list carries no links out and no backend row, but keeps Cursor and Reset.
+    #[test]
+    fn the_game_scope_lists_its_own_rows_only() {
+        let game: Vec<usize> = settings_visible_logical_rows(SettingsScope::Game).collect();
+        for absent in [ROW_VIDEO_BACKEND, ROW_EXPERIMENTAL, ROW_DIAGNOSTICS, ROW_ABOUT] {
+            assert!(!game.contains(&absent), "row {absent} must not be on the per-game list");
+        }
+        assert!(game.contains(&ROW_CURSOR));
+        assert!(game.contains(&ROW_RESET));
+        assert!(!settings_visible_logical_rows(SettingsScope::Global).any(|r| r == ROW_RESET));
+    }
+
+    #[test]
+    fn the_cursor_sub_screen_maps_onto_its_two_logical_rows() {
+        assert_eq!(cursor_logical_row(CURSOR_ROW_CAPTURE), ROW_CURSOR_CAPTURE);
+        assert_eq!(cursor_logical_row(CURSOR_ROW_GESTURES), ROW_CURSOR_GESTURES);
+    }
+
+    #[test]
+    fn cycle_index_wraps_both_ways() {
+        assert_eq!(cycle_index(0, 3, true), 1);
+        assert_eq!(cycle_index(2, 3, true), 0);
+        assert_eq!(cycle_index(0, 3, false), 2);
+        assert_eq!(cycle_index(1, 3, false), 0);
+        assert_eq!(cycle_index(0, 1, true), 0);
+        assert_eq!(cycle_index(0, 1, false), 0);
+    }
+
+    fn bitrate_at(fraction: f32) -> u32 {
+        let mut s = Settings::default();
+        set_bitrate_fraction(&mut s, fraction);
+        s.bitrate_kbps
+    }
+
+    #[test]
+    fn the_bottom_of_the_bitrate_track_is_the_automatic_notch() {
+        assert_eq!(bitrate_at(0.0), BITRATE_AUTOMATIC);
+        assert_eq!(bitrate_at(-1.0), BITRATE_AUTOMATIC);
+        // Half a step above the floor still rounds down onto it, so still Automatic.
+        let half_step = (BITRATE_STEP_KBPS / 2 - 1) as f32 / (BITRATE_MAX_KBPS - BITRATE_MIN_KBPS) as f32;
+        assert_eq!(bitrate_at(half_step), BITRATE_AUTOMATIC);
+        // One full step above it is the first real value.
+        let one_step = BITRATE_STEP_KBPS as f32 / (BITRATE_MAX_KBPS - BITRATE_MIN_KBPS) as f32;
+        assert_eq!(bitrate_at(one_step), BITRATE_MIN_KBPS + BITRATE_STEP_KBPS);
+    }
+
+    #[test]
+    fn the_bitrate_track_stays_stepped_and_inside_its_range() {
+        for i in 0..=100 {
+            let v = bitrate_at(i as f32 / 100.0);
+            if v == BITRATE_AUTOMATIC {
+                continue;
+            }
+            assert_eq!(v % BITRATE_STEP_KBPS, 0, "{v} is off the step grid");
+            assert!((BITRATE_MIN_KBPS..=BITRATE_MAX_KBPS).contains(&v), "{v} out of range");
+        }
+        assert_eq!(bitrate_at(1.0), BITRATE_MAX_KBPS);
+        assert_eq!(bitrate_at(2.0), BITRATE_MAX_KBPS);
+    }
+
+    /// `audio_option_count` exists to answer this without building the list; if the two ever
+    /// disagree the Audio row locks against a list it is not showing.
+    #[test]
+    fn the_audio_option_count_matches_the_option_list() {
+        assert_eq!(audio_option_count(), audio_channel_options().len());
+    }
+
+    #[test]
+    fn exp_game_mode_is_locked_until_the_root_probe_says_yes() {
+        assert!(exp_row_lock(EXP_ROW_GAME_MODE, None).is_some());
+        assert!(exp_row_lock(EXP_ROW_GAME_MODE, Some(false)).is_some());
+        assert!(exp_row_lock(EXP_ROW_GAME_MODE, Some(true)).is_none());
+        assert!(exp_row_lock(EXP_ROW_HW_AUDIO, None).is_none());
+    }
+}
