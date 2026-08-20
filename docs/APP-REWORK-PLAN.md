@@ -1,6 +1,6 @@
 # `src/app` rework plan
 
-Status: proposal. Scope: `src/app` (10.9k LOC, 56 files), plus the seams it forces open in
+Status: phases 0, 0.5 and 1 landed (see below); 2-7 proposal. Scope: `src/app` (10.9k LOC, 56 files), plus the seams it forces open in
 `src/core/screen.rs`, `src/ui/screen.rs` and `src/runtime`.
 
 ## 1. What is actually wrong
@@ -238,7 +238,7 @@ integers.
 Each phase compiles, passes `task docker:lint` (`-D warnings`), and is independently
 revertable. Ordered so the safety net and the cheap wins land before anything risky.
 
-### Phase 0 — hygiene (no behaviour change)
+### Phase 0 — hygiene (no behaviour change) — DONE
 
 1. Fix the `WakeSettings` hover gap (P3): add it to `hover_focus_at`'s list-modal arm and drop
    the hardcoded row-0 click special case. This is a bug fix, not a refactor — land it alone so
@@ -248,7 +248,7 @@ revertable. Ordered so the safety net and the cheap wins land before anything ri
    not exist in the tree. Fold R6's rationale into §5 here and repoint both citations.
 3. Fix CLAUDE.md's "~8 `Screen` match sites" to the real count; re-fix it after Phase 3.
 
-### Phase 0.5 — characterization tests (P8)
+### Phase 0.5 — characterization tests (P8) — DONE (23 tests; `task docker:test`)
 
 The prerequisite for everything below. Pure functions only; no SDL, no fonts, no TV.
 
@@ -263,7 +263,14 @@ The prerequisite for everything below. Pure functions only; no SDL, no fonts, no
 
 Target: ~40 tests, all `cargo test` on the host, no cross-toolchain needed.
 
-### Phase 1 — hot-path allocations and cache containers (P6, P10)
+### Phase 1 — hot-path allocations and cache containers (P6, P10) — DONE except 3 and 7
+
+Item 3 (`editing_override` → `Cow`) was dropped: `SettingsOverride` is `Copy`, so the call
+never allocated. Item 7 (the known-hosts index) is deferred to Phase 6, which is where
+`HostsState` gains the single mutation funnel an index can be maintained from.
+
+Still unmeasured: the exit criteria below want `frame_timer` numbers from the TV, which
+this work has not been checked against.
 
 Pure optimization, no API churn. Measurable on armv7 softfloat, where a `FocusRow` list is
 `String` formatting per row.
