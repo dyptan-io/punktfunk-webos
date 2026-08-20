@@ -35,8 +35,8 @@ machine) ← `runtime` (the two top-level loops).
   flat inside `ui` via `ui::prelude`.
 - **`app`** splits per screen by concern: `state::<screen>` (events, transitions) and
   `view::<screen>` (geometry, draw list). `app::render` holds `tile` (which tile is which),
-  `key` (what its pixels depend on — hashed, never stored) and `ctx` (`RenderCtx`, threaded
-  through every `prepare_*`). `App` is 19 fields and owns almost nothing directly: `nav` (screen,
+  `key` (what its pixels depend on — hashed, never stored), `ctx` (`RenderCtx`, threaded
+  through every `prepare_*`) and `prepare_grid` (the O(visible) card passes, one method each). `App` is 19 fields and owns almost nothing directly: `nav` (screen,
   previous screen, one focus cursor per screen), `jobs` (every background receiver, one
   `drain_jobs`), `library` (the selected host's games, art and pins), `hosts` (the known list,
   reachability, rooted), `settings_ui` (the document plus its dropdown/override/slider),

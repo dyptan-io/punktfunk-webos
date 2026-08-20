@@ -1,6 +1,6 @@
 # `src/app` rework plan
 
-Status: phases 0-6 landed (see the per-phase notes below); 7 proposal. Scope: `src/app` (10.9k LOC, 56 files), plus the seams it forces open in
+Status: phases 0-7 landed; see the per-phase notes below. Scope: `src/app` (10.9k LOC, 56 files), plus the seams it forces open in
 `src/core/screen.rs`, `src/ui/screen.rs` and `src/runtime`.
 
 ## 1. What is actually wrong
@@ -496,7 +496,7 @@ modules. Funnelling those first is its own change.
 sub-structs, Home's focus and status, the launch handoff, the card menu, the state writer, the
 gamepad type, the keyboard flag and the identity.
 
-### Phase 7 — file size
+### Phase 7 — file size — DONE
 
 `render/prepare.rs` (1291) and `render/compose.rs` (722) stay large but are cohesive once
 Phase 4 removes their inner matches. Re-measure then. The two genuine outliers are
@@ -504,6 +504,27 @@ Phase 4 removes their inner matches. Re-measure then. The two genuine outliers a
 both are the O(visible) window logic. Split `prepare_grid` along its existing internal
 boundaries only — evict / build-window / card-menu tiles / reveal / shared tiles are five
 self-contained passes — and do not restructure the windowing arithmetic while doing it.
+
+Landed. `prepare_grid` (430 lines by then) moved to its own `render/prepare_grid.rs` and became
+seven methods: `release_stale_cards`, `evict_cards_outside`, `build_card_window`,
+`prepare_focused_card_tiles`, `prepare_grid_shared_tiles`, `advance_grid_reveal` and
+`prepare_no_host_tile`. The windowing arithmetic stays in `prepare_grid` itself, which is now
+the only thing in the module that computes an index range. Two consequences worth knowing:
+`art_ready` is a free function taking `&Library` (a closure could not survive `&mut self` in a
+sibling pass), and the reveal now runs *after* the shared tiles rather than between them —
+neither reads the other, both only ensure tiles and record what they rebuilt.
+
+`compose_grid` split twice — `compose_focused_card` (the card's own glow/shadow/zoom/outline/
+badge stack) and `compose_card_strip` (the title strip, or the submenu panel a hold grows out
+of it) — and `compose_modal` once, into `compose_modal_card`. The layer functions now hold only
+what is genuinely shared: `compose_grid` the window arithmetic, `compose_modal` the cross-fade
+between an entering and a leaving card plus the scrim that belongs to neither.
+
+Re-measured after: no function in `src/app` over 184 lines, and the two the plan named are 97
+(`compose_grid`) and 73 (`prepare_grid`). `prepare.rs` is 880, `compose.rs` 763. The survivors
+over 150 (`compose_modal_card`, `prepare_modal`, `prepare_scroll`) are each one screen family's
+paint order end to end, which is the thing being described — splitting those would hide an
+ordering the reader needs to see all at once.
 
 ## 4. Invariants this rework must not break
 
@@ -544,7 +565,7 @@ encode as much of it as possible in Phase 0.5's tests.
 | 4 families | per-commit | every list screen + every confirm dialog, on the TV — **still owed** |
 | 5 Jobs | yes | discovery, pairing, speed test, send-logs, root probe all still land — **still owed** |
 | 6 App split | per-sub-struct | full menu pass + one stream launch/return — **still owed** |
-| 7 file size | yes | lint only |
+| 7 file size | yes | lint only — done, plus `cargo test` |
 
 Phases 1, 2 and 5 are independent and can land in any order after 0.5. Phase 4 wants 3 done
 first (its handlers read `nav.cursor`) and is much cheaper after 2. Phase 6 wants everything
