@@ -23,5 +23,6 @@ pub(crate) mod ctx;
 pub(crate) mod geometry;
 pub(crate) mod key;
 pub(crate) mod prepare;
+pub(crate) mod prepare_grid;
 pub(crate) mod state;
 pub(crate) mod tile;
