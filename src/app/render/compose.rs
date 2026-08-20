@@ -70,179 +70,7 @@ impl App {
             });
         }
         if !matches!(screen, Screen::Home) {
-            let dy = ((1.0 - m) * MODAL_RISE) as i32;
-            // The tile now covers only the card region (see `prepare_modal`), so it
-            // composites there rather than full-screen. Opening plays the same motion
-            // `compose_modal`'s closing snapshot uses below, in reverse — fade + rise, no
-            // scale.
-            let modal_base = self.render.modal.tile_region.offset(0, dy);
-            cmds.push(DrawCmd::Tex {
-                tile: tile::MODAL,
-                dst: modal_base,
-                alpha: (255.0 * m) as u8,
-            });
-            // Scrollable content geometry (Settings rows or About document), computed
-            // once and reused. Scrolling crops the full baked tile, never re-rasterizes.
-            let scroll_geom = self.scroll_geometry_for(screen, screen_w, screen_h, fonts);
-            if let Some((total, _, _, content)) = scroll_geom {
-                let stride = self.scroll_stride_for(screen, fonts);
-                let scroll_px = self.clamped_scroll_px(total, stride, content.height());
-                let alpha = (255.0 * m) as u8;
-                // Settings' body is one tile per row (see `tile::settings_row`), so it is
-                // placed row by row; every other scrolling modal crops its single baked tile.
-                if matches!(screen, Screen::Settings(_)) {
-                    Self::push_settings_rows(cmds, total, content, scroll_px, dy, alpha);
-                } else if let Some((src, dst)) = self.scroll_src_rect(screen, screen_w, screen_h, fonts) {
-                    cmds.push(DrawCmd::TexCropped {
-                        tile: tile::SCROLL_CONTENT,
-                        src,
-                        dst: dst.offset(0, dy),
-                        alpha,
-                    });
-                }
-                // Bottom fade, only while rows remain below the viewport — it is the
-                // "there is more" signal, so it has to vanish exactly when scrolling has
-                // reached the end, or it reads as content that can never be got to.
-                //
-                // Pushed here, between the content and the focused-row tile below, on
-                // purpose: focus must never look dimmed just because it sits on the last
-                // visible row, and an open dropdown (pushed next) must cover the band
-                // rather than show through it.
-                // Keyed off pixels, not rows: at either end of the list the offset is clamped
-                // mid-row, so a row-based test would keep claiming there is more beyond.
-                let fade_h = ui::widgets::SCROLL_FADE_H.min(content.height());
-                if scroll_px > 0 {
-                    cmds.push(DrawCmd::Tex {
-                        tile: tile::SCROLL_FADE_TOP,
-                        dst: Rect::new(content.x(), content.y() + dy, content.width(), fade_h),
-                        alpha: (255.0 * m) as u8,
-                    });
-                }
-                if scroll_px < Self::max_scroll_px(total, stride, content.height()) {
-                    cmds.push(DrawCmd::Tex {
-                        tile: tile::SCROLL_FADE,
-                        dst: Rect::new(
-                            content.x(),
-                            content.y() + dy + (content.height() - fade_h) as i32,
-                            content.width(),
-                            fade_h,
-                        ),
-                        alpha: (255.0 * m) as u8,
-                    });
-                }
-            }
-            // An open dropdown's panel and its focused option, resolved once — the two are
-            // drawn either side of the focus tile below, which is the only reason they are
-            // not one block.
-            let dropdown = self.dropdown_draw_state().and_then(|(row, focused, dd_alpha)| {
-                let (content, scroll_px) = self.dropdown_geom(screen_w, screen_h, fonts)?;
-                let overlay_rect = view::settings::dropdown_overlay_rect_at_px(content, row, scroll_px);
-                Some((row, focused, overlay_rect, (255.0 * m * dd_alpha) as u8))
-            });
-            // Dropdown overlay (Settings or Diagnostics).
-            if let Some((row, _, overlay_rect, dd_alpha)) = dropdown {
-                let options_len = self.dropdown_len(row);
-                cmds.push(DrawCmd::Tex {
-                    tile: tile::DROPDOWN_OVERLAY,
-                    dst: Rect::new(
-                        overlay_rect.x(),
-                        overlay_rect.y() + dy,
-                        overlay_rect.width(),
-                        options_len as u32 * ui::widgets::DROPDOWN_OPTION_H,
-                    ),
-                    alpha: dd_alpha,
-                });
-            }
-            // Focused widget of the active modal (setting row, button, etc.);
-            // composites on shell at its on-screen position (no re-rasterize on move).
-            // The entering screen's only — the snapshot has its own focused row baked in.
-            let focus_rect = self.modal_focus_rect(screen, screen_w, screen_h, fonts);
-            if let Some(rect) = focus_rect {
-                let pad = ui::tiles::ROW_TILE_PAD;
-                let base = rect.inflate(pad).offset(0, dy);
-                // The zoom-in: same GPU-scale-around-center technique as the
-                // grid's card focus pop (see above) — `modal_focus_tile` is
-                // rasterized once at its literal size, never re-rendered for
-                // this (except while `switch_anim` animates its content, see
-                // `prepare_tiles`).
-                let dst = ui::animation::focus_tile_rect(base, self.render.modal.focus_anim, self.press_dip(screen));
-                let alpha = (255.0 * m) as u8;
-                // In a scrolling modal the focused row can hang past the viewport's bottom
-                // edge mid-glide (the crop lags the row offset by up to one stride), so it is
-                // clipped rather than left to paint over the card's chrome. Every other modal
-                // keeps the plain unclipped path — none of them scrolls.
-                let tile_size = tiles.get(tile::MODAL_FOCUS).map(|p| (p.width(), p.height()));
-                match (scroll_geom, tile_size) {
-                    (Some((_, _, _, content)), Some((tw, th))) => {
-                        let viewport = content.inflate(pad).offset(0, dy);
-                        if let Some((src, visible)) = Self::clip_tile(dst, viewport, tw, th) {
-                            cmds.push(DrawCmd::TexCropped {
-                                tile: tile::MODAL_FOCUS,
-                                src,
-                                dst: visible,
-                                alpha,
-                            });
-                        }
-                    }
-                    _ => cmds.push(DrawCmd::Tex {
-                        tile: tile::MODAL_FOCUS,
-                        dst,
-                        alpha,
-                    }),
-                }
-            }
-            // The open dropdown's focused option — same idea, composited on
-            // top of the shell's unfocused option list at its actual
-            // position, so navigating dropdown options needs no modal
-            // re-rasterize either. `Settings` or `Diagnostics`.
-            if let Some((_, focused, overlay_rect, dd_alpha)) = dropdown {
-                let option_rect = ui::widgets::dropdown_option_rect(overlay_rect, focused);
-                cmds.push(DrawCmd::Tex {
-                    tile: tile::DROPDOWN_FOCUS,
-                    dst: Rect::new(
-                        option_rect.x(),
-                        option_rect.y() + dy,
-                        option_rect.width(),
-                        option_rect.height(),
-                    ),
-                    alpha: dd_alpha,
-                });
-            }
-            // Whichever modal is scrollable, its indicator — full opacity for
-            // `SCROLL_INDICATOR_HOLD`, then a linear fade over `SCROLL_INDICATOR_FADE`
-            // (names kept from when only Settings had one; every scrollable modal now
-            // shares the same timing and the same `self.render.scroll.shown_at` clock, since
-            // only one is ever open at a time).
-            if let Some((total, visible, card, content)) = scroll_geom {
-                if total > visible {
-                    let scroll_alpha = self.render.scroll.shown_at.map_or(0.0, |t| {
-                        let elapsed = t.elapsed();
-                        if elapsed < SCROLL_INDICATOR_HOLD {
-                            1.0
-                        } else {
-                            let fading = (elapsed - SCROLL_INDICATOR_HOLD).as_secs_f32();
-                            1.0 - (fading / SCROLL_INDICATOR_FADE.as_secs_f32()).clamp(0.0, 1.0)
-                        }
-                    });
-                    if scroll_alpha > 0.0 {
-                        // Sits nearer the card's edge than the content's, so it doesn't
-                        // overlap a Settings row's dropdown pill/slider/switch. The `26`
-                        // offset isn't derived from either modal's own width fraction —
-                        // re-check both if either changes.
-                        let dst = Rect::new(
-                            card.right() - 26,
-                            content.y() + dy,
-                            SCROLL_INDICATOR_TILE_W,
-                            content.height(),
-                        );
-                        cmds.push(DrawCmd::Tex {
-                            tile: tile::SCROLL_INDICATOR,
-                            dst,
-                            alpha: (255.0 * m * scroll_alpha) as u8,
-                        });
-                    }
-                }
-            }
+            self.compose_modal_card(tiles, screen, ui::render::Size::new(screen_w, screen_h), fonts, m, cmds);
         }
         // Last, so it fades away *over* what it uncovers: the entering card is often the
         // larger (a submenu returning to Settings) and would otherwise hide it entirely.
@@ -267,6 +95,194 @@ impl App {
 
     /// The settings list: each row's tile placed at its scrolled position and clipped to the
     /// viewport. Pure placement — scrolling re-rasterizes nothing.
+    /// The open modal itself: its card, its scrollable content, an open dropdown and the
+    /// focused widget composited on top. `m` is the modal layer's own fade/rise progress —
+    /// everything here rides it rather than animating separately.
+    fn compose_modal_card(
+        &self,
+        tiles: &TileStore,
+        screen: Screen,
+        size: ui::render::Size,
+        fonts: &ui::text::Fonts,
+        m: f32,
+        cmds: &mut Vec<DrawCmd>,
+    ) {
+        let (screen_w, screen_h) = (size.w, size.h);
+        let dy = ((1.0 - m) * MODAL_RISE) as i32;
+        // The tile now covers only the card region (see `prepare_modal`), so it
+        // composites there rather than full-screen. Opening plays the same motion
+        // `compose_modal`'s closing snapshot uses below, in reverse — fade + rise, no
+        // scale.
+        let modal_base = self.render.modal.tile_region.offset(0, dy);
+        cmds.push(DrawCmd::Tex {
+            tile: tile::MODAL,
+            dst: modal_base,
+            alpha: (255.0 * m) as u8,
+        });
+        // Scrollable content geometry (Settings rows or About document), computed
+        // once and reused. Scrolling crops the full baked tile, never re-rasterizes.
+        let scroll_geom = self.scroll_geometry_for(screen, screen_w, screen_h, fonts);
+        if let Some((total, _, _, content)) = scroll_geom {
+            let stride = self.scroll_stride_for(screen, fonts);
+            let scroll_px = self.clamped_scroll_px(total, stride, content.height());
+            let alpha = (255.0 * m) as u8;
+            // Settings' body is one tile per row (see `tile::settings_row`), so it is
+            // placed row by row; every other scrolling modal crops its single baked tile.
+            if matches!(screen, Screen::Settings(_)) {
+                Self::push_settings_rows(cmds, total, content, scroll_px, dy, alpha);
+            } else if let Some((src, dst)) = self.scroll_src_rect(screen, screen_w, screen_h, fonts) {
+                cmds.push(DrawCmd::TexCropped {
+                    tile: tile::SCROLL_CONTENT,
+                    src,
+                    dst: dst.offset(0, dy),
+                    alpha,
+                });
+            }
+            // Bottom fade, only while rows remain below the viewport — it is the
+            // "there is more" signal, so it has to vanish exactly when scrolling has
+            // reached the end, or it reads as content that can never be got to.
+            //
+            // Pushed here, between the content and the focused-row tile below, on
+            // purpose: focus must never look dimmed just because it sits on the last
+            // visible row, and an open dropdown (pushed next) must cover the band
+            // rather than show through it.
+            // Keyed off pixels, not rows: at either end of the list the offset is clamped
+            // mid-row, so a row-based test would keep claiming there is more beyond.
+            let fade_h = ui::widgets::SCROLL_FADE_H.min(content.height());
+            if scroll_px > 0 {
+                cmds.push(DrawCmd::Tex {
+                    tile: tile::SCROLL_FADE_TOP,
+                    dst: Rect::new(content.x(), content.y() + dy, content.width(), fade_h),
+                    alpha: (255.0 * m) as u8,
+                });
+            }
+            if scroll_px < Self::max_scroll_px(total, stride, content.height()) {
+                cmds.push(DrawCmd::Tex {
+                    tile: tile::SCROLL_FADE,
+                    dst: Rect::new(
+                        content.x(),
+                        content.y() + dy + (content.height() - fade_h) as i32,
+                        content.width(),
+                        fade_h,
+                    ),
+                    alpha: (255.0 * m) as u8,
+                });
+            }
+        }
+        // An open dropdown's panel and its focused option, resolved once — the two are
+        // drawn either side of the focus tile below, which is the only reason they are
+        // not one block.
+        let dropdown = self.dropdown_draw_state().and_then(|(row, focused, dd_alpha)| {
+            let (content, scroll_px) = self.dropdown_geom(screen_w, screen_h, fonts)?;
+            let overlay_rect = view::settings::dropdown_overlay_rect_at_px(content, row, scroll_px);
+            Some((row, focused, overlay_rect, (255.0 * m * dd_alpha) as u8))
+        });
+        // Dropdown overlay (Settings or Diagnostics).
+        if let Some((row, _, overlay_rect, dd_alpha)) = dropdown {
+            let options_len = self.dropdown_len(row);
+            cmds.push(DrawCmd::Tex {
+                tile: tile::DROPDOWN_OVERLAY,
+                dst: Rect::new(
+                    overlay_rect.x(),
+                    overlay_rect.y() + dy,
+                    overlay_rect.width(),
+                    options_len as u32 * ui::widgets::DROPDOWN_OPTION_H,
+                ),
+                alpha: dd_alpha,
+            });
+        }
+        // Focused widget of the active modal (setting row, button, etc.);
+        // composites on shell at its on-screen position (no re-rasterize on move).
+        // The entering screen's only — the snapshot has its own focused row baked in.
+        let focus_rect = self.modal_focus_rect(screen, screen_w, screen_h, fonts);
+        if let Some(rect) = focus_rect {
+            let pad = ui::tiles::ROW_TILE_PAD;
+            let base = rect.inflate(pad).offset(0, dy);
+            // The zoom-in: same GPU-scale-around-center technique as the
+            // grid's card focus pop (see above) — `modal_focus_tile` is
+            // rasterized once at its literal size, never re-rendered for
+            // this (except while `switch_anim` animates its content, see
+            // `prepare_tiles`).
+            let dst = ui::animation::focus_tile_rect(base, self.render.modal.focus_anim, self.press_dip(screen));
+            let alpha = (255.0 * m) as u8;
+            // In a scrolling modal the focused row can hang past the viewport's bottom
+            // edge mid-glide (the crop lags the row offset by up to one stride), so it is
+            // clipped rather than left to paint over the card's chrome. Every other modal
+            // keeps the plain unclipped path — none of them scrolls.
+            let tile_size = tiles.get(tile::MODAL_FOCUS).map(|p| (p.width(), p.height()));
+            match (scroll_geom, tile_size) {
+                (Some((_, _, _, content)), Some((tw, th))) => {
+                    let viewport = content.inflate(pad).offset(0, dy);
+                    if let Some((src, visible)) = Self::clip_tile(dst, viewport, tw, th) {
+                        cmds.push(DrawCmd::TexCropped {
+                            tile: tile::MODAL_FOCUS,
+                            src,
+                            dst: visible,
+                            alpha,
+                        });
+                    }
+                }
+                _ => cmds.push(DrawCmd::Tex {
+                    tile: tile::MODAL_FOCUS,
+                    dst,
+                    alpha,
+                }),
+            }
+        }
+        // The open dropdown's focused option — same idea, composited on
+        // top of the shell's unfocused option list at its actual
+        // position, so navigating dropdown options needs no modal
+        // re-rasterize either. `Settings` or `Diagnostics`.
+        if let Some((_, focused, overlay_rect, dd_alpha)) = dropdown {
+            let option_rect = ui::widgets::dropdown_option_rect(overlay_rect, focused);
+            cmds.push(DrawCmd::Tex {
+                tile: tile::DROPDOWN_FOCUS,
+                dst: Rect::new(
+                    option_rect.x(),
+                    option_rect.y() + dy,
+                    option_rect.width(),
+                    option_rect.height(),
+                ),
+                alpha: dd_alpha,
+            });
+        }
+        // Whichever modal is scrollable, its indicator — full opacity for
+        // `SCROLL_INDICATOR_HOLD`, then a linear fade over `SCROLL_INDICATOR_FADE`
+        // (names kept from when only Settings had one; every scrollable modal now
+        // shares the same timing and the same `self.render.scroll.shown_at` clock, since
+        // only one is ever open at a time).
+        if let Some((total, visible, card, content)) = scroll_geom {
+            if total > visible {
+                let scroll_alpha = self.render.scroll.shown_at.map_or(0.0, |t| {
+                    let elapsed = t.elapsed();
+                    if elapsed < SCROLL_INDICATOR_HOLD {
+                        1.0
+                    } else {
+                        let fading = (elapsed - SCROLL_INDICATOR_HOLD).as_secs_f32();
+                        1.0 - (fading / SCROLL_INDICATOR_FADE.as_secs_f32()).clamp(0.0, 1.0)
+                    }
+                });
+                if scroll_alpha > 0.0 {
+                    // Sits nearer the card's edge than the content's, so it doesn't
+                    // overlap a Settings row's dropdown pill/slider/switch. The `26`
+                    // offset isn't derived from either modal's own width fraction —
+                    // re-check both if either changes.
+                    let dst = Rect::new(
+                        card.right() - 26,
+                        content.y() + dy,
+                        SCROLL_INDICATOR_TILE_W,
+                        content.height(),
+                    );
+                    cmds.push(DrawCmd::Tex {
+                        tile: tile::SCROLL_INDICATOR,
+                        dst,
+                        alpha: (255.0 * m * scroll_alpha) as u8,
+                    });
+                }
+            }
+        }
+    }
+
     fn push_settings_rows(cmds: &mut Vec<DrawCmd>, total: usize, content: Rect, scroll_px: i32, dy: i32, alpha: u8) {
         let viewport = content.offset(0, dy);
         for i in 0..total {
