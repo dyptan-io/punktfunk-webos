@@ -159,16 +159,10 @@ impl App {
 
     /// Handles host menu events.
     pub(crate) fn handle_host_menu_event(&mut self, ev: MenuEvent) {
-        let len = self.host_menu_actions().len();
-        if crate::ui::widgets::list_nav(
-            self.nav.cursor_mut(ScreenKey::HostMenu),
-            len,
-            crate::app::menu::nav_dir(ev),
-        ) {
+        if self.list_nav_event(ev) {
             // Vertical movement always lands on the row body — a ⋯ belongs to the row
             // it's on, so leaving that row leaves the button too.
             self.host_menu_dots = false;
-            self.modal.focus_anim = Some(Instant::now());
             return;
         }
         match ev {

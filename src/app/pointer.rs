@@ -18,10 +18,17 @@ use crate::ui;
 use crate::ui::render::Rect;
 
 impl App {
-    /// Handed to `SDL_SetTextInputRect` by the render loop.
-    pub fn address_field_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Rect {
-        let (_, subtitle) = self.address_copy();
-        view::addhost::field_rect(screen_w, screen_h, fonts, &subtitle, self.keyboard_shown)
+    /// Handed to `SDL_SetTextInputRect` by the render loop. `None` off the address screens,
+    /// which are the only ones that take text input at all.
+    pub fn address_field_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<Rect> {
+        let (_, subtitle) = self.address_copy()?;
+        Some(view::addhost::field_rect(
+            screen_w,
+            screen_h,
+            fonts,
+            &subtitle,
+            self.keyboard_shown,
+        ))
     }
 
     /// Updates focus/hover to whatever the Magic Remote's pointer is over, returning
@@ -307,7 +314,7 @@ impl App {
         let dd = self.dropdown.as_ref()?;
         let (content, scroll_px) = self.dropdown_geom(screen_w, screen_h, fonts)?;
         let overlay = view::settings::dropdown_overlay_rect_at_px(content, dd.row, scroll_px);
-        let options_len = self.dropdown_options_len(dd.row);
+        let options_len = self.dropdown_len(dd.row);
         (0..options_len).find(|&i| ui::widgets::dropdown_option_rect(overlay, i).contains_point((x, y)))
     }
 

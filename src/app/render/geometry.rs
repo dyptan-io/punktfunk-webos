@@ -227,14 +227,32 @@ impl App {
         match screen {
             Screen::Settings(_) => ui::widgets::FOCUS_ROW_H as i32 + ui::widgets::FOCUS_ROW_GAP,
             Screen::About => view::about::line_stride(fonts.raster, fonts.value),
-            _ => 1,
+            // Nothing else has a scrolling body. `1` rather than `0` because the stride is a
+            // divisor in the scroll arithmetic, and this is only reached where
+            // `scroll_geometry` already said there is nothing to scroll.
+            Screen::Home
+            | Screen::Pairing
+            | Screen::AddHost
+            | Screen::Wake
+            | Screen::ForgetHost
+            | Screen::HostMenu
+            | Screen::EditHost
+            | Screen::SpeedTest
+            | Screen::WakeSettings
+            | Screen::PinLimit
+            | Screen::Diagnostics
+            | Screen::Experimental
+            | Screen::CursorSettings(_)
+            | Screen::SendLogs => 1,
         }
     }
 
     /// Title and subtitle of the address form, which serves both Add host and Edit
     /// address — the only difference between the two screens.
-    pub(crate) fn address_copy(&self) -> (&'static str, String) {
-        match self.nav.screen {
+    /// `None` off the two address screens — the copy is the only thing that separates them,
+    /// so a third screen falling in here would silently render as an address form.
+    pub(crate) fn address_copy(&self) -> Option<(&'static str, String)> {
+        Some(match self.nav.screen {
             Screen::EditHost => {
                 let name = self
                     .edit_host_index
@@ -242,8 +260,9 @@ impl App {
                     .map_or_else(String::new, |e| e.name().to_string());
                 (view::addhost::EDIT_TITLE, view::addhost::edit_subtitle(&name))
             }
-            _ => (view::addhost::ADD_TITLE, view::addhost::ADD_SUBTITLE.to_string()),
-        }
+            Screen::AddHost => (view::addhost::ADD_TITLE, view::addhost::ADD_SUBTITLE.to_string()),
+            _ => return None,
+        })
     }
 
     /// The current screen's modal card rect, or `None` for a screen that draws no
@@ -389,15 +408,6 @@ impl App {
         Some(ui::widgets::focus_row_rect(content, self.list_modal_focused()?))
     }
 
-    /// How many options the open dropdown lists. Read by both the overlay's drawn height
-    /// and its hit test, so the two can't disagree about where the last option ends.
-    pub(crate) fn dropdown_options_len(&self, row: usize) -> usize {
-        match self.nav.screen {
-            Screen::Diagnostics => menu::LOG_LEVEL_OPTIONS.len(),
-            _ => menu::settings_logical_row(self.settings_scope(), row).map_or(0, menu::dropdown_option_count),
-        }
-    }
-
     /// Calls `f` with the open modal as a [`ui::ModalScreen`], built from the state it
     /// shows. `None` on Home, and on a screen whose payload isn't set yet (Wake before its
     /// host is known).
@@ -440,7 +450,7 @@ impl App {
                 busy: self.pairing_busy,
             }),
             Screen::AddHost | Screen::EditHost => {
-                let (title, subtitle) = self.address_copy();
+                let (title, subtitle) = self.address_copy()?;
                 f(&view::addhost::Modal {
                     title,
                     subtitle,

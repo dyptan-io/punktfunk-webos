@@ -4,8 +4,6 @@ use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::{Screen, SettingsScope};
-use crate::ui;
-use std::time::Instant;
 
 impl App {
     /// Probes root access for the Game mode row, once per launch — rooting can come and go
@@ -65,9 +63,7 @@ impl App {
 
     /// All rows are plain Left/Right/Confirm toggles. Back saves and returns to Settings.
     pub(crate) fn handle_experimental_event(&mut self, ev: MenuEvent) {
-        let len = menu::EXP_ROWS.len();
-        if ui::widgets::list_nav(self.nav.cursor_mut(ScreenKey::Experimental), len, menu::nav_dir(ev)) {
-            self.modal.focus_anim = Some(Instant::now());
+        if self.list_nav_event(ev) {
             return;
         }
         match (
@@ -77,7 +73,7 @@ impl App {
             (Some(menu::ExpRow::HwAudio), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
                 let from = self.settings.ndl_audio_offload;
                 self.settings.ndl_audio_offload = !from;
-                self.modal.switch_anim = Some((Instant::now(), from, self.nav.cursor(ScreenKey::Experimental)));
+                self.arm_switch_anim(from);
             }
             // A locked row (see `menu::exp_row_lock`) rejects the press — the greyed control
             // already says the value is fixed.
@@ -86,7 +82,7 @@ impl App {
             {
                 let from = self.settings.game_mode;
                 self.settings.game_mode = !from;
-                self.modal.switch_anim = Some((Instant::now(), from, self.nav.cursor(ScreenKey::Experimental)));
+                self.arm_switch_anim(from);
             }
             (_, MenuEvent::Back) => {
                 self.persist();

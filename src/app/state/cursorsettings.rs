@@ -4,8 +4,6 @@ use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
-use crate::ui;
-use std::time::Instant;
 
 impl App {
     /// Opens the Cursor screen (Settings → `menu::SettingsRow::Cursor`). Holds the two pointer
@@ -19,12 +17,7 @@ impl App {
     /// settings screen opened it — the per-game one keeps editing its own copy while here
     /// (see `App::settings_target`), so only where the save lands differs.
     pub(crate) fn handle_cursor_settings_event(&mut self, ev: MenuEvent) {
-        if ui::widgets::list_nav(
-            self.nav.cursor_mut(ScreenKey::CursorSettings),
-            menu::CURSOR_ROWS.len(),
-            menu::nav_dir(ev),
-        ) {
-            self.modal.focus_anim = Some(Instant::now());
+        if self.list_nav_event(ev) {
             return;
         }
         let row = self.nav.cursor(ScreenKey::CursorSettings);
@@ -37,7 +30,7 @@ impl App {
                 if menu::adjust_setting(self.settings_target_mut(), logical, true, detected) {
                     self.capture_game_override(logical);
                     if let Some(from) = from {
-                        self.modal.switch_anim = Some((Instant::now(), from, row));
+                        self.arm_switch_anim(from);
                     }
                 }
             }

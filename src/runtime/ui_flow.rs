@@ -347,8 +347,9 @@ pub(super) fn run_ui_flow(
         if wants_text != text_input_active {
             text_input_active = wants_text;
             if wants_text {
-                let r = app.address_field_rect(display_mode.w as u32, display_mode.h as u32, fonts);
-                text_input.set_rect(sdl2::rect::Rect::new(r.x(), r.y(), r.width(), r.height()));
+                if let Some(r) = app.address_field_rect(display_mode.w as u32, display_mode.h as u32, fonts) {
+                    text_input.set_rect(sdl2::rect::Rect::new(r.x(), r.y(), r.width(), r.height()));
+                }
                 text_input.start();
             } else {
                 text_input.stop();

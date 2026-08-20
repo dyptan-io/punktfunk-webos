@@ -6,8 +6,6 @@ use crate::app::DropdownState;
 use crate::core::event::MenuEvent;
 use crate::core::screen::{Screen, SettingsScope};
 use crate::services::store;
-use crate::ui;
-use std::time::Instant;
 
 impl App {
     /// Opens the Diagnostics screen — reached from the "Diagnostics" row at the
@@ -41,9 +39,7 @@ impl App {
             }
             return;
         }
-        let len = crate::app::menu::DIAGNOSTICS_ROW_COUNT;
-        if ui::widgets::list_nav(self.nav.cursor_mut(ScreenKey::Diagnostics), len, menu::nav_dir(ev)) {
-            self.modal.focus_anim = Some(Instant::now());
+        if self.list_nav_event(ev) {
             return;
         }
         match (self.nav.cursor(ScreenKey::Diagnostics), ev) {
@@ -58,13 +54,13 @@ impl App {
             (menu::DIAG_ROW_STATS_OVERLAY, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
                 let from = self.settings.stats_overlay;
                 self.settings.stats_overlay = !from;
-                self.modal.switch_anim = Some((Instant::now(), from, self.nav.cursor(ScreenKey::Diagnostics)));
+                self.arm_switch_anim(from);
             }
             (menu::DIAG_ROW_SHOW_LOGS, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
                 let from = self.settings.show_logs;
                 self.settings.show_logs = !from;
                 crate::runtime::set_log_overlay_enabled(!from);
-                self.modal.switch_anim = Some((Instant::now(), from, self.nav.cursor(ScreenKey::Diagnostics)));
+                self.arm_switch_anim(from);
             }
             (menu::DIAG_ROW_SEND_LOGS, MenuEvent::Confirm) => {
                 // Persist any pending diagnostics changes before leaving the screen —

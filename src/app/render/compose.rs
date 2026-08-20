@@ -141,7 +141,7 @@ impl App {
             });
             // Dropdown overlay (Settings or Diagnostics).
             if let Some((row, _, overlay_rect, dd_alpha)) = dropdown {
-                let options_len = self.dropdown_options_len(row);
+                let options_len = self.dropdown_len(row);
                 cmds.push(DrawCmd::Tex {
                     tile: tile::DROPDOWN_OVERLAY,
                     dst: Rect::new(

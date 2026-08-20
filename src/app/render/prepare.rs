@@ -923,40 +923,15 @@ impl App {
                             )?
                         }
                     }),
-                    Screen::HostMenu => {
-                        let mut rows = self.host_menu_rows();
-                        // The only place a row's ⋯ is drawn lit — see `host_menu_actions`.
-                        if let Some(row) = rows.get_mut(self.nav.cursor(ScreenKey::HostMenu)) {
-                            row.menu = row.menu.map(|_| self.host_menu_dots);
-                        }
-                        let content = self.modal_list_content(screen_w, screen_h, fonts);
-                        Some(ui::rasterize(
-                            ui::widgets::FocusRowTile {
-                                rows: &rows,
-                                content_width: content.width(),
-                                index: self.nav.cursor(ScreenKey::HostMenu),
-                                dropdown_open: false,
-                                switch_frac: 0.0,
-                            },
-                            text_cache,
-                            fonts,
-                        )?)
-                    }
-                    // The plain list modals: same tile, same geometry, built from whichever
-                    // rows this screen shows. Only Diagnostics can have a dropdown open.
-                    Screen::WakeSettings | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
-                        let rows = match self.nav.screen {
-                            Screen::WakeSettings => {
-                                view::wakesettings::rows(self.wake_settings_host().is_some_and(|h| h.wol_auto))
-                            }
-                            Screen::Diagnostics => view::diagnostics::rows(&self.settings),
-                            Screen::Experimental => view::experimental::rows(&self.settings, self.rooted),
-                            _ => view::cursorsettings::rows(
-                                self.settings_target(),
-                                &self.editing_override(),
-                                Some(self.nav.cursor(ScreenKey::CursorSettings)),
-                            ),
-                        };
+                    // Every plain list modal: same tile, same geometry, built from whichever
+                    // rows the screen lists. Only Diagnostics can have a dropdown open, and
+                    // only the host menu has a ⋯ to light.
+                    Screen::HostMenu
+                    | Screen::WakeSettings
+                    | Screen::Diagnostics
+                    | Screen::Experimental
+                    | Screen::CursorSettings(_) => {
+                        let rows = self.list_focus_rows().unwrap_or_default();
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
                         self.list_modal_focused()
                             .map(|focused| {
@@ -1003,17 +978,13 @@ impl App {
         } = ctx;
         let (screen_w, screen_h) = (size.w, size.h);
         if let Some(dd) = &self.dropdown {
-            let (options, content_w) = match self.nav.screen {
-                Screen::Diagnostics => {
-                    let content = self.modal_list_content(screen_w, screen_h, fonts);
-                    (menu::log_level_dropdown_options(), content.width())
-                }
-                _ => {
-                    let (_, content) = view::settings::layout(self.settings_scope(), screen_w, screen_h);
-                    let options = menu::settings_logical_row(self.settings_scope(), dd.row)
-                        .map_or_else(Vec::new, |row| menu::dropdown_options(row, self.detected_gamepad_type));
-                    (options, content.width())
-                }
+            let options = self.dropdown_options(dd.row);
+            // The overlay hangs inside whichever viewport its list is drawn in.
+            let content_w = match self.nav.screen {
+                Screen::Diagnostics => self.modal_list_content(screen_w, screen_h, fonts).width(),
+                _ => view::settings::layout(self.settings_scope(), screen_w, screen_h)
+                    .1
+                    .width(),
             };
 
             // Keyed by screen as well as row: row 0 means a different setting on Settings

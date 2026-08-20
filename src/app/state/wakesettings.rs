@@ -1,10 +1,8 @@
 //! Per-host Wake-on-LAN settings — logic. Rendering lives in `app::view::wakesettings`.
-use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
 use crate::services::store;
-use std::time::Instant;
 
 impl App {
     /// Open Wake settings for host menu's current host.
@@ -21,13 +19,7 @@ impl App {
 
     /// Left/Right/Confirm flip toggle; Back returns to host menu.
     pub(crate) fn handle_wake_settings_event(&mut self, ev: MenuEvent) {
-        let len = crate::app::view::wakesettings::ROW_COUNT;
-        if crate::ui::widgets::list_nav(
-            self.nav.cursor_mut(ScreenKey::WakeSettings),
-            len,
-            crate::app::menu::nav_dir(ev),
-        ) {
-            self.modal.focus_anim = Some(Instant::now());
+        if self.list_nav_event(ev) {
             return;
         }
         match ev {
@@ -49,8 +41,6 @@ impl App {
         let from = known.wol_auto;
         known.wol_auto = !from;
         self.persist();
-        // Captures the value it's flipping *from*, so the knob slides rather than
-        // snapping — same contract as the Settings modal's switch rows.
-        self.modal.switch_anim = Some((Instant::now(), from, self.nav.cursor(ScreenKey::WakeSettings)));
+        self.arm_switch_anim(from);
     }
 }

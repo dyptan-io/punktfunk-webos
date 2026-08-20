@@ -5,3 +5,4 @@
 //! differ only in their labels are four values rather than four copies of the same match arm
 //! (see `docs/APP-REWORK-PLAN.md` §1, P4).
 pub(crate) mod confirm;
+pub(crate) mod list;
