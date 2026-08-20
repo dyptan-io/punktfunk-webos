@@ -34,6 +34,12 @@ impl App {
         let menu = self.card_menu.as_ref()?;
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
+        // The latch is only good while the grid still holds that card at that index — a
+        // library reload landing under an open menu (`drain_games`) reorders it, and measuring
+        // the wrong card's rect would put the rows somewhere the user never sees them.
+        if self.pin_id_at_grid_idx(menu.idx, columns) != Some(menu.pin_id.as_str()) {
+            return None;
+        }
         let card = self.scrolled_card_rect(menu.idx, columns, ui::widgets::SIDEBAR_W as i32, available_w);
         let panel_h = ui::widgets::card_menu_strip_h(fonts.raster, fonts.value, card.height(), ROW_COUNT);
         let title_h = ui::widgets::title_strip_h(fonts.raster, fonts.value, card.height());
