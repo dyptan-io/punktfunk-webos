@@ -272,7 +272,7 @@ impl App {
         let row_rect = self.settings_row_rect(self.settings_focused, screen_w, screen_h);
         // A marked row's track shifts left (see `row_layout`), so the drag reads the same
         // geometry the draw did rather than deriving its own.
-        let marked = menu::override_is_set(&self.editing_override(), menu::ROW_BITRATE);
+        let marked = menu::override_is_set(&self.editing_override(), menu::SettingsRow::Bitrate);
         (row_rect, ui::widgets::row_layout(row_rect, marked).track)
     }
 
@@ -282,7 +282,7 @@ impl App {
     fn set_bitrate_from_x(&mut self, x: i32, track: Rect) {
         let fraction = (x - track.x()) as f32 / track.width() as f32;
         menu::set_bitrate_fraction(self.settings_target_mut(), fraction);
-        self.capture_game_override(menu::ROW_BITRATE);
+        self.capture_game_override(menu::SettingsRow::Bitrate);
     }
 
     /// Drags the Bitrate slider to `x`.
@@ -459,8 +459,14 @@ impl App {
                 // arms the drag (see `handle_mouse_motion`) instead of nudging one notch the
                 // way `Confirm` below would — a slider is for landing on a value, not stepping
                 // to it one click at a time.
-                if menu::settings_logical_row(self.settings_scope(), self.settings_focused) == menu::ROW_BITRATE
-                    && menu::row_lock(menu::ROW_BITRATE, self.settings_target(), self.detected_gamepad_type).is_none()
+                if menu::settings_logical_row(self.settings_scope(), self.settings_focused)
+                    == Some(menu::SettingsRow::Bitrate)
+                    && menu::row_lock(
+                        menu::SettingsRow::Bitrate,
+                        self.settings_target(),
+                        self.detected_gamepad_type,
+                    )
+                    .is_none()
                 {
                     let (row_rect, track) = self.bitrate_row_and_track(screen_w, screen_h);
                     // Full row height, not just the thin track — vertical precision on a

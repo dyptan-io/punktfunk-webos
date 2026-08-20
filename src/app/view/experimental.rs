@@ -2,7 +2,7 @@
 //!
 //! `rooted` reaches every entry point rather than being read here, so this module stays
 //! platform-neutral.
-use crate::app::menu::{self, ExpRowLock, EXP_ROW_COUNT};
+use crate::app::menu::{self, ExpRow, ExpRowLock};
 use crate::services::store::Settings;
 use crate::ui;
 use crate::ui::render::Rect;
@@ -38,7 +38,7 @@ pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
     // is always listed, but stays locked until the probe finds that helper actually reachable.
     let game_mode = FocusRow::toggle(crate::app::view::icons::ICON_GAMEPAD, "Game mode", settings.game_mode)
         .with_subtext(ui::widgets::RowSubtext::hint("Your TV is rooted, you can use ALLM"));
-    rows.push(match menu::exp_row_lock(menu::EXP_ROW_GAME_MODE, rooted) {
+    rows.push(match menu::exp_row_lock(ExpRow::GameMode, rooted) {
         // The lock's caption replaces the row's own: a row the user can't change has nothing
         // more useful to say than why.
         Some(lock) => game_mode.locked(true).with_subtext(lock_caption(lock)),
@@ -55,7 +55,7 @@ fn lock_caption(lock: ExpRowLock) -> ui::widgets::RowSubtext {
 }
 
 pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
-    ui::widgets::list_modal_card_rect(screen_w, screen_h, fonts, SUBTITLE, EXP_ROW_COUNT)
+    ui::widgets::list_modal_card_rect(screen_w, screen_h, fonts, SUBTITLE, menu::EXP_ROWS.len())
 }
 
 /// The experimental-features list as a [`ModalScreen`].
@@ -74,7 +74,7 @@ impl ModalMetrics for Modal<'_> {
             card,
             fonts,
             SUBTITLE,
-            EXP_ROW_COUNT,
+            menu::EXP_ROWS.len(),
         ))
     }
 }

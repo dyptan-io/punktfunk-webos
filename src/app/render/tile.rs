@@ -88,7 +88,7 @@ pub const SECTION_LIBRARY: TileId = TileId(30);
 /// list (see [`settings_row`]). Fixed rather than interned: the list is short, its rows are
 /// addressed by position, and every screen that uses it shows one list at a time.
 const SETTINGS_ROW_BASE: u32 = 32;
-/// Slots in that band. `menu::SETTINGS_ROW_COUNT` and its sub-pages are all far under this;
+/// Slots in that band. `menu::GLOBAL_ROWS` and its sub-pages are all far under this;
 /// [`settings_row`] refuses anything past it rather than colliding with the spinner band.
 pub const SETTINGS_ROW_SLOTS: usize = 32;
 

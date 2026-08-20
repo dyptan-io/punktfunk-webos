@@ -76,7 +76,7 @@ fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
     }
 }
 
-/// One row per `menu::ROW_*`, in order, filtered by `menu::settings_visible_logical_rows`
+/// One row per `menu::SettingsRow`, in order, filtered by `menu::settings_visible_logical_rows`
 /// (so `set` decides which list this is) and greyed by `menu::row_lock` (whose reason becomes the row's caption, see [`lock_caption`]).
 ///
 /// `detected_gamepad_type` is the attached pad per `gamepad::detect_type`, `None` with nothing
@@ -99,18 +99,18 @@ pub(crate) fn rows(
         (settings.bitrate_kbps.saturating_sub(menu::BITRATE_MIN_KBPS)) as f32
             / (menu::BITRATE_MAX_KBPS - menu::BITRATE_MIN_KBPS) as f32
     };
-    let row_for = |logical: usize| match logical {
-        menu::ROW_RESOLUTION => FocusRow::dropdown(
+    let row_for = |logical: menu::SettingsRow| match logical {
+        menu::SettingsRow::Resolution => FocusRow::dropdown(
             crate::app::view::icons::ICON_MONITOR,
             "Resolution",
             menu::resolution_label(settings.width, settings.height),
         ),
-        menu::ROW_FRAMERATE => FocusRow::dropdown(
+        menu::SettingsRow::Framerate => FocusRow::dropdown(
             crate::app::view::icons::ICON_SCHEDULE,
             "Frame rate",
             format!("{} Hz", settings.refresh_hz),
         ),
-        menu::ROW_BITRATE => FocusRow::slider(
+        menu::SettingsRow::Bitrate => FocusRow::slider(
             crate::app::view::icons::ICON_SIGNAL,
             "Bitrate",
             if settings.bitrate_kbps == menu::BITRATE_AUTOMATIC {
@@ -124,7 +124,7 @@ pub(crate) fn rows(
             (settings.bitrate_kbps > menu::BITRATE_WARN_KBPS)
                 .then(|| ui::widgets::RowSubtext::caution("May be unstable on Wi-Fi — try Ethernet")),
         ),
-        menu::ROW_VIDEO_BACKEND => FocusRow::dropdown(
+        menu::SettingsRow::VideoBackend => FocusRow::dropdown(
             crate::app::view::icons::ICON_MEMORY,
             "Video backend",
             match settings.video_backend {
@@ -132,18 +132,18 @@ pub(crate) fn rows(
                 VideoBackend::Smp => "SMP",
             },
         ),
-        menu::ROW_CODEC => FocusRow::dropdown(
+        menu::SettingsRow::Codec => FocusRow::dropdown(
             crate::app::view::icons::ICON_MOVIE,
             "Codec",
             menu::codec_label(settings.codec),
         ),
-        menu::ROW_HDR => FocusRow::toggle(crate::app::view::icons::ICON_SUN, "HDR", settings.hdr_enabled),
-        menu::ROW_AUDIO => FocusRow::dropdown(
+        menu::SettingsRow::Hdr => FocusRow::toggle(crate::app::view::icons::ICON_SUN, "HDR", settings.hdr_enabled),
+        menu::SettingsRow::Audio => FocusRow::dropdown(
             crate::app::view::icons::ICON_SIGNAL,
             "Audio",
             menu::audio_label(settings.audio_channels),
         ),
-        menu::ROW_GAMEPAD => FocusRow::dropdown(
+        menu::SettingsRow::Gamepad => FocusRow::dropdown(
             crate::app::view::icons::ICON_GAMEPAD,
             "Controller",
             if settings.gamepad_type == GamepadType::Auto {
@@ -155,28 +155,26 @@ pub(crate) fn rows(
         .with_subtext_opt(
             dualsense_limited.then(|| ui::widgets::RowSubtext::caution("Limited support by your WebOS version")),
         ),
-        menu::ROW_CURSOR => FocusRow::action(crate::app::view::icons::ICON_MOUSE, "Cursor"),
-        menu::ROW_EXPERIMENTAL => FocusRow::action(crate::app::view::icons::ICON_BUG, "Experimental"),
-        menu::ROW_DIAGNOSTICS => FocusRow::action(crate::app::view::icons::ICON_WRENCH, "Diagnostics"),
+        menu::SettingsRow::Cursor => FocusRow::action(crate::app::view::icons::ICON_MOUSE, "Cursor"),
+        menu::SettingsRow::Experimental => FocusRow::action(crate::app::view::icons::ICON_BUG, "Experimental"),
+        menu::SettingsRow::Diagnostics => FocusRow::action(crate::app::view::icons::ICON_WRENCH, "Diagnostics"),
         // The build version rides along as this row's value, so it's visible without
         // opening the screen — matching where the other clients surface it.
-        menu::ROW_ABOUT => FocusRow::action_with_value(
+        menu::SettingsRow::About => FocusRow::action_with_value(
             crate::app::view::icons::ICON_INFO,
             "About & licenses",
             format!("v{VERSION}"),
         ),
         // Marked destructive: it discards the whole screen's worth of choices in one press,
         // and the red reads as that before it's pressed rather than after. Per-game only —
-        // the global list has nothing to fall back to (see `menu::ROW_RESET`).
-        menu::ROW_RESET => FocusRow::action(crate::app::view::icons::ICON_DELETE, "Reset")
+        // the global list has nothing to fall back to (see `menu::SettingsRow::Reset`).
+        menu::SettingsRow::Reset => FocusRow::action(crate::app::view::icons::ICON_DELETE, "Reset")
             .danger()
             .with_subtext(ui::widgets::RowSubtext::hint("Use global settings for this game")),
-        // `ROW_CURSOR_CAPTURE`/`ROW_CURSOR_GESTURES` are logical ids only — both screens reach
-        // them through the Cursor link above, so they are on neither list and never asked for.
-        // Anything else means a row list gained an id without an arm here: fail loudly in
-        // debug rather than render a blank, focusable row.
-        _ => {
-            debug_assert!(false, "no settings row built for logical {logical}");
+        // The Cursor sub-screen's own two rows are built by `view::cursorsettings`, which
+        // knows their labels and their per-screen wording; they are on neither list here.
+        menu::SettingsRow::CursorCapture | menu::SettingsRow::CursorGestures => {
+            debug_assert!(false, "the cursor toggles are built by view::cursorsettings");
             FocusRow::action("", "")
         }
     };

@@ -361,7 +361,7 @@ impl App {
     pub(crate) fn dropdown_options_len(&self, row: usize) -> usize {
         match self.screen {
             Screen::Diagnostics => menu::LOG_LEVEL_OPTIONS.len(),
-            _ => menu::dropdown_option_count(menu::settings_logical_row(self.settings_scope(), row)),
+            _ => menu::settings_logical_row(self.settings_scope(), row).map_or(0, menu::dropdown_option_count),
         }
     }
 

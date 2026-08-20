@@ -55,7 +55,7 @@ impl App {
         true
     }
 
-    /// Opens the Experimental screen (Settings → `menu::ROW_EXPERIMENTAL`). Holds unstable,
+    /// Opens the Experimental screen (Settings → `menu::SettingsRow::Experimental`). Holds unstable,
     /// off-by-default toggles (the software-audio override, Game mode on rooted sets).
     pub(crate) fn open_experimental(&mut self) {
         self.start_root_probe();
@@ -65,21 +65,21 @@ impl App {
 
     /// All rows are plain Left/Right/Confirm toggles. Back saves and returns to Settings.
     pub(crate) fn handle_experimental_event(&mut self, ev: MenuEvent) {
-        let len = menu::EXP_ROW_COUNT;
+        let len = menu::EXP_ROWS.len();
         if ui::widgets::list_nav(&mut self.experimental_focused, len, menu::nav_dir(ev)) {
             self.modal.focus_anim = Some(Instant::now());
             return;
         }
-        match (self.experimental_focused, ev) {
-            (menu::EXP_ROW_HW_AUDIO, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
+        match (menu::EXP_ROWS.get(self.experimental_focused).copied(), ev) {
+            (Some(menu::ExpRow::HwAudio), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
                 let from = self.settings.ndl_audio_offload;
                 self.settings.ndl_audio_offload = !from;
                 self.modal.switch_anim = Some((Instant::now(), from, self.experimental_focused));
             }
             // A locked row (see `menu::exp_row_lock`) rejects the press — the greyed control
             // already says the value is fixed.
-            (menu::EXP_ROW_GAME_MODE, MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm)
-                if menu::exp_row_lock(menu::EXP_ROW_GAME_MODE, self.rooted).is_none() =>
+            (Some(menu::ExpRow::GameMode), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm)
+                if menu::exp_row_lock(menu::ExpRow::GameMode, self.rooted).is_none() =>
             {
                 let from = self.settings.game_mode;
                 self.settings.game_mode = !from;

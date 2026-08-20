@@ -56,7 +56,7 @@ impl App {
     /// A pick that lands on the global's own current value stores nothing; a row that
     /// genuinely differs is cleared by `clear_game_override` instead. Both rules, and why
     /// only *this* row is judged against the global, are on `store::SettingsOverride`.
-    pub(crate) fn capture_game_override(&mut self, row: usize) {
+    pub(crate) fn capture_game_override(&mut self, row: menu::SettingsRow) {
         let global = self.settings;
         self.edit_game_override(|over, merged| menu::override_capture(over, row, merged, &global));
     }
@@ -65,13 +65,14 @@ impl App {
     /// way a single override goes away (the Reset row drops them all). A no-op outside the
     /// per-game scope and on a row that overrides nothing, so the key is safe to lean on.
     ///
-    /// Resolves the row here rather than at each binding: separate index spaces are the only
-    /// thing the flow's two screens would differ in.
+    /// Resolves the row here rather than at each binding: which list the focus indexes is the
+    /// only thing the flow's two screens differ in.
     pub(crate) fn clear_focused_override(&mut self) {
         let row = match self.screen {
-            Screen::CursorSettings(_) => menu::cursor_logical_row(self.cursor_settings_focused),
+            Screen::CursorSettings(_) => menu::CURSOR_ROWS.get(self.cursor_settings_focused).copied(),
             _ => menu::settings_logical_row(self.settings_scope(), self.settings_focused),
         };
+        let Some(row) = row else { return };
         self.edit_game_override(|over, _| menu::override_clear(over, row));
     }
 

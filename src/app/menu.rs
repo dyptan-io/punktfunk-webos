@@ -49,97 +49,117 @@ pub const BITRATE_AUTOMATIC: u32 = 0;
 /// Above this, the Bitrate row shows a dull-orange caution caption (not a hard cap).
 pub const BITRATE_WARN_KBPS: u32 = 150_000;
 
-/// Row indices for settings modal.
-pub const ROW_RESOLUTION: usize = 0;
-pub const ROW_FRAMERATE: usize = 1;
-pub const ROW_BITRATE: usize = 2;
-/// Which decode pipeline to load — see `store::VideoBackend`. Only offered where there is a
-/// choice (webOS 3.5-4.x, see `caps::smp_selectable`), and above Codec deliberately: the
-/// pick is what decides whether HEVC and HDR exist as options at all.
-pub const ROW_VIDEO_BACKEND: usize = 3;
-/// Locked where the backend has no HEVC — there is only one decodable codec then (see `row_lock`).
-pub const ROW_CODEC: usize = 4;
-/// Directly below Codec: HDR applies only to HEVC, so the row locks on an explicit
-/// H.264 pick (see `row_lock`) — adjacency keeps that dependency discoverable.
-pub const ROW_HDR: usize = 5;
-/// Locked where the backend is capped at stereo — the only channel count then (see `row_lock`).
-pub const ROW_AUDIO: usize = 6;
-/// Which controller the host presents to the game — see `store::GamepadType`. Last of the
-/// real settings: it's the only input-side one, and picking `DualSense` is what turns on
-/// adaptive triggers (`crate::platform::webos::dualsense`).
-pub const ROW_GAMEPAD: usize = 7;
-/// Not a setting — a link to `Screen::CursorSettings`, directly below Controller since it's
-/// the other input-side entry. Both pointer toggles live behind it (see
-/// `app::view::cursorsettings::rows`) rather than on this list: neither is something a user
-/// sets more than once, and pairing them makes the gesture toggle discoverable next to the
-/// capture mode it interacts with.
-pub const ROW_CURSOR: usize = 8;
-/// Not a setting — a link to `Screen::Experimental` (unstable toggles: NDL audio offload,
-/// and Game mode on rooted sets). Grouped off the main list so an untested option isn't one keystroke away.
-pub const ROW_EXPERIMENTAL: usize = 9;
-/// Not a setting — a link to `Screen::Diagnostics` (log level + stats overlay).
-/// A debug aid, not something a normal user needs to find quickly.
-pub const ROW_DIAGNOSTICS: usize = 10;
-/// Not a setting — a link to `Screen::About`. Sits last: every other punktfunk
-/// client puts the version + licences at the very bottom of Settings, and a
-/// `RowKind::Action` row costs nothing extra to render.
-pub const ROW_ABOUT: usize = 11;
-pub const SETTINGS_ROW_COUNT: usize = 12;
-/// The two Cursor toggles, as logical ids for [`override_is_set`] and friends. They are on no
-/// row list — both screens reach them through [`ROW_CURSOR`]'s sub-screen, which has its own
-/// `CURSOR_ROW_*` indices. Past [`SETTINGS_ROW_COUNT`] on purpose: these key dropdown and row
-/// tiles, so they must never shift the ones above them.
-pub const ROW_CURSOR_CAPTURE: usize = 12;
-pub const ROW_CURSOR_GESTURES: usize = 13;
-/// Not a setting — the action row at the foot of the *per-game* list only. It drops every
-/// override, putting the game back to what its screen inherits. The global list has no
-/// counterpart: there is nothing above it to fall back to.
-pub const ROW_RESET: usize = 14;
+/// One row of a settings-shaped screen.
+///
+/// An enum rather than the bare `usize` indices this used to be, because a dozen tables
+/// answer per row (labels, locks, override fields, dropdown options and their application)
+/// and every one of them had a `_ =>` arm — so a new row compiled, and silently behaved like
+/// whatever the fallback did. Here it does not compile until each table answers for it.
+///
+/// The variants past [`Self::About`] are on no list of their own: they are the Cursor
+/// sub-screen's two toggles, and the per-game list's Reset action. They are the same kind of
+/// thing (a row the override table is keyed by), so they are the same type — which is what
+/// removed the second index space and the hand-written mapping between them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum SettingsRow {
+    Resolution,
+    Framerate,
+    Bitrate,
+    /// Which decode pipeline to load — see `store::VideoBackend`. Only offered where there is
+    /// a choice (webOS 3.5-4.x, see `caps::smp_selectable`), and above Codec deliberately: the
+    /// pick is what decides whether HEVC and HDR exist as options at all.
+    VideoBackend,
+    /// Locked where the backend has no HEVC — there is only one decodable codec then (see
+    /// [`row_lock`]).
+    Codec,
+    /// Directly below Codec: HDR applies only to HEVC, so the row locks on an explicit H.264
+    /// pick (see [`row_lock`]) — adjacency keeps that dependency discoverable.
+    Hdr,
+    /// Locked where the backend is capped at stereo — the only channel count then.
+    Audio,
+    /// Which controller the host presents to the game — see `store::GamepadType`. Last of the
+    /// real settings: it's the only input-side one, and picking `DualSense` is what turns on
+    /// adaptive triggers (`crate::platform::webos::dualsense`).
+    Gamepad,
+    /// Not a setting — a link to `Screen::CursorSettings`, directly below Controller since
+    /// it's the other input-side entry. Both pointer toggles live behind it rather than on
+    /// this list: neither is something a user sets more than once, and pairing them makes the
+    /// gesture toggle discoverable next to the capture mode it interacts with.
+    Cursor,
+    /// Not a setting — a link to `Screen::Experimental` (unstable toggles: NDL audio offload,
+    /// and Game mode on rooted sets). Grouped off the main list so an untested option isn't
+    /// one keystroke away.
+    Experimental,
+    /// Not a setting — a link to `Screen::Diagnostics` (log level + stats overlay). A debug
+    /// aid, not something a normal user needs to find quickly.
+    Diagnostics,
+    /// Not a setting — a link to `Screen::About`. Sits last: every other punktfunk client puts
+    /// the version + licences at the very bottom of Settings.
+    About,
+    /// The Cursor sub-screen's rows. On no list here — see [`CURSOR_ROWS`].
+    CursorCapture,
+    CursorGestures,
+    /// The action row at the foot of the *per-game* list only. It drops every override,
+    /// putting the game back to what its screen inherits. The global list has no counterpart:
+    /// there is nothing above it to fall back to.
+    Reset,
+}
+
+/// The global list, in display order.
+const GLOBAL_ROWS: [SettingsRow; 12] = [
+    SettingsRow::Resolution,
+    SettingsRow::Framerate,
+    SettingsRow::Bitrate,
+    SettingsRow::VideoBackend,
+    SettingsRow::Codec,
+    SettingsRow::Hdr,
+    SettingsRow::Audio,
+    SettingsRow::Gamepad,
+    SettingsRow::Cursor,
+    SettingsRow::Experimental,
+    SettingsRow::Diagnostics,
+    SettingsRow::About,
+];
 
 /// Which rows a settings-shaped screen shows — the scope its screen carries (see
-/// [`crate::core::screen::Screen::Settings`]). Both scopes share every `ROW_*` index and
+/// [`crate::core::screen::Screen::Settings`]). Both scopes share every [`SettingsRow`] and
 /// therefore every mutator, dropdown list and lock in this module.
 pub use crate::core::screen::SettingsScope;
 
-/// The per-game list. No `ROW_VIDEO_BACKEND` (`caps::set_backend` is a process-global, so a
-/// per-game backend would need an apply/restore around every launch) and no links out — the
-/// Experimental and Diagnostics are device-wide, so neither they nor anything behind them
-/// appears. Cursor keeps its link row and its sub-screen, exactly as on the global list — it holds two
-/// toggles either way, and duplicating that layout only for this screen would make the same
-/// settings look like two different things. See `store::SettingsOverride`.
-const GAME_ROWS: [usize; 9] = [
-    ROW_RESOLUTION,
-    ROW_FRAMERATE,
-    ROW_BITRATE,
-    ROW_CODEC,
-    ROW_HDR,
-    ROW_AUDIO,
-    ROW_GAMEPAD,
-    ROW_CURSOR,
-    ROW_RESET,
+/// The per-game list. No [`SettingsRow::VideoBackend`] (`caps::set_backend` is a
+/// process-global, so a per-game backend would need an apply/restore around every launch) and
+/// no links out — Experimental and Diagnostics are device-wide, so neither they nor anything
+/// behind them appears. Cursor keeps its link row and its sub-screen, exactly as on the global
+/// list — it holds two toggles either way, and duplicating that layout only for this screen
+/// would make the same settings look like two different things. See `store::SettingsOverride`.
+const GAME_ROWS: [SettingsRow; 9] = [
+    SettingsRow::Resolution,
+    SettingsRow::Framerate,
+    SettingsRow::Bitrate,
+    SettingsRow::Codec,
+    SettingsRow::Hdr,
+    SettingsRow::Audio,
+    SettingsRow::Gamepad,
+    SettingsRow::Cursor,
+    SettingsRow::Reset,
 ];
 
-/// Experimental modal row indices (see `app::view::experimental::rows`).
-pub const EXP_ROW_HW_AUDIO: usize = 0;
-/// Locked whenever [`exp_row_lock`] returns a reason.
-pub const EXP_ROW_GAME_MODE: usize = 1;
-/// Fixed: the Game mode row is always listed, locked rather than hidden when it can't be used.
-pub const EXP_ROW_COUNT: usize = 2;
+/// The Cursor sub-screen's list, in display order (see `app::view::cursorsettings::rows`).
+/// Its rows are [`SettingsRow`]s like any other, so the override table, the toggle values and
+/// the per-game marks all reach them without a second index space in between.
+pub const CURSOR_ROWS: [SettingsRow; 2] = [SettingsRow::CursorCapture, SettingsRow::CursorGestures];
 
-/// Cursor modal row indices (see `app::view::cursorsettings::rows`).
-pub const CURSOR_ROW_CAPTURE: usize = 0;
-pub const CURSOR_ROW_GESTURES: usize = 1;
-pub const CURSOR_ROW_COUNT: usize = 2;
-
-/// A Cursor sub-screen row's logical `ROW_*` id — what the per-game override table is keyed
-/// by. The sub-screen has its own dense indices, so this is the one place the two spaces meet.
-pub fn cursor_logical_row(cursor_row: usize) -> usize {
-    debug_assert!((CURSOR_ROW_CAPTURE..CURSOR_ROW_COUNT).contains(&cursor_row));
-    match cursor_row {
-        CURSOR_ROW_GESTURES => ROW_CURSOR_GESTURES,
-        _ => ROW_CURSOR_CAPTURE,
-    }
+/// Experimental modal rows (see `app::view::experimental::rows`). A separate type from
+/// [`SettingsRow`]: these are device-wide toggles that no per-game override reaches.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ExpRow {
+    HwAudio,
+    /// Locked whenever [`exp_row_lock`] returns a reason. Always listed, locked rather than
+    /// hidden when it can't be used.
+    GameMode,
 }
+
+pub const EXP_ROWS: [ExpRow; 2] = [ExpRow::HwAudio, ExpRow::GameMode];
 
 /// Diagnostics modal row indices (see `app::view::diagnostics::rows`). Log level keeps
 /// index 0 so its dropdown's `(Screen, row)` tile key stays stable.
@@ -162,11 +182,11 @@ pub const DIAGNOSTICS_ROW_COUNT: usize = 4;
 ///
 /// Consequence worth keeping: no user action changes this, so the display↔logical mapping is
 /// fixed for the run and no site has to re-anchor focus after a mutation.
-pub(crate) fn row_shown(row: usize) -> bool {
+pub(crate) fn row_shown(row: SettingsRow) -> bool {
     match row {
         // Only a choice where NDL is the narrow v1 generation — everywhere else NDL v2 is
         // strictly better and the row would be a trap.
-        ROW_VIDEO_BACKEND => crate::core::caps::smp_selectable(),
+        SettingsRow::VideoBackend => crate::core::caps::smp_selectable(),
         _ => true,
     }
 }
@@ -204,24 +224,24 @@ pub(crate) enum ExpRowLock {
 }
 
 /// `rooted` is the root-probe verdict, `None` while it is still running.
-pub(crate) fn exp_row_lock(row: usize, rooted: Option<bool>) -> Option<ExpRowLock> {
+pub(crate) fn exp_row_lock(row: ExpRow, rooted: Option<bool>) -> Option<ExpRowLock> {
     match (row, rooted) {
-        (EXP_ROW_GAME_MODE, None) => Some(ExpRowLock::RootUnknown),
-        (EXP_ROW_GAME_MODE, Some(false)) => Some(ExpRowLock::NotRooted),
-        _ => None,
+        (ExpRow::GameMode, None) => Some(ExpRowLock::RootUnknown),
+        (ExpRow::GameMode, Some(false)) => Some(ExpRowLock::NotRooted),
+        (ExpRow::GameMode, Some(true)) | (ExpRow::HwAudio, _) => None,
     }
 }
 
 /// `detected` is the attached pad per `gamepad::detect_type` — `None` with nothing attached
 /// (or an unrecognized pad), which is what locks the Controller row.
-pub(crate) fn row_lock(row: usize, settings: &Settings, detected: Option<GamepadType>) -> Option<RowLock> {
+pub(crate) fn row_lock(row: SettingsRow, settings: &Settings, detected: Option<GamepadType>) -> Option<RowLock> {
     let caps = video_caps();
     match row {
-        ROW_HDR if !caps.hdr => Some(RowLock::NoHdr),
-        ROW_HDR if settings.codec == CodecPref::H264 => Some(RowLock::HdrNeedsHevc),
-        ROW_CODEC if caps.codec_prefs().len() < 2 => Some(RowLock::OneCodec),
-        ROW_AUDIO if audio_channel_options().len() < 2 => Some(RowLock::StereoOnly),
-        ROW_GAMEPAD if detected.is_none() => Some(RowLock::NoGamepad),
+        SettingsRow::Hdr if !caps.hdr => Some(RowLock::NoHdr),
+        SettingsRow::Hdr if settings.codec == CodecPref::H264 => Some(RowLock::HdrNeedsHevc),
+        SettingsRow::Codec if caps.codec_prefs().len() < 2 => Some(RowLock::OneCodec),
+        SettingsRow::Audio if audio_channel_options().len() < 2 => Some(RowLock::StereoOnly),
+        SettingsRow::Gamepad if detected.is_none() => Some(RowLock::NoGamepad),
         _ => None,
     }
 }
@@ -229,40 +249,33 @@ pub(crate) fn row_lock(row: usize, settings: &Settings, detected: Option<Gamepad
 /// Logical `ROW_*` indices currently visible, in display order — the single source of truth
 /// every visibility-aware helper derives from. Settings-independent (see [`row_shown`]), so
 /// this mapping is fixed for the run.
-pub fn settings_visible_logical_rows(set: SettingsScope) -> impl Iterator<Item = usize> {
-    const GLOBAL_ROWS: [usize; SETTINGS_ROW_COUNT] = {
-        let mut rows = [0; SETTINGS_ROW_COUNT];
-        let mut i = 0;
-        while i < SETTINGS_ROW_COUNT {
-            rows[i] = i;
-            i += 1;
-        }
-        rows
-    };
-    let rows: &'static [usize] = match set {
+pub fn settings_visible_logical_rows(set: SettingsScope) -> impl Iterator<Item = SettingsRow> {
+    let rows: &'static [SettingsRow] = match set {
         SettingsScope::Global => &GLOBAL_ROWS,
         SettingsScope::Game => &GAME_ROWS,
     };
     rows.iter().copied().filter(|&row| row_shown(row))
 }
 
-/// Live row count (vs. `SETTINGS_ROW_COUNT`, the maximum).
+/// Live row count — what the list is actually showing this run.
 pub fn settings_row_count(set: SettingsScope) -> usize {
     settings_visible_logical_rows(set).count()
 }
 
-/// On-screen row position -> logical `ROW_*` index, skipping past any hidden rows.
-pub fn settings_logical_row(set: SettingsScope, display: usize) -> usize {
-    settings_visible_logical_rows(set).nth(display).unwrap_or(display)
+/// On-screen row position -> the row shown there, skipping past any hidden rows. `None` past
+/// the end of the list — with the rows a type rather than an index there is no "the position
+/// itself" to fall back on, which is what used to let an out-of-range focus address a row.
+pub fn settings_logical_row(set: SettingsScope, display: usize) -> Option<SettingsRow> {
+    settings_visible_logical_rows(set).nth(display)
 }
 
 /// Current value of `row` if it is a toggle — the start point the switch slide animates
 /// from. `None` for every other row kind.
-pub fn toggle_value(settings: &Settings, row: usize) -> Option<bool> {
+pub fn toggle_value(settings: &Settings, row: SettingsRow) -> Option<bool> {
     match row {
-        ROW_HDR => Some(settings.hdr_enabled),
-        ROW_CURSOR_CAPTURE => Some(settings.cursor_capture),
-        ROW_CURSOR_GESTURES => Some(settings.cursor_gestures),
+        SettingsRow::Hdr => Some(settings.hdr_enabled),
+        SettingsRow::CursorCapture => Some(settings.cursor_capture),
+        SettingsRow::CursorGestures => Some(settings.cursor_gestures),
         _ => None,
     }
 }
@@ -271,25 +284,31 @@ pub fn toggle_value(settings: &Settings, row: usize) -> Option<bool> {
 /// a row can't show a dot for a field it doesn't record. The Cursor *link* row owns both
 /// toggles behind it, or a game overriding only a cursor one shows a dot on its card and
 /// nothing on the list saying where it came from.
-fn row_fields(row: usize) -> &'static [OverrideField] {
+fn row_fields(row: SettingsRow) -> &'static [OverrideField] {
     match row {
-        ROW_RESOLUTION => &[OverrideField::Mode],
-        ROW_FRAMERATE => &[OverrideField::RefreshHz],
-        ROW_BITRATE => &[OverrideField::BitrateKbps],
-        ROW_HDR => &[OverrideField::HdrEnabled],
-        ROW_CODEC => &[OverrideField::Codec],
-        ROW_AUDIO => &[OverrideField::AudioChannels],
-        ROW_GAMEPAD => &[OverrideField::GamepadKind],
-        ROW_CURSOR_CAPTURE => &[OverrideField::CursorCapture],
-        ROW_CURSOR_GESTURES => &[OverrideField::CursorGestures],
-        ROW_CURSOR => &[OverrideField::CursorCapture, OverrideField::CursorGestures],
-        _ => &[],
+        SettingsRow::Resolution => &[OverrideField::Mode],
+        SettingsRow::Framerate => &[OverrideField::RefreshHz],
+        SettingsRow::Bitrate => &[OverrideField::BitrateKbps],
+        SettingsRow::Hdr => &[OverrideField::HdrEnabled],
+        SettingsRow::Codec => &[OverrideField::Codec],
+        SettingsRow::Audio => &[OverrideField::AudioChannels],
+        SettingsRow::Gamepad => &[OverrideField::GamepadKind],
+        SettingsRow::CursorCapture => &[OverrideField::CursorCapture],
+        SettingsRow::CursorGestures => &[OverrideField::CursorGestures],
+        SettingsRow::Cursor => &[OverrideField::CursorCapture, OverrideField::CursorGestures],
+        // Rows that override nothing: the backend is a process-global, and the rest are links
+        // out or an action.
+        SettingsRow::VideoBackend
+        | SettingsRow::Experimental
+        | SettingsRow::Diagnostics
+        | SettingsRow::About
+        | SettingsRow::Reset => &[],
     }
 }
 
 /// Whether `row` currently overrides the global value — what decides that the row gets a
 /// "use global" delete affordance.
-pub fn override_is_set(over: &SettingsOverride, row: usize) -> bool {
+pub fn override_is_set(over: &SettingsOverride, row: SettingsRow) -> bool {
     row_fields(row).iter().any(|&f| over.is_set(f))
 }
 
@@ -300,7 +319,7 @@ pub fn override_is_set(over: &SettingsOverride, row: usize) -> bool {
 /// Focused only because subtext renders nowhere else; a caption the row already carries wins,
 /// since a lock explains why the row can't be used at all. The colour lives here rather than
 /// in `ui`, which knows only that some rows carry a mark.
-pub fn decorate_override(row: &mut FocusRow, over: &SettingsOverride, logical: usize, focused: bool) {
+pub fn decorate_override(row: &mut FocusRow, over: &SettingsOverride, logical: SettingsRow, focused: bool) {
     row.mark = override_is_set(over, logical).then(|| crate::ui::style::theme().warning);
     if row.mark.is_some() && focused && row.subtext.is_none() {
         row.subtext = Some(RowSubtext::hint("Delete to use the global setting"));
@@ -309,7 +328,7 @@ pub fn decorate_override(row: &mut FocusRow, over: &SettingsOverride, logical: u
 
 /// Drops `row` back to inheriting the global — every field it owns, so clearing the Cursor
 /// link row clears both toggles behind it.
-pub fn override_clear(over: &mut SettingsOverride, row: usize) {
+pub fn override_clear(over: &mut SettingsOverride, row: SettingsRow) {
     for &field in row_fields(row) {
         over.clear(field);
     }
@@ -321,12 +340,12 @@ pub fn override_clear(over: &mut SettingsOverride, row: usize) {
 /// Strictly the fields the row owns: an H.264 pick's effect on HDR is
 /// `Settings::presentable`'s job, not a second override written behind the user's back and
 /// stranded the moment they clear the Codec row.
-pub fn override_capture(over: &mut SettingsOverride, row: usize, edited: &Settings, global: &Settings) {
+pub fn override_capture(over: &mut SettingsOverride, row: SettingsRow, edited: &Settings, global: &Settings) {
     // An adjustable row owning no field would have its edit silently reverted by
     // `edit_game_override`'s re-merge. Unreachable today (link rows don't adjust).
     debug_assert!(
         !row_fields(row).is_empty(),
-        "settings row {row} is adjustable but overrides nothing"
+        "settings row {row:?} is adjustable but overrides nothing"
     );
     for &field in row_fields(row) {
         over.capture(field, edited, global);
@@ -461,21 +480,21 @@ fn video_backend_label(backend: VideoBackend) -> &'static str {
 }
 
 /// Dropdown labels for a row.
-pub fn dropdown_options(row_index: usize, detected: Option<GamepadType>) -> Vec<String> {
-    match row_index {
-        ROW_VIDEO_BACKEND => VIDEO_BACKENDS.iter().map(|&b| video_backend_label(b).into()).collect(),
-        ROW_RESOLUTION => RESOLUTIONS
+pub fn dropdown_options(row: SettingsRow, detected: Option<GamepadType>) -> Vec<String> {
+    match row {
+        SettingsRow::VideoBackend => VIDEO_BACKENDS.iter().map(|&b| video_backend_label(b).into()).collect(),
+        SettingsRow::Resolution => RESOLUTIONS
             .iter()
             .map(|(w, h, _, name)| resolution_dropdown_label(*w, *h, name))
             .collect(),
-        ROW_FRAMERATE => REFRESH_RATES.iter().map(|hz| format!("{hz} Hz")).collect(),
-        ROW_CODEC => video_caps()
+        SettingsRow::Framerate => REFRESH_RATES.iter().map(|hz| format!("{hz} Hz")).collect(),
+        SettingsRow::Codec => video_caps()
             .codec_prefs()
             .iter()
             .map(|&p| codec_label(p).to_string())
             .collect(),
-        ROW_AUDIO => audio_channel_options().iter().map(|(_, s)| (*s).to_string()).collect(),
-        ROW_GAMEPAD => GAMEPAD_TYPES
+        SettingsRow::Audio => audio_channel_options().iter().map(|(_, s)| (*s).to_string()).collect(),
+        SettingsRow::Gamepad => GAMEPAD_TYPES
             .iter()
             .map(|&t| {
                 if t == GamepadType::Auto {
@@ -491,43 +510,43 @@ pub fn dropdown_options(row_index: usize, detected: Option<GamepadType>) -> Vec<
 
 /// How many options a dropdown row offers, without building the label list — the compose
 /// path needs only the count, and `dropdown_options` allocates a `String` per entry.
-pub fn dropdown_option_count(row_index: usize) -> usize {
-    match row_index {
-        ROW_VIDEO_BACKEND => VIDEO_BACKENDS.len(),
-        ROW_RESOLUTION => RESOLUTIONS.len(),
-        ROW_FRAMERATE => REFRESH_RATES.len(),
-        ROW_CODEC => video_caps().codec_prefs().len(),
-        ROW_AUDIO => audio_channel_options().len(),
-        ROW_GAMEPAD => GAMEPAD_TYPES.len(),
+pub fn dropdown_option_count(row: SettingsRow) -> usize {
+    match row {
+        SettingsRow::VideoBackend => VIDEO_BACKENDS.len(),
+        SettingsRow::Resolution => RESOLUTIONS.len(),
+        SettingsRow::Framerate => REFRESH_RATES.len(),
+        SettingsRow::Codec => video_caps().codec_prefs().len(),
+        SettingsRow::Audio => audio_channel_options().len(),
+        SettingsRow::Gamepad => GAMEPAD_TYPES.len(),
         _ => 0,
     }
 }
 
 /// Current dropdown index for a row's setting.
-pub fn dropdown_current_index(settings: &Settings, row_index: usize) -> usize {
-    match row_index {
-        ROW_RESOLUTION => RESOLUTIONS
+pub fn dropdown_current_index(settings: &Settings, row: SettingsRow) -> usize {
+    match row {
+        SettingsRow::Resolution => RESOLUTIONS
             .iter()
             .position(|(w, h, _, _)| *w == settings.width && *h == settings.height)
             .unwrap_or(0),
-        ROW_FRAMERATE => REFRESH_RATES
+        SettingsRow::Framerate => REFRESH_RATES
             .iter()
             .position(|hz| *hz == settings.refresh_hz)
             .unwrap_or(0),
-        ROW_VIDEO_BACKEND => VIDEO_BACKENDS
+        SettingsRow::VideoBackend => VIDEO_BACKENDS
             .iter()
             .position(|&b| b == settings.video_backend)
             .unwrap_or(0),
-        ROW_CODEC => video_caps()
+        SettingsRow::Codec => video_caps()
             .codec_prefs()
             .iter()
             .position(|&p| p == settings.codec)
             .unwrap_or(0),
-        ROW_AUDIO => audio_channel_options()
+        SettingsRow::Audio => audio_channel_options()
             .iter()
             .position(|(c, _)| *c == settings.audio_channels)
             .unwrap_or(0),
-        ROW_GAMEPAD => GAMEPAD_TYPES
+        SettingsRow::Gamepad => GAMEPAD_TYPES
             .iter()
             .position(|&t| t == settings.gamepad_type)
             .unwrap_or(0),
@@ -540,26 +559,26 @@ pub fn dropdown_current_index(settings: &Settings, row_index: usize) -> usize {
 /// one place a locked row's value is actually protected, not one per call site.
 pub fn apply_dropdown_choice(
     settings: &mut Settings,
-    row_index: usize,
+    row: SettingsRow,
     choice_index: usize,
     detected: Option<GamepadType>,
 ) {
-    if row_lock(row_index, settings, detected).is_some() {
+    if row_lock(row, settings, detected).is_some() {
         return;
     }
-    match row_index {
-        ROW_RESOLUTION => {
+    match row {
+        SettingsRow::Resolution => {
             if let Some((w, h, _, _)) = RESOLUTIONS.get(choice_index) {
                 settings.width = *w;
                 settings.height = *h;
             }
         }
-        ROW_FRAMERATE => {
+        SettingsRow::Framerate => {
             if let Some(hz) = REFRESH_RATES.get(choice_index) {
                 settings.refresh_hz = *hz;
             }
         }
-        ROW_VIDEO_BACKEND => {
+        SettingsRow::VideoBackend => {
             if let Some(&backend) = VIDEO_BACKENDS.get(choice_index) {
                 settings.video_backend = backend;
                 // The pick IS the capability set (see `core::caps::set_backend`), so publish it
@@ -569,7 +588,7 @@ pub fn apply_dropdown_choice(
                 settings.clamp_to_caps();
             }
         }
-        ROW_CODEC => {
+        SettingsRow::Codec => {
             if let Some(&pref) = video_caps().codec_prefs().get(choice_index) {
                 settings.codec = pref;
                 // H.264 never resolves HDR (see `RowLock::HdrNeedsHevc`).
@@ -578,12 +597,12 @@ pub fn apply_dropdown_choice(
                 }
             }
         }
-        ROW_AUDIO => {
+        SettingsRow::Audio => {
             if let Some((channels, _)) = audio_channel_options().get(choice_index) {
                 settings.audio_channels = *channels;
             }
         }
-        ROW_GAMEPAD => {
+        SettingsRow::Gamepad => {
             if let Some(&t) = GAMEPAD_TYPES.get(choice_index) {
                 settings.gamepad_type = t;
             }
@@ -599,12 +618,12 @@ pub fn apply_dropdown_choice(
 ///
 /// A locked row (see [`row_lock`]) refuses every adjustment: the same predicate that greys it
 /// is what rejects the keypress, so nothing can edit a value the UI shows as fixed.
-pub fn adjust_setting(settings: &mut Settings, row_index: usize, forward: bool, detected: Option<GamepadType>) -> bool {
-    if row_lock(row_index, settings, detected).is_some() {
+pub fn adjust_setting(settings: &mut Settings, row: SettingsRow, forward: bool, detected: Option<GamepadType>) -> bool {
+    if row_lock(row, settings, detected).is_some() {
         return false;
     }
-    match row_index {
-        ROW_BITRATE => {
+    match row {
+        SettingsRow::Bitrate => {
             if settings.bitrate_kbps == BITRATE_AUTOMATIC {
                 if forward {
                     settings.bitrate_kbps = BITRATE_MIN_KBPS;
@@ -620,19 +639,32 @@ pub fn adjust_setting(settings: &mut Settings, row_index: usize, forward: bool, 
             }
             true
         }
-        ROW_HDR => {
+        SettingsRow::Hdr => {
             settings.hdr_enabled = !settings.hdr_enabled;
             true
         }
-        ROW_CURSOR_CAPTURE => {
+        SettingsRow::CursorCapture => {
             settings.cursor_capture = !settings.cursor_capture;
             true
         }
-        ROW_CURSOR_GESTURES => {
+        SettingsRow::CursorGestures => {
             settings.cursor_gestures = !settings.cursor_gestures;
             true
         }
-        row => {
+        // Every dropdown row shares this arm, and the link/action rows fall through it with
+        // an empty option list — `dropdown_option_count` is the one table that decides which
+        // is which.
+        SettingsRow::Resolution
+        | SettingsRow::Framerate
+        | SettingsRow::VideoBackend
+        | SettingsRow::Codec
+        | SettingsRow::Audio
+        | SettingsRow::Gamepad
+        | SettingsRow::Cursor
+        | SettingsRow::Experimental
+        | SettingsRow::Diagnostics
+        | SettingsRow::About
+        | SettingsRow::Reset => {
             let len = dropdown_option_count(row);
             if len == 0 {
                 return false;
@@ -668,15 +700,19 @@ mod tests {
     #[test]
     fn display_to_logical_is_a_bijection_over_the_visible_range() {
         for set in SCOPES {
-            let visible: Vec<usize> = settings_visible_logical_rows(set).collect();
+            let visible: Vec<SettingsRow> = settings_visible_logical_rows(set).collect();
             assert_eq!(visible.len(), settings_row_count(set));
             for (display, &logical) in visible.iter().enumerate() {
-                assert_eq!(settings_logical_row(set, display), logical);
+                assert_eq!(settings_logical_row(set, display), Some(logical));
             }
-            let mut sorted = visible.clone();
-            sorted.sort_unstable();
-            sorted.dedup();
-            assert_eq!(sorted.len(), visible.len(), "a logical row is listed twice");
+            assert_eq!(
+                settings_logical_row(set, visible.len()),
+                None,
+                "past the end of the list"
+            );
+            for (i, row) in visible.iter().enumerate() {
+                assert!(!visible[..i].contains(row), "{row:?} is listed twice");
+            }
         }
     }
 
@@ -684,7 +720,7 @@ mod tests {
     fn only_shown_rows_are_reachable_from_a_display_position() {
         for set in SCOPES {
             for display in 0..settings_row_count(set) {
-                assert!(row_shown(settings_logical_row(set, display)));
+                assert!(settings_logical_row(set, display).is_some_and(row_shown));
             }
         }
     }
@@ -692,19 +728,43 @@ mod tests {
     /// The per-game list carries no links out and no backend row, but keeps Cursor and Reset.
     #[test]
     fn the_game_scope_lists_its_own_rows_only() {
-        let game: Vec<usize> = settings_visible_logical_rows(SettingsScope::Game).collect();
-        for absent in [ROW_VIDEO_BACKEND, ROW_EXPERIMENTAL, ROW_DIAGNOSTICS, ROW_ABOUT] {
-            assert!(!game.contains(&absent), "row {absent} must not be on the per-game list");
+        let game: Vec<SettingsRow> = settings_visible_logical_rows(SettingsScope::Game).collect();
+        for absent in [
+            SettingsRow::VideoBackend,
+            SettingsRow::Experimental,
+            SettingsRow::Diagnostics,
+            SettingsRow::About,
+        ] {
+            assert!(
+                !game.contains(&absent),
+                "row {absent:?} must not be on the per-game list"
+            );
         }
-        assert!(game.contains(&ROW_CURSOR));
-        assert!(game.contains(&ROW_RESET));
-        assert!(!settings_visible_logical_rows(SettingsScope::Global).any(|r| r == ROW_RESET));
+        assert!(game.contains(&SettingsRow::Cursor));
+        assert!(game.contains(&SettingsRow::Reset));
+        assert!(!settings_visible_logical_rows(SettingsScope::Global).any(|r| r == SettingsRow::Reset));
     }
 
+    /// The sub-screen's rows are `SettingsRow`s like any other, so the override table reaches
+    /// them — that is the whole reason the two index spaces were merged.
     #[test]
-    fn the_cursor_sub_screen_maps_onto_its_two_logical_rows() {
-        assert_eq!(cursor_logical_row(CURSOR_ROW_CAPTURE), ROW_CURSOR_CAPTURE);
-        assert_eq!(cursor_logical_row(CURSOR_ROW_GESTURES), ROW_CURSOR_GESTURES);
+    fn the_cursor_link_row_owns_both_rows_behind_it() {
+        let on = Settings {
+            cursor_capture: !Settings::default().cursor_capture,
+            cursor_gestures: !Settings::default().cursor_gestures,
+            ..Settings::default()
+        };
+        for row in CURSOR_ROWS {
+            let mut over = SettingsOverride::default();
+            override_capture(&mut over, row, &on, &Settings::default());
+            assert!(override_is_set(&over, row));
+            assert!(
+                override_is_set(&over, SettingsRow::Cursor),
+                "the link row shows the mark"
+            );
+            override_clear(&mut over, SettingsRow::Cursor);
+            assert!(!override_is_set(&over, row), "clearing the link row clears both");
+        }
     }
 
     #[test]
@@ -760,9 +820,9 @@ mod tests {
 
     #[test]
     fn exp_game_mode_is_locked_until_the_root_probe_says_yes() {
-        assert!(exp_row_lock(EXP_ROW_GAME_MODE, None).is_some());
-        assert!(exp_row_lock(EXP_ROW_GAME_MODE, Some(false)).is_some());
-        assert!(exp_row_lock(EXP_ROW_GAME_MODE, Some(true)).is_none());
-        assert!(exp_row_lock(EXP_ROW_HW_AUDIO, None).is_none());
+        assert!(exp_row_lock(ExpRow::GameMode, None).is_some());
+        assert!(exp_row_lock(ExpRow::GameMode, Some(false)).is_some());
+        assert!(exp_row_lock(ExpRow::GameMode, Some(true)).is_none());
+        assert!(exp_row_lock(ExpRow::HwAudio, None).is_none());
     }
 }

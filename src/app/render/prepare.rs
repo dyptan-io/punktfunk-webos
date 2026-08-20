@@ -1007,11 +1007,9 @@ impl App {
                 }
                 _ => {
                     let (_, content) = view::settings::layout(self.settings_scope(), screen_w, screen_h);
-                    let logical = menu::settings_logical_row(self.settings_scope(), dd.row);
-                    (
-                        menu::dropdown_options(logical, self.detected_gamepad_type),
-                        content.width(),
-                    )
+                    let options = menu::settings_logical_row(self.settings_scope(), dd.row)
+                        .map_or_else(Vec::new, |row| menu::dropdown_options(row, self.detected_gamepad_type));
+                    (options, content.width())
                 }
             };
 
