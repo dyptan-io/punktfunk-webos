@@ -102,7 +102,8 @@ impl App {
         // Diagnostics), and uses the same overlay geometry the renderer draws against.
         if let Some(i) = self.dropdown_option_at(x, y, screen_w, screen_h, fonts) {
             let dd = self
-                .settings_ui.dropdown
+                .settings_ui
+                .dropdown
                 .as_mut()
                 .expect("dropdown_option_at yields Some only when one is open");
             let changed = dd.focused != i;

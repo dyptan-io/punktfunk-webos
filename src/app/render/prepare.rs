@@ -109,7 +109,9 @@ impl App {
         if self.launch_anim.is_none() {
             return;
         }
-        let Some(id) = self.render.hero.pending_upload() else { return };
+        let Some(id) = self.render.hero.pending_upload() else {
+            return;
+        };
         // One hero slot: the upload replaces whatever it held (`Compositor::upload_raw`),
         // reusing the texture when the two images happen to share a size.
         self.render.hero.mark_uploaded(id);
@@ -240,7 +242,8 @@ impl App {
             }),
             Screen::ForgetHost => Some(ModalShellKey::ForgetHost {
                 name: self
-                    .screens.host_menu_index
+                    .screens
+                    .host_menu_index
                     .and_then(|i| self.hosts.entries.get(i))
                     .map(HostEntry::name),
             }),
@@ -303,14 +306,16 @@ impl App {
                 self.detected_gamepad_type,
             )),
             Screen::Wake => self
-                .screens.wake
+                .screens
+                .wake
                 .as_ref()
                 .filter(|w| !w.mac.is_empty())
                 .map(|w| ModalFocusKey::WakeButton(w.focused)),
             Screen::Pairing => Some(match self.screens.pairing_focus {
-                PairingFocus::Pin => {
-                    ModalFocusKey::PairingDigit(self.screens.pin_digit_index, self.screens.pin_digits[self.screens.pin_digit_index])
-                }
+                PairingFocus::Pin => ModalFocusKey::PairingDigit(
+                    self.screens.pin_digit_index,
+                    self.screens.pin_digits[self.screens.pin_digit_index],
+                ),
                 PairingFocus::RequestAccess => ModalFocusKey::PairingButton,
             }),
             Screen::ForgetHost => Some(ModalFocusKey::ForgetButton(self.nav.cursor(ScreenKey::ForgetHost))),
@@ -427,7 +432,8 @@ impl App {
                         let (_, content) = view::settings::layout(self.settings_scope(), screen_w, screen_h);
                         let rows = settings_rows.get_or_insert_with(|| self.settings_rows());
                         let dropdown_open = self
-                            .settings_ui.dropdown
+                            .settings_ui
+                            .dropdown
                             .as_ref()
                             .is_some_and(|dd| dd.row == self.nav.cursor(ScreenKey::Settings));
                         let target_on = rows
@@ -505,7 +511,8 @@ impl App {
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
                         self.list_modal_focused()
                             .map(|focused| {
-                                let dropdown_open = self.settings_ui.dropdown.as_ref().is_some_and(|dd| dd.row == focused);
+                                let dropdown_open =
+                                    self.settings_ui.dropdown.as_ref().is_some_and(|dd| dd.row == focused);
                                 let target_on = rows.get(focused).is_some_and(|r| r.value == "On");
                                 ui::rasterize(
                                     ui::widgets::FocusRowTile {

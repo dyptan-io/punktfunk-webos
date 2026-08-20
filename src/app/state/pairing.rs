@@ -56,10 +56,12 @@ impl App {
             // "Request access" button below; `Confirm` submits the PIN.
             PairingFocus::Pin => match ev {
                 MenuEvent::Up => {
-                    self.screens.pin_digits[self.screens.pin_digit_index] = (self.screens.pin_digits[self.screens.pin_digit_index] + 1) % 10;
+                    self.screens.pin_digits[self.screens.pin_digit_index] =
+                        (self.screens.pin_digits[self.screens.pin_digit_index] + 1) % 10;
                 }
                 MenuEvent::Down => {
-                    self.screens.pin_digits[self.screens.pin_digit_index] = (self.screens.pin_digits[self.screens.pin_digit_index] + 9) % 10;
+                    self.screens.pin_digits[self.screens.pin_digit_index] =
+                        (self.screens.pin_digits[self.screens.pin_digit_index] + 9) % 10;
                 }
                 MenuEvent::Left => {
                     // Off the left-hand end goes back up to the primary button, so the two
@@ -190,7 +192,12 @@ impl App {
         let name = entry.name().to_string();
         let mgmt_port = entry.mgmt_port();
         let mac = entry.mac().to_vec();
-        let pin: String = self.screens.pin_digits.iter().map(std::string::ToString::to_string).collect();
+        let pin: String = self
+            .screens
+            .pin_digits
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         self.screens.pairing_busy = true;
         self.screens.pairing_status = Some("Pairing — confirm the PIN on the host.".into());
         tracing::info!("pairing with {host}:{port} (pin len {})", pin.len());

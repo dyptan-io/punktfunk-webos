@@ -144,7 +144,8 @@ impl App {
     /// `modal.scroll_px` is the raw target the ease writes; every reader wants it clamped, and
     /// the clamp used to be spelled out at each of them.
     pub(crate) fn clamped_scroll_px(&self, total: usize, stride: i32, viewport_h: u32) -> i32 {
-        self.render.modal
+        self.render
+            .modal
             .scroll_px
             .clamp(0, Self::max_scroll_px(total, stride, viewport_h))
     }
@@ -255,7 +256,8 @@ impl App {
         Some(match self.nav.screen {
             Screen::EditHost => {
                 let name = self
-                    .screens.edit_host_index
+                    .screens
+                    .edit_host_index
                     .and_then(|i| self.hosts.entries.get(i))
                     .map_or_else(String::new, |e| e.name().to_string());
                 (view::addhost::EDIT_TITLE, view::addhost::edit_subtitle(&name))

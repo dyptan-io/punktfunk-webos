@@ -14,7 +14,11 @@ impl App {
 
     /// Return to `HostMenu` or Home if host was removed.
     pub(crate) fn back_to_host_menu(&mut self) {
-        if self.screens.host_menu_index.is_some_and(|i| i < self.hosts.entries.len()) {
+        if self
+            .screens
+            .host_menu_index
+            .is_some_and(|i| i < self.hosts.entries.len())
+        {
             self.nav.enter(Screen::HostMenu, 0);
         } else {
             self.screens.host_menu_index = None;

@@ -51,7 +51,8 @@ impl App {
         self.persist();
         self.rebuild_entries();
         self.home_focus = HomeFocus::Sidebar(
-            self.hosts.entries
+            self.hosts
+                .entries
                 .iter()
                 .position(|e| e.host() == host && e.port() == port)
                 .unwrap_or(0),

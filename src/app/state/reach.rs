@@ -25,7 +25,12 @@ impl App {
             return;
         }
         self.hosts.reach_last = Some(Instant::now());
-        let targets: Vec<(String, u16)> = self.hosts.entries.iter().map(|e| (e.host().to_string(), e.port())).collect();
+        let targets: Vec<(String, u16)> = self
+            .hosts
+            .entries
+            .iter()
+            .map(|e| (e.host().to_string(), e.port()))
+            .collect();
         if targets.is_empty() {
             return;
         }
@@ -77,7 +82,10 @@ impl App {
 
     /// Last known reachability (None until first probe).
     pub(crate) fn entry_online(&self, entry: &crate::app::hosts::HostEntry) -> Option<bool> {
-        self.hosts.reachable.get(&(entry.host().to_string(), entry.port())).copied()
+        self.hosts
+            .reachable
+            .get(&(entry.host().to_string(), entry.port()))
+            .copied()
     }
 
     /// All reachability states, index-aligned with entries.

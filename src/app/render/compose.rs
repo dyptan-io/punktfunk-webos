@@ -45,7 +45,8 @@ impl App {
         // `snapshot_closing_modal`) — the entering one owns `tile::MODAL` from this frame.
         // The two overlap, so leaving one modal for another cross-fades.
         let closing = self
-            .render.modal
+            .render
+            .modal
             .fade
             .closing_frame(MODAL_FADE_OUT)
             .and_then(|(alpha, _)| Some((alpha, self.render.modal.prev?)));
@@ -397,8 +398,14 @@ impl App {
             if !shown {
                 continue;
             }
-            let band =
-                view::home::section_heading_rect(first_idx, columns, grid_x, available_w, sections, self.render.grid.scroll);
+            let band = view::home::section_heading_rect(
+                first_idx,
+                columns,
+                grid_x,
+                available_w,
+                sections,
+                self.render.grid.scroll,
+            );
             if band.bottom() < 0 || band.y() > screen_h as i32 {
                 continue;
             }
@@ -426,14 +433,7 @@ impl App {
     /// focus pop and title strip (or the submenu panel a hold grew out of it), plus the pin
     /// badge. `r` is its unscaled rect — everything here scales about the card's own centre, so
     /// the pops can't fight over position.
-    fn compose_focused_card(
-        &self,
-        tiles: &TileStore,
-        cmds: &mut Vec<DrawCmd>,
-        pin_id: &str,
-        r: Rect,
-        pad: i32,
-    ) {
+    fn compose_focused_card(&self, tiles: &TileStore, cmds: &mut Vec<DrawCmd>, pin_id: &str, r: Rect, pad: i32) {
         // The focus pop: the GPU scales the (unfocused) card tile up
         // around its center as the pop progresses, with the shared glow
         // tile fading in behind it at the same scale.
@@ -507,7 +507,6 @@ impl App {
         }
     }
 
-
     /// The focused card's title strip, or the taller submenu panel a hold grew out of it.
     /// `pop` and `card_scale` are the card's own transform: everything here rides the card
     /// rather than animating on its own, or the frost drifts off the cover baked into it.
@@ -539,7 +538,10 @@ impl App {
                 // On its own clock: `focus_anim` is re-armed by every focus move, so
                 // the panel would pop open the instant the menu is dismissed by
                 // moving off the card.
-                let clock = self.card_menu.as_ref().map_or(self.render.focus_anim, |m| Some(m.since));
+                let clock = self
+                    .card_menu
+                    .as_ref()
+                    .map_or(self.render.focus_anim, |m| Some(m.since));
                 // Smoothstep, not the cubic ease-out the plain strip's short wipe
                 // uses: over a whole panel's travel `1-(1-t)³` is 87% done at the
                 // halfway point, so the tail reads as a small late move after the
@@ -752,7 +754,13 @@ impl App {
         let f = self.render.hero.opacity();
         cmds.push(DrawCmd::TexF {
             tile: tile::HERO,
-            dst: hero::hero_pan_dst(hero.width, hero.height, screen_w, screen_h, self.render.hero.panned_for()),
+            dst: hero::hero_pan_dst(
+                hero.width,
+                hero.height,
+                screen_w,
+                screen_h,
+                self.render.hero.panned_for(),
+            ),
             alpha: (255.0 * f) as u8,
         });
         cmds.push(DrawCmd::Fill {

@@ -10,10 +10,10 @@
 use std::sync::mpsc::Receiver;
 
 use crate::app::state::{reach::Reachability, sendlogs::SendLogsMsg, speedtest::SpeedTestMsg};
+use crate::app::PairingOutcome;
 use crate::services::art::ArtLoader;
 use crate::services::discovery::Discovery;
 use crate::services::library::GamesLoaded;
-use crate::app::PairingOutcome;
 
 #[derive(Default)]
 pub(crate) struct Jobs {

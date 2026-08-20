@@ -29,7 +29,12 @@ impl App {
     /// Grid shape at `columns` columns — plain field reads (see [`App::desktop_pin`]), so a
     /// caller in a loop may still prefer to hoist it.
     pub(crate) fn grid_layout(&self, columns: usize) -> GridLayout {
-        GridLayout::new(self.library.pinned_count, self.library.desktop_pin, self.library.games_loaded, columns)
+        GridLayout::new(
+            self.library.pinned_count,
+            self.library.desktop_pin,
+            self.library.games_loaded,
+            columns,
+        )
     }
 
     /// Total grid nav positions — `0` (no cards at all) only when no host is
@@ -155,7 +160,11 @@ impl App {
                 view::home::unscrolled_card_rect(idx, columns, ui::widgets::SIDEBAR_W as i32, available_w, sections);
             // Screen space, at the scroll the grid is easing *toward* — so that a move
             // crossing into the sidebar compares against its rows on equal terms.
-            map.item(HomeFocus::Grid(idx), r.offset(0, -self.render.grid.scroll_target), GROUP_GRID);
+            map.item(
+                HomeFocus::Grid(idx),
+                r.offset(0, -self.render.grid.scroll_target),
+                GROUP_GRID,
+            );
         }
         map
     }
@@ -293,7 +302,8 @@ impl App {
             .filter_map(|idx| layout.pin_id_at(&self.library.games, idx))
             .collect();
         let rest_ids: Vec<String> = self
-            .render.grid
+            .render
+            .grid
             .card_ids
             .pin_ids()
             .filter(|id| !pinned.contains(id))
@@ -362,7 +372,8 @@ impl App {
     }
 
     fn selected_known_host_idx(&self) -> Option<usize> {
-        self.library.selected_host
+        self.library
+            .selected_host
             .as_ref()
             .and_then(|(h, p)| self.hosts.known.iter().position(|k| k.host == *h && k.port == *p))
     }
@@ -402,7 +413,8 @@ impl App {
         let viewport = (view::home::GRID_TOP_Y, screen_h as i32 - view::home::GRID_PAD);
         let max_scroll = self.max_grid_scroll(columns, available_w, screen_h);
         self.render.grid.scroll_target =
-            ui::scroll::scroll_to_reveal(card, viewport, self.render.grid.scroll_target, FOCUS_MARGIN).clamp(0, max_scroll);
+            ui::scroll::scroll_to_reveal(card, viewport, self.render.grid.scroll_target, FOCUS_MARGIN)
+                .clamp(0, max_scroll);
     }
 
     /// Scrolls the grid by `dy_px` (positive = content moves up), clamped — the
@@ -457,7 +469,8 @@ impl App {
         self.library.selected_host = Some((host.clone(), port));
         self.persist();
         let name = self
-            .hosts.known
+            .hosts
+            .known
             .iter()
             .find(|h| h.host == host && h.port == port)
             .map_or_else(|| host.clone(), |h| h.name.clone());
@@ -574,7 +587,8 @@ impl App {
         self.home_status_sticky = false;
         if matches!(e, crate::services::library::LibraryError::Unreachable(_)) {
             let mac = self
-                .hosts.known
+                .hosts
+                .known
                 .iter()
                 .find(|h| h.host == host && h.port == port)
                 .map(|h| h.mac.clone())
@@ -615,7 +629,9 @@ impl App {
         // black — as does a game with none, which hands straight over to the stream. Armed
         // before the art is handed over, so `Hero::accept` recognises a cache hit as belonging
         // to this launch even if the focus prefetch never ran.
-        let game = launch.as_ref().and_then(|id| self.library.games.iter().find(|g| &g.id == id));
+        let game = launch
+            .as_ref()
+            .and_then(|id| self.library.games.iter().find(|g| &g.id == id));
         self.render.hero.arm(launch.clone());
         if let (Some(game), Some(loader)) = (game, &mut self.jobs.art) {
             // The disk is only touched when the focus prefetch hasn't already decoded this

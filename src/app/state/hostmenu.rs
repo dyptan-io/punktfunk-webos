@@ -97,7 +97,8 @@ impl App {
     /// Whether the menu's host is paired — what half the actions are conditional on, and
     /// the one thing a row label varies on.
     pub(crate) fn host_menu_paired(&self) -> bool {
-        self.screens.host_menu_index
+        self.screens
+            .host_menu_index
             .and_then(|i| self.hosts.entries.get(i))
             .is_some_and(HostEntry::is_paired)
     }
@@ -142,14 +143,16 @@ impl App {
 
     /// The host's name — the menu's title.
     pub(crate) fn host_menu_title(&self) -> String {
-        self.screens.host_menu_index
+        self.screens
+            .host_menu_index
             .and_then(|i| self.hosts.entries.get(i))
             .map_or_else(String::new, |e| e.name().to_string())
     }
 
     /// `address:port` and the pairing state — the menu's subtitle.
     pub(crate) fn host_menu_subtitle(&self) -> String {
-        self.screens.host_menu_index
+        self.screens
+            .host_menu_index
             .and_then(|i| self.hosts.entries.get(i))
             .map_or_else(String::new, |e| {
                 let paired = if e.is_paired() { "paired" } else { "not paired" };
@@ -192,7 +195,9 @@ impl App {
         let Some(action) = actions.get(self.nav.cursor(ScreenKey::HostMenu)) else {
             return;
         };
-        let Some(idx) = self.screens.host_menu_index else { return };
+        let Some(idx) = self.screens.host_menu_index else {
+            return;
+        };
         match action {
             HostAction::Connect => {
                 self.screens.host_menu_index = None;
@@ -207,7 +212,9 @@ impl App {
             }
             HostAction::SpeedTest => self.open_speed_test(idx),
             HostAction::Wake => {
-                let Some(entry) = self.hosts.entries.get(idx) else { return };
+                let Some(entry) = self.hosts.entries.get(idx) else {
+                    return;
+                };
                 let (host, port) = (entry.host().to_string(), entry.port());
                 let mac = entry.mac().to_vec();
                 let name = entry.name().to_string();

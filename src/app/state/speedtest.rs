@@ -54,14 +54,17 @@ pub(crate) enum SpeedTestMsg {
 impl App {
     /// Opens `Screen::SpeedTest` for sidebar entry `idx` and starts the probe.
     pub(crate) fn open_speed_test(&mut self, idx: usize) {
-        let Some(entry) = self.hosts.entries.get(idx) else { return };
+        let Some(entry) = self.hosts.entries.get(idx) else {
+            return;
+        };
         let host = entry.host().to_string();
         let port = entry.port();
         let name = entry.name().to_string();
         // Only reachable for a paired host (see `App::host_menu_actions`), so the pin is
         // expected to be there; `None` still just falls back to TOFU rather than failing.
         let pin = self
-            .hosts.known
+            .hosts
+            .known
             .iter()
             .find(|h| h.host == host && h.port == port)
             .and_then(|k| k.fingerprint);

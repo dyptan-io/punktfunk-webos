@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 
-use crate::app::grid::{CARD_BUILD_BUDGET, CARD_BUILD_BURST, CARD_KEEP_ROWS, CARD_PREFETCH_ROWS, GridLayout};
+use crate::app::grid::{GridLayout, CARD_BUILD_BUDGET, CARD_BUILD_BURST, CARD_KEEP_ROWS, CARD_PREFETCH_ROWS};
 use crate::app::library::Library;
 use crate::app::render::ctx::RenderCtx;
 use crate::app::render::tile;
@@ -130,7 +130,12 @@ impl App {
     }
 
     /// Frees every resident card outside the keep window, with its cover.
-    fn evict_cards_outside(&mut self, keep_window: std::ops::Range<usize>, layout: &GridLayout, tiles: &mut ui::cache::TileStore) {
+    fn evict_cards_outside(
+        &mut self,
+        keep_window: std::ops::Range<usize>,
+        layout: &GridLayout,
+        tiles: &mut ui::cache::TileStore,
+    ) {
         // Evict first, so a long scroll frees textures in the same frame it needs new
         // ones rather than a frame later.
         //
@@ -153,7 +158,8 @@ impl App {
         let mut dropped = std::mem::take(&mut self.render.grid.scratch.dropped);
         dropped.clear();
         dropped.extend(
-            self.render.grid
+            self.render
+                .grid
                 .card_ids
                 .entries()
                 .filter(|(_, t)| keep.binary_search(t).is_err())
@@ -467,7 +473,12 @@ impl App {
 
     /// Advances the loading spinner, and pops the whole grid in at once on the frame the window
     /// is finally complete.
-    fn advance_grid_reveal(&mut self, mut build_window: std::ops::Range<usize>, layout: &GridLayout, ctx: &mut RenderCtx<'_>) {
+    fn advance_grid_reveal(
+        &mut self,
+        mut build_window: std::ops::Range<usize>,
+        layout: &GridLayout,
+        ctx: &mut RenderCtx<'_>,
+    ) {
         let RenderCtx { tiles, updated, .. } = ctx;
         if !self.render.grid.reveal.is_revealed() {
             // Rechecks the whole window rather than trusting `!pending`, since a card built
@@ -476,11 +487,16 @@ impl App {
             let window_ready = || {
                 build_window.all(|idx| {
                     layout.pin_id_at(&self.library.games, idx).is_none_or(|id| {
-                        self.render.grid.card_ids.get(id).is_some_and(|t| tiles.contains(t)) && art_ready(&self.library, layout, idx)
+                        self.render.grid.card_ids.get(id).is_some_and(|t| tiles.contains(t))
+                            && art_ready(&self.library, layout, idx)
                     })
                 })
             };
-            let next_frame = self.render.grid.reveal.advance(self.library_fetch_in_flight(), window_ready);
+            let next_frame = self
+                .render
+                .grid
+                .reveal
+                .advance(self.library_fetch_in_flight(), window_ready);
             match next_frame {
                 Some(idx) => updated.push(tile::spinner(idx)),
                 // Everything built behind the spinner becomes visible in this one frame, so
@@ -507,20 +523,19 @@ impl App {
             ..
         } = ctx;
         self.render.grid.reveal.reveal();
-    self.render.grid.reveal.reveal();
-    if tiles.ensure_static(tile::NO_HOST, || {
-        ui::rasterize(
-            ui::tiles::TextTile {
-                font: fonts.label,
-                text: "No host selected — pick one from the list, or add one.",
-                color: ui::style::theme().muted,
-            },
-            text_cache,
-            fonts,
-        )
-    })? {
-        updated.push(tile::NO_HOST);
-    }
+        if tiles.ensure_static(tile::NO_HOST, || {
+            ui::rasterize(
+                ui::tiles::TextTile {
+                    font: fonts.label,
+                    text: "No host selected — pick one from the list, or add one.",
+                    color: ui::style::theme().muted,
+                },
+                text_cache,
+                fonts,
+            )
+        })? {
+            updated.push(tile::NO_HOST);
+        }
         Ok(())
     }
 }

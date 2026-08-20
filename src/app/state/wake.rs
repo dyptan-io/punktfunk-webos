@@ -64,7 +64,9 @@ impl App {
     /// silent auto-send after that, and probes reachability every `WAKE_PROBE_INTERVAL`.
     /// Runs whether modal is showing or not; `drain_discovery` can also end wake.
     pub fn tick_wake(&mut self) -> bool {
-        let Some(wake) = &mut self.screens.wake else { return false };
+        let Some(wake) = &mut self.screens.wake else {
+            return false;
+        };
         let now = Instant::now();
         let mut changed = false;
         let mut new_status = None;
@@ -76,7 +78,8 @@ impl App {
                 if loaded.result.is_ok() {
                     let (host, port) = (wake.host.clone(), wake.port);
                     let mgmt_port = self
-                        .hosts.known
+                        .hosts
+                        .known
                         .iter()
                         .find(|h| h.host == host && h.port == port)
                         .and_then(|h| h.mgmt_port);
@@ -86,7 +89,9 @@ impl App {
                 wake.last_probe = Some(now);
             }
         }
-        let Some(wake) = &mut self.screens.wake else { return changed };
+        let Some(wake) = &mut self.screens.wake else {
+            return changed;
+        };
 
         // WHY: resend only if wake.sent=true; else retry would fire on first tick
         // before user confirms. First send is start_wake's call (auto) or user's confirm.

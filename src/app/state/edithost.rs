@@ -39,7 +39,9 @@ impl App {
         if !self.screens.add_host.is_complete() {
             return;
         }
-        let Some(idx) = self.screens.edit_host_index else { return };
+        let Some(idx) = self.screens.edit_host_index else {
+            return;
+        };
         let Some(HostEntry::Known(old)) = self.hosts.entries.get(idx).cloned() else {
             return;
         };
@@ -75,7 +77,8 @@ impl App {
             self.library.selected_host = Some((host.clone(), port));
         }
         self.home_focus = HomeFocus::Sidebar(
-            self.hosts.entries
+            self.hosts
+                .entries
                 .iter()
                 .position(|e| e.host() == host && e.port() == port)
                 .unwrap_or(0),

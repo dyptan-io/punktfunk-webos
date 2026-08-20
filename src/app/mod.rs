@@ -253,7 +253,8 @@ impl App {
         // so relaunching the app lands back on its game grid.
         if let Some((host, port)) = selected_host {
             if let Some(h) = app
-                .hosts.known
+                .hosts
+                .known
                 .iter()
                 .find(|h| h.host == host && h.port == port && h.is_paired())
             {
@@ -272,7 +273,8 @@ impl App {
 
     /// Name of the host whichever host-scoped modal (Forget, Wake settings) is acting on.
     pub(crate) fn host_menu_host_name(&self) -> Option<&str> {
-        self.screens.host_menu_index
+        self.screens
+            .host_menu_index
             .and_then(|i| self.hosts.entries.get(i))
             .map(HostEntry::name)
     }
@@ -375,9 +377,14 @@ impl App {
     /// `(row, focused, alpha)` for the open dropdown or its close-fade; `None` if neither.
     pub(crate) fn dropdown_draw_state(&self) -> Option<(usize, usize, f32)> {
         if let Some(dd) = &self.settings_ui.dropdown {
-            Some((dd.row, dd.focused, self.settings_ui.dropdown_fade.open_alpha(DROPDOWN_FADE)))
+            Some((
+                dd.row,
+                dd.focused,
+                self.settings_ui.dropdown_fade.open_alpha(DROPDOWN_FADE),
+            ))
         } else {
-            self.settings_ui.dropdown_fade
+            self.settings_ui
+                .dropdown_fade
                 .closing_frame(DROPDOWN_FADE)
                 .map(|(alpha, (row, focused))| (row, focused, alpha))
         }
@@ -463,7 +470,8 @@ impl App {
     pub(crate) fn host_listed(&self, addr: &str, port: u16) -> bool {
         self.hosts.known.iter().any(|h| h.host == addr && h.port == port)
             || self
-                .hosts.entries
+                .hosts
+                .entries
                 .iter()
                 .any(|e| matches!(e, HostEntry::Discovered(d) if d.addr == addr && d.port == port))
     }
@@ -493,7 +501,8 @@ impl App {
             }
             #[allow(clippy::suspicious_operation_groupings)]
             let known = self
-                .hosts.known
+                .hosts
+                .known
                 .iter_mut()
                 .find(|h| h.host == found.addr && h.port == found.port);
             if let Some(known) = known {
@@ -613,10 +622,12 @@ impl App {
         let now = Instant::now();
         let dt = self.last_tick.map_or(ui::animation::SCROLL_STEP_TICK, |t| now - t);
         self.last_tick = Some(now);
-        let mut animating = ui::animation::ease_scroll(&mut self.render.grid.scroll, self.render.grid.scroll_target, dt);
+        let mut animating =
+            ui::animation::ease_scroll(&mut self.render.grid.scroll, self.render.grid.scroll_target, dt);
         // The scrolling modal's viewport, on the same ease-out as the grid. `scroll.offset`
         // has already jumped to its new row; this is only the rendered crop catching up.
-        animating |= ui::animation::ease_scroll(&mut self.render.modal.scroll_px, self.render.modal.scroll_target_px, dt);
+        animating |=
+            ui::animation::ease_scroll(&mut self.render.modal.scroll_px, self.render.modal.scroll_target_px, dt);
         if let Some(t) = self.render.focus_anim {
             if t.elapsed() >= ui::animation::CARD_FOCUS_POP {
                 self.render.focus_anim = None;

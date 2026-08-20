@@ -32,7 +32,9 @@ impl App {
                     self.set_log_level(menu::LOG_LEVEL_OPTIONS[choice]);
                 }
                 MenuEvent::Back => {
-                    self.settings_ui.dropdown_fade.close((menu::DIAG_ROW_LOG_LEVEL, dd.focused));
+                    self.settings_ui
+                        .dropdown_fade
+                        .close((menu::DIAG_ROW_LOG_LEVEL, dd.focused));
                     self.settings_ui.dropdown = None;
                 }
                 MenuEvent::Left | MenuEvent::Right | MenuEvent::Secondary => {}
