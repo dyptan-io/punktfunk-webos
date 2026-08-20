@@ -158,7 +158,7 @@ impl App {
                 changed
             }
             // Identical row-list geometry; only which focus field they carry differs.
-            Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
+            Screen::WakeSettings | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
                 let Some(row) = self.modal_list_row_at(x, y, screen_w, screen_h, fonts) else {
                     return false;
                 };
@@ -196,7 +196,7 @@ impl App {
                 self.set_confirm_focused(i)
             }
             // No positional focus to move: single-card info/entry modals (AddHost,
-            // EditHost, About, WakeSettings, PinLimit) and Settings with a dropdown open.
+            // EditHost, About, PinLimit) and Settings with a dropdown open.
             _ => false,
         }
     }
@@ -487,15 +487,8 @@ impl App {
                 self.menu_focused = i;
                 self.host_menu_dots = dots;
             }
-            // One row, already focused — the click only has to have landed on it.
-            Screen::WakeSettings => {
-                let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
-                if !ui::widgets::focus_row_rect(content, 0).contains_point((x, y)) {
-                    return None;
-                }
-            }
             // Identical row-list geometry; only which focus field they carry differs.
-            Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
+            Screen::WakeSettings | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
                 let row = self.modal_list_row_at(x, y, screen_w, screen_h, fonts)?;
                 *self.list_modal_focused_mut()? = row;
             }
