@@ -4,6 +4,7 @@
 //! *widgets*, not this app's menus.
 use crate::core::caps::video_caps;
 use crate::core::event::MenuEvent;
+use crate::core::model::{BITRATE_AUTOMATIC, BITRATE_MAX_KBPS, BITRATE_MIN_KBPS, BITRATE_STEP_KBPS};
 use crate::services::store::{
     CodecPref, GamepadType, LogLevelOverride, OverrideField, Settings, SettingsOverride, VideoBackend,
 };
@@ -35,18 +36,8 @@ pub const RESOLUTIONS: [(u32, u32, &str, &str); 3] = [
 /// Sent to host as exact wire refresh rate.
 pub const REFRESH_RATES: [u32; 3] = [30, 60, 120];
 
-/// Slider range: 10-200 Mbps, 5 Mbps steps.
-pub const BITRATE_MIN_KBPS: u32 = 10_000;
-pub const BITRATE_MAX_KBPS: u32 = 200_000;
-pub const BITRATE_STEP_KBPS: u32 = 5_000;
-/// Sentinel one notch below `BITRATE_MIN_KBPS` on the slider: `punktfunk_core::client::NativeClient`
-/// arms its own client-side AIMD bitrate controller (`punktfunk_core::abr`) precisely when it's
-/// asked to connect with `bitrate_kbps == 0` — it reacts to unrecoverable frames, heavy loss,
-/// one-way-delay rise, and (via `session.rs`'s `report_decode_us` call) decode latency, backing off
-/// or climbing every ~750ms. A fixed Mbps number, however carefully picked, never adapts to a link
-/// that degrades mid-session — this does.
-pub const BITRATE_AUTOMATIC: u32 = 0;
-/// Above this, the Bitrate row shows a dull-orange caution caption (not a hard cap).
+/// Above this, the Bitrate row shows a dull-orange caution caption (not a hard cap). Presentation
+/// only, unlike the range itself (`core::model::BITRATE_MIN_KBPS`/`BITRATE_MAX_KBPS`).
 pub const BITRATE_WARN_KBPS: u32 = 150_000;
 
 /// One row of a settings-shaped screen.

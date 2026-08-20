@@ -2,6 +2,7 @@
 //! Logic lives in `app::state::settings`.
 use crate::app::menu;
 use crate::app::menu::SettingsScope;
+use crate::core::model;
 use crate::core::VERSION;
 use crate::services::store::{GamepadType, Settings, VideoBackend};
 use crate::ui;
@@ -93,11 +94,11 @@ pub(crate) fn rows(
     dualsense_limited: bool,
     webos_major: Option<u32>,
 ) -> Vec<FocusRow> {
-    let bitrate_frac = if settings.bitrate_kbps == menu::BITRATE_AUTOMATIC {
+    let bitrate_frac = if settings.bitrate_kbps == model::BITRATE_AUTOMATIC {
         0.0
     } else {
-        (settings.bitrate_kbps.saturating_sub(menu::BITRATE_MIN_KBPS)) as f32
-            / (menu::BITRATE_MAX_KBPS - menu::BITRATE_MIN_KBPS) as f32
+        (settings.bitrate_kbps.saturating_sub(model::BITRATE_MIN_KBPS)) as f32
+            / (model::BITRATE_MAX_KBPS - model::BITRATE_MIN_KBPS) as f32
     };
     let row_for = |logical: menu::SettingsRow| match logical {
         menu::SettingsRow::Resolution => FocusRow::dropdown(
@@ -113,7 +114,7 @@ pub(crate) fn rows(
         menu::SettingsRow::Bitrate => FocusRow::slider(
             crate::app::view::icons::ICON_SIGNAL,
             "Bitrate",
-            if settings.bitrate_kbps == menu::BITRATE_AUTOMATIC {
+            if settings.bitrate_kbps == model::BITRATE_AUTOMATIC {
                 "Automatic".to_string()
             } else {
                 format!("{} Mbps", settings.bitrate_kbps / 1000)
