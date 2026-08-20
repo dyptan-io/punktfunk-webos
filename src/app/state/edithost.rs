@@ -14,20 +14,20 @@ impl App {
         let Some(HostEntry::Known(h)) = self.hosts.entries.get(idx) else {
             return;
         };
-        self.add_host = AddHostState::from_host_port(&h.host, h.port);
-        self.edit_host_index = Some(idx);
-        self.host_menu_index = None;
+        self.screens.add_host = AddHostState::from_host_port(&h.host, h.port);
+        self.screens.edit_host_index = Some(idx);
+        self.screens.host_menu_index = None;
         self.nav.screen = Screen::EditHost;
     }
 
     /// Handle menu event. Left/Right stand in for backspace; Confirm commits with 4 octets.
     pub(crate) fn handle_edit_host_event(&mut self, ev: MenuEvent) {
         match ev {
-            MenuEvent::Left => self.add_host.backspace(),
-            MenuEvent::Right => self.add_host.advance_field(),
+            MenuEvent::Left => self.screens.add_host.backspace(),
+            MenuEvent::Right => self.screens.add_host.advance_field(),
             MenuEvent::Confirm => self.confirm_edit_host(),
             MenuEvent::Back => {
-                self.edit_host_index = None;
+                self.screens.edit_host_index = None;
                 self.nav.screen = Screen::Home;
             }
             MenuEvent::Up | MenuEvent::Down | MenuEvent::Secondary => {}
@@ -36,16 +36,16 @@ impl App {
 
     /// Rewrite address in-place, keeping identity (fingerprint, `mgmt_port`, MAC). No-op if partial.
     pub(crate) fn confirm_edit_host(&mut self) {
-        if !self.add_host.is_complete() {
+        if !self.screens.add_host.is_complete() {
             return;
         }
-        let Some(idx) = self.edit_host_index else { return };
+        let Some(idx) = self.screens.edit_host_index else { return };
         let Some(HostEntry::Known(old)) = self.hosts.entries.get(idx).cloned() else {
             return;
         };
-        let (host, port) = self.add_host.host_and_port();
+        let (host, port) = self.screens.add_host.host_and_port();
         if host == old.host && port == old.port {
-            self.edit_host_index = None;
+            self.screens.edit_host_index = None;
             self.nav.screen = Screen::Home;
             return;
         }
@@ -80,7 +80,7 @@ impl App {
                 .position(|e| e.host() == host && e.port() == port)
                 .unwrap_or(0),
         );
-        self.edit_host_index = None;
+        self.screens.edit_host_index = None;
         self.sidebar_dirty = true;
         self.grid.dirty = true;
         self.nav.screen = Screen::Home;

@@ -97,15 +97,15 @@ impl App {
     /// Whether the menu's host is paired — what half the actions are conditional on, and
     /// the one thing a row label varies on.
     pub(crate) fn host_menu_paired(&self) -> bool {
-        self.host_menu_index
+        self.screens.host_menu_index
             .and_then(|i| self.hosts.entries.get(i))
             .is_some_and(HostEntry::is_paired)
     }
 
     /// Opens host menu for sidebar row `idx` (⋯ button, pointer, or Right key).
     pub(crate) fn open_host_menu(&mut self, idx: usize) {
-        self.host_menu_index = Some(idx);
-        self.host_menu_dots = false;
+        self.screens.host_menu_index = Some(idx);
+        self.screens.host_menu_dots = false;
         self.nav.enter(Screen::HostMenu, 0);
     }
 
@@ -117,7 +117,7 @@ impl App {
     /// The actions offered; conditional on host state (saved/discovered, has MAC).
     pub(crate) fn host_menu_actions(&self) -> HostActions {
         let mut actions = HostActions::default();
-        let Some(entry) = self.host_menu_index.and_then(|i| self.hosts.entries.get(i)) else {
+        let Some(entry) = self.screens.host_menu_index.and_then(|i| self.hosts.entries.get(i)) else {
             return actions;
         };
         let saved = matches!(entry, HostEntry::Known(_));
@@ -142,14 +142,14 @@ impl App {
 
     /// The host's name — the menu's title.
     pub(crate) fn host_menu_title(&self) -> String {
-        self.host_menu_index
+        self.screens.host_menu_index
             .and_then(|i| self.hosts.entries.get(i))
             .map_or_else(String::new, |e| e.name().to_string())
     }
 
     /// `address:port` and the pairing state — the menu's subtitle.
     pub(crate) fn host_menu_subtitle(&self) -> String {
-        self.host_menu_index
+        self.screens.host_menu_index
             .and_then(|i| self.hosts.entries.get(i))
             .map_or_else(String::new, |e| {
                 let paired = if e.is_paired() { "paired" } else { "not paired" };
@@ -162,24 +162,24 @@ impl App {
         if self.list_nav_event(ev) {
             // Vertical movement always lands on the row body — a ⋯ belongs to the row
             // it's on, so leaving that row leaves the button too.
-            self.host_menu_dots = false;
+            self.screens.host_menu_dots = false;
             return;
         }
         match ev {
             // Right/Left move onto and off the focused row's ⋯, mirroring the sidebar's
             // `HomeFocus::SidebarMenu`; on a row without one they do nothing.
-            MenuEvent::Right if !self.host_menu_dots && self.host_menu_row_has_dots() => {
-                self.host_menu_dots = true;
+            MenuEvent::Right if !self.screens.host_menu_dots && self.host_menu_row_has_dots() => {
+                self.screens.host_menu_dots = true;
                 self.modal.focus_anim = Some(Instant::now());
             }
-            MenuEvent::Left if self.host_menu_dots => {
-                self.host_menu_dots = false;
+            MenuEvent::Left if self.screens.host_menu_dots => {
+                self.screens.host_menu_dots = false;
                 self.modal.focus_anim = Some(Instant::now());
             }
-            MenuEvent::Confirm if self.host_menu_dots => self.open_wake_settings(),
+            MenuEvent::Confirm if self.screens.host_menu_dots => self.open_wake_settings(),
             MenuEvent::Confirm => self.confirm_host_menu_row(),
             MenuEvent::Back => {
-                self.host_menu_index = None;
+                self.screens.host_menu_index = None;
                 self.nav.screen = Screen::Home;
             }
             MenuEvent::Up | MenuEvent::Down | MenuEvent::Left | MenuEvent::Right | MenuEvent::Secondary => {}
@@ -192,17 +192,17 @@ impl App {
         let Some(action) = actions.get(self.nav.cursor(ScreenKey::HostMenu)) else {
             return;
         };
-        let Some(idx) = self.host_menu_index else { return };
+        let Some(idx) = self.screens.host_menu_index else { return };
         match action {
             HostAction::Connect => {
-                self.host_menu_index = None;
+                self.screens.host_menu_index = None;
                 self.nav.screen = Screen::Home;
                 self.confirm_sidebar_host(idx);
             }
             // Straight to the PIN ceremony, even for an already-paired host: re-pairing
             // is the documented recovery when a host's certificate has changed.
             HostAction::Pair => {
-                self.host_menu_index = None;
+                self.screens.host_menu_index = None;
                 self.open_pairing(idx);
             }
             HostAction::SpeedTest => self.open_speed_test(idx),
@@ -211,7 +211,7 @@ impl App {
                 let (host, port) = (entry.host().to_string(), entry.port());
                 let mac = entry.mac().to_vec();
                 let name = entry.name().to_string();
-                self.host_menu_index = None;
+                self.screens.host_menu_index = None;
                 self.nav.screen = Screen::Home;
                 self.start_wake(host, port, mac, format!("Waking {name}…"));
             }

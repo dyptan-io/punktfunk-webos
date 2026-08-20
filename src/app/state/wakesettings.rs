@@ -12,7 +12,7 @@ impl App {
 
     /// Host being edited (always from host menu).
     pub(crate) fn wake_settings_host(&self) -> Option<&store::KnownHost> {
-        let entry = self.host_menu_index.and_then(|i| self.hosts.entries.get(i))?;
+        let entry = self.screens.host_menu_index.and_then(|i| self.hosts.entries.get(i))?;
         let (host, port) = (entry.host(), entry.port());
         self.hosts.known.iter().find(|h| h.host == host && h.port == port)
     }
@@ -31,7 +31,7 @@ impl App {
 
     /// Flip auto-send flag and persist (discovered-only hosts have no record).
     fn toggle_wol_auto(&mut self) {
-        let Some(entry) = self.host_menu_index.and_then(|i| self.hosts.entries.get(i)) else {
+        let Some(entry) = self.screens.host_menu_index.and_then(|i| self.hosts.entries.get(i)) else {
             return;
         };
         let (host, port) = (entry.host().to_string(), entry.port());

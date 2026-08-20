@@ -66,8 +66,8 @@ impl App {
             .find(|h| h.host == host && h.port == port)
             .and_then(|k| k.fingerprint);
 
-        self.speed_test_name = name;
-        self.speed_test = Some(SpeedTestState::Connecting);
+        self.screens.speed_test_name = name;
+        self.screens.speed_test = Some(SpeedTestState::Connecting);
         self.nav.enter(Screen::SpeedTest, 0);
         tracing::info!("speed test: connecting to {host}:{port}");
 
@@ -106,7 +106,7 @@ impl App {
             changed = true;
             match msg {
                 SpeedTestMsg::Progress(p) => {
-                    self.speed_test = Some(SpeedTestState::Measuring { partial: Some(p) });
+                    self.screens.speed_test = Some(SpeedTestState::Measuring { partial: Some(p) });
                 }
                 SpeedTestMsg::Done { outcome, confirmed } => {
                     tracing::info!(
@@ -116,7 +116,7 @@ impl App {
                         outcome.recv_bytes,
                         outcome.elapsed_ms
                     );
-                    self.speed_test = Some(SpeedTestState::Done {
+                    self.screens.speed_test = Some(SpeedTestState::Done {
                         outcome: *outcome,
                         confirmed,
                     });
@@ -126,7 +126,7 @@ impl App {
                 }
                 SpeedTestMsg::Failed(e) => {
                     tracing::warn!("speed test failed: {e}");
-                    self.speed_test = Some(SpeedTestState::Failed(e));
+                    self.screens.speed_test = Some(SpeedTestState::Failed(e));
                     self.jobs.speed_test = None;
                     break;
                 }
@@ -137,7 +137,7 @@ impl App {
 
     pub(crate) fn handle_speed_test_event(&mut self, ev: MenuEvent) {
         let done = matches!(
-            self.speed_test,
+            self.screens.speed_test,
             Some(SpeedTestState::Done { .. }) | Some(SpeedTestState::Failed(_))
         );
         match ev {
@@ -154,7 +154,7 @@ impl App {
                     self.close_speed_test();
                     return;
                 }
-                let applied = match &self.speed_test {
+                let applied = match &self.screens.speed_test {
                     Some(SpeedTestState::Done { outcome, .. }) => recommended_kbps(outcome),
                     _ => None,
                 };
@@ -175,7 +175,7 @@ impl App {
     /// index is still set (this screen is only ever reached from there), so nothing has
     /// to be stashed separately.
     pub(crate) fn retry_speed_test(&mut self) {
-        let Some(idx) = self.host_menu_index else {
+        let Some(idx) = self.screens.host_menu_index else {
             self.close_speed_test();
             return;
         };
@@ -184,7 +184,7 @@ impl App {
 
     /// Leaves the screen, abandoning any in-flight probe.
     pub(crate) fn close_speed_test(&mut self) {
-        self.speed_test = None;
+        self.screens.speed_test = None;
         self.jobs.cancel_speed_test();
         self.back_to_host_menu();
     }

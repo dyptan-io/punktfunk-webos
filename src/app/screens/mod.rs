@@ -6,3 +6,4 @@
 //! (see `docs/APP-REWORK-PLAN.md` §1, P4).
 pub(crate) mod confirm;
 pub(crate) mod list;
+pub(crate) mod slots;

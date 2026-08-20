@@ -39,8 +39,9 @@ pub enum Screen {
 }
 
 /// Pairing modal's focused input: PIN row or "Request access" button.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum PairingFocus {
+    #[default]
     Pin,
     RequestAccess,
 }

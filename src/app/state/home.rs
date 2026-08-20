@@ -200,7 +200,7 @@ impl App {
                     self.confirm_sidebar_host(i);
                 }
                 HomeFocus::Sidebar(i) if i == self.hosts.entries.len() => {
-                    self.add_host = AddHostState::default();
+                    self.screens.add_host = AddHostState::default();
                     self.nav.screen = Screen::AddHost;
                 }
                 HomeFocus::Sidebar(_) => {

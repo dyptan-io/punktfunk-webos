@@ -255,7 +255,7 @@ impl App {
         Some(match self.nav.screen {
             Screen::EditHost => {
                 let name = self
-                    .edit_host_index
+                    .screens.edit_host_index
                     .and_then(|i| self.hosts.entries.get(i))
                     .map_or_else(String::new, |e| e.name().to_string());
                 (view::addhost::EDIT_TITLE, view::addhost::edit_subtitle(&name))
@@ -311,7 +311,7 @@ impl App {
     /// payload that is `None` off-screen, so it has nowhere else to live.
     pub(crate) fn confirm_focused(&self) -> Option<usize> {
         match self.nav.screen {
-            Screen::Wake => Some(self.wake.as_ref()?.focused),
+            Screen::Wake => Some(self.screens.wake.as_ref()?.focused),
             screen if is_confirm(screen) => Some(self.nav.cursor(ScreenKey::of(screen))),
             _ => None,
         }
@@ -321,7 +321,7 @@ impl App {
     /// actually moved — the hover/click contract every focus setter here follows.
     pub(crate) fn set_confirm_focused(&mut self, index: usize) -> bool {
         let Some(focused) = (match self.nav.screen {
-            Screen::Wake => self.wake.as_mut().map(|w| &mut w.focused),
+            Screen::Wake => self.screens.wake.as_mut().map(|w| &mut w.focused),
             screen if is_confirm(screen) => Some(self.nav.cursor_mut(ScreenKey::of(screen))),
             _ => None,
         }) else {
@@ -366,10 +366,10 @@ impl App {
                 .map(|(subtitle, i)| Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &subtitle, i)),
             Screen::Pairing => {
                 let card = view::pairing::card_rect(screen_w, screen_h, fonts);
-                Some(match self.pairing_focus {
+                Some(match self.screens.pairing_focus {
                     PairingFocus::Pin => {
                         let digit_y = view::pairing::pin_row_y(card, fonts);
-                        view::pairing::digit_rect(card, digit_y, self.pin_digit_index)
+                        view::pairing::digit_rect(card, digit_y, self.screens.pin_digit_index)
                     }
                     PairingFocus::RequestAccess => view::pairing::request_button_rect(card, fonts),
                 })
@@ -445,21 +445,21 @@ impl App {
                 game: self.editing_game().map(|gs| gs.title.as_str()),
             }),
             Screen::Pairing => f(&view::pairing::Modal {
-                pin_digits: &self.pin_digits,
-                status: self.pairing_status.as_ref(),
-                busy: self.pairing_busy,
+                pin_digits: &self.screens.pin_digits,
+                status: self.screens.pairing_status.as_ref(),
+                busy: self.screens.pairing_busy,
             }),
             Screen::AddHost | Screen::EditHost => {
                 let (title, subtitle) = self.address_copy()?;
                 f(&view::addhost::Modal {
                     title,
                     subtitle,
-                    typed: self.add_host.text(),
+                    typed: self.screens.add_host.text(),
                     keyboard_shown: self.keyboard_shown,
                 })
             }
             Screen::Wake => f(&view::wake::Modal {
-                wake: self.wake.as_ref()?,
+                wake: self.screens.wake.as_ref()?,
                 confirm: confirm.as_ref(),
             }),
             Screen::ForgetHost => f(&view::confirm::Modal {
@@ -477,8 +477,8 @@ impl App {
             }),
             Screen::About => f(&view::about::Modal),
             Screen::SpeedTest => f(&view::speedtest::Modal {
-                state: self.speed_test.as_ref(),
-                host_name: &self.speed_test_name,
+                state: self.screens.speed_test.as_ref(),
+                host_name: &self.screens.speed_test_name,
                 confirm: confirm.as_ref(),
             }),
             Screen::PinLimit => f(&view::pinlimit::Modal {

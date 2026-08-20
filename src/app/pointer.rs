@@ -160,9 +160,9 @@ impl App {
                 let Some((i, dots)) = self.host_menu_row_at(x, y, screen_w, screen_h, fonts) else {
                     return false;
                 };
-                let changed = self.nav.cursor(ScreenKey::HostMenu) != i || self.host_menu_dots != dots;
+                let changed = self.nav.cursor(ScreenKey::HostMenu) != i || self.screens.host_menu_dots != dots;
                 self.nav.set_cursor(ScreenKey::HostMenu, i);
-                self.host_menu_dots = dots;
+                self.screens.host_menu_dots = dots;
                 changed
             }
             // Identical row-list geometry; only which focus field they carry differs.
@@ -182,8 +182,8 @@ impl App {
             Screen::Pairing => {
                 let card = view::pairing::card_rect(screen_w, screen_h, fonts);
                 if view::pairing::request_button_rect(card, fonts).contains_point((x, y)) {
-                    let changed = self.pairing_focus != PairingFocus::RequestAccess;
-                    self.pairing_focus = PairingFocus::RequestAccess;
+                    let changed = self.screens.pairing_focus != PairingFocus::RequestAccess;
+                    self.screens.pairing_focus = PairingFocus::RequestAccess;
                     changed
                 } else {
                     false
@@ -495,12 +495,12 @@ impl App {
                 if !view::pairing::request_button_rect(card, fonts).contains_point((x, y)) {
                     return None;
                 }
-                self.pairing_focus = PairingFocus::RequestAccess;
+                self.screens.pairing_focus = PairingFocus::RequestAccess;
             }
             Screen::HostMenu => {
                 let (i, dots) = self.host_menu_row_at(x, y, screen_w, screen_h, fonts)?;
                 self.nav.set_cursor(ScreenKey::HostMenu, i);
-                self.host_menu_dots = dots;
+                self.screens.host_menu_dots = dots;
             }
             // Identical row-list geometry; only which focus field they carry differs.
             Screen::WakeSettings | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {

@@ -10,8 +10,8 @@ impl App {
     /// opens the optional port. Confirm once the address is complete.
     pub fn handle_add_host_event(&mut self, ev: MenuEvent) {
         match ev {
-            MenuEvent::Left => self.add_host.backspace(),
-            MenuEvent::Right => self.add_host.advance_field(),
+            MenuEvent::Left => self.screens.add_host.backspace(),
+            MenuEvent::Right => self.screens.add_host.advance_field(),
             MenuEvent::Up | MenuEvent::Down | MenuEvent::Secondary => {}
             MenuEvent::Confirm => self.confirm_add_host(),
             MenuEvent::Back => self.nav.screen = Screen::Home,
@@ -20,15 +20,15 @@ impl App {
 
     /// Direct digit entry from Magic Remote number buttons.
     pub fn enter_add_host_digit(&mut self, digit: u8) {
-        self.add_host.enter_digit(digit);
+        self.screens.add_host.enter_digit(digit);
     }
 
     /// No-op until all four octets typed; prevents truncated connections.
     pub(crate) fn confirm_add_host(&mut self) {
-        if !self.add_host.is_complete() {
+        if !self.screens.add_host.is_complete() {
             return;
         }
-        let (host, port) = self.add_host.host_and_port();
+        let (host, port) = self.screens.add_host.host_and_port();
         // Non-default port in the name, so two ports on one address stay tellable apart.
         let name = if port == FIXED_HOST_PORT {
             host.clone()
@@ -60,7 +60,7 @@ impl App {
     }
     /// Shared by `AddHost` and `EditHost`.
     pub(crate) fn enter_host_address_char(&mut self, c: char) {
-        self.add_host.enter_char(c);
+        self.screens.add_host.enter_char(c);
     }
 }
 

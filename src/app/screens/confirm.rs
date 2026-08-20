@@ -86,10 +86,10 @@ impl App {
                 "Wake host",
                 theme().accent_bright,
                 "Cancel",
-                view::wake::status_text(self.wake.as_ref().filter(|w| !w.mac.is_empty())?),
+                view::wake::status_text(self.screens.wake.as_ref().filter(|w| !w.mac.is_empty())?),
             ),
             Screen::SpeedTest => {
-                let state = self.speed_test.as_ref();
+                let state = self.screens.speed_test.as_ref();
                 if !view::speedtest::finished(state) {
                     return None;
                 }
@@ -100,7 +100,7 @@ impl App {
                     // "Close" rather than "Cancel": the test has already run, so there is
                     // nothing left to call off.
                     "Close",
-                    view::speedtest::status(state, &self.speed_test_name),
+                    view::speedtest::status(state, &self.screens.speed_test_name),
                 )
             }
             _ => return None,

@@ -652,25 +652,25 @@ impl App {
             .then(|| view::wakesettings::title(&self.host_menu_title()))
             .unwrap_or_default();
         let speed_test_status = matches!(self.nav.screen, Screen::SpeedTest)
-            .then(|| view::speedtest::status(self.speed_test.as_ref(), &self.speed_test_name))
+            .then(|| view::speedtest::status(self.screens.speed_test.as_ref(), &self.screens.speed_test_name))
             .unwrap_or_default();
         let key = match self.nav.screen {
             Screen::Settings(_) => Some(ModalShellKey::Settings {
                 game: self.editing_game().map(|gs| gs.title.as_str()),
             }),
-            Screen::Wake => self.wake.as_ref().map(|w| ModalShellKey::Wake {
+            Screen::Wake => self.screens.wake.as_ref().map(|w| ModalShellKey::Wake {
                 name: &w.name,
                 mac_empty: w.mac.is_empty(),
                 sent: w.sent,
             }),
             Screen::Pairing => Some(ModalShellKey::Pairing {
-                digits: self.pin_digits,
-                status: self.pairing_status.as_deref(),
-                busy: self.pairing_busy,
+                digits: self.screens.pin_digits,
+                status: self.screens.pairing_status.as_deref(),
+                busy: self.screens.pairing_busy,
             }),
             Screen::ForgetHost => Some(ModalShellKey::ForgetHost {
                 name: self
-                    .host_menu_index
+                    .screens.host_menu_index
                     .and_then(|i| self.hosts.entries.get(i))
                     .map(HostEntry::name),
             }),
@@ -723,7 +723,7 @@ impl App {
     fn modal_focus_version(&self, host_menu_actions: &[crate::app::state::hostmenu::HostAction]) -> Option<u64> {
         // Borrowed by the key below, so it outlives it.
         let speed_test_label = matches!(self.nav.screen, Screen::SpeedTest)
-            .then(|| view::speedtest::apply_label(view::speedtest::recommendation(self.speed_test.as_ref())))
+            .then(|| view::speedtest::apply_label(view::speedtest::recommendation(self.screens.speed_test.as_ref())))
             .unwrap_or_default();
         let key = match self.nav.screen {
             Screen::Settings(_) => Some(ModalFocusKey::SettingsRow(
@@ -733,13 +733,13 @@ impl App {
                 self.detected_gamepad_type,
             )),
             Screen::Wake => self
-                .wake
+                .screens.wake
                 .as_ref()
                 .filter(|w| !w.mac.is_empty())
                 .map(|w| ModalFocusKey::WakeButton(w.focused)),
-            Screen::Pairing => Some(match self.pairing_focus {
+            Screen::Pairing => Some(match self.screens.pairing_focus {
                 PairingFocus::Pin => {
-                    ModalFocusKey::PairingDigit(self.pin_digit_index, self.pin_digits[self.pin_digit_index])
+                    ModalFocusKey::PairingDigit(self.screens.pin_digit_index, self.screens.pin_digits[self.screens.pin_digit_index])
                 }
                 PairingFocus::RequestAccess => ModalFocusKey::PairingButton,
             }),
@@ -751,7 +751,7 @@ impl App {
                         self.nav.cursor(ScreenKey::HostMenu),
                         action,
                         self.host_menu_paired(),
-                        self.host_menu_dots,
+                        self.screens.host_menu_dots,
                     )
                 }),
             Screen::WakeSettings => Some(ModalFocusKey::WakeToggle(
@@ -759,7 +759,7 @@ impl App {
             )),
             // Only once there are buttons to focus — while measuring there is nothing
             // on the card but text.
-            Screen::SpeedTest => view::speedtest::finished(self.speed_test.as_ref())
+            Screen::SpeedTest => view::speedtest::finished(self.screens.speed_test.as_ref())
                 .then(|| ModalFocusKey::SpeedTestButton(self.nav.cursor(ScreenKey::SpeedTest), &speed_test_label)),
             Screen::Diagnostics => Some(ModalFocusKey::DiagnosticsRow(
                 self.nav.cursor(ScreenKey::Diagnostics),
@@ -896,9 +896,9 @@ impl App {
                             _ => None,
                         }
                     }
-                    Screen::Pairing => Some(match self.pairing_focus {
+                    Screen::Pairing => Some(match self.screens.pairing_focus {
                         PairingFocus::Pin => {
-                            let digit = self.pin_digits[self.pin_digit_index].to_string();
+                            let digit = self.screens.pin_digits[self.screens.pin_digit_index].to_string();
                             ui::rasterize(
                                 ui::widgets::CardTextTile {
                                     font: fonts.title,

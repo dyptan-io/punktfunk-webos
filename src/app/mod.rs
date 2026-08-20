@@ -31,7 +31,6 @@ use tiny_skia::Pixmap;
 use crate::app::grid::GridCard;
 use crate::app::hosts::HostEntry;
 use crate::app::nav::ScreenKey;
-use crate::app::state::addhost::AddHostState;
 use crate::core::event::MenuEvent;
 pub use crate::core::model::ConnectTarget;
 pub use crate::core::screen::{HomeFocus, PairingFocus, Screen};
@@ -118,6 +117,8 @@ pub struct App {
     pub(crate) hosts: hosts::HostsState,
     /// The settings document and the UI editing it — see [`settingsui::SettingsUi`].
     pub(crate) settings_ui: settingsui::SettingsUi,
+    /// Per-screen payloads — see [`screens::slots::ScreenSlots`].
+    pub(crate) screens: screens::slots::ScreenSlots,
     pub home_focus: HomeFocus,
     pub home_status: Option<String>,
     /// Whether `home_status` is the reason the last launch bounced back to the menu, and so must
@@ -153,20 +154,6 @@ pub struct App {
     pub(crate) settings_scroll: ui::scroll::ScrollWindow,
     /// Window slice of baked About document.
     pub(crate) content_window: ui::scroll::ContentWindow,
-    /// The sidebar row `Screen::ForgetHost` is confirming forgetting — set
-    /// alongside `screen = Screen::ForgetHost` (see `App::open_forget_host`),
-    /// `None` otherwise.
-    pub host_menu_index: Option<usize>,
-    /// Whether focus is on the ⋯ button of the host menu's focused row rather than on
-    /// the row body — the list-modal counterpart of `HomeFocus::SidebarMenu`. Only the
-    /// "Wake host" row has one (see `host_menu_actions`).
-    pub host_menu_dots: bool,
-    /// The sidebar row `Screen::EditHost` is editing, `None` otherwise.
-    pub edit_host_index: Option<usize>,
-    /// The in-flight/finished speed test, `None` when that screen isn't open.
-    pub(crate) speed_test: Option<crate::app::state::speedtest::SpeedTestState>,
-    /// The host being measured, for the status line.
-    pub speed_test_name: String,
     /// Whether webOS's on-screen keyboard is currently up, polled from
     /// `SDL_IsScreenKeyboardShown` each tick by `main.rs` — it moves the address form out
     /// from under the panel (see `App::keyboard_modal_card`).
@@ -180,19 +167,6 @@ pub struct App {
     /// only the flattened list has a uniform per-unit stride. Keyed by the
     /// body width it was wrapped for, rebuilt if that width changes.
     pub(crate) about_wrapped: Option<(u32, Vec<String>)>,
-    pub add_host: AddHostState,
-    /// The active "host unreachable — wake it?" prompt/wait, if any — see `WakeState`.
-    pub wake: Option<WakeState>,
-    /// PIN entry: 4 digits, each 0-9, edited one at a time.
-    pub pin_digits: [u8; 4],
-    pub pin_digit_index: usize,
-    /// Whether the pairing modal's input is on the PIN row or the Request-access button.
-    pub pairing_focus: PairingFocus,
-    pub pairing_status: Option<String>,
-    pub pairing_busy: bool,
-    /// Index into `entries` currently being paired — captured when entering
-    /// `Screen::Pairing`.
-    pub(crate) pairing_entry: usize,
     /// Whether the Magic Remote's pointer is currently hovering a modal's
     /// close (X) button.
     pub hover_close: bool,
@@ -273,6 +247,7 @@ impl App {
                 ..Default::default()
             },
             settings_ui: settingsui::SettingsUi::new(settings),
+            screens: screens::slots::ScreenSlots::default(),
             hosts: hosts::HostsState {
                 known: known_hosts,
                 entries,
@@ -293,22 +268,9 @@ impl App {
             scroll: ui::scroll::ScrollWindow::new(),
             settings_scroll: ui::scroll::ScrollWindow::new(),
             content_window: ui::scroll::ContentWindow::new(),
-            host_menu_index: None,
-            host_menu_dots: false,
-            edit_host_index: None,
-            speed_test: None,
-            speed_test_name: String::new(),
             keyboard_shown: false,
             about_lines: Vec::new(),
             about_wrapped: None,
-            add_host: AddHostState::default(),
-            wake: None,
-            pin_digits: [0; 4],
-            pin_digit_index: 0,
-            pairing_focus: PairingFocus::Pin,
-            pairing_status: None,
-            pairing_busy: false,
-            pairing_entry: 0,
             hover_close: false,
             identity,
             sidebar_dirty: true,
@@ -343,7 +305,7 @@ impl App {
 
     /// Name of the host whichever host-scoped modal (Forget, Wake settings) is acting on.
     pub(crate) fn host_menu_host_name(&self) -> Option<&str> {
-        self.host_menu_index
+        self.screens.host_menu_index
             .and_then(|i| self.hosts.entries.get(i))
             .map(HostEntry::name)
     }
@@ -542,7 +504,7 @@ impl App {
     /// Merges freshly-discovered hosts into the entry list (known hosts keep their
     /// paired status; a discovered host not yet known gets appended), learns each
     /// known host's Wake-on-LAN MAC(s) from its live advert while it's awake to
-    /// advertise them, and — if a wake is in flight (`self.wake`) — notices when the
+    /// advertise them, and — if a wake is in flight (`self.screens.wake`) — notices when the
     /// waking host reappears on mDNS and reconnects. Returns whether the sidebar
     /// actually changed — `main.rs`'s render loop uses this to skip a redraw when a
     /// discovery tick found nothing new (see its dirty-flag docs).
@@ -557,7 +519,7 @@ impl App {
         let polled = self.jobs.discovery.as_mut().map(Discovery::poll).unwrap_or_default();
         for found in polled {
             #[allow(clippy::suspicious_operation_groupings)]
-            if let Some(w) = &self.wake {
+            if let Some(w) = &self.screens.wake {
                 if found.addr == w.host && found.port == w.port {
                     woke = Some((found.addr.clone(), found.port, found.mgmt_port));
                 }
@@ -598,7 +560,7 @@ impl App {
     /// (`tick_wake`'s reachability probe succeeding). `source` is just for the log line.
     pub(crate) fn wake_succeeded(&mut self, host: String, port: u16, mgmt_port: Option<u16>, source: &str) {
         tracing::info!("wake succeeded: {host}:{port} back ({source})");
-        let name = self.wake.take().map(|w| w.name);
+        let name = self.screens.wake.take().map(|w| w.name);
         // A wake ends on its own timing, not a keypress, so it dismisses its own modal and
         // nothing else. The selection still moves — that is what the wait was for. Safe under
         // an open modal: the one that writes per-host state off the selection pins its target

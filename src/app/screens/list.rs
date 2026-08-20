@@ -42,7 +42,7 @@ impl App {
         let mut rows = self.list_modal_rows()?;
         if matches!(self.nav.screen, Screen::HostMenu) {
             if let Some(row) = rows.get_mut(self.nav.cursor(ScreenKey::HostMenu)) {
-                row.menu = row.menu.map(|_| self.host_menu_dots);
+                row.menu = row.menu.map(|_| self.screens.host_menu_dots);
             }
         }
         Some(rows)

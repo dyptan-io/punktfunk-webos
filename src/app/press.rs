@@ -90,7 +90,7 @@ impl App {
             // isn't — launching one is already an animation of its own.
             Screen::Home => matches!(self.home_focus, HomeFocus::Sidebar(_) | HomeFocus::SidebarMenu(_)),
             // The button only; the PIN digits above it are a field.
-            Screen::Pairing => matches!(self.pairing_focus, PairingFocus::RequestAccess),
+            Screen::Pairing => matches!(self.screens.pairing_focus, PairingFocus::RequestAccess),
             Screen::Wake | Screen::ForgetHost | Screen::SpeedTest | Screen::SendLogs => true,
             // Rows, not buttons.
             Screen::Settings(_)

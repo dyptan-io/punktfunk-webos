@@ -8,16 +8,16 @@ use std::time::Instant;
 impl App {
     /// Open `ForgetHost` confirmation for sidebar row at long-press.
     pub fn open_forget_host(&mut self, idx: usize) {
-        self.host_menu_index = Some(idx);
+        self.screens.host_menu_index = Some(idx);
         self.nav.enter(Screen::ForgetHost, 1);
     }
 
     /// Return to `HostMenu` or Home if host was removed.
     pub(crate) fn back_to_host_menu(&mut self) {
-        if self.host_menu_index.is_some_and(|i| i < self.hosts.entries.len()) {
+        if self.screens.host_menu_index.is_some_and(|i| i < self.hosts.entries.len()) {
             self.nav.enter(Screen::HostMenu, 0);
         } else {
-            self.host_menu_index = None;
+            self.screens.host_menu_index = None;
             self.nav.screen = Screen::Home;
         }
     }
@@ -32,11 +32,11 @@ impl App {
             }
             MenuEvent::Confirm => {
                 if self.nav.cursor(ScreenKey::ForgetHost) == 0 {
-                    if let Some(idx) = self.host_menu_index {
+                    if let Some(idx) = self.screens.host_menu_index {
                         self.forget_host(idx);
                     }
                     // Entry list changed; host_menu_index is now stale
-                    self.host_menu_index = None;
+                    self.screens.host_menu_index = None;
                     self.nav.screen = Screen::Home;
                 } else {
                     self.back_to_host_menu();
