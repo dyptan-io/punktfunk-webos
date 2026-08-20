@@ -1,5 +1,6 @@
-target
+target/
 dist/
+tmp/
 
 # webOS cross-toolchain (webosbrew/native-toolchain release tarball, ~140MB) —
 # fetched by `task toolchain`, not committed.

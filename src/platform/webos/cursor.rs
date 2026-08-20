@@ -6,10 +6,19 @@
 //! it stops drawing. But starving only stops *future* draws: an arrow already on screen when the
 //! stream starts stays painted until something retracts it, which is why the hide is also
 //! requested outright on each [`Cursor::apply`] and again once the grab is actually in place
-//! ([`Cursor::reassert_hidden`]), and on a 4 Hz loop bounded to the start of a capture
-//! ([`Cursor::tick`]). An *unbounded* version of that loop was tried and dropped: verified on
-//! webOS 26 the compositor re-shows its arrow on pointer activity regardless, so past the panel
-//! mode switch it only spent Wayland requests. See [`STARTUP_REASSERT`].
+//! ([`Cursor::reassert_hidden`]).
+//!
+//! Hiding is not enough on its own: the compositor's invisible branch "let cursor be updated by
+//! upcoming event" only marks the pointer hidden and waits for the next pointer event to repaint.
+//! With the mouse node held by `EVIOCGRAB` no such event ever arrives, so an arrow already on
+//! screen stays until something unrelated (a wheel or D-pad press on a node this app doesn't grab)
+//! flushes it. [`Cursor::flush`] supplies that event. Showing is lazy the same way, so releasing
+//! a capture needs the nudge too or the arrow stays gone until a button press.
+//!
+//! Re-asserting the hide on a timer was tried twice and dropped both times — unbounded, and
+//! bounded to the seconds after a capture to chase the arrow the panel repaints on the HDR mode
+//! switch. Neither retracted it: on webOS 26 the compositor re-shows its arrow on pointer
+//! activity regardless, so the loop only spent Wayland requests.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -18,17 +27,12 @@ use std::time::{Duration, Instant};
 
 use sdl2::mouse::MouseUtil;
 use sdl2::sys::SDL_bool;
+use sdl2::video::Window;
 
 use super::sdl_webos;
 
-/// How long after a capture the hide keeps being re-issued. The compositor repaints its arrow
-/// when the panel changes mode — entering HDR is the case that bites, the arrow coming back for
-/// as long as the TV's HDR badge is up, well after the one-shot retracts have run. Bounded rather
-/// than the always-on loop: this covers the mode switch without spending requests all stream.
-const STARTUP_REASSERT: Duration = Duration::from_secs(10);
-
-/// Compositor gives no "took the pointer back" event, so re-hiding just polls, capped here at
-/// 4 Wayland requests/sec however often [`Cursor::tick`] runs.
+/// Debounce between compositor hide requests, so a caller pairing [`Cursor::reassert_hidden`]
+/// with a state change that already ran [`Cursor::apply`] doesn't duplicate the request.
 const REASSERT_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Global: shared with the panic hook, which has no [`Cursor`] to reach for.
@@ -42,8 +46,8 @@ pub struct Cursor {
     last_assert: Instant,
     captured: bool,
     sdl_relative: bool,
-    /// End of the post-capture [`STARTUP_REASSERT`] window.
-    reassert_until: Instant,
+    /// Whether the last [`set_compositor_visible`] was actually honoured — see [`Self::flush`].
+    compositor_layer: bool,
 }
 
 impl Cursor {
@@ -53,7 +57,7 @@ impl Cursor {
             last_assert: Instant::now(),
             captured: false,
             sdl_relative: true,
-            reassert_until: Instant::now(),
+            compositor_layer: false,
         }
     }
 
@@ -81,24 +85,43 @@ impl Cursor {
         let _ = OWNER_THREAD.set(std::thread::current().id());
         self.mouse.show_cursor(!self.captured);
         self.mouse.set_relative_mouse_mode(self.captured && self.sdl_relative);
-        set_compositor_visible(!self.captured);
+        self.compositor_layer = set_compositor_visible(!self.captured);
         COMPOSITOR_HIDDEN.store(self.captured, Ordering::Relaxed);
         self.last_assert = Instant::now();
-        // Anchored at the capture, not advanced by the re-asserts themselves (`last_assert` is).
-        // Releasing arms nothing: there is no hide to keep re-issuing.
-        self.reassert_until = if self.captured {
-            self.last_assert + STARTUP_REASSERT
-        } else {
-            self.last_assert
-        };
     }
 
-    /// Drive once per frame: keeps re-issuing the hide for [`STARTUP_REASSERT`] after a capture,
-    /// so a panel mode switch mid-startup (HDR) can't leave the compositor's arrow on screen.
-    pub fn tick(&mut self) {
-        if Instant::now() < self.reassert_until {
-            self.reassert_hidden();
+    /// Nudges the compositor into acting on the last visibility change by warping its pointer —
+    /// see the module docs: `set_cursor_visibility` alone repaints nothing, it waits for a pointer
+    /// event that a grabbed mouse node can no longer produce. Relative mode is dropped across the
+    /// warp because the fork implements it *as* a warp per motion, and SDL swallows an explicit
+    /// one while it is on.
+    ///
+    /// Captured, the destination is free (relative mode re-centres anyway) so it is the centre.
+    /// Uncaptured the pointer is the user's again and must not jump, so the warp is to where it
+    /// already is — a null move still counts as the event the compositor is waiting for. That
+    /// second case is also why an unseen pointer is left alone: SDL reports the origin until a
+    /// motion event arrives, and warping there would fling a pointer the TV is drawing mid-screen
+    /// into the corner, and forward that jump to the host as an absolute move.
+    ///
+    /// No-op where the compositor layer isn't ours to drive (stock SDL2, or a TV without
+    /// `wl_webos_input_manager`): there is no pending visibility change to flush, so the warp
+    /// would be pure pointer displacement.
+    pub fn flush(&mut self, window: &Window) {
+        if !self.compositor_layer {
+            return;
         }
+        let (x, y) = if self.captured {
+            let (w, h) = window.size();
+            (w as i32 / 2, h as i32 / 2)
+        } else {
+            match global_position() {
+                (0, 0) => return,
+                pos => pos,
+            }
+        };
+        self.mouse.set_relative_mouse_mode(false);
+        self.mouse.warp_mouse_in_window(window, x, y);
+        self.mouse.set_relative_mouse_mode(self.captured && self.sdl_relative);
     }
 
     /// Asks the compositor once more to drop its pointer. For the point where the evdev grab has
@@ -106,9 +129,6 @@ impl Cursor {
     /// node, so any motion in that window can repaint the arrow it just retracted. No-op while
     /// uncaptured.
     pub fn reassert_hidden(&mut self) {
-        // The interval doubles as a debounce: callers pair this with a state change that already
-        // ran `apply` (`disable_sdl_relative`), and repeating its request in the same tick would
-        // be a pure duplicate.
         if !self.captured || self.last_assert.elapsed() < REASSERT_INTERVAL {
             return;
         }
@@ -132,6 +152,15 @@ fn set_compositor_visible(visible: bool) -> bool {
         );
     }
     supported
+}
+
+/// Window-relative pointer position, straight from SDL: [`MouseUtil`] exposes no query, and
+/// `MouseState` needs the event pump this type deliberately doesn't hold.
+fn global_position() -> (i32, i32) {
+    let (mut x, mut y) = (0, 0);
+    // SAFETY: both out-pointers are valid locals; caller is the SDL video thread.
+    unsafe { sdl2::sys::SDL_GetMouseState(&mut x, &mut y) };
+    (x, y)
 }
 
 const fn bool_to_sdl(value: bool) -> SDL_bool {

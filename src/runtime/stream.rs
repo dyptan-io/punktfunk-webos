@@ -167,6 +167,7 @@ pub(super) fn run_inner() -> Result<()> {
         // forwarded-position cursor read as "the pointer doesn't match the mouse".
         let mut cursor = cursor::Cursor::new(sdl.mouse());
         cursor.set_captured(settings.cursor_capture);
+        cursor.flush(canvas.window());
 
         // `None` when the session decodes audio somewhere other than here (punktfunk's NDL Opus
         // offload) — a second unfed audio device would still claim a PulseAudio sink.
@@ -190,6 +191,7 @@ pub(super) fn run_inner() -> Result<()> {
                             tracing::warn!("session teardown timed out — skipping NDL unload for this run");
                         }
                         cursor.set_captured(false);
+                        cursor.flush(canvas.window());
                         menu_status = Some(format!("Couldn't start audio: {e:#}"));
                         continue;
                     }
@@ -321,9 +323,6 @@ pub(super) fn run_inner() -> Result<()> {
                 connected.disconnect_quit();
                 break 'running StreamOutcome::Quit;
             }
-            // Bounded post-capture re-assert — the compositor repaints its arrow when the panel
-            // switches into HDR, after the one-shot retracts below have already run.
-            cursor.tick();
             if settings.cursor_capture
                 && !hid_device_seen
                 && hid
@@ -336,6 +335,7 @@ pub(super) fn run_inner() -> Result<()> {
                 // at connect raced the reader thread's scan. Usually a no-op, since the call
                 // above re-issued it already; kept so the retract doesn't hinge on that.
                 cursor.reassert_hidden();
+                cursor.flush(canvas.window());
             }
             for event in events.poll_iter() {
                 use sdl2::event::Event;
@@ -888,6 +888,7 @@ pub(super) fn run_inner() -> Result<()> {
         // Put the TV's picture/sound modes back (no-op unless game mode switched them).
         crate::platform::webos::game_mode::restore(restore_tv_modes);
         cursor.set_captured(false);
+        cursor.flush(canvas.window());
         match outcome {
             StreamOutcome::Quit => {
                 tracing::info!("punktfunk-webos exiting cleanly");

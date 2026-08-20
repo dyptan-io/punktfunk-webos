@@ -95,8 +95,9 @@ impl FrameTimer {
     }
 
     /// Reports the tick, but only when its own work blew `budget` — a frame inside budget
-    /// says nothing that is worth a line at any level, sixty times a second. See
-    /// [`Self::work`] for why `Present` is excluded from the comparison.
+    /// says nothing that is worth a line at any level, sixty times a second. Overruns are
+    /// routine on this hardware (a menu rebuild alone blows a 16ms budget), so this is a
+    /// debug line, not a warning. See [`Self::work`] for why `Present` is excluded.
     pub fn report(&self, budget: Duration, stats: &FrameStats) {
         let work = self.work();
         if work <= budget {
@@ -112,7 +113,7 @@ impl FrameTimer {
         } = stats;
         let (total, breakdown) = (self.elapsed(), self.breakdown());
         let (resident, mib) = (tiles.len(), tiles.bytes() as f32 / (1024.0 * 1024.0));
-        tracing::warn!("frame work overran {budget:?}: {work:?} of {total:?} on {screen:?} ({breakdown}, {rebuilt} tiles rebuilt, {resident} resident / {mib:.1} MiB, {text} text)");
+        tracing::debug!("frame work overran {budget:?}: {work:?} of {total:?} on {screen:?} ({breakdown}, {rebuilt} tiles rebuilt, {resident} resident / {mib:.1} MiB, {text} text)");
     }
 
     fn breakdown(&self) -> String {
