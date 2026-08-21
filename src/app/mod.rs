@@ -109,7 +109,7 @@ pub struct App {
     pub(crate) nav: nav::Nav,
     /// Every background job in flight — see [`jobs::Jobs`].
     pub(crate) jobs: jobs::Jobs,
-    /// The selected host's games, art and pin bookkeeping — see [`library::Library`].
+    /// The selected host's games, art and grid sections — see [`library::Library`].
     pub(crate) library: library::Library,
     /// Every host the menu knows about — see [`hosts::HostsState`].
     pub(crate) hosts: hosts::HostsState,
@@ -129,8 +129,8 @@ pub struct App {
     pub(crate) launch_ready: Option<ConnectTarget>,
     pub(crate) launch_anim: Option<Instant>,
     pub(crate) launch_anim_idx: Option<usize>,
-    /// The submenu raised over a held grid card's title strip (Pin/Unpin + Settings), and
-    /// the only way to `Screen::GameSettings`. `None` when no card is held open.
+    /// The submenu raised over a held grid card's title strip (where the card lives, plus
+    /// its per-game settings). `None` when no card is held open.
     pub(crate) card_menu: Option<state::cardmenu::CardMenu>,
     /// Whether the card submenu's introduction (`state::cardmenu::INTRO_HINT`) is still owed —
     /// set on the first launch of a build that stamped a new version into the document, spent
@@ -695,8 +695,8 @@ impl App {
         self.hosts.known.iter().find(|h| h.host == host && h.port == port)
     }
 
-    /// The `KnownHost` record backing `selected_host`, if any — shared by every
-    /// pin-related lookup (the focused card's badge, `toggle_focused_pin`).
+    /// The `KnownHost` record backing `selected_host`, if any — shared by every lookup
+    /// that needs the selected host's collections or per-game settings.
     pub(crate) fn selected_known_host(&self) -> Option<&KnownHost> {
         let (host, port) = self.library.selected_host.as_ref()?;
         self.known_host(host, *port)
