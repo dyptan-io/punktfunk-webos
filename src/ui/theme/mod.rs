@@ -122,11 +122,18 @@ pub struct Icons {
 /// adding a look is adding one entry and nothing else has an order to keep in step with. A
 /// `static` rather than a `const` so the accessors can hand out real `&'static` references
 /// into it.
-pub static PRESETS: [Theme; 2] = [presets::DEFAULT, presets::GLOSSY];
+/// Glossy first: the list is the Theme dropdown's order *and* the fallback for a document
+/// that names no look at all, so the look a fresh install draws in is simply the first entry
+/// (see [`index_of`] and `ACTIVE`'s initial value).
+pub static PRESETS: [Theme; 2] = [presets::GLOSSY, presets::DEFAULT];
 
 /// Which preset is drawing, as its index in [`PRESETS`]. An index rather than a pointer or a
 /// lock: the looks are constants of the binary, so picking one is one relaxed store and
 /// reading one is one relaxed load.
+///
+/// Starts on the first preset, which is also what an unset `ThemeChoice` resolves to — so the
+/// handful of frames drawn before `App::restyle` reads the document are already in the look
+/// the document is about to ask for.
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
 /// Bumped whenever [`select`] changes the pick, and mixed into every tile's cache version

@@ -150,7 +150,7 @@ const TITLE_DOT_GAP: i32 = 8;
 /// glass was briefly thinner, to keep more of the cover art under it; at that strength it
 /// stopped matching the modals, and looking like one material everywhere won.
 ///
-/// On the default (non-glossy) look this goes opaque, which is what makes gating `App::card_frost`
+/// On the flat look this goes opaque, which is what makes gating `App::card_frost`
 /// on the switch safe: the title keeps a solid backing instead of a bare tint over cover art.
 pub fn card_glass() -> Color {
     crate::ui::theme::glass_fill()
