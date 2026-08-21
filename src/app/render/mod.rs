@@ -14,8 +14,27 @@ use crate::ui::render::Rect;
 #[derive(Clone, Copy)]
 pub(crate) struct ModalSnapshot {
     pub region: Rect,
-    /// `(src crop, dst rect)` of the scrolled content, for Settings/About.
-    pub content: Option<(Rect, Rect)>,
+    /// The scrolled body under that card, frozen as it was drawn — `None` for a modal whose
+    /// body is baked into its own shell (every list modal and confirm dialog).
+    pub content: Option<SnapshotBody>,
+}
+
+/// How a left modal's body is redrawn while it fades.
+///
+/// Two shapes because the live compose path has two: one baked tile to crop (About), or the
+/// settings band's tile-per-row. The fading copy goes through the *same* two paths rather
+/// than through a form of its own — see `compose_modal` and `Self::push_settings_rows`.
+#[derive(Clone, Copy)]
+pub(crate) enum SnapshotBody {
+    /// `(src crop, dst rect)` of [`tile::MODAL_PREV_CONTENT`], a clone of the leaving
+    /// screen's single body tile.
+    Cropped(Rect, Rect),
+    /// Settings' rows, left in the per-row tiles they were already drawn from: the row count,
+    /// the viewport they sit in, and the scroll offset frozen at the frame the screen was
+    /// left. Nothing is copied — the band outlives the screen (see
+    /// `prepare_scroll`'s eviction), so the fade-out costs the same handful of blits the
+    /// live screen cost, instead of stitching a full-height painter on the way out.
+    Rows(usize, Rect, i32),
 }
 
 pub(crate) mod compose;

@@ -109,6 +109,9 @@ impl TileWidget for CardMenuRowsTile<'_> {
 /// a focused settings row is. Padded by [`ROW_TILE_PAD`] like [`FocusRowTile`](super::FocusRowTile),
 /// because a shadow needs somewhere to fall.
 ///
+/// Held off the card's side edges by [`CARD_MENU_BAND_INSET`] — that inset is what the focus
+/// pop grows into, so a focused row never reaches past the cover art underneath it.
+///
 /// It used to be a square-cornered band with no shadow, in two halves — one square, one
 /// bottom-rounded for the row that ends on the card's own edge. Same fill as a settings row and
 /// yet visibly flatter, because the lift comes from the shadow and the corners, not the colour.
@@ -125,6 +128,6 @@ impl Widget for CardMenuBandTile {
 
 impl TileWidget for CardMenuBandTile {
     fn size(&self, _fonts: &Fonts) -> (u32, u32) {
-        padded_size(self.card_w.max(1), CARD_MENU_ROW_H, ROW_TILE_PAD)
+        padded_size(card_menu_band_w(self.card_w), CARD_MENU_ROW_H, ROW_TILE_PAD)
     }
 }

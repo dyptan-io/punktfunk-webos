@@ -4,6 +4,7 @@
 //! focus pop and every fade is a texture-copy parameter here, never a re-raster (see
 //! `platform::webos::compositor`). Split out of `app/mod.rs` alongside `prepare`.
 use crate::app::render::tile;
+use crate::app::render::SnapshotBody;
 use crate::app::{
     hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP, CARD_POP_SHRINK, LAUNCH_GROWTH,
     MODAL_FADE, MODAL_FADE_OUT, MODAL_TILE_PAD, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD,
@@ -61,18 +62,27 @@ impl App {
         // A left modal keeps drawing from its snapshot while its fade runs (see
         // `snapshot_closing_modal`) — the entering one owns `tile::MODAL` from this frame.
         // The two overlap, so leaving one modal for another cross-fades.
-        let closing = self
-            .render
-            .modal
-            .fade
-            .closing_frame(MODAL_FADE_OUT)
-            .and_then(|(alpha, _)| Some((alpha, self.render.modal.prev?)));
         let screen = self.nav.screen;
         let m = if matches!(screen, Screen::Home) {
             0.0
         } else {
             self.render.modal.fade.open_alpha(MODAL_FADE)
         };
+        // Modal-to-modal, the leaving card is the entering one's inverse rather than its own
+        // ease: the two alphas sum to 1 at every instant, so what is behind them never shows
+        // through the handover. On the way out to Home there is nothing entering, and the
+        // fade's own longer ease-out stands (see `ModalState::cross`).
+        let closing = self
+            .render
+            .modal
+            .fade
+            .closing_frame(self.modal_fade_out())
+            .and_then(|(alpha, _)| {
+                Some((
+                    if self.render.modal.cross { 1.0 - m } else { alpha },
+                    self.render.modal.prev?,
+                ))
+            });
         // The backdrop belongs to "a modal is up", not to either card: re-fading it
         // mid-step would brighten the whole screen and read as a blink. It only fades when
         // the modal layer itself appears or disappears.
@@ -122,13 +132,21 @@ impl App {
                 dst: prev.region.offset(0, dy),
                 alpha: a,
             });
-            if let Some((src, dst)) = prev.content {
-                cmds.push(DrawCmd::TexCropped {
+            // The leaving body, through whichever of the two live paths drew it: a crop of
+            // its own baked tile, or the settings rows still in their own tiles. No edge
+            // fades on the way out — the card is dissolving, and a ramp on top of a ramp
+            // reads as the list going first.
+            match prev.content {
+                Some(SnapshotBody::Cropped(src, dst)) => cmds.push(DrawCmd::TexCropped {
                     tile: tile::MODAL_PREV_CONTENT,
                     src,
                     dst: dst.offset(0, dy),
                     alpha: a,
-                });
+                }),
+                Some(SnapshotBody::Rows(total, content, scroll_px)) => {
+                    Self::push_settings_rows(cmds, total, content, scroll_px, dy, a, &[None, None]);
+                }
+                None => {}
             }
         }
     }
@@ -739,6 +757,16 @@ impl App {
                     // the margin its shadow lives in (see `CardMenuBandTile`).
                     let pad = ui::tiles::ROW_TILE_PAD;
                     let row_h = ui::widgets::CARD_MENU_ROW_H;
+                    // The focus pop, through the same helper every other focused widget in
+                    // the app is placed by — about the band's own centre, inside the card,
+                    // and then the card's transform on top of that. The inset the band is
+                    // drawn at (`CARD_MENU_BAND_INSET`) is what the growth spends, so a
+                    // focused row stays within the cover art.
+                    let popped = ui::animation::focus_tile_rect(
+                        band.inflate(pad),
+                        self.card_menu.as_ref().and_then(|m| m.focus_anim),
+                        ui::animation::Press::default(),
+                    );
                     cmds.push(DrawCmd::TexCropped {
                         tile: tile::CARD_MENU_BAND,
                         src: Rect::new(
@@ -747,7 +775,7 @@ impl App {
                             tile.width(),
                             band.height() + 2 * pad as u32,
                         ),
-                        dst: ui::animation::scale_about(band.inflate(pad), r, card_scale),
+                        dst: ui::animation::scale_about(popped, r, card_scale),
                         alpha: (255.0 * pop) as u8,
                     });
                 }

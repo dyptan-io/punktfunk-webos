@@ -13,6 +13,7 @@ use crate::app::nav::ScreenKey;
 use crate::app::render::ctx::RenderCtx;
 use crate::app::render::key::{ModalFocusKey, ModalShellKey, ScrollContentKey};
 use crate::app::render::tile;
+use crate::app::render::SnapshotBody;
 use crate::app::{
     menu, view, App, HomeFocus, PairingFocus, Screen, ABOUT_WINDOW_BUDGET, ABOUT_WINDOW_MARGIN, DROPDOWN_FADE,
     MODAL_FADE_OUT, SCROLL_INDICATOR_TILE_W,
@@ -133,7 +134,7 @@ impl App {
         } = ctx;
         let screen_changed = *screen_changed;
         let (screen_w, screen_h) = (size.w, size.h);
-        let closing = self.render.modal.fade.closing_frame(MODAL_FADE_OUT);
+        let closing = self.render.modal.fade.closing_frame(self.modal_fade_out());
         if closing.is_none() {
             // Fade over (or cancelled by reopening the same screen) — drop the copies
             // rather than keep two card-sized textures alive for nothing.
@@ -153,54 +154,35 @@ impl App {
         };
         // Still the left card's — `modal_painter` moves it on later in this same call.
         let region = self.render.modal.tile_region;
-        // The crop `compose_modal` was drawing for this screen last frame, frozen. Settings
-        // has no single body tile to freeze — its rows are a tile each — so one is stitched
-        // from them at the geometry they were just drawn at. That is a blit per row and no
-        // rasterization, and it keeps the fade-out a snapshot rather than a live list the
-        // leaving screen would have to keep its tiles alive for.
-        let body = match left {
-            Screen::Settings(_) => self.stitch_settings_body(left, tiles, screen_w, screen_h, fonts),
-            _ => tiles.get(tile::SCROLL_CONTENT).cloned(),
+        // What `compose_modal` was drawing for this screen last frame, frozen. Settings keeps
+        // its rows where they are — the band is not evicted while a settings sub-screen (or
+        // this fade) is up, so the leaving list is redrawn from the very tiles it was already
+        // drawn from. It used to be stitched into one full-height painter here: an allocation
+        // the size of the whole list plus a blit per row, on the frame that was already paying
+        // for the entering screen's shell. That stitch is what made leaving Settings visibly
+        // slower than leaving any other modal.
+        let content = match left {
+            Screen::Settings(_) => {
+                self.scroll_geometry_for(left, screen_w, screen_h, fonts)
+                    .map(|(total, _, _, content)| {
+                        let stride = self.scroll_stride_for(left, fonts);
+                        let scroll_px = self.clamped_scroll_px(total, stride, content.height());
+                        SnapshotBody::Rows(total, content, scroll_px)
+                    })
+            }
+            _ => tiles
+                .get(tile::SCROLL_CONTENT)
+                .cloned()
+                .zip(self.scroll_src_rect(left, screen_w, screen_h, fonts))
+                .map(|(body, (src, dst))| {
+                    tiles.put(tile::MODAL_PREV_CONTENT, cache::static_version(), body);
+                    updated.push(tile::MODAL_PREV_CONTENT);
+                    SnapshotBody::Cropped(src, dst)
+                }),
         };
-        let content = self
-            .scroll_src_rect(left, screen_w, screen_h, fonts)
-            .zip(body)
-            .map(|((src, dst), body)| (body, src, dst));
         tiles.put(tile::MODAL_PREV, cache::static_version(), shell);
         updated.push(tile::MODAL_PREV);
-        let content = content.map(|(body, src, dst)| {
-            tiles.put(tile::MODAL_PREV_CONTENT, cache::static_version(), body);
-            updated.push(tile::MODAL_PREV_CONTENT);
-            (src, dst)
-        });
         self.render.modal.prev = Some(crate::app::render::ModalSnapshot { region, content });
-    }
-
-    /// The settings list as one painter, at the full unscrolled height `scroll_src_rect`
-    /// crops against — the single body tile the row band deliberately does not keep. Built
-    /// only when a settings screen is being left (see `snapshot_closing_modal`).
-    ///
-    /// `screen` is the one being *left*, not `self.nav.screen` — that has already moved on, and
-    /// asking it for this geometry answers `None` (or the wrong scope's row count), which
-    /// drops the row list out of the fade instead of freezing it.
-    fn stitch_settings_body(
-        &self,
-        screen: Screen,
-        tiles: &ui::cache::TileStore,
-        screen_w: u32,
-        screen_h: u32,
-        fonts: &ui::text::Fonts,
-    ) -> Option<Painter> {
-        let (total, _, _, content) = self.scroll_geometry_for(screen, screen_w, screen_h, fonts)?;
-        let stride = ui::widgets::focus_row_stride();
-        let mut body = Painter::new(content.width().max(1), (total as u32 * stride).max(1));
-        for i in 0..total {
-            let Some(row) = tile::settings_row(i).and_then(|id| tiles.get(id)) else {
-                continue;
-            };
-            body.draw_painter(0, i as i32 * stride as i32, row);
-        }
-        Some(body)
     }
 
     /// The version [`tile::MODAL`] is valid at — a hash of everything the open screen's
@@ -636,7 +618,18 @@ impl App {
         let (screen_w, screen_h) = (size.w, size.h);
         // The settings-row band belongs to the settings screens alone; leaving them releases
         // it rather than holding a list's worth of textures behind whatever is on screen now.
-        if !matches!(self.nav.screen, Screen::Settings(_)) {
+        //
+        // "Leaving them" excludes stepping *into* a sub-page of Settings, and excludes the
+        // fade that step plays: the band is what the leaving screen fades out from
+        // (`SnapshotBody::Rows`), and it is what makes coming back a shell rebuild instead of
+        // a whole list of rows re-rasterized on the frame the user is waiting on. Those rows
+        // are keyed by content, so anything that changed under the sub-page still rebuilds.
+        let keeps_rows = self.nav.screen.over_settings()
+            || matches!(
+                self.render.modal.prev.map(|p| p.content),
+                Some(Some(SnapshotBody::Rows(..)))
+            );
+        if !keeps_rows {
             self.evict_settings_rows_from(0, tiles);
         }
         // Whichever modal's content overflows its viewport (Settings' rows, About's

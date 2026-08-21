@@ -118,7 +118,27 @@ pub fn title_strip_h(raster: &dyn TextRaster, font: FontId, card_h: u32) -> u32 
 }
 
 /// Height of one row of the submenu a held card raises over its title strip.
-pub const CARD_MENU_ROW_H: u32 = 46;
+pub const CARD_MENU_ROW_H: u32 = 54;
+
+/// Breathing room above and below the submenu's block of rows, inside the glass. The panel
+/// is a raised surface in its own right now, so its rows sit off its edges the way a modal's
+/// do rather than running into the title above and the card's edge below.
+pub const CARD_MENU_ROWS_PAD: i32 = 10;
+
+/// How far the submenu's rows — and the selection band under them — are held off the card's
+/// left and right edges.
+///
+/// Two jobs: it is the inset that makes the band read as a pill inside the panel rather than
+/// a full-bleed stripe, and it is the margin the focus pop grows into. The band zooms by
+/// [`FOCUS_GROWTH`](crate::ui::animation::FOCUS_GROWTH) about its own centre, so it gains
+/// `growth / 2` of its width on each side; anything less than that here and a focused row
+/// would spill past the cover art it is drawn on.
+pub const CARD_MENU_BAND_INSET: i32 = 10;
+
+/// Inset of a submenu row's icon from the band's own left edge — on top of
+/// [`CARD_MENU_BAND_INSET`], so the icon sits inside the selection pill rather than against
+/// its corner.
+const CARD_MENU_ICON_INSET: i32 = 14;
 
 /// Gap kept between the "this game has settings overrides" dot and the label that would
 /// otherwise run into it. The dot itself is [`super::rows::MARK_DOT_R`] — the same mark the
@@ -147,8 +167,32 @@ pub fn card_title_fg() -> Color {
 /// deliberately ignores that function's third-of-a-card cap: the panel is meant to climb
 /// the card, which is what says the menu belongs to it.
 pub fn card_menu_strip_h(raster: &dyn TextRaster, font: FontId, card_h: u32, rows: usize) -> u32 {
-    let panel = title_strip_h(raster, font, card_h) + rows as u32 * CARD_MENU_ROW_H;
+    let panel = title_strip_h(raster, font, card_h) + card_menu_rows_h(rows);
     panel.min(card_h.max(1))
+}
+
+/// Height of the submenu's rows block: the rows themselves plus [`CARD_MENU_ROWS_PAD`] at
+/// each end. One place, because the tile that draws it, the geometry that places the band and
+/// the pointer hit-test all have to agree to the pixel.
+pub fn card_menu_rows_h(rows: usize) -> u32 {
+    rows as u32 * CARD_MENU_ROW_H + 2 * CARD_MENU_ROWS_PAD as u32
+}
+
+/// Width of the submenu's selection band on a `card_w`-wide card: the card less
+/// [`CARD_MENU_BAND_INSET`] on each side.
+pub fn card_menu_band_w(card_w: u32) -> u32 {
+    card_w.saturating_sub(2 * CARD_MENU_BAND_INSET as u32).max(1)
+}
+
+/// The selection band's rect for row `i`, given the rows block's own rect — the band the
+/// compose path zooms, and the row the labels are drawn into, are the same rectangle.
+pub fn card_menu_row_rect(band: Rect, i: usize) -> Rect {
+    Rect::new(
+        band.x() + CARD_MENU_BAND_INSET,
+        band.y() + CARD_MENU_ROWS_PAD + i as i32 * CARD_MENU_ROW_H as i32,
+        band.width().saturating_sub(2 * CARD_MENU_BAND_INSET as u32),
+        CARD_MENU_ROW_H,
+    )
 }
 
 /// Vertical breathing room around the title strip's single line.
@@ -319,12 +363,7 @@ impl Canvas<'_, '_> {
         focused: usize,
     ) -> Result<()> {
         for (i, (glyph, label)) in rows.iter().enumerate() {
-            let row = Rect::new(
-                band.x(),
-                band.y() + i as i32 * CARD_MENU_ROW_H as i32,
-                band.width(),
-                CARD_MENU_ROW_H,
-            );
+            let row = card_menu_row_rect(band, i);
             let fg = if i == focused { palette().text } else { palette().muted };
             self.poster_menu_row(row, glyph, label, marked == Some(i), fg)?;
         }
@@ -335,9 +374,9 @@ impl Canvas<'_, '_> {
     fn poster_menu_row(&mut self, row: Rect, glyph: &str, label: &str, marked: bool, fg: Color) -> Result<()> {
         let font = self.fonts.value;
         let icon = 22u32;
-        // One left edge with the title above (`poster_strip_label`'s inset): the mark now
-        // lives on the right, so nothing has to be held clear of it.
-        let icon_x = row.x() + TITLE_STRIP_INSET;
+        // Inside the selection pill, not against the panel's edge — the title above keeps
+        // its own shallower inset, because it has no band under it to sit within.
+        let icon_x = row.x() + CARD_MENU_ICON_INSET;
         self.icon(
             Rect::new(icon_x, row.y() + (row.height() as i32 - icon as i32) / 2, icon, icon),
             glyph,

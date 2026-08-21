@@ -5,7 +5,7 @@
 //! The panel itself is baked into one tile (`ui::tiles::render_card_menu_tile`) without any
 //! notion of focus, so everything the *selection* needs is here and nothing of it is in that
 //! tile's cache key: moving between rows rebuilds nothing.
-use crate::app::state::cardmenu::{MENU_FOCUS_SLIDE, ROW_COUNT};
+use crate::app::state::cardmenu::ROW_COUNT;
 use crate::app::{view, App};
 use crate::ui;
 use crate::ui::render::Rect;
@@ -67,21 +67,27 @@ impl App {
             return None;
         }
         // Proportional, not by `CARD_MENU_ROW_H`: the band carries the focused card's scale
-        // (see `card_menu_rows_rect`), so its rows are that much taller on screen too.
-        let row = ((y - band.y()) as f32 / band.height().max(1) as f32 * ROW_COUNT as f32) as usize;
-        (row < ROW_COUNT).then_some(row)
+        // (see `card_menu_rows_rect`), so its rows are that much taller on screen too. The
+        // block's own top/bottom padding is scaled the same way and taken off first, so a
+        // click in it lands on the row nearest it rather than skewing every boundary.
+        let pad = ui::widgets::CARD_MENU_ROWS_PAD as f32 * band.height() as f32
+            / ui::widgets::card_menu_rows_h(ROW_COUNT) as f32;
+        let rows_h = (band.height() as f32 - 2.0 * pad).max(1.0);
+        let row = (((y - band.y()) as f32 - pad).max(0.0) / rows_h * ROW_COUNT as f32) as usize;
+        Some(row.min(ROW_COUNT - 1))
     }
 
     /// The selection band in screen space, clipped to the part of the panel the wipe has
     /// revealed — `None` when no menu is open on this card, or when the rise hasn't reached
     /// the band yet.
     ///
-    /// One band that *moves*, not one per row: on a focus change its top slides from the row
-    /// being left to the row arriving, so the selection reads as a single object travelling
-    /// the list rather than two darkenings trading places.
+    /// It does not travel between rows: it is drawn on whichever row has focus and *pops*
+    /// there, the same zoom `tile::MODAL_FOCUS` plays when a settings row takes focus (see
+    /// `compose_card_strip`, which applies it). One focus idiom for every list in the app was
+    /// worth more than this list having a motion of its own.
     ///
-    /// The band is square-cornered as a rect; the compose path rounds its bottom corners when
-    /// it ends on the card's edge (see `ui::tiles::render_card_menu_band_tile`).
+    /// Held off the card's edges by `CARD_MENU_BAND_INSET`, which is the room that pop grows
+    /// into — see `ui::widgets::card_menu_row_rect`.
     ///
     /// `panel_h` is the panel tile's own height and `shown` how many of its bottom rows are
     /// on screen, so the panel's local y maps to `card.bottom() - (panel_h - y)`. `rows_top`
@@ -90,24 +96,19 @@ impl App {
     /// ride with it or it sits on the resting row while the labels are still travelling.
     pub(crate) fn card_menu_band(&self, card: Rect, panel_h: u32, shown: u32, rows_top: i32) -> Option<Rect> {
         let menu = self.card_menu.as_ref()?;
-        let row_h = ui::widgets::CARD_MENU_ROW_H as i32;
-        let row_top = |row: usize| (rows_top + row as i32 * row_h) as f32;
-        // Smoothstep, not the cubic ease-out: eased at both ends, a short travel of one row
-        // height reads as one motion instead of a jump that drifts to a stop.
-        let frac = ui::animation::anim_frac_smooth(menu.leaving.map(|(_, t)| t), MENU_FOCUS_SLIDE);
-        let from = menu
-            .leaving
-            .map_or_else(|| row_top(menu.focused), |(row, _)| row_top(row));
-        let top = (from + (row_top(menu.focused) - from) * frac) as i32;
-        let visible_top = top.max(panel_h as i32 - shown as i32);
-        let visible_bottom = (top + row_h).min(panel_h as i32);
+        // Panel-local: the rows block starts at `rows_top`, and the band is that block's row
+        // rect — one function with the tile that draws the labels into it.
+        let block = Rect::new(0, rows_top, card.width(), ui::widgets::card_menu_rows_h(ROW_COUNT));
+        let row = ui::widgets::card_menu_row_rect(block, menu.focused);
+        let visible_top = row.y().max(panel_h as i32 - shown as i32);
+        let visible_bottom = row.bottom().min(panel_h as i32);
         if visible_bottom <= visible_top {
             return None;
         }
         Some(Rect::new(
-            card.x(),
+            card.x() + row.x(),
             card.bottom() - (panel_h as i32 - visible_top),
-            card.width(),
+            row.width(),
             (visible_bottom - visible_top) as u32,
         ))
     }

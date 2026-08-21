@@ -38,6 +38,21 @@ pub enum Screen {
     SendLogs,
 }
 
+impl Screen {
+    /// Whether this screen is the settings list or a page reached from it — the four
+    /// sub-pages that open over Settings and return to it.
+    ///
+    /// Used by the render path to decide that the settings row band is still wanted: a step
+    /// into a sub-page is not "leaving Settings", it is Settings with something on top of it,
+    /// and coming back must not re-rasterize a list that never changed.
+    pub const fn over_settings(self) -> bool {
+        matches!(
+            self,
+            Self::Settings(_) | Self::Experimental | Self::Diagnostics | Self::CursorSettings(_) | Self::SendLogs
+        )
+    }
+}
+
 /// Pairing modal's focused input: PIN row or "Request access" button.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum PairingFocus {
