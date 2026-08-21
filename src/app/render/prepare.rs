@@ -578,12 +578,7 @@ impl App {
             })? {
                 updated.push(tile::DROPDOWN_FOCUS);
             }
-        } else if self
-            .settings_ui
-            .dropdown_fade
-            .closing_frame(DROPDOWN_FADE, None)
-            .is_none()
-        {
+        } else if !self.settings_ui.dropdown_fade.is_closing(DROPDOWN_FADE) {
             // Keep the tiles cached while a close-fade is in flight — `draw_list`
             // still composites them at falling alpha.
             tiles.remove(tile::DROPDOWN_OVERLAY);
