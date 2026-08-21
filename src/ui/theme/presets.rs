@@ -39,8 +39,8 @@ const ICONS: Icons = Icons {
 
 /// Flat opaque panels. Costs no GPU memory and no render-target binds at all.
 pub const DEFAULT: Theme = Theme {
-    name: "Default",
-    choice: ThemeChoice::Default,
+    name: "Funk",
+    choice: ThemeChoice::Funk,
     palette: PALETTE,
     icons: ICONS,
     glass: None,
@@ -52,8 +52,8 @@ pub const DEFAULT: Theme = Theme {
 /// is not something a spec answers — the compositor probes, logs `frosted modals: <bool>` and
 /// falls back to flat fills on its own, so this is safe to offer everywhere.
 pub const GLASS: Theme = Theme {
-    name: "Default Glass",
-    choice: ThemeChoice::DefaultGlass,
+    name: "Funk Glass",
+    choice: ThemeChoice::FunkGlass,
     palette: PALETTE,
     icons: ICONS,
     glass: Some(Glass {
