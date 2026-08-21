@@ -5,7 +5,7 @@ transparent background with a frosted effect (the same theme tint)? Are there wa
 algorithm so it is cheap to dynamically render?" Then, over two sessions: implement it, extend it
 to the game card slide-up menu, unify colours/fades across menus, add an Experimental toggle, and
 make that toggle actually reach the cost.
-**Branch:** app-rework - **Status:** ready for review; **nothing verified on device**
+**Branch:** frosted-glass-ui-followups - **Status:** ready for review; **nothing verified on device**
 
 ## Scope
 Frosted glass for the menu UI, done on the GPU. In-stream chrome (`ui/tiles/overlay.rs`, the
@@ -37,8 +37,73 @@ surface, so it is not in the framebuffer and cannot be blurred at all.
   `ui::render` so `app` and `runtime` name the same figure.
 - Card submenu stays open behind the per-game settings modal; closed in `state/settings.rs`'s
   `MenuEvent::Back` for `SettingsScope::Game`.
-- Experimental toggle "Frosted theme" (`Settings::frosted`, default on) governs **modals and
-  cards**, applied live through `ui::style` + `App::restyle()`.
+- Settings row **"Theme"** (`SettingsRow::Theme`, global list only, between Cursor and
+  Experimental) governs **modals and cards**, applied live through `ui::style` +
+  `App::restyle()`. It replaced the Experimental "Frosted theme" toggle.
+  - `core::model::ThemeChoice { Default, DefaultGlossy }` replaces `Settings::frosted`.
+    Serialized as `"default"` / `"default_glossy"`; `ThemeChoice::glossy()` is what every
+    former `settings.frosted` reader calls now. **Default is `Default`** — the old `frosted`
+    defaulted to on, so this flips the shipped look.
+  - `Deserialize` is hand-written, through `serde_json::Value`: an unknown name (or any other
+    JSON shape) yields `Default`. A derived impl errors, and since `Settings` loads with one
+    `from_value` that error would discard the *whole* document over a cosmetic field.
+  - It is an ordinary dropdown row — no custom input logic. `dropdown_options` /
+    `dropdown_option_count` / `dropdown_current_index` / `apply_dropdown_choice` each carry a
+    `Theme` arm, and the row is listed in `state/settings.rs`'s dropdown-opening `Confirm` arm
+    so a click/OK raises the shared popup instead of cycling in place. `restyle()` is called
+    at both apply sites (the popup's pick and Left/Right).
+
+## Material (what "frosted" means here, beyond the blur)
+- **Grain.** A pure minification chain is perfectly smooth, which reads as *defocus*, not as
+  frost — real frosting scatters off a rough surface. `grain_tile` builds one 256px square of
+  neutral LCG noise once and tiles it 1:1 into each pane's scratch, inside the same
+  `with_texture_canvas` pass as the mask and **before** it (the mask writes alpha only, so
+  anything after it paints outside the rounded shape). `GRAIN_ALPHA` is the one knob.
+  256px, not 64: it trades texture bytes (256 KB) against blit count (~32 for a full-screen
+  pane rather than ~500).
+- **Tint** is `Theme::panel_glass`: `0x1c1c1cda` neutral / `0x1c1532da` brand.
+- **`FROST_BLUR = 64`**, with `FROST_STEPS = [4, 2, 2, 2, 2]` (divisors 4/8/16/32/64). The
+  fifth link costs one copy of a 34x17 texture and buys a visibly wider, smoother spread —
+  successive 2x averages converge on a gaussian where one deep jump does not.
+
+## Performance: glossy vs default
+Static analysis (code + arithmetic at a 1080p surface), **not measured on device**.
+
+The CPU delta is ~nil: with the default theme `card_glass()` simply returns an opaque fill, so
+tiny-skia rasterizes the same tiles either way. The whole footprint is GPU memory, GPU fill and
+render-target binds. And the menu only draws when `dirty || animating` (`runtime/ui_flow.rs`),
+so **at rest both themes cost nothing** — everything below is per *drawn* frame.
+
+Memory, allocated on the first focused card and held for the session: backdrop 7.9 MiB, five
+chain levels 0.66 MiB, grain 0.25 MiB, up to four scratches + four masks ~5.5 MiB — **~14 MiB**,
+against zero for the default theme. The surface is the display mode (`runtime/stream.rs`), so a
+set that ever hands back a 4K mode triples that.
+
+Fill, against a ~2.1 Mpx baseline menu frame:
+
+| Frame | Extra fill | vs baseline |
+| --- | --- | --- |
+| Focused card strip only (300x50) | ~2.3 Mpx | +110% |
+| Modal over a card (900x700 + strip) | ~4.8 Mpx | +230% |
+
+**The fixed cost dominates**: capture + blit-back is ~2.07 Mpx and the chain ~0.17 Mpx whatever
+the pane is, so a 300x50 title strip cost almost as much as a whole modal. Blur width and the
+grain are cheap by comparison (the grain is ~13% of a modal frame's extra, one pane-area of
+fill). Per pane the work is ~4x its area: magnify, grain, mask, blit.
+
+Latency: 8 to 12 render-target binds per frosted frame (1 backdrop + 5 chain + 2 per pane)
+against none. On a tile-based GPU each is a resolve/restore, and that — not fill — is the term
+to watch. `present()` is a blocking vsync swap, so this eats headroom silently until it doesn't.
+
+### The backdrop cache (the fix that came out of the above)
+`Chain::backdrop_key` hashes the under-pane commands, the clear colour, the target size and a
+`Compositor::tile_epoch` (bumped on every tile upload/drop/clear, so a tile whose *pixels*
+changed under an unchanged draw list still invalidates). A frosted frame whose key matches the
+last one **skips the capture and all five minifications**, leaving one full-screen blit as the
+whole backdrop cost. That is the common case by a wide margin — the grid under an animating
+card strip or a fading-in modal is identical frame to frame — and it removes ~6 of the binds
+and the under-layer's redraw from those frames. The key is cleared *before* the capture, so an
+error mid-capture cannot leave a key naming half a frame.
 
 ## The style epoch (what invalidates tiles on toggle)
 `ui::style::STYLE_EPOCH` is an `AtomicU64` bumped by `set_frosted` when the value changes.
@@ -68,8 +133,17 @@ that the card tiles actually see, the gate would leave stale translucent strips 
   Bounded, but worth watching for a hitch.
 - `FADE_STEP` went 4 to 8, halving the edge fade's command count (~46 to ~24 per frame). Steps
   land ~32 alpha apart over 92px. Drop it back to 4 if banding shows on the panel.
-- Measure the grid's hot path. With the toggle on, a focused card still pushes a frost every
-  animating menu frame, so each pays one extra full-screen offscreen render + blit.
+- **Measure the grid's hot path on device** — the numbers above are arithmetic. Deploy with
+  `task deploy TELEMETRY=auto` and compare the same navigation glossy vs default with the frame
+  timer at TRACE.
+- Confirm the backdrop cache actually hits during a card-strip wipe and a modal fade. If it
+  misses, something under the pane is being re-emitted with a moving rect or re-uploaded every
+  frame, and the hash will say so.
+- The remaining fixed cost is the full-screen blit-back. Removing it means capturing only the
+  pane's own region rather than the screen, which is the same change that would fix stacked
+  panes (see "Known limits").
+- `GRAIN_ALPHA` and the tint are unverified on a real panel — grain that reads as film grain
+  rather than as a surface is the failure mode.
 
 ## Key decisions
 - **Blur width is declared, never inferred from pane size.** `FrostPane.blur` maps through
@@ -100,8 +174,7 @@ that the card tiles actually see, the gate would leave stale translucent strips 
   a card's title strip or its taller submenu panel), leaving one spare for a cross-fade. A fourth
   live shape would thrash.
 - **The chain is allocated for the session on the first focused card**, not on the first modal.
-  ~8.3 MB at 1080p plus levels and scratches. Only a stream that never returns to the menu
-  avoids it.
+  ~14 MB at 1080p all told. Only a stream that never returns to the menu avoids it.
 
 ## Dead ends
 - `glReadPixels` / `SDL_RenderReadPixels` off the default framebuffer: pipeline stall, ~5-20ms.

@@ -6,7 +6,7 @@ use crate::core::caps::video_caps;
 use crate::core::event::MenuEvent;
 use crate::core::model::{BITRATE_AUTOMATIC, BITRATE_MAX_KBPS, BITRATE_MIN_KBPS, BITRATE_STEP_KBPS};
 use crate::services::store::{
-    CodecPref, GamepadType, LogLevelOverride, OverrideField, Settings, SettingsOverride, VideoBackend,
+    CodecPref, GamepadType, LogLevelOverride, OverrideField, Settings, SettingsOverride, ThemeChoice, VideoBackend,
 };
 use crate::ui::focus::Dir;
 use crate::ui::widgets::{FocusRow, RowSubtext};
@@ -77,6 +77,9 @@ pub enum SettingsRow {
     /// this list: neither is something a user sets more than once, and pairing them makes the
     /// gesture toggle discoverable next to the capture mode it interacts with.
     Cursor,
+    /// Which look the menus draw in — see `store::ThemeChoice`. Cosmetic and device-wide, so
+    /// it is on the global list only, and applies the moment it is picked.
+    Theme,
     /// Not a setting — a link to `Screen::Experimental` (unstable toggles: NDL audio offload,
     /// and Game mode on rooted sets). Grouped off the main list so an untested option isn't
     /// one keystroke away.
@@ -97,7 +100,7 @@ pub enum SettingsRow {
 }
 
 /// The global list, in display order.
-const GLOBAL_ROWS: [SettingsRow; 12] = [
+const GLOBAL_ROWS: [SettingsRow; 13] = [
     SettingsRow::Resolution,
     SettingsRow::Framerate,
     SettingsRow::Bitrate,
@@ -107,6 +110,7 @@ const GLOBAL_ROWS: [SettingsRow; 12] = [
     SettingsRow::Audio,
     SettingsRow::Gamepad,
     SettingsRow::Cursor,
+    SettingsRow::Theme,
     SettingsRow::Experimental,
     SettingsRow::Diagnostics,
     SettingsRow::About,
@@ -148,12 +152,9 @@ pub enum ExpRow {
     /// Locked whenever [`exp_row_lock`] returns a reason. Always listed, locked rather than
     /// hidden when it can't be used.
     GameMode,
-    /// Frosted glass menus (`Settings::frosted`). Never locked — the compositor falls back to
-    /// flat fills on its own where it can't blur, so the row is safe to offer everywhere.
-    Frosted,
 }
 
-pub const EXP_ROWS: [ExpRow; 3] = [ExpRow::HwAudio, ExpRow::GameMode, ExpRow::Frosted];
+pub const EXP_ROWS: [ExpRow; 2] = [ExpRow::HwAudio, ExpRow::GameMode];
 
 /// Diagnostics modal row indices (see `app::view::diagnostics::rows`). Log level keeps
 /// index 0 so its dropdown's `(Screen, row)` tile key stays stable.
@@ -222,7 +223,7 @@ pub(crate) fn exp_row_lock(row: ExpRow, rooted: Option<bool>) -> Option<ExpRowLo
     match (row, rooted) {
         (ExpRow::GameMode, None) => Some(ExpRowLock::RootUnknown),
         (ExpRow::GameMode, Some(false)) => Some(ExpRowLock::NotRooted),
-        (ExpRow::GameMode, Some(true)) | (ExpRow::HwAudio | ExpRow::Frosted, _) => None,
+        (ExpRow::GameMode, Some(true)) | (ExpRow::HwAudio, _) => None,
     }
 }
 
@@ -293,6 +294,7 @@ fn row_fields(row: SettingsRow) -> &'static [OverrideField] {
         // Rows that override nothing: the backend is a process-global, and the rest are links
         // out or an action.
         SettingsRow::VideoBackend
+        | SettingsRow::Theme
         | SettingsRow::Experimental
         | SettingsRow::Diagnostics
         | SettingsRow::About
@@ -473,9 +475,22 @@ fn video_backend_label(backend: VideoBackend) -> &'static str {
     }
 }
 
+/// The looks offered, in display order (see `store::ThemeChoice`).
+pub const THEMES: [ThemeChoice; 2] = [ThemeChoice::Default, ThemeChoice::DefaultGlossy];
+
+/// Dropdown label for a look. Derived from the value for the same reason
+/// [`video_backend_label`] is — the dropdown indexes into [`THEMES`].
+pub(crate) fn theme_label(theme: ThemeChoice) -> &'static str {
+    match theme {
+        ThemeChoice::Default => "Default",
+        ThemeChoice::DefaultGlossy => "Default Glossy",
+    }
+}
+
 /// Dropdown labels for a row.
 pub fn dropdown_options(row: SettingsRow, detected: Option<GamepadType>) -> Vec<String> {
     match row {
+        SettingsRow::Theme => THEMES.iter().map(|&t| theme_label(t).to_string()).collect(),
         SettingsRow::VideoBackend => VIDEO_BACKENDS.iter().map(|&b| video_backend_label(b).into()).collect(),
         SettingsRow::Resolution => RESOLUTIONS
             .iter()
@@ -506,6 +521,7 @@ pub fn dropdown_options(row: SettingsRow, detected: Option<GamepadType>) -> Vec<
 /// path needs only the count, and `dropdown_options` allocates a `String` per entry.
 pub fn dropdown_option_count(row: SettingsRow) -> usize {
     match row {
+        SettingsRow::Theme => THEMES.len(),
         SettingsRow::VideoBackend => VIDEO_BACKENDS.len(),
         SettingsRow::Resolution => RESOLUTIONS.len(),
         SettingsRow::Framerate => REFRESH_RATES.len(),
@@ -519,6 +535,7 @@ pub fn dropdown_option_count(row: SettingsRow) -> usize {
 /// Current dropdown index for a row's setting.
 pub fn dropdown_current_index(settings: &Settings, row: SettingsRow) -> usize {
     match row {
+        SettingsRow::Theme => THEMES.iter().position(|&t| t == settings.theme).unwrap_or(0),
         SettingsRow::Resolution => RESOLUTIONS
             .iter()
             .position(|(w, h, _, _)| *w == settings.width && *h == settings.height)
@@ -561,6 +578,11 @@ pub fn apply_dropdown_choice(
         return;
     }
     match row {
+        SettingsRow::Theme => {
+            if let Some(&t) = THEMES.get(choice_index) {
+                settings.theme = t;
+            }
+        }
         SettingsRow::Resolution => {
             if let Some((w, h, _, _)) = RESOLUTIONS.get(choice_index) {
                 settings.width = *w;
@@ -650,6 +672,7 @@ pub fn adjust_setting(settings: &mut Settings, row: SettingsRow, forward: bool, 
         // is which.
         SettingsRow::Resolution
         | SettingsRow::Framerate
+        | SettingsRow::Theme
         | SettingsRow::VideoBackend
         | SettingsRow::Codec
         | SettingsRow::Audio

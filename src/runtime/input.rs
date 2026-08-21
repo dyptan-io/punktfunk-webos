@@ -118,7 +118,7 @@ pub(super) struct ConfirmDialog {
     press: crate::ui::animation::Press,
     tc: crate::ui::text::TextCache,
     /// Whether the shell tile currently baked is the glass one. Compared against what
-    /// [`Self::draw`] is passed, so toggling the Frosted theme with the dialog up rebuilds it.
+    /// [`Self::draw`] is passed, so switching Theme with the dialog up rebuilds it.
     glass: bool,
 }
 

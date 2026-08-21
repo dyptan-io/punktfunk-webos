@@ -14,7 +14,7 @@ use serde_json::Value;
 
 pub use crate::core::model::{
     desktop_capture_override, new_host_games, upsert_known_host, CodecPref, GamepadType, KnownHost, LogLevelOverride,
-    OverrideField, Persisted, Settings, SettingsOverride, VideoBackend, DESKTOP_PIN_ID,
+    OverrideField, Persisted, Settings, SettingsOverride, ThemeChoice, VideoBackend, DESKTOP_PIN_ID,
 };
 pub use crate::services::paths::app_dir;
 pub use identity::load_or_create_identity;

@@ -68,6 +68,10 @@ pub struct Compositor {
     /// first frame with focus, and a screen's worth of render target is allocated for the rest
     /// of the session. Only a stream that never returns to the menu avoids it.
     frost: Option<Frost>,
+    /// Bumped whenever any tile's pixels change identity — an upload, a drop, a clear. What
+    /// lets [`Chain::backdrop_key`] tell "the same draw list" from "the same draw list, but
+    /// one of those tiles has new pixels in it".
+    tile_epoch: u64,
 }
 
 /// Frosted glass, entirely in the sampler: the layers under the first frosted card are drawn
@@ -133,16 +137,25 @@ struct Chain {
     /// The scratches a pane's blur is magnified into and masked in, each at one shape's size.
     /// Cached in the same number as the masks, and for the same reason.
     scratches: Vec<(Texture, (u32, u32))>,
+    /// One tile of etch grain, tiled over every pane's blur. This is what separates frosted
+    /// glass from a plain blur: real frosting scatters light off a rough surface, and a pure
+    /// minification chain is perfectly smooth. See [`grain_tile`].
+    grain: Option<Texture>,
     /// [`mask_blend`], composed once and accepted by this renderer.
     mask_mode: sdl2::sys::SDL_BlendMode,
+    /// What [`backdrop`](Self::backdrop) and the levels under it currently hold — see
+    /// [`backdrop_key`]. `None` on a chain that has captured nothing yet.
+    backdrop_key: Option<u64>,
 }
 
 /// The blur chain's minification steps, each applied to the level before it — cumulative
-/// divisors 4, 8, 16 and 32, which are the blur widths a [`FrostPane`] can ask for. Steps of 2
-/// past the first rather than one big jump: a bilinear sample only ever averages the 2x2 texels
-/// around it, so a single large minification point-samples and aliases instead of blurring.
-/// Each extra link costs one copy of a texture that is already tiny.
-const FROST_STEPS: [u32; 4] = [4, 2, 2, 2];
+/// divisors 4, 8, 16, 32 and 64, which are the blur widths a [`FrostPane`] can ask for. Steps
+/// of 2 past the first rather than one big jump: a bilinear sample only ever averages the 2x2
+/// texels around it, so a single large minification point-samples and aliases instead of
+/// blurring. Each extra link costs one copy of a texture that is already tiny, and buys a
+/// wider, smoother spread — successive 2x averages converge on a gaussian, where one deep
+/// jump would not.
+const FROST_STEPS: [u32; 5] = [4, 2, 2, 2, 2];
 
 /// `dst.rgb` untouched, `dst.a *= src.a` — the rounded-rect mask, applied over an already
 /// drawn blur.
@@ -163,6 +176,55 @@ fn mask_blend() -> sdl2::sys::SDL_BlendMode {
             SDL_BlendOperation::SDL_BLENDOPERATION_ADD,
         )
     }
+}
+
+/// What the captured backdrop and the blur chain built off it currently hold: the commands
+/// drawn into it, the ground they were cleared to, the size of the target, and the tile epoch
+/// those commands resolved against.
+///
+/// A frosted frame whose key matches the last one reuses the capture instead of redrawing and
+/// re-minifying it — which is the common case by a wide margin: a card's title strip animates
+/// its wipe, a modal fades in, and the grid under either is identical frame to frame. That
+/// skips the under-layer's draws, all [`FROST_STEPS`] minifications and six render-target
+/// binds, leaving one full-screen blit as the whole cost of the backdrop.
+///
+/// Hashed rather than compared: keeping the previous list would mean cloning a frame's
+/// commands every frame to save comparing them, and a 64-bit hash of a draw list this size
+/// collides on a timescale nobody will be running this TV for.
+fn backdrop_key(cmds: &[DrawCmd], clear: sdl2::pixels::Color, size: (u32, u32), tile_epoch: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (size, tile_epoch, (clear.r, clear.g, clear.b, clear.a)).hash(&mut h);
+    for cmd in cmds {
+        match cmd {
+            DrawCmd::Tex { tile, dst, alpha } => (0u8, tile, rect_key(*dst), alpha).hash(&mut h),
+            DrawCmd::TexCropped { tile, src, dst, alpha } => {
+                (1u8, tile, rect_key(*src), rect_key(*dst), alpha).hash(&mut h);
+            }
+            // Through the bits: the fractional destination is the whole point of this variant,
+            // so rounding it here would let a sub-pixel pan reuse a stale capture.
+            DrawCmd::TexF { tile, dst, alpha } => (
+                2u8,
+                tile,
+                dst.x.to_bits(),
+                dst.y.to_bits(),
+                dst.w.to_bits(),
+                dst.h.to_bits(),
+                alpha,
+            )
+                .hash(&mut h),
+            DrawCmd::Fill { rect, color } => (3u8, rect_key(*rect), (color.r, color.g, color.b, color.a)).hash(&mut h),
+            // Unreachable: the slice hashed here ends at the frame's first frost. Hashed as a
+            // bare tag anyway rather than skipped, so a future caller that passes one cannot
+            // silently make two different lists key alike.
+            DrawCmd::Frost(_) => 4u8.hash(&mut h),
+        }
+    }
+    h.finish()
+}
+
+fn rect_key(r: Rect) -> (i32, i32, u32, u32) {
+    (r.x(), r.y(), r.width(), r.height())
 }
 
 /// A render target that samples smoothly and overwrites rather than blends — every link in
@@ -193,6 +255,10 @@ impl Chain {
             levels,
             screen: (w, h),
             scratches: Vec::new(),
+            backdrop_key: None,
+            // Optional: the grain is the finish, not the effect. A renderer that will not hand
+            // one over still gets the blur.
+            grain: grain_tile(creator).ok(),
             mask_mode,
         })
     }
@@ -210,7 +276,7 @@ impl Chain {
     /// land on different levels, so the frost visibly changed the instant the panel opened,
     /// which is the one thing a surface growing out of another must not do. A pane too short to
     /// hold the spread it asked for magnifies a texel or two into a near-flat wash, and that is
-    /// the correct answer: a 32px blur across a 50px band *is* flat.
+    /// the correct answer: a 64px blur across a 50px band is a flat wash.
     fn level_for(&self, blur: u32) -> (Option<usize>, u32, (u32, u32)) {
         // Seeded on the backdrop, not on level 0: a request finer than the first step samples
         // the unminified frame — no blur, the honest degradation, where naming level 0 anyway
@@ -247,6 +313,7 @@ impl Chain {
         std::iter::once(self.backdrop)
             .chain(self.levels)
             .chain(self.scratches.into_iter().map(|(t, _)| t))
+            .chain(self.grain)
     }
 }
 
@@ -388,6 +455,7 @@ impl Compositor {
             staging: Vec::new(),
             premultiplied: None,
             frost: None,
+            tile_epoch: 0,
         }
     }
 
@@ -479,6 +547,7 @@ impl Compositor {
         if self.tiles.get(&tile).map(|t| t.shape) != Some(shape) {
             self.acquire(creator, tile, shape)?;
         }
+        self.tile_epoch = self.tile_epoch.wrapping_add(1);
         let entry = self.tiles.get_mut(&tile).expect("acquired above or already fresh");
         entry.premultiplied = false;
         entry
@@ -510,6 +579,7 @@ impl Compositor {
         if self.tiles.get(&tile).map(|t| t.shape) != Some(shape) {
             self.acquire(creator, tile, shape)?;
         }
+        self.tile_epoch = self.tile_epoch.wrapping_add(1);
         let entry = self.tiles.get_mut(&tile).expect("acquired above or already fresh");
         entry.premultiplied = premultiplied.is_some();
         let tex = &mut entry.texture;
@@ -557,6 +627,7 @@ impl Compositor {
 
     /// Destroys all cached GPU textures (call on stream start to free VRAM).
     pub fn clear_all(&mut self) {
+        self.tile_epoch = self.tile_epoch.wrapping_add(1);
         // SAFETY: `unsafe_textures` detaches each `Texture` from its creator's
         // lifetime, making the owner responsible for destruction. We drain both
         // collections so nothing can reach these textures again, then destroy each
@@ -574,6 +645,7 @@ impl Compositor {
     /// view; the texture goes to the pool for the row scrolling in to reuse, and is destroyed
     /// outright once that is full.
     pub fn drop_tile(&mut self, tile: TileId) {
+        self.tile_epoch = self.tile_epoch.wrapping_add(1);
         if let Some(tile) = self.tiles.remove(&tile) {
             self.release(tile);
         }
@@ -643,28 +715,40 @@ impl Compositor {
         size: (u32, u32),
         frost: &mut Frost,
     ) -> Result<()> {
+        let epoch = self.tile_epoch;
         let rest = if let Some(chain) = frost.chain_for(creator, size) {
+            let key = backdrop_key(&cmds[..first_frost], clear, size, epoch);
+            let stale = chain.backdrop_key != Some(key);
+            // Cleared before the capture, not after: an error below leaves the texture holding
+            // half a frame, and a key still naming it would show that half next frame.
+            chain.backdrop_key = None;
             let Chain { backdrop, levels, .. } = chain;
-            let mut err = None;
-            canvas
-                .with_texture_canvas(backdrop, |c| {
-                    c.set_draw_color(clear);
-                    c.clear();
-                    err = self.run(c, &cmds[..first_frost], None, None).err();
-                })
-                .map_err(|e| anyhow::anyhow!("frost backdrop: {e}"))?;
-            if let Some(e) = err {
-                return Err(e);
+            if stale {
+                let mut err = None;
+                canvas
+                    .with_texture_canvas(backdrop, |c| {
+                        c.set_draw_color(clear);
+                        c.clear();
+                        err = self.run(c, &cmds[..first_frost], None, None).err();
+                    })
+                    .map_err(|e| anyhow::anyhow!("frost backdrop: {e}"))?;
+                if let Some(e) = err {
+                    return Err(e);
+                }
+                // Down the chain. Skipped with the capture: the levels are a pure function of
+                // the backdrop, so an unchanged one leaves them all still valid.
+                let mut src: &Texture = backdrop;
+                for level in levels.iter_mut() {
+                    copy_into(canvas, level, src, None)?;
+                    src = level;
+                }
             }
-            // Down the chain, then the copy that replaces the commands just captured.
-            let mut src: &Texture = backdrop;
-            for level in levels.iter_mut() {
-                copy_into(canvas, level, src, None)?;
-                src = level;
-            }
+            // The copy that stands in for the commands captured — reused or not, the screen
+            // still needs them.
             canvas
                 .copy(backdrop, None, None)
                 .map_err(|e| anyhow::anyhow!("frost backdrop blit: {e}"))?;
+            chain.backdrop_key = Some(key);
             &cmds[first_frost..]
         } else {
             cmds
@@ -778,6 +862,7 @@ fn draw_frost(
         backdrop,
         levels,
         scratches,
+        grain,
         ..
     } = chain;
     let blurred: &Texture = level.map_or(backdrop, |i| &levels[i]);
@@ -787,10 +872,25 @@ fn draw_frost(
     copy_into(canvas, scratch, blurred, Some(src))?;
     let (mask, _) = &masks[mask_i];
     set_raw_blend_mode(mask, mask_mode);
+    let grain = grain.as_ref();
     let mut err = None;
     canvas
         .with_texture_canvas(scratch, |c| {
-            err = c.copy(mask, None, None).err();
+            // Grain first, then the mask: the mask only writes alpha, so anything laid after
+            // it would paint outside the rounded shape.
+            if let Some(grain) = grain {
+                for ty in (0..h).step_by(GRAIN_TILE as usize) {
+                    for tx in (0..w).step_by(GRAIN_TILE as usize) {
+                        let tile = Rect::new(tx as i32, ty as i32, GRAIN_TILE, GRAIN_TILE);
+                        if err.is_none() {
+                            err = c.copy(grain, None, Some(to_sdl_rect(tile))).err();
+                        }
+                    }
+                }
+            }
+            if err.is_none() {
+                err = c.copy(mask, None, None).err();
+            }
         })
         .map_err(|e| anyhow::anyhow!("frost mask target: {e}"))?;
     if let Some(e) = err {
@@ -805,6 +905,43 @@ fn draw_frost(
             Some(to_sdl_rect(pane.dst)),
         )
         .map_err(|e| anyhow::anyhow!("frost blit: {e}"))
+}
+
+/// Edge of the square grain tile, in texels. Tiled 1:1 over the pane, so this only trades
+/// texture bytes against blit count: 256 covers a full-screen pane in ~32 copies of a 256 KB
+/// texture, where a 64px tile would cost ~500.
+const GRAIN_TILE: u32 = 256;
+
+/// How strongly the grain sits over the blur. Low: the point is a surface that catches light,
+/// not visible noise. Raise it and the glass starts to look like film grain.
+const GRAIN_ALPHA: u8 = 0x2e;
+
+/// One tile of neutral etch grain — per-texel white noise around mid grey, tiled over a pane's
+/// blur so the surface reads as *rough* rather than merely out of focus.
+///
+/// Grey rather than white or black: at [`GRAIN_ALPHA`] a neutral wash pulls the blur very
+/// slightly toward mid and leaves the tint above it to set the level, so brightening and
+/// darkening cancel across the pane instead of fogging it.
+fn grain_tile(creator: &TextureCreator<WindowContext>) -> Result<Texture> {
+    let n = (GRAIN_TILE * GRAIN_TILE) as usize;
+    let mut px = Vec::with_capacity(n * 4);
+    // An LCG, not `rand`: the tile is built once and only has to be uncorrelated, not random.
+    let mut seed: u32 = 0x9e37_79b9;
+    for _ in 0..n {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        // Two draws averaged, so the distribution centres instead of being flat — extremes
+        // are what read as noise.
+        let v = (((seed >> 24) as u16 + ((seed >> 8) & 0xff) as u16) / 2) as u8;
+        px.extend_from_slice(&[v, v, v, 0xff]);
+    }
+    let mut tex = creator
+        .create_texture_static(PixelFormatEnum::RGBA32, GRAIN_TILE, GRAIN_TILE)
+        .map_err(|e| anyhow::anyhow!("frost grain: {e}"))?;
+    tex.update(None, &px, GRAIN_TILE as usize * 4)
+        .map_err(|e| anyhow::anyhow!("frost grain upload: {e}"))?;
+    tex.set_blend_mode(BlendMode::Blend);
+    tex.set_alpha_mod(GRAIN_ALPHA);
+    Ok(tex)
 }
 
 /// One pane's alpha mask, at its unscaled shape size. White throughout — only the alpha is read

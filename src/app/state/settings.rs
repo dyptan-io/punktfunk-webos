@@ -43,6 +43,11 @@ impl App {
                         // visit, not per-row.
                         menu::apply_dropdown_choice(self.settings_target_mut(), logical, choice, detected);
                         self.capture_game_override(logical);
+                        // The look applies live, and the epoch bump is what stales the tiles
+                        // that baked the old fill (see `App::restyle`).
+                        if logical == menu::SettingsRow::Theme {
+                            self.restyle();
+                        }
                     }
                 }
                 MenuEvent::Left | MenuEvent::Right | MenuEvent::Secondary => {}
@@ -107,7 +112,8 @@ impl App {
                     | menu::SettingsRow::VideoBackend
                     | menu::SettingsRow::Codec
                     | menu::SettingsRow::Audio
-                    | menu::SettingsRow::Gamepad),
+                    | menu::SettingsRow::Gamepad
+                    | menu::SettingsRow::Theme),
                 ) if menu::row_lock(logical, self.settings_target(), self.detected_gamepad_type).is_none() => {
                     let focused = menu::dropdown_current_index(self.settings_target(), logical);
                     // `row` is the display position (what the overlay is drawn against);
@@ -170,6 +176,9 @@ impl App {
         let detected = self.detected_gamepad_type;
         if menu::adjust_setting(self.settings_target_mut(), row, forward, detected) {
             self.capture_game_override(row);
+            if row == menu::SettingsRow::Theme {
+                self.restyle();
+            }
             if let Some(from) = toggled_from {
                 // Scope the slide to the display row being rendered (see `toggle_frac`).
                 self.render.modal.switch_anim = Some((Instant::now(), from, display_row));

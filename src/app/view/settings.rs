@@ -157,6 +157,11 @@ pub(crate) fn rows(
             dualsense_limited.then(|| ui::widgets::RowSubtext::caution("Limited support by your WebOS version")),
         ),
         menu::SettingsRow::Cursor => FocusRow::action(crate::app::view::icons::ICON_MOUSE, "Cursor"),
+        menu::SettingsRow::Theme => FocusRow::dropdown(
+            crate::app::view::icons::ICON_PALETTE,
+            "Theme",
+            menu::theme_label(settings.theme),
+        ),
         menu::SettingsRow::Experimental => FocusRow::action(crate::app::view::icons::ICON_BUG, "Experimental"),
         menu::SettingsRow::Diagnostics => FocusRow::action(crate::app::view::icons::ICON_WRENCH, "Diagnostics"),
         // The build version rides along as this row's value, so it's visible without

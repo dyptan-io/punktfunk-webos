@@ -65,7 +65,7 @@ impl Theme {
     pub const DEFAULT: Self = Self {
         bg: Color::RGB(0x14, 0x14, 0x14),
         panel: Color::RGB(0x1c, 0x1c, 0x1c),
-        panel_glass: Color::RGBA(0x22, 0x22, 0x22, 0xd8),
+        panel_glass: Color::RGBA(0x1c, 0x1c, 0x1c, 0xda),
         surface: Color::RGB(0x2b, 0x2b, 0x2b),
         accent: Color::RGB(0x5b, 0x5b, 0xf3),
         accent_bright: Color::RGB(0x9f, 0x9f, 0xf8),
@@ -109,7 +109,7 @@ impl Icons {
 static ACTIVE: OnceLock<(Theme, Icons)> = OnceLock::new();
 
 /// Whether the menus draw as frosted glass. Unlike the palette this *does* change at runtime
-/// (Experimental → "Frosted theme"), so it is an atomic rather than part of the `OnceLock`:
+/// (Settings → Theme → "Default Glossy"), so it is an atomic rather than part of the `OnceLock`:
 /// the theme is a constant of the process, this is a setting.
 ///
 /// Every glass surface reads it through [`glass_fill`], down inside widget code that has no
@@ -144,7 +144,7 @@ pub fn frosted() -> bool {
 }
 
 /// What a raised surface is filled with: the translucent
-/// [`Theme::panel_glass`] with the frosted theme on, the opaque [`Theme::panel`] with it off.
+/// [`Theme::panel_glass`] on the glossy look, the opaque [`Theme::panel`] on the default one.
 ///
 /// A modal card, a dropdown's popup, a toast and a scroll-edge fade all take this, so one
 /// switch moves the whole set and none of them can drift from the others.

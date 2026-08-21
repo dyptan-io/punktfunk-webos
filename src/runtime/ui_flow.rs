@@ -490,7 +490,7 @@ pub(super) fn run_ui_flow(
                 texture_creator,
                 fonts,
                 crate::ui::render::Size::new(display_mode.w as u32, display_mode.h as u32),
-                app.settings_ui.settings.frosted,
+                app.settings_ui.settings.theme.glossy(),
                 &mut cmds,
             )?;
             Ok(cmds)

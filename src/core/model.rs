@@ -320,6 +320,47 @@ pub enum VideoBackend {
     Smp,
 }
 
+/// Which look the menus draw in, picked on the Settings screen.
+///
+/// The glossy look wants render targets and a composed blend mode, and which webOS
+/// generations give it both is not something a spec answers — the compositor probes, logs
+/// `frosted modals: <bool>` and falls back to flat fills on its own, so this is safe to offer
+/// everywhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeChoice {
+    /// Flat opaque panels.
+    #[default]
+    Default,
+    /// Frosted glass: translucent cards over a blurred, grained copy of what they cover
+    /// (`ui::render::DrawCmd::Frost`).
+    DefaultGlossy,
+}
+
+impl ThemeChoice {
+    /// Whether this look draws its panels as frosted glass.
+    #[must_use]
+    pub fn glossy(self) -> bool {
+        self == Self::DefaultGlossy
+    }
+}
+
+/// Anything but a name this build knows deserializes to [`ThemeChoice::default`].
+///
+/// Hand-written rather than derived: a derived enum rejects an unknown string, and since
+/// `Settings` is loaded with one `from_value` that error would discard the *whole* document
+/// — every real setting lost to a cosmetic field written by a build that had one more look.
+impl<'de> Deserialize<'de> for ThemeChoice {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // Through `Value` so any JSON shape at all lands here rather than failing to parse.
+        let v = serde_json::Value::deserialize(d)?;
+        Ok(match v.as_str() {
+            Some("default_glossy") => Self::DefaultGlossy,
+            _ => Self::Default,
+        })
+    }
+}
+
 /// Codec preference selectable in Settings — a *preference*, not a demand. The host
 /// resolves the session codec from the client's advertised set via its own precedence
 /// ladder (HEVC > H.264), honouring the preference only when its encoder can
@@ -497,18 +538,9 @@ pub struct Settings {
     /// no working Red button then has no other way to left-click. Off also means no added
     /// wait on the release.
     pub cursor_gestures: bool,
-    /// Draw the modals as frosted glass: translucent cards over a blurred copy of what they
-    /// cover (`ui::render::DrawCmd::Frost`), instead of flat opaque panels. On by default.
-    ///
-    /// Modals only. A grid card's title strip and its submenu stay frosted either way — the
-    /// blur is what lets the game's own cover show through a strip that still has to carry a
-    /// legible title.
-    ///
-    /// Experimental because the blur wants render targets and a composed blend mode, and which
-    /// webOS generations give it both is not something a spec answers — the compositor probes
-    /// and logs `frosted modals: <bool>`, and this is the switch for anyone whose set says
-    /// true and still doesn't like what it costs. Applies live; nothing here rides a stream.
-    pub frosted: bool,
+    /// Which look the menus draw in — see [`ThemeChoice`]. Cosmetic and purely local, so it
+    /// applies the moment it is picked rather than on the next launch.
+    pub theme: ThemeChoice,
 }
 
 impl Default for Settings {
@@ -534,7 +566,7 @@ impl Default for Settings {
             game_mode: false,
             ndl_audio_offload: false,
             cursor_gestures: false,
-            frosted: true,
+            theme: ThemeChoice::default(),
         }
     }
 }

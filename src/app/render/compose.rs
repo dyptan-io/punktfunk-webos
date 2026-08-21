@@ -117,7 +117,7 @@ impl App {
     /// what keeps the frost off a frame whose video lives on a hardware plane the blur cannot
     /// see anyway.
     fn push_frost(&self, cmds: &mut Vec<DrawCmd>, tile_region: Rect, alpha: u8) {
-        if alpha == 0 || !self.settings_ui.settings.frosted {
+        if alpha == 0 || !self.settings_ui.settings.theme.glossy() {
             return;
         }
         cmds.push(DrawCmd::Frost(Box::new(ui::render::FrostPane::whole(
@@ -601,7 +601,7 @@ impl App {
     /// zoomed, scrolled, whatever art finished loading — blurred and cut to the card's own
     /// rounded bottom edge.
     ///
-    /// Gated on the Frosted theme setting like [`push_frost`](Self::push_frost). The strip
+    /// Gated on the Theme setting like [`push_frost`](Self::push_frost). The strip
     /// stays readable with it off because `ui::widgets::card_glass` goes opaque at the same
     /// time — a blur is what lets a *translucent* strip carry a title over cover art, so the
     /// two have to move together or the title lands on bare art.
@@ -613,7 +613,7 @@ impl App {
     /// both unscaled. The mask and the blur scratch are built at the unscaled size and the
     /// zoom is applied in the blit, so a focus pop rebuilds neither (see `FrostPane::shape`).
     fn push_card_frost(&self, cmds: &mut Vec<DrawCmd>, r: Rect, card_scale: f32, panel_h: u32, shown: u32, alpha: u8) {
-        if !self.settings_ui.settings.frosted {
+        if !self.settings_ui.settings.theme.glossy() {
             return;
         }
         let panel = Rect::new(r.x(), r.bottom() - panel_h as i32, r.width(), panel_h);

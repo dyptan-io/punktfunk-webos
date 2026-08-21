@@ -16,8 +16,8 @@ use anyhow::Result;
 pub const TITLE: &str = "Experimental";
 pub const SUBTITLE: &str = "Unstable, off by default.";
 
-/// The software-audio override, Game mode, and the frosted theme. `rooted` is the root-probe
-/// verdict, `None` while it is still running.
+/// The software-audio override and Game mode. `rooted` is the root-probe verdict, `None`
+/// while it is still running.
 pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
     // Opt-in, not the default: the audio-enabled load is rejected on at least some webOS 5+ sets
     // and takes the video plane down with it (black picture, sound fine — see
@@ -44,17 +44,6 @@ pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
         Some(lock) => game_mode.locked(true).with_subtext(lock_caption(lock)),
         None => game_mode,
     });
-    // Purely cosmetic and purely local: nothing here rides a stream or a handshake, so it
-    // applies the moment it is flipped rather than on the next launch.
-    rows.push(
-        FocusRow::toggle(crate::app::view::icons::ICON_PALETTE, "Frosted theme", settings.frosted).with_subtext(
-            ui::widgets::RowSubtext::hint(if settings.frosted {
-                "Turn off to remove the transparency effect"
-            } else {
-                "Turn on to add the transparency effect"
-            }),
-        ),
-    );
     rows
 }
 

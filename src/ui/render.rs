@@ -159,7 +159,7 @@ pub enum DrawCmd {
 /// Blur spread, in screen px, behind every piece of glass in the app — a modal card, a grid
 /// card's title strip, the submenu grown out of it, the quit dialog. One figure, so every
 /// frosted surface reads as the same material. Rounded to what the compositor's chain can give.
-pub const FROST_BLUR: u32 = 32;
+pub const FROST_BLUR: u32 = 64;
 
 /// Which corners of a [`FrostPane`] are rounded.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
