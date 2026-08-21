@@ -14,6 +14,28 @@ fn reveal_deadline(started: Option<Instant>) -> Instant {
     started.unwrap_or_else(|| Instant::now() + crate::app::hero::FIRST_FRAME_WAIT)
 }
 
+/// How many copies of a mid-stream `GamepadArrival` to send — see its one caller.
+const ARRIVAL_SENDS: usize = 3;
+
+/// `DualSense` HID feedback (adaptive triggers, lightbar), opened only for a pad kind that emits
+/// it — anything else never sends these events. Not found (USB pad, no `luna-send-pub`) isn't an
+/// error: logged once, the feature just stays off.
+fn open_ds_feedback(kind: store::GamepadType) -> Option<crate::platform::webos::dualsense::Feedback> {
+    if !kind.is_dualsense() {
+        return None;
+    }
+    match crate::platform::webos::dualsense::find_address() {
+        Some(addr) => crate::platform::webos::dualsense::Feedback::new(addr),
+        None => {
+            tracing::info!(
+                "no Bluetooth DualSense found in /proc/bus/input/devices — \
+                 adaptive triggers off for this session"
+            );
+            None
+        }
+    }
+}
+
 pub(super) fn run_inner() -> Result<()> {
     // Stops webOS's launcher intercepting Back/Guide as its own shortcut (see `gamepad.rs`'s
     // BTN_GUIDE mapping). Must be set before window creation — these hints only latch there.
@@ -105,6 +127,7 @@ pub(super) fn run_inner() -> Result<()> {
         let Some(ConnectOutcome {
             handle: connect_thread,
             settings,
+            gamepad_auto,
             first_frame_deadline,
         }) = run_ui_flow(
             &mut canvas,
@@ -219,20 +242,10 @@ pub(super) fn run_inner() -> Result<()> {
         // DualSense HID feedback (adaptive triggers, lightbar), started only for an actual
         // DualSense — anything else never emits these events. Not found (USB pad, no
         // `luna-send-pub`) isn't an error: logged once, feature just stays off.
-        let mut ds_feedback = if settings.gamepad_type.is_dualsense() {
-            match crate::platform::webos::dualsense::find_address() {
-                Some(addr) => crate::platform::webos::dualsense::Feedback::new(addr),
-                None => {
-                    tracing::info!(
-                        "no Bluetooth DualSense found in /proc/bus/input/devices — \
-                             adaptive triggers off for this session"
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let mut ds_feedback = open_ds_feedback(settings.gamepad_type);
+        // The pad kind the host currently builds for pad 0: the handshake default until a
+        // controller plugged in mid-stream declares another one.
+        let mut declared_pad = settings.gamepad_type;
 
         let mut scroll_acc = mouse::ScrollAccumulator::default();
         // Every button the client synthesizes rather than forwards: the remote's OK gestures and
@@ -365,13 +378,40 @@ pub(super) fn run_inner() -> Result<()> {
                         connected.disconnect_quit();
                         break 'running StreamOutcome::Quit;
                     }
-                    Event::ControllerDeviceAdded { which, .. } if controller.is_none() => {
-                        match game_controller.open(which) {
-                            Ok(c) => {
-                                tracing::info!("controller connected: {}", c.name());
-                                controller = Some(c);
+                    Event::ControllerDeviceAdded { which, .. } => {
+                        if controller.is_none() {
+                            match game_controller.open(which) {
+                                Ok(c) => {
+                                    tracing::info!("controller connected: {}", c.name());
+                                    controller = Some(c);
+                                }
+                                Err(e) => tracing::warn!("controller open failed: {e}"),
                             }
-                            Err(e) => tracing::warn!("controller open failed: {e}"),
+                        }
+                        // Outside the open, as in the menu loop: only the first pad becomes
+                        // `controller`, but a later one is still what `detect_type` names.
+                        // Under `Automatic` the handshake settled the pad kind from whatever was
+                        // attached at connect time — usually nothing — so a pad arriving now has
+                        // to declare itself or the host keeps driving its default Xbox pad. An
+                        // explicit pick needs none of this: the session default already is it.
+                        let kind = if gamepad_auto {
+                            gamepad::detect_type(&game_controller).unwrap_or_default()
+                        } else {
+                            declared_pad
+                        };
+                        if kind != declared_pad {
+                            if let Some(ev) = gamepad::arrival_event(kind, 0) {
+                                tracing::info!("pad 0 is {kind:?} (hotplug) — declaring it to the host");
+                                // Sent by hand rather than by the core's own arrival path, so it
+                                // carries no retransmit of its own; input rides unreliable
+                                // datagrams. Re-declaring is idempotent host-side.
+                                for _ in 0..ARRIVAL_SENDS {
+                                    connected.send_input(&ev);
+                                }
+                                declared_pad = kind;
+                                // Adaptive triggers/lightbar follow the kind the host now builds.
+                                ds_feedback = kind.is_dualsense().then(|| open_ds_feedback(kind)).flatten();
+                            }
                         }
                     }
                     Event::ControllerDeviceRemoved { .. } => {

@@ -121,7 +121,11 @@ pub(super) fn run_ui_flow(
     // Set once the reachability check passes — `spawn_connect` is already
     // running by then, so this just carries its handle out of the loop for
     // `run_inner` to join once the launch animation finishes.
-    let mut connect_handle: Option<(std::thread::JoinHandle<Result<session::Connected>>, store::Settings)> = None;
+    let mut connect_handle: Option<(
+        std::thread::JoinHandle<Result<session::Connected>>,
+        store::Settings,
+        bool,
+    )> = None;
     // Yellow button log overlay works here too (see streaming loop).
     let mut yellow_held = false;
     let mut home_held = false;
@@ -218,9 +222,10 @@ pub(super) fn run_ui_flow(
                 // point where the game being launched is known and the settings copy that
                 // rides the whole session is made. Clamped to caps like any global value.
                 let mut settings = launch_settings(&app, &target);
+                let gamepad_auto = settings.gamepad_type == store::GamepadType::Auto;
                 settings = resolve_gamepad_type(settings, game_controller);
                 let handle = spawn_connect(identity.clone(), target, settings)?;
-                connect_handle = Some((handle, settings));
+                connect_handle = Some((handle, settings, gamepad_auto));
             }
         }
         // Without a hero the screen is handed to the streaming loop at the end of the
@@ -232,7 +237,7 @@ pub(super) fn run_ui_flow(
             // `is_finished` is monotonic, so this needs no latch of its own.
             let connect = match connect_handle.as_ref() {
                 _ if CONNECT_FAILED.load(Ordering::Relaxed) => Connect::Failed,
-                Some((h, _)) if !h.is_finished() => Connect::Pending,
+                Some((h, _, _)) if !h.is_finished() => Connect::Pending,
                 _ => Connect::Done,
             };
             let presenting = crate::platform::webos::ndl::presenting();
@@ -522,9 +527,10 @@ pub(super) fn run_ui_flow(
     if text_input_active {
         text_input.stop();
     }
-    Ok(connect_handle.map(|(handle, settings)| ConnectOutcome {
+    Ok(connect_handle.map(|(handle, settings, gamepad_auto)| ConnectOutcome {
         handle,
         settings,
+        gamepad_auto,
         first_frame_deadline: app.render.hero.first_frame_deadline(),
     }))
 }

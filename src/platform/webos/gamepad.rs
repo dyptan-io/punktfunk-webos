@@ -73,6 +73,27 @@ fn type_for_name(name: &str) -> Option<crate::services::store::GamepadType> {
     }
 }
 
+/// Declares pad `pad`'s kind to the host mid-session, for a controller plugged in AFTER the
+/// handshake: the session default was settled from whatever was attached at connect time, so a
+/// `DualSense` connected mid-stream would otherwise drive the host's default Xbox pad — wrong
+/// glyphs and no adaptive triggers. `None` for `Auto` (nothing to declare; the host's own choice
+/// is what `Auto` means). Hosts without `HOST_CAP_GAMEPAD_STATE` ignore the tag.
+pub fn arrival_event(kind: crate::services::store::GamepadType, pad: u8) -> Option<InputEvent> {
+    let pref = kind.to_core();
+    if pref == punktfunk_core::config::GamepadPref::Auto {
+        return None;
+    }
+    Some(InputEvent {
+        kind: InputKind::GamepadArrival,
+        _pad: [0; 3],
+        code: u32::from(pref.to_u8()),
+        // No pad-audio caps: this client renders neither haptics nor pad speaker.
+        x: 0,
+        y: 0,
+        flags: punktfunk_core::input::encode_gamepad_arrival(pad, 0),
+    })
+}
+
 /// SDL2's `Axis` enum → punktfunk's `AXIS_*` wire id.
 fn axis_id(axis: Axis) -> u32 {
     match axis {

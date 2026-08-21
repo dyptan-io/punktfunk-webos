@@ -25,6 +25,10 @@ use crate::ui::render::DrawCmd;
 struct ConnectOutcome {
     handle: std::thread::JoinHandle<Result<session::Connected>>,
     settings: store::Settings,
+    /// Whether the user's pick was `Automatic` — `settings.gamepad_type` has already been
+    /// resolved against the attached pad, so this is the only thing left that says a pad
+    /// hotplugged mid-stream should re-decide the kind rather than keep the session default.
+    gamepad_auto: bool,
     /// When the wait for a decoded frame runs out — one deadline for the whole launch, set by
     /// the loading screen (`app::hero`) and honoured again by the reveal in `stream`, so a host
     /// that connects and then decodes nothing costs [`crate::app::hero::FIRST_FRAME_WAIT`] once
