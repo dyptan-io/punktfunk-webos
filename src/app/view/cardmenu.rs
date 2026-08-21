@@ -2,9 +2,9 @@
 //! the selection band the compose path lays over the panel. Logic lives in
 //! `app::state::cardmenu`.
 //!
-//! The panel itself is baked into one tile (`ui::tiles::render_card_menu_tile`) without any
-//! notion of focus, so everything the *selection* needs is here and nothing of it is in that
-//! tile's cache key: moving between rows rebuilds nothing.
+//! The panel's glass and title are baked without any notion of focus, so moving between rows
+//! rebuilds neither; the *selection* — its geometry here, its pixels in
+//! `ui::tiles::CardMenuBandTile` — is what a row move costs.
 use crate::app::state::cardmenu::ROW_COUNT;
 use crate::app::{view, App};
 use crate::ui;
@@ -90,27 +90,29 @@ impl App {
     /// Held off the card's edges by `CARD_MENU_BAND_INSET`, which is the room that pop grows
     /// into — see `ui::widgets::card_menu_row_rect`.
     ///
-    /// `panel_h` is the panel tile's own height and `shown` how many of its bottom rows are
-    /// on screen, so the panel's local y maps to `card.bottom() - (panel_h - y)`. `rows_top`
-    /// is the rows overlay's current panel-local top — passed in rather than recomputed
-    /// because the overlay *slides* during the rise (see `compose_grid`), and the band has to
-    /// ride with it or it sits on the resting row while the labels are still travelling.
-    pub(crate) fn card_menu_band(&self, card: Rect, panel_h: u32, shown: u32, rows_top: i32) -> Option<Rect> {
+    /// `panel_h` is the panel tile's own height, so the panel's local y maps to
+    /// `card.bottom() - (panel_h - y)`. `rows_top` is the rows overlay's current panel-local
+    /// top — passed in rather than recomputed because the overlay *slides* during the rise
+    /// (see `compose_grid`), and the band has to ride with it or it sits on the resting row
+    /// while the labels are still travelling.
+    pub(crate) fn card_menu_band(&self, card: Rect, panel_h: u32, rows_top: i32) -> Option<Rect> {
         let menu = self.card_menu.as_ref()?;
         // Panel-local: the rows block starts at `rows_top`, and the band is that block's row
         // rect — one function with the tile that draws the labels into it.
         let block = Rect::new(0, rows_top, card.width(), ui::widgets::card_menu_rows_h(ROW_COUNT));
         let row = ui::widgets::card_menu_row_rect(block, menu.focused);
-        let visible_top = row.y().max(panel_h as i32 - shown as i32);
+        // Only the bottom can be clipped: the block hangs off the revealed window's top edge,
+        // so every row sits below it and a row the rise has not reached yet runs off the
+        // panel's bottom. `compose_card_strip` crops the tile from y=0 on that basis.
         let visible_bottom = row.bottom().min(panel_h as i32);
-        if visible_bottom <= visible_top {
+        if visible_bottom <= row.y() {
             return None;
         }
         Some(Rect::new(
             card.x() + row.x(),
-            card.bottom() - (panel_h as i32 - visible_top),
+            card.bottom() - (panel_h as i32 - row.y()),
             row.width(),
-            (visible_bottom - visible_top) as u32,
+            (visible_bottom - row.y()) as u32,
         ))
     }
 }

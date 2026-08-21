@@ -37,7 +37,7 @@ pub struct Theme {
     /// `Some` where this look's raised surfaces are frosted glass over a blurred copy of what
     /// they cover (`DrawCmd::Frost`), `None` where they are flat opaque fills.
     ///
-    /// An `Option` rather than a `bool`: "is this look glossy" and "how wide is its blur" were
+    /// An `Option` rather than a `bool`: "is this look glass" and "how wide is its blur" were
     /// two separate answers living two layers apart, so a look could be turned on without the
     /// numbers that make it cost anything. Asking for [`Glass`] returns both or neither.
     pub glass: Option<Glass>,
@@ -122,10 +122,10 @@ pub struct Icons {
 /// adding a look is adding one entry and nothing else has an order to keep in step with. A
 /// `static` rather than a `const` so the accessors can hand out real `&'static` references
 /// into it.
-/// Glossy first: the list is the Theme dropdown's order *and* the fallback for a document
+/// Glass first: the list is the Theme dropdown's order *and* the fallback for a document
 /// that names no look at all, so the look a fresh install draws in is simply the first entry
 /// (see [`index_of`] and `ACTIVE`'s initial value).
-pub static PRESETS: [Theme; 2] = [presets::GLOSSY, presets::DEFAULT];
+pub static PRESETS: [Theme; 2] = [presets::GLASS, presets::DEFAULT];
 
 /// Which preset is drawing, as its index in [`PRESETS`]. An index rather than a pointer or a
 /// lock: the looks are constants of the binary, so picking one is one relaxed store and
@@ -196,7 +196,7 @@ pub fn epoch() -> u64 {
     EPOCH.load(Ordering::Relaxed)
 }
 
-/// What a raised surface is filled with: the translucent [`Glass::panel`] on a glossy look,
+/// What a raised surface is filled with: the translucent [`Glass::panel`] on a glass look,
 /// the opaque [`Palette::panel`] on a flat one.
 ///
 /// A modal card, a dropdown's popup, a toast and a scroll-edge fade all take this, so one

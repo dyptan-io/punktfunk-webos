@@ -359,9 +359,9 @@ impl Canvas<'_, '_> {
     /// instead of popping a bare band under a label that stays put; drawing it here as well
     /// would leave that fixed copy showing from under the zoom.
     ///
-    /// `marked` is the row that wears the override dot, in the same column the collapsed
-    /// title's sits in ([`mark_dot_x`]), so raising the panel moves the mark straight down onto
-    /// the Settings row that owns it.
+    /// `marked` is the row that wears the override dot ([`mark_dot_x`], measured off the row's
+    /// own right edge rather than the card's), so raising the panel moves the mark down onto
+    /// the Settings row that owns it, stepping in with the rest of the band.
     pub fn poster_menu_rows(
         &mut self,
         band: Rect,

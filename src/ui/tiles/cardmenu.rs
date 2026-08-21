@@ -8,8 +8,8 @@
 //! - the title ([`CardMenuTitleTile`]) and the rows ([`CardMenuRowsTile`]) have to *travel*,
 //!   riding the top edge of the growing window — the title is already on screen at the card's
 //!   bottom before the menu opens, so it continues upward from there rather than restarting;
-//! - the band ([`CardMenuBandTile`]) is the focused row's raised surface, and it *slides*
-//!   between rows while the labels stay put.
+//! - the band ([`CardMenuBandTile`]) is the focused row entire — surface, icon and label —
+//!   and it *pops* on whichever row has focus, zoomed as a unit.
 //!
 //! See `app::render::compose`, which is the one place those four motions are reconciled.
 use crate::ui::prelude::*;
@@ -81,11 +81,11 @@ impl TileWidget for CardMenuTitleTile<'_> {
     }
 }
 
-/// The submenu's icons and labels alone, on a transparent tile the width of the card — laid
-/// over the selection band so the band darkens the glass and nothing else. The focused row is
-/// drawn in the theme's focused text colour and the rest muted (see [`Canvas::poster_menu_rows`]),
-/// so unlike its three siblings this tile *is* keyed by focus — a row move rebuilds two short
-/// labels, which is what that costs now the panel carries no art.
+/// The *unfocused* rows' icons and labels, on a transparent tile the width of the card. The
+/// focused one is skipped here and drawn by [`CardMenuBandTile`] instead (see
+/// [`Canvas::poster_menu_rows`]), so unlike the glass and the title this tile *is* keyed by
+/// focus — a row move rebuilds a short label, which is what that costs now the panel carries
+/// no art.
 pub struct CardMenuRowsTile<'a> {
     pub card_w: u32,
     pub card_h: u32,

@@ -742,14 +742,16 @@ impl App {
                 // surface fill, so a label drawn beneath it would be covered outright.
                 // It rides `rows_top` too, staying on its row for the whole rise.
                 if let Some((band, tile)) = self
-                    .card_menu_band(r, panel_h, shown, rows_top)
+                    .card_menu_band(r, panel_h, rows_top)
                     .zip(tiles.get(tile::CARD_MENU_BAND))
                 {
-                    // The rise clips the band's *top*, so this crops from the bottom of the
-                    // tile: the band's own height plus `ROW_TILE_PAD` on every side, which is
-                    // the margin its shadow lives in (see `CardMenuBandTile`).
+                    // The rows block hangs off the *top* of the revealed window, so a row that
+                    // has not been reached yet is clipped at its bottom by the panel's own
+                    // edge — never at its top. The crop therefore starts at the tile's y=0,
+                    // exactly as `tile::CARD_MENU_ROWS` does below. Height is the visible
+                    // band plus `ROW_TILE_PAD` on every side, the margin its shadow lives in
+                    // (see `CardMenuBandTile`).
                     let pad = ui::tiles::ROW_TILE_PAD;
-                    let row_h = ui::widgets::CARD_MENU_ROW_H;
                     // The focus pop, through the same helper every other focused widget in
                     // the app is placed by — about the band's own centre, inside the card,
                     // and then the card's transform on top of that. The inset the band is
@@ -762,12 +764,7 @@ impl App {
                     );
                     cmds.push(DrawCmd::TexCropped {
                         tile: tile::CARD_MENU_BAND,
-                        src: Rect::new(
-                            0,
-                            row_h.saturating_sub(band.height()) as i32,
-                            tile.width(),
-                            band.height() + 2 * pad as u32,
-                        ),
+                        src: Rect::new(0, 0, tile.width(), band.height() + 2 * pad as u32),
                         dst: ui::animation::scale_about(popped, r, card_scale),
                         alpha: (255.0 * pop) as u8,
                     });

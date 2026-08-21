@@ -51,9 +51,9 @@ pub const DEFAULT: Theme = Theme {
 /// Wants render targets and a composed blend mode, and which webOS generations give it both
 /// is not something a spec answers — the compositor probes, logs `frosted modals: <bool>` and
 /// falls back to flat fills on its own, so this is safe to offer everywhere.
-pub const GLOSSY: Theme = Theme {
-    name: "Default Glossy",
-    choice: ThemeChoice::DefaultGlossy,
+pub const GLASS: Theme = Theme {
+    name: "Default Glass",
+    choice: ThemeChoice::DefaultGlass,
     palette: PALETTE,
     icons: ICONS,
     glass: Some(Glass {

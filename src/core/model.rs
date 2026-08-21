@@ -323,7 +323,7 @@ pub enum VideoBackend {
 /// Which look the menus draw in, picked on the Settings screen — the persisted name of a
 /// `ui::theme` preset, and the only part of a theme that belongs to the domain.
 ///
-/// The default is the glossy look, which is `ui::theme::PRESETS`' first entry: a fresh
+/// The default is the glass look, which is `ui::theme::PRESETS`' first entry: a fresh
 /// install has no `theme` key at all and draws frosted until someone picks otherwise. A
 /// document that names `"default"` keeps the flat look — the change is to what *absence*
 /// means, not to anyone's stored pick.
@@ -332,7 +332,7 @@ pub enum VideoBackend {
 pub enum ThemeChoice {
     Default,
     #[default]
-    DefaultGlossy,
+    DefaultGlass,
 }
 
 /// Anything but a name this build knows deserializes to [`ThemeChoice::default`].
