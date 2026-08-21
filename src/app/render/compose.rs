@@ -7,7 +7,7 @@ use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
 use crate::app::{
     hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP, CARD_POP_SHRINK, LAUNCH_GROWTH,
-    MODAL_FADE, MODAL_FADE_OUT, MODAL_TILE_PAD, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD,
+    MODAL_FADE, MODAL_TILE_PAD, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD,
     SCROLL_INDICATOR_TILE_W, STATUS_BG_PAD,
 };
 use crate::ui;

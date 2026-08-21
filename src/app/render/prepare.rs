@@ -16,7 +16,7 @@ use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
 use crate::app::{
     menu, view, App, HomeFocus, PairingFocus, Screen, ABOUT_WINDOW_BUDGET, ABOUT_WINDOW_MARGIN, DROPDOWN_FADE,
-    MODAL_FADE_OUT, SCROLL_INDICATOR_TILE_W,
+    SCROLL_INDICATOR_TILE_W,
 };
 use crate::ui;
 use crate::ui::cache;
