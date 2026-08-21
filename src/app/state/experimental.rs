@@ -103,6 +103,16 @@ impl App {
                 self.settings_ui.settings.ndl_audio_offload = !from;
                 self.arm_switch_anim(from);
             }
+            (Some(menu::ExpRow::PcmAudio), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
+                let from = self.settings_ui.settings.ndl_audio_pcm;
+                self.settings_ui.settings.ndl_audio_pcm = !from;
+                self.arm_switch_anim(from);
+            }
+            (Some(menu::ExpRow::FrameParts), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
+                let from = self.settings_ui.settings.ndl_frame_parts;
+                self.settings_ui.settings.ndl_frame_parts = !from;
+                self.arm_switch_anim(from);
+            }
             // A locked row (see `menu::exp_row_lock`) rejects the press — the greyed control
             // already says the value is fixed.
             (Some(menu::ExpRow::GameMode), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm)

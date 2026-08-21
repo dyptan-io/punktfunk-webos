@@ -798,8 +798,8 @@ pub(super) fn run_inner() -> Result<()> {
                     // of its own — NDL owns both — so the two figures are omitted there rather
                     // than printed as a pair of zeroes that look like a stalled plane.
                     let layout = connected.audio_layout();
-                    if connected.audio_offloaded {
-                        lines.push(format!("Opus HW {layout} · NDL"));
+                    if connected.audio_route.on_ndl_plane() {
+                        lines.push(format!("{} {layout} · NDL", connected.audio_route.overlay_tag()));
                     } else {
                         let (buf_ms, av_ms) = connected.audio_stats();
                         lines.push(format!("Opus SW {layout} · buf {buf_ms} ms · A/V {av_ms:+} ms"));

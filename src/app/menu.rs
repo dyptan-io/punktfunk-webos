@@ -149,12 +149,16 @@ pub const CURSOR_ROWS: [SettingsRow; 2] = [SettingsRow::CursorCapture, SettingsR
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ExpRow {
     HwAudio,
+    /// Software Opus onto NDL's PCM plane instead of the SDL device (`Settings::ndl_audio_pcm`).
+    PcmAudio,
+    /// Slice-progressive video delivery (`Settings::ndl_frame_parts`).
+    FrameParts,
     /// Locked whenever [`exp_row_lock`] returns a reason. Always listed, locked rather than
     /// hidden when it can't be used.
     GameMode,
 }
 
-pub const EXP_ROWS: [ExpRow; 2] = [ExpRow::HwAudio, ExpRow::GameMode];
+pub const EXP_ROWS: [ExpRow; 4] = [ExpRow::HwAudio, ExpRow::PcmAudio, ExpRow::FrameParts, ExpRow::GameMode];
 
 /// Diagnostics modal row indices (see `app::view::diagnostics::rows`). Log level keeps
 /// index 0 so its dropdown's `(Screen, row)` tile key stays stable.
@@ -223,7 +227,7 @@ pub(crate) fn exp_row_lock(row: ExpRow, rooted: Option<bool>) -> Option<ExpRowLo
     match (row, rooted) {
         (ExpRow::GameMode, None) => Some(ExpRowLock::RootUnknown),
         (ExpRow::GameMode, Some(false)) => Some(ExpRowLock::NotRooted),
-        (ExpRow::GameMode, Some(true)) | (ExpRow::HwAudio, _) => None,
+        (ExpRow::GameMode, Some(true)) | (ExpRow::HwAudio | ExpRow::PcmAudio | ExpRow::FrameParts, _) => None,
     }
 }
 

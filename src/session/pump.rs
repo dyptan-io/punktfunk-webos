@@ -10,7 +10,7 @@ use punktfunk_core::client::{AudioPacket, NativeClient};
 use punktfunk_core::packet::{FLAG_SOF, USER_FLAG_RECOVERY_ANCHOR};
 use punktfunk_core::PunktfunkError;
 
-use crate::platform::webos::audio::AudioFeed;
+use crate::platform::webos::audio::{AudioFeed, PcmFeed};
 use crate::platform::webos::device::boost_current_thread;
 use crate::platform::webos::ndl::NdlVideo;
 use crate::session::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
@@ -51,6 +51,92 @@ impl Tick {
     }
 }
 
+/// What [`AuParts`] decided about one delivery.
+enum PartStep {
+    /// Hand the bytes to the sink. `partial` = this is not the AU's last piece; `lost_parts` = an
+    /// earlier AU died mid-flight, so decoding cannot continue from where it stopped.
+    Feed { partial: bool, lost_parts: bool },
+    /// Nothing usable — a piece of an AU already abandoned. The decoder must not see it.
+    Discard,
+}
+
+/// Slice-progressive reassembly bookkeeping (`punktfunk_core::session::FramePart`).
+///
+/// With `frame_parts` off — the default, and every session on a backend that isn't NDL v2 — every
+/// delivery carries `part: None` and this is a pass-through. With it on, AU prefixes arrive while
+/// the rest is still on the wire, and the decoder gets a frame's first bytes without waiting for
+/// its last datagram. That wait is a real slice of a frame period at high bitrate and it is pure
+/// latency: none of it is decode work.
+///
+/// The contract enforced here is core's: parts arrive in order with no gaps, BUT the pre-decode
+/// hand-off may drop entries (memory pressure, a jump-to-live clear), so an `offset` that isn't the
+/// open AU's next expected byte means that AU is gone. There is no abort marker — a `first` part for
+/// a new index while one is still open is how a death is signalled. Both cases abandon the AU and
+/// report loss, which puts the sink into freeze-until-reanchor and asks the host for a keyframe:
+/// the decoder is holding a truncated input, and nothing short of a fresh anchor clears it.
+#[derive(Default)]
+struct AuParts {
+    /// `(frame_index, next expected byte offset)` of the AU currently being fed.
+    open: Option<(u32, u32)>,
+    /// An AU was abandoned and nothing has restarted decoding since — so whatever comes next is
+    /// resuming against a decoder that still holds a truncated frame.
+    abandoned: bool,
+}
+
+impl AuParts {
+    fn step(&mut self, frame: &punktfunk_core::session::Frame) -> PartStep {
+        let Some(part) = frame.part else {
+            // Whole-AU delivery: `frame_parts` is off, or this is an aged-out chunk-aligned
+            // partial, which core hands over as one buffer either way.
+            self.open = None;
+            return PartStep::Feed {
+                partial: false,
+                lost_parts: std::mem::take(&mut self.abandoned),
+            };
+        };
+        let len = frame.data.len() as u32;
+        if part.first {
+            let lost_parts = self.open.take().is_some() | std::mem::take(&mut self.abandoned);
+            if lost_parts {
+                tracing::warn!("frame parts: AU {} starts over an unfinished one", frame.frame_index);
+            }
+            self.open = (!part.last).then_some((frame.frame_index, len));
+            return PartStep::Feed {
+                partial: !part.last,
+                lost_parts,
+            };
+        }
+        match self.open {
+            Some((index, next)) if index == frame.frame_index && next == part.offset => {
+                self.open = (!part.last).then_some((index, next + len));
+                PartStep::Feed {
+                    partial: !part.last,
+                    lost_parts: false,
+                }
+            }
+            // Either nothing is open (the AU was abandoned, or this part arrived without its head)
+            // or the offset skipped — both mean the AU can never be completed.
+            open => {
+                if open.is_some() {
+                    tracing::warn!(
+                        "frame parts: AU {} broke at offset {} — abandoning",
+                        frame.frame_index,
+                        part.offset,
+                    );
+                }
+                self.drop_open();
+                PartStep::Discard
+            }
+        }
+    }
+
+    /// Forget the AU in flight: its remaining parts are no longer feedable, and whatever restarts
+    /// decoding has to be told the decoder holds a truncated input.
+    fn drop_open(&mut self) {
+        self.abandoned |= self.open.take().is_some();
+    }
+}
+
 /// Drives the video thread: transport → [`NdlSink`], plus the counters and the loss/HDR
 /// side-channels that ride the same loop.
 struct VideoPump {
@@ -64,6 +150,9 @@ struct VideoPump {
     last_dropped_seen: u64,
     heartbeat: Tick,
     video_log: Tick,
+    /// Slice-progressive reassembly state — a pass-through unless the session opted into
+    /// `frame_parts` (see [`AuParts`]).
+    parts: AuParts,
 }
 
 impl VideoPump {
@@ -77,6 +166,7 @@ impl VideoPump {
             last_dropped_seen,
             heartbeat: Tick::new(HEARTBEAT),
             video_log: Tick::new(VIDEO_LOG_INTERVAL),
+            parts: AuParts::default(),
         }
     }
 
@@ -113,15 +203,27 @@ impl VideoPump {
     }
 
     fn on_frame(&mut self, frame: &punktfunk_core::session::Frame) {
-        self.stats.frames.fetch_add(1, Ordering::Relaxed);
         self.stats.bytes.fetch_add(frame.data.len() as u64, Ordering::Relaxed);
         self.heartbeat();
 
-        let loss = self.note_loss(frame);
+        // A piece of an AU whose predecessor went missing has nowhere to go: the decoder holds a
+        // truncated input and only a re-anchor clears it. `Discard` says so; `Feed` carries whether
+        // the pieces so far leave this AU decodable.
+        let PartStep::Feed { partial, lost_parts } = self.parts.step(frame) else {
+            return;
+        };
+        // Only a completed AU is a frame — a session feeding pieces would otherwise count one
+        // picture several times, and the overlay reads this figure as pictures per second.
+        if !partial {
+            self.stats.frames.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let loss = self.note_loss(frame) || lost_parts;
         let flags = FrameFlags {
             reanchor: frame.flags & u32::from(FLAG_SOF) != 0 || frame.flags & USER_FLAG_RECOVERY_ANCHOR != 0,
             loss,
             index: u64::from(frame.frame_index),
+            partial,
         };
         match self.sink.submit(&frame.data, frame.pts_ns, flags) {
             SinkResult::Presented { decode_us } => {
@@ -129,8 +231,13 @@ impl VideoPump {
                     self.client.report_decode_us(us);
                 }
             }
-            SinkResult::Held => {}
+            // Either the piece never reached the decoder (a hold swallows it, an error refused
+            // it) or it did and a keyframe has just been asked for regardless — on both paths the
+            // AU cannot be completed. Forgetting it costs the rest of one AU; keeping it would
+            // eventually feed a frame with a hole in it.
+            SinkResult::Held => self.parts.drop_open(),
             SinkResult::NeedKeyframe => {
+                self.parts.drop_open();
                 if let Err(e) = self.client.request_keyframe() {
                     tracing::warn!("request_keyframe: {e:#}");
                 }
@@ -155,11 +262,12 @@ impl VideoPump {
         // on-device file sink is INFO-only (`logger::resolved_level`).
         if self.video_log.due() {
             tracing::debug!(
-                "video: {} frames, holding={}, dropped={}, backlog={}",
+                "video: {} frames, holding={}, dropped={}, backlog={}, pts_trim={}ms",
                 self.frames(),
                 self.sink.holding(),
                 self.client.frames_dropped(),
                 backlog.map_or_else(|| "n/a".to_string(), |b| b.to_string()),
+                self.sink.pts_trimmed_ms(),
             );
         }
     }
@@ -269,6 +377,32 @@ fn audio_drain(client: &NativeClient, stop: &AtomicBool, what: &str, mut play: i
 pub(super) fn ndl_audio_pump(client: &NativeClient, ndl: &NdlVideo, stop: &AtomicBool) {
     audio_drain(client, stop, "audio pump", |packet| {
         if let Err(e) = ndl.play_audio(&packet.data, packet.pts_ns) {
+            tracing::warn!("NDL audio error (seq {}): {e:#}", packet.seq);
+        }
+    });
+}
+
+/// Decodes Opus here and feeds the PCM to NDL's own sink, for the `NdlAudioConfig::Pcm` path.
+///
+/// The middle ground between the two older routes, and the shortest audio leg of the three: the
+/// software decoder still runs (so concealment, 5.1 layouts and every core fix stay in play) but
+/// the samples go to the same hardware clock as the picture instead of through the SDL ring and
+/// device buffer. Same teardown safety as [`ndl_audio_pump`] — the thread holds an `Arc<NdlVideo>`,
+/// so no unload can race the feed.
+pub(super) fn ndl_pcm_audio_pump(client: &NativeClient, ndl: &NdlVideo, stop: &AtomicBool, feed: &mut PcmFeed) {
+    audio_drain(client, stop, "audio pcm", |packet| {
+        let (pcm, lead_ms) = match feed.decode(packet.seq, &packet.data) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                tracing::warn!("audio decode error (seq {}): {e:#}", packet.seq);
+                return;
+            }
+        };
+        // Concealment sits in the hole BEFORE this packet, so the buffer starts that much earlier
+        // than the packet's own stamp. `play_audio`'s ceiling floors anything that lands under the
+        // audio already fed, which is exactly the right answer for a hole being filled.
+        let pts_ns = packet.pts_ns.saturating_sub(lead_ms as u64 * 1_000_000);
+        if let Err(e) = ndl.play_audio(pcm, pts_ns) {
             tracing::warn!("NDL audio error (seq {}): {e:#}", packet.seq);
         }
     });

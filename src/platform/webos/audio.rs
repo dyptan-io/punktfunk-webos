@@ -29,6 +29,8 @@ use punktfunk_core::audio::{
 /// test, the canonical reference for both ends of this wire format).
 const SAMPLE_RATE: u32 = 48_000;
 const SAMPLES_PER_FRAME: usize = 240;
+/// Duration of one packet, in ms — the framing above, as the concealment arithmetic needs it.
+const FRAME_MS: i64 = 5;
 /// Max channels punktfunk ever negotiates (7.1) — sizes the scratch decode buffer.
 const MAX_CHANNELS: usize = 8;
 
@@ -79,6 +81,83 @@ const WEBOS_TUNING: JitterTuning = JitterTuning {
     hard_cap_ms: 120,
     deprime_ms: 60,
 };
+
+/// The PCM half of the software Opus path, for a session whose audio rides **NDL's own sink**
+/// rather than SDL's (`NdlAudioConfig::Pcm`, opted into by `Settings::ndl_audio_pcm`).
+///
+/// Same decode as [`AudioFeed`] — same libopus multistream decoder, same PLC concealment — and
+/// then it stops: no ring, no chunk channel, no device buffer. The interleaved samples are
+/// converted to S16LE and handed straight to `NDL_DirectAudioPlay` on the video plane's timeline,
+/// which is the whole point. What the ring bought (a de-jitter policy this client could steer) NDL
+/// owns instead; what it cost was its own depth on top of the device quantum, plus an A/V offset
+/// that no longer had a common clock to be measured against.
+///
+/// Not a [`JitterPolicy`] client, deliberately: NDL paces this plane off the stamps, so a second
+/// buffer in front of it would only add depth for the same audio.
+pub struct PcmFeed {
+    decoder: opus::MSDecoder,
+    /// Negotiated channel count — the interleave width, and what libopus sizes a frame by.
+    channels: usize,
+    /// Detects packets lost on the wire so they can be concealed rather than skipped.
+    gaps: AudioGapTracker,
+    /// Reused across packets: concealment frames first, then the packet itself.
+    out: Vec<u8>,
+}
+
+impl PcmFeed {
+    pub fn new(channels: u8) -> Result<Self> {
+        let layout = layout_for(channels, false);
+        let decoder = opus::MSDecoder::new(SAMPLE_RATE, layout.streams, layout.coupled, layout.mapping)
+            .map_err(|e| anyhow::anyhow!("opus MSDecoder::new: {e}"))?;
+        Ok(Self {
+            decoder,
+            channels: layout.channels as usize,
+            gaps: AudioGapTracker::default(),
+            // One packet plus the concealment burst that can precede it, so steady state never
+            // reallocates.
+            out: Vec::with_capacity(SAMPLES_PER_FRAME * MAX_CHANNELS * 2 * 4),
+        })
+    }
+
+    /// Decodes one packet, prefixed by a concealment frame for each packet lost immediately
+    /// before it, into interleaved S16LE.
+    ///
+    /// Returns the bytes and how many **milliseconds before the packet's own PTS the buffer
+    /// starts** — the concealment sits in the hole that precedes the packet, so the caller stamps
+    /// at `pts - lead`. Zero on the (overwhelmingly common) contiguous path.
+    pub fn decode(&mut self, seq: u32, opus_payload: &[u8]) -> Result<(&[u8], i64)> {
+        self.out.clear();
+        let missing = self.gaps.missing_before(seq);
+        for _ in 0..missing {
+            let mut pcm = [0f32; SAMPLES_PER_FRAME * MAX_CHANNELS];
+            // One frame's worth, not the whole scratch buffer — libopus derives the frame size
+            // from `out.len() / channels` when there is no packet to describe it, and rejects a
+            // length that isn't legal. Same trap as `AudioFeed::play`.
+            let out = &mut pcm[..SAMPLES_PER_FRAME * self.channels];
+            let n = self
+                .decoder
+                .decode_float(&[], out, false)
+                .map_err(|e| anyhow::anyhow!("opus PLC decode: {e}"))?;
+            Self::append_s16le(&mut self.out, &pcm[..n * self.channels]);
+        }
+        let mut pcm = [0f32; SAMPLES_PER_FRAME * MAX_CHANNELS];
+        let frames = self
+            .decoder
+            .decode_float(opus_payload, &mut pcm, false)
+            .map_err(|e| anyhow::anyhow!("opus decode_float: {e}"))?;
+        Self::append_s16le(&mut self.out, &pcm[..frames * self.channels]);
+        Ok((&self.out, i64::from(missing) * FRAME_MS))
+    }
+
+    /// f32 → S16LE, clamped. NDL's PCM plane takes no float format, and a sample outside
+    /// [-1, 1] (libopus can produce one) would wrap rather than clip if cast directly.
+    fn append_s16le(out: &mut Vec<u8>, pcm: &[f32]) {
+        out.extend(
+            pcm.iter()
+                .flat_map(|&s| ((s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16).to_le_bytes()),
+        );
+    }
+}
 
 /// The cells the A/V sync loop trades through, all owned by `NativeClient`: the video plane and
 /// the clock handshake write the first two, this module writes the last two, and the stats overlay

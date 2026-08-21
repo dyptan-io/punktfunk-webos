@@ -707,6 +707,29 @@ pub struct Settings {
     /// accepts it can still play nothing, which no runtime probe detects. 5.1/7.1 stay on the
     /// software decoder regardless — NDL's Opus struct has no multistream mapping field.
     pub ndl_audio_offload: bool,
+    /// Whether the software decoder's PCM goes to **NDL's audio plane** instead of the SDL device
+    /// (`NdlAudioConfig::Pcm`). Takes effect on the next stream, and only where the load actually
+    /// got a plane; `ndl_audio_offload` wins if both are on, since it needs no local decode at all.
+    ///
+    /// The latency case: the SDL path is a jitter ring (25 ms base, up to 90 under pressure) on top
+    /// of a 512-frame device buffer, and NDL's plane is carrying a silent metronome beside it. This
+    /// route deletes both and puts real audio on the same hardware clock as the picture — which is
+    /// also what would make the A/V offset measurable rather than estimated (docs/NOTES.md
+    /// § "A/V sync"). Off by default: NDL owns the depth on that plane and it is unmeasured, and
+    /// the stamp-monotonicity rules that mute a session for good apply to it in full.
+    pub ndl_audio_pcm: bool,
+    /// Whether the client asks the host for **slice-progressive** video delivery: AU prefixes
+    /// arrive while the rest is still on the wire and go straight to the decoder
+    /// (`punktfunk_core::session::FramePart`, `session::pump`'s `AuParts`). Takes effect on the
+    /// next stream, and only on NDL v2 — the other backends' feeds are untested against a
+    /// fragmented AU.
+    ///
+    /// The latency case: without it the decoder sees byte 0 of a frame only after that frame's
+    /// LAST datagram lands, so every frame pays its own reassembly time. NDL has no partial-frame
+    /// flag — it takes raw Annex-B and finds boundaries by start code — so whether it tolerates a
+    /// fragmented feed at all is a device question, which is why this is Experimental: the failure
+    /// mode is visible corruption, and turning it off is the way out.
+    pub ndl_frame_parts: bool,
     /// Resolve the Magic Remote's OK button into left click / right click / drag by how long
     /// it's held (see `platform::webos::mouse::RemoteButtons`). Off by default — with it
     /// off, OK stays the plain immediate left click it has always been, since a remote with
@@ -740,6 +763,8 @@ impl Default for Settings {
             cursor_capture: true,
             game_mode: false,
             ndl_audio_offload: false,
+            ndl_audio_pcm: false,
+            ndl_frame_parts: false,
             cursor_gestures: false,
             theme: ThemeChoice::default(),
         }

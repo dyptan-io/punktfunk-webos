@@ -123,6 +123,12 @@ pub struct FrameFlags {
     pub loss: bool,
     /// Host frame index, for logs only.
     pub index: u64,
+    /// This feed is one PIECE of an access unit whose end has not arrived yet
+    /// (slice-progressive delivery — `punktfunk_core::session::FramePart`, opted into by
+    /// `Settings::ndl_frame_parts`). The decoder still takes the bytes; what a piece is NOT is a
+    /// presentable frame, so the per-frame reference points hang off the piece that completes the
+    /// AU instead. `false` for every feed on the whole-AU path.
+    pub partial: bool,
 }
 
 /// Outcome of one [`NdlSink::submit`].
@@ -276,6 +282,10 @@ pub struct SinkConfig {
     /// Where [`video_e2e_ns`] is published for the audio plane
     /// (`NativeClient::video_e2e_shared`). `0` = nothing on the glass yet.
     pub video_e2e: Arc<AtomicU64>,
+    /// Whether the host-PTS anchor may trim its standing lead — see
+    /// [`HostPtsAnchor::new`]. False on every session where the real audio stream rides NDL's
+    /// own audio plane, since audio stamps there cannot follow the video timeline downwards.
+    pub trim_pts_lead: bool,
 }
 
 /// Minimum spacing between [`SinkResult::NeedKeyframe`] results: the request travels on its own
@@ -319,7 +329,7 @@ impl NdlSink {
             player,
             stats,
             frame_interval_ns,
-            host_anchor: HostPtsAnchor::default(),
+            host_anchor: HostPtsAnchor::new(cfg.trim_pts_lead, frame_interval_ns),
             cfg,
             backlog_cached: None,
             backlog_recent: std::collections::VecDeque::with_capacity(CUSHION_MIN_POLLS),
@@ -417,6 +427,12 @@ impl NdlSink {
         }
     }
 
+    /// Standing PTS lead this run has trimmed off NDL's stamps, in ms — the decoder-hold latency
+    /// the session started with, and the only place it is observable (see [`HostPtsAnchor`]).
+    pub fn pts_trimmed_ms(&self) -> u64 {
+        self.host_anchor.trimmed_ns() / 1_000_000
+    }
+
     /// Whether a freeze-until-reanchor hold is currently active (stats/logging).
     pub fn holding(&self) -> bool {
         self.hold_started.is_some()
@@ -463,6 +479,7 @@ impl NdlSink {
         // A/V reference has a better guess, and both already treat 0 as "nothing to add".
         let backlog = self.poll_backlog().unwrap_or(0);
         let (decode_us, failed_keyframe) = match play_result {
+            Ok(()) if flags.partial => (None, false),
             Ok(()) => {
                 // Only a frame NDL actually accepted is on its way to the glass. A failed feed is
                 // followed by a flush and a hold, where the reference would be meaningless.

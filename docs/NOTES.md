@@ -152,6 +152,8 @@ stuttered, and the same session with the audio plane fed was smooth.
 So **every accepted V2 load asks for a stereo audio plane**, and what rides it is a separate
 question:
 
+- **PCM to the same plane** (Experimental → "Audio via TV sink", opt-in) — `session::pump::ndl_pcm_audio_pump`
+  decodes Opus here and feeds S16LE, stamped on the video timeline. See "Latency levers" below.
 - **Hardware Opus decode** (Experimental → "Audio offload", opt-in) — `session::pump::ndl_audio_pump`
   feeds the real stream, stamped on the video timeline; no SDL device is opened.
 - **The clock plane** (default, and the only option for 5.1/7.1) — `NdlVideo::run_clock_plane`
@@ -224,6 +226,75 @@ cost a session its audio with nothing in the log to find.
 probe can distinguish the two**. If a model regresses, the `NDL load state:`
 (`LOADCOMPLETED`/`PLAYING`) log says whether the pipeline ever started, and turning Experimental →
 "Audio offload" off is the way out of the hardware-decode half.
+
+## Latency levers on the NDL path (2026-08-21, all three UNMEASURED on hardware)
+
+The video feed itself is already copy-free — core reassembles one contiguous `Vec` (which
+`NDL_DirectVideoPlay` requires) and `sink::submit` passes that pointer straight through, no
+Annex-B rewrite, no client-side queue. So these three are about *when* bytes are released, not
+how they move.
+
+**1. The PTS anchor's standing lead (`session::timeline`, on by default).** `HostPtsAnchor` maps
+`base = player0 + (host_pts - host0)`, which bakes frame 0's own delivery latency into every later
+frame: one that arrives faster than frame 0 did gets a stamp in NDL's future and
+`pauseAtDecodeTime` holds it there for the difference. Frame 0 is the first keyframe, behind the
+handshake and (on Automatic) the ABR capacity probe — likely the session's worst frame. SS4S
+sidesteps this by stamping arrival time (`now - mediaLoadedTime`), which never holds but also
+discards the spacing NDL paces on. The trim keeps the spacing: the MINIMUM lead over a 500 ms
+window is slack no frame in that window needed, so it is subtracted, ramped at a quarter frame
+interval per frame (the stamps must never go backwards) and only inside the first 3 s after an
+anchor. `pts lead: trimming Xms` at INFO, plus `pts_trim=` on the video heartbeat, is how much
+standing hold the session started with — a number not otherwise observable from the app.
+
+⚠ **On the software route the trim moves the picture, not the sound.** Video reaches the glass
+`trim` ms earlier and the SDL ring is untouched, so audio ends up that much LATE — and `AvSync` is
+still measure-only, so nothing corrects it. The `A/V` figure on the stats overlay moves by the same
+amount, which is the check: if a trim of 30 ms shows up as 30 ms of fresh audio lateness, arming
+the sync loop (§ "A/V sync") is the follow-up, not backing the trim out.
+
+⚠ **Armed only where NDL's plane carries the metronome** (`SinkConfig::trim_pts_lead`, false on
+both NDL-plane audio routes). Audio there is stamped through this mapping's offset and
+`play_audio` can only move a stamp forward — a rewind mutes the session for good — so a video
+timeline pulled earlier would land as exactly that much lip-sync error instead.
+
+**2. Slice-progressive feed (Experimental → "Progressive feed", off).** Without it the decoder
+sees byte 0 of a frame only once that frame's LAST datagram lands; at 200 Mbps a keyframe is many
+datagrams and the tail of that reassembly wait is pure latency. Core has had the plumbing all
+along (`Frame::part`, the `frame_parts` connect flag) and this client passed `false`.
+`session::pump`'s `AuParts` implements core's contract — parts in order, an `offset` mismatch or a
+new `first` over an open AU means that AU died — and reports the break as loss, which is what puts
+the sink into freeze-until-reanchor and asks for a keyframe. `session::sink` skips the per-frame
+reference points (`video_e2e`, the decode report, the audio latch) on a piece that is not the AU's
+last, since a piece is not a presentable frame.
+
+⚠ **NDL has no `PARTIAL_FRAME` flag and no AU-boundary flag at all** — it takes raw Annex-B and
+must be finding boundaries by start code, which is the whole reason to expect a fragmented feed to
+work, and the whole reason it might not. Clamped to NDL v2 (v1's feed carries no timestamp to
+repeat across pieces; SMP's load shape is fragile enough already). Failure mode is visible
+corruption; the way out is the toggle.
+
+**3. PCM on NDL's audio plane (Experimental → "Audio via TV sink", off).** ss4s
+(`webos5/ndl_audio.c`) *prefers* `NDL_AUDIO_TYPE_PCM` over Opus for stereo, and the struct is in
+`webos-userland`: `NDL_DIRECTAUDIO_PCM_INFO_T { type, unknown1, format, layout, channelMode,
+sampleRate }` — 24 of the union's 32 bytes on this ABI, `format` = `"S16LE"`, `sampleRate` = the
+enum's `48KHZ` (1), NOT hertz, and `layout` left **null** exactly as ss4s leaves it. So the
+software decoder can keep running (concealment, layouts, every core fix) while its samples go to
+the TV's own sink instead of SDL's: the 25-90 ms jitter ring and the 512-frame device buffer leave
+the path, and audio lands on the same hardware clock as the picture — which is also what would
+make the A/V offset measurable rather than the estimate § "A/V sync" describes.
+
+- The plane's silence is format-specific now (`NdlAudioConfig::silence`): the load prime and
+  `run_clock_plane` feed 5 ms of zeroed S16LE instead of `opus_empty_frame_211`. A PCM plane fed
+  an Opus frame would read it as 3 bytes of samples.
+- 5.1 needs webOS 7's multi-channel PCM sink, probed the way ss4s probes it — the presence of
+  `NDL_DirectAudioRegisterCallback`. Without it the route falls back to software rather than
+  loading a plane for a width the set can't take (a failed load costs the picture its pacing).
+- `NDL_DirectAudioRegisterCallback` itself is the pull-based feed, i.e. real hardware pacing. Not
+  used; it is the next step if this route proves out.
+- Unknowns, in order: the depth NDL holds on that plane (it is not `render_buffer_length` and
+  there is no query), and whether `Settings::ndl_audio_pcm` beats plain Opus offload where offload
+  works at all. The three routes are named on the overlay (`Opus SW` / `Opus HW` / `PCM HW`) and
+  in the `audio path:` log line precisely so a report says which one produced the numbers.
 
 ## ABR startup probe: 2 Gbps, upstream-hardcoded
 

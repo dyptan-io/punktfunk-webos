@@ -337,6 +337,12 @@ fn ensure_init(app_id: &str, api2: bool) -> Result<()> {
 
 /// The app id NDL is initialised with. Overridable for dev builds installed under another id —
 /// NDL keys its session on the caller's app id, so a mismatch fails the load.
+/// Whether the TV has webOS 7's multi-channel PCM sink — the gate on loading NDL's audio plane
+/// for 5.1 PCM (`session::connect::AudioRoute`).
+pub fn supports_multichannel_pcm() -> bool {
+    ffi::supports_multichannel_pcm()
+}
+
 pub fn app_id() -> String {
     std::env::var("APPID").unwrap_or_else(|_| "io.dyptan.punktfunk.webos".into())
 }
