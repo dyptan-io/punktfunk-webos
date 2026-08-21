@@ -64,7 +64,7 @@ impl Widget for CardMenuTitleTile<'_> {
         // strip's: it separates the name from a list, and there is no list until the panel
         // is up.
         c.painter.rule(
-            area.x() + CARD_MENU_BAND_INSET,
+            card_menu_band_x(area),
             area.bottom() - 1,
             card_menu_band_w(area.width()),
         );

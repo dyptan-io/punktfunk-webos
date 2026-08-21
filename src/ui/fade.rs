@@ -55,7 +55,7 @@ impl<T: Copy + PartialEq> ModalFade<T> {
     }
 
     /// [`Self::close`] for an overlay with another one opening behind it: the two are made
-    /// each other's exact inverse (see [`Self::closing_frame`]) on one clock
+    /// each other's exact inverse (see [`Self::closing_frame_against`]) on one clock
     /// ([`Self::close_dur`]).
     ///
     /// Their own curves do not compose — an ease-out closing against an ease-in opening sums
@@ -97,17 +97,24 @@ impl<T: Copy + PartialEq> ModalFade<T> {
     }
 
     /// Returns `(alpha, payload)` while a close is in flight; `None` otherwise.
-    ///
-    /// `against` is the alpha of whatever is opening this frame, and a cross-fade's closing
-    /// overlay is its inverse rather than its own ease — so the pair sums to one at every
-    /// instant. Pass `None` where nothing is opening.
-    pub fn closing_frame(&self, dur: Duration, against: Option<f32>) -> Option<(f32, T)> {
+    pub fn closing_frame(&self, dur: Duration) -> Option<(f32, T)> {
         let (t, payload) = self.closing.filter(|(t, _)| t.elapsed() < dur)?;
-        let alpha = match against.filter(|_| self.cross) {
-            Some(open) => 1.0 - open,
-            None => 1.0 - anim_frac(Some(t), dur),
-        };
-        Some((alpha, payload))
+        Some((1.0 - anim_frac(Some(t), dur), payload))
+    }
+
+    /// [`Self::closing_frame`] for the one caller that draws a cross-fade: `open` is the alpha
+    /// of whatever is opening this frame, and a cross-fade's closing overlay is its inverse
+    /// rather than its own ease, so the pair sums to one at every instant.
+    pub fn closing_frame_against(&self, dur: Duration, open: f32) -> Option<(f32, T)> {
+        match self.closing_frame(dur)? {
+            (_, payload) if self.cross => Some((1.0 - open, payload)),
+            frame => Some(frame),
+        }
+    }
+
+    /// Whether a close is in flight, for callers that need its presence but not its alpha.
+    pub fn is_closing(&self, dur: Duration) -> bool {
+        self.closing.is_some_and(|(t, _)| t.elapsed() < dur)
     }
 
     /// Open-fade alpha: eases 0.0 -> 1.0, `1.0` once finished or if never opened.
@@ -120,7 +127,7 @@ impl<T: Copy + PartialEq> ModalFade<T> {
     /// fade even after `shown` has already flipped to `false` (so the last frame doesn't
     /// cut instantly), and `None` once fully faded and hidden.
     pub fn visibility_alpha(&self, dur: Duration, shown: bool) -> Option<f32> {
-        if let Some((alpha, _)) = self.closing_frame(dur, None) {
+        if let Some((alpha, _)) = self.closing_frame(dur) {
             return Some(alpha);
         }
         shown.then(|| self.open_alpha(dur))

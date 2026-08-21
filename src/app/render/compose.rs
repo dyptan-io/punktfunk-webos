@@ -7,7 +7,7 @@ use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
 use crate::app::{
     hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP, CARD_POP_SHRINK, LAUNCH_GROWTH,
-    MODAL_FADE, MODAL_FADE_OUT, MODAL_TILE_PAD, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD,
+    MODAL_FADE, MODAL_TILE_PAD, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD,
     SCROLL_INDICATOR_TILE_W, STATUS_BG_PAD,
 };
 use crate::ui;
@@ -33,6 +33,9 @@ const FADE_STEP: u32 = 8;
 /// A scrolling viewport's two edge fade bands, top then bottom, each present only while there
 /// is content past that edge — the fade *is* the "there is more" signal.
 type Fades = [Option<Rect>; 2];
+
+/// [`Fades`] for a viewport that wants none.
+const NO_FADES: Fades = [None; 2];
 
 impl App {
     /// Assembles the read-only view of state the render path consumes (see
@@ -69,12 +72,11 @@ impl App {
             self.render.modal.fade.open_alpha(MODAL_FADE)
         };
         // `m` is what a cross-fade's leaving card is drawn as the inverse of (see `ModalFade`).
-        let fade = &self.render.modal.fade;
         let closing = self
             .render
             .modal
             .prev
-            .zip(fade.closing_frame(fade.close_dur(MODAL_FADE, MODAL_FADE_OUT), Some(m)))
+            .zip(self.render.modal.fade.closing_frame_against(self.modal_close_dur(), m))
             .map(|(prev, (alpha, _))| (alpha, prev));
         // The backdrop belongs to "a modal is up", not to either card: re-fading it
         // mid-step would brighten the whole screen and read as a blink. It only fades when
@@ -137,7 +139,7 @@ impl App {
                     alpha: a,
                 }),
                 Some(SnapshotBody::Rows(total, content, scroll_px)) => {
-                    Self::push_settings_rows(cmds, total, content, scroll_px, dy, a, &[None, None]);
+                    Self::push_settings_rows(cmds, total, content, scroll_px, dy, a, &NO_FADES);
                 }
                 None => {}
             }
@@ -206,8 +208,6 @@ impl App {
             let stride = self.scroll_stride_for(screen, fonts);
             let scroll_px = self.clamped_scroll_px(total, stride, content.height());
             let alpha = (255.0 * m) as u8;
-            // Settings' body is one tile per row (see `tile::settings_row`), so it is
-            // placed row by row; every other scrolling modal crops its single baked tile.
             // The viewport's edge fades, resolved before the content is pushed: they ramp the
             // content's own alpha rather than being painted over it (see `push_faded`).
             //

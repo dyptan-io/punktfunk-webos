@@ -16,7 +16,7 @@ use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
 use crate::app::{
     menu, view, App, HomeFocus, PairingFocus, Screen, ABOUT_WINDOW_BUDGET, ABOUT_WINDOW_MARGIN, DROPDOWN_FADE,
-    MODAL_FADE, MODAL_FADE_OUT, SCROLL_INDICATOR_TILE_W,
+    SCROLL_INDICATOR_TILE_W,
 };
 use crate::ui;
 use crate::ui::cache;
@@ -136,11 +136,7 @@ impl App {
         let (screen_w, screen_h) = (size.w, size.h);
         // Presence only — this decides whether a snapshot is still wanted, not what it
         // is drawn at, so it needs neither the entering alpha nor the exact duration.
-        let closing = self
-            .render
-            .modal
-            .fade
-            .closing_frame(self.render.modal.fade.close_dur(MODAL_FADE, MODAL_FADE_OUT), None);
+        let closing = self.render.modal.fade.closing_frame(self.modal_close_dur());
         if closing.is_none() {
             // Fade over (or cancelled by reopening the same screen) — drop the copies
             // rather than keep two card-sized textures alive for nothing.
@@ -164,19 +160,15 @@ impl App {
         // its rows where they are and redraws from them; stitching them into one full-height
         // painter here is what made leaving Settings slower than leaving any other modal.
         let content = match left {
-            Screen::Settings(_) => {
-                self.scroll_geometry_for(left, screen_w, screen_h, fonts)
-                    .map(|(total, _, _, content)| {
-                        let stride = self.scroll_stride_for(left, fonts);
-                        let scroll_px = self.clamped_scroll_px(total, stride, content.height());
-                        SnapshotBody::Rows(total, content, scroll_px)
-                    })
-            }
-            _ => tiles
-                .get(tile::SCROLL_CONTENT)
-                .cloned()
-                .zip(self.scroll_src_rect(left, screen_w, screen_h, fonts))
-                .map(|(body, (src, dst))| {
+            Screen::Settings(_) => self
+                .scroll_view_for(left, screen_w, screen_h, fonts)
+                .map(|(total, content, scroll_px)| SnapshotBody::Rows(total, content, scroll_px)),
+            // `src_rect` first: a screen whose body lives in its shell tile has no crop, and
+            // cloning the body pixmap before finding that out copies it for nothing.
+            _ => self
+                .scroll_src_rect(left, screen_w, screen_h, fonts)
+                .and_then(|(src, dst)| Some((src, dst, tiles.get(tile::SCROLL_CONTENT).cloned()?)))
+                .map(|(src, dst, body)| {
                     tiles.put(tile::MODAL_PREV_CONTENT, cache::static_version(), body);
                     updated.push(tile::MODAL_PREV_CONTENT);
                     SnapshotBody::Cropped(src, dst)
