@@ -149,12 +149,14 @@ impl App {
                 false
             }
             // Dropdown case already handled above.
-            Screen::Settings(_) => {
-                let Some(row) = self.settings_row_at(x, y, screen_w, screen_h) else {
+            // The two scrolling lists share one hit test and one cursor lookup.
+            screen @ (Screen::Settings(_) | Screen::Collections) => {
+                let Some(row) = self.scroll_list_row_at(x, y, screen_w, screen_h) else {
                     return false;
                 };
-                let changed = self.nav.cursor(ScreenKey::Settings) != row;
-                self.nav.set_cursor(ScreenKey::Settings, row);
+                let key = ScreenKey::of(screen);
+                let changed = self.nav.cursor(key) != row;
+                self.nav.set_cursor(key, row);
                 changed
             }
             Screen::HostMenu => {
@@ -232,45 +234,45 @@ impl App {
         match self.nav.screen {
             // Anchored to the animated offset (`settings_content_scroll`) so an open
             // dropdown stays attached to its row while the list is still settling.
-            Screen::Settings(_) => Some(self.settings_content_scroll(screen_w, screen_h)),
+            Screen::Settings(_) => self.scroll_list_content_scroll(screen_w, screen_h),
             // Diagnostics doesn't scroll, so 0.
             Screen::Diagnostics => Some((self.modal_list_geometry(screen_w, screen_h, fonts)?.1, 0)),
             _ => None,
         }
     }
 
-    /// The Settings display-row index under the pointer, using the same animated
-    /// `modal_scroll_px` the rows render with — a fixed-offset hit-test drifts a row
-    /// off once the list has scrolled. `None` outside the viewport or in a row gap.
-    pub(crate) fn settings_row_at(&self, x: i32, y: i32, screen_w: u32, screen_h: u32) -> Option<usize> {
-        let (content, scroll_px) = self.settings_content_scroll(screen_w, screen_h);
-        let total = menu::settings_row_count(self.settings_scope());
-        Self::row_at(content, total, scroll_px, x, y)
+    /// The open scrolling list's display-row index under the pointer, using the same animated
+    /// `modal_scroll_px` the rows render with — a fixed-offset hit-test drifts a row off once
+    /// the list has scrolled. `None` outside the viewport, in a row gap, or off the family.
+    pub(crate) fn scroll_list_row_at(&self, x: i32, y: i32, screen_w: u32, screen_h: u32) -> Option<usize> {
+        let (content, scroll_px) = self.scroll_list_content_scroll(screen_w, screen_h)?;
+        Self::row_at(content, self.scroll_list_row_count(), scroll_px, x, y)
     }
 
-    /// Settings' content viewport and its current animated scroll offset — the shared
-    /// geometry `settings_row_at`'s hit test and `settings_row_rect`'s lookup both index
-    /// into, so a scrolled list can't put them at odds.
-    fn settings_content_scroll(&self, screen_w: u32, screen_h: u32) -> (Rect, i32) {
-        let set = self.settings_scope();
-        let (_, content) = view::settings::layout(set, screen_w, screen_h);
+    /// The open scrolling list's content viewport and its current animated scroll offset —
+    /// the shared geometry the hit test and `scroll_list_row_rect`'s lookup both index into,
+    /// so a scrolled list can't put them at odds.
+    fn scroll_list_content_scroll(&self, screen_w: u32, screen_h: u32) -> Option<(Rect, i32)> {
+        let (_, content) = self.scroll_list_layout(self.nav.screen, screen_w, screen_h)?;
         let stride = ui::widgets::focus_row_stride() as i32;
-        let total = menu::settings_row_count(set);
-        (content, self.clamped_scroll_px(total, stride, content.height()))
+        let total = self.scroll_list_row_count();
+        Some((content, self.clamped_scroll_px(total, stride, content.height())))
     }
 
-    /// Display row `row`'s on-screen rect, same animated scroll offset `settings_row_at`
-    /// hit-tests against — the geometry the Bitrate drag anchors to.
-    fn settings_row_rect(&self, row: usize, screen_w: u32, screen_h: u32) -> Rect {
-        let (content, scroll_px) = self.settings_content_scroll(screen_w, screen_h);
-        ui::widgets::focus_row_rect_at_px(content, row, scroll_px)
+    /// Display row `row`'s on-screen rect, same animated scroll offset the hit test uses —
+    /// the geometry the Bitrate drag anchors to.
+    fn scroll_list_row_rect(&self, row: usize, screen_w: u32, screen_h: u32) -> Rect {
+        self.scroll_list_content_scroll(screen_w, screen_h).map_or_else(
+            || Rect::new(0, 0, 0, 0),
+            |(content, px)| ui::widgets::focus_row_rect_at_px(content, row, px),
+        )
     }
 
     /// The Bitrate row's rect and track — `settings_focused` is already that row (set by
     /// whatever press started the drag), so this is the one geometry lookup both the arming
     /// click and every later drag motion need.
     fn bitrate_row_and_track(&self, screen_w: u32, screen_h: u32) -> (Rect, Rect) {
-        let row_rect = self.settings_row_rect(self.nav.cursor(ScreenKey::Settings), screen_w, screen_h);
+        let row_rect = self.scroll_list_row_rect(self.nav.cursor(ScreenKey::Settings), screen_w, screen_h);
         // A marked row's track shifts left (see `row_layout`), so the drag reads the same
         // geometry the draw did rather than deriving its own.
         let marked = menu::override_is_set(&self.editing_override(), menu::SettingsRow::Bitrate);
@@ -464,11 +466,15 @@ impl App {
                     self.home_focus = HomeFocus::Grid(idx);
                 }
             }
+            // `?` bails if the click hit the gap between rows or outside the viewport —
+            // nothing to focus or confirm.
+            Screen::Collections => self.nav.set_cursor(
+                ScreenKey::Collections,
+                self.scroll_list_row_at(x, y, screen_w, screen_h)?,
+            ),
             Screen::Settings(_) => {
-                // `?` bails if the click hit the gap between rows or outside the
-                // viewport — nothing to focus or confirm.
                 self.nav
-                    .set_cursor(ScreenKey::Settings, self.settings_row_at(x, y, screen_w, screen_h)?);
+                    .set_cursor(ScreenKey::Settings, self.scroll_list_row_at(x, y, screen_w, screen_h)?);
                 // A press on the Bitrate track sets the value under the cursor directly and
                 // arms the drag (see `handle_mouse_motion`) instead of nudging one notch the
                 // way `Confirm` below would — a slider is for landing on a value, not stepping

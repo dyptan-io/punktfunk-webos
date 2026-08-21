@@ -69,7 +69,9 @@ impl App {
             | Screen::EditHost
             | Screen::About
             | Screen::SpeedTest
-            | Screen::SendLogs => 0,
+            | Screen::SendLogs
+            // A scrolling list, counted by `scroll_list_row_count`.
+            | Screen::Collections => 0,
         }
     }
 
@@ -122,7 +124,8 @@ impl App {
             | Screen::WakeSettings
             | Screen::Experimental
             | Screen::CursorSettings(_)
-            | Screen::SendLogs => Vec::new(),
+            | Screen::SendLogs
+            | Screen::Collections => Vec::new(),
         }
     }
 

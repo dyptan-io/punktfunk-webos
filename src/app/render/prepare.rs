@@ -11,6 +11,7 @@ use anyhow::Result;
 use crate::app::hosts::HostEntry;
 use crate::app::nav::ScreenKey;
 use crate::app::render::ctx::RenderCtx;
+use crate::app::render::geometry::is_scroll_list;
 use crate::app::render::key::{ModalFocusKey, ModalShellKey, ScrollContentKey};
 use crate::app::render::tile;
 use crate::app::{
@@ -159,7 +160,7 @@ impl App {
         // rasterization, and it keeps the fade-out a snapshot rather than a live list the
         // leaving screen would have to keep its tiles alive for.
         let body = match left {
-            Screen::Settings(_) => self.stitch_list_body(left, tiles, screen_w, screen_h, fonts),
+            screen if is_scroll_list(screen) => self.stitch_list_body(left, tiles, screen_w, screen_h, fonts),
             _ => tiles.get(tile::SCROLL_CONTENT).cloned(),
         };
         let content = self
@@ -229,6 +230,10 @@ impl App {
         let key = match self.nav.screen {
             Screen::Settings(_) => Some(ModalShellKey::Settings {
                 game: self.editing_game().map(|gs| gs.title.as_str()),
+            }),
+            Screen::Collections => Some(ModalShellKey::Collections {
+                card: &self.screens.collections.title,
+                rows: self.collections_row_count(),
             }),
             Screen::Wake => self.screens.wake.as_ref().map(|w| ModalShellKey::Wake {
                 name: &w.name,
@@ -304,6 +309,17 @@ impl App {
                 self.editing_override(),
                 self.detected_gamepad_type,
             )),
+            Screen::Collections => {
+                let row = self.nav.cursor(ScreenKey::Collections);
+                let host = self.selected_known_host();
+                let holding = host
+                    .zip(self.screens.collections.target.as_deref())
+                    .is_some_and(|(h, target)| h.collection_of(target).or_else(|| h.library_index()) == Some(row));
+                let name = host
+                    .and_then(|h| h.collections().get(row))
+                    .map_or("", |c| c.name.as_str());
+                Some(ModalFocusKey::CollectionRow(row, name, holding))
+            }
             Screen::Wake => self
                 .screens
                 .wake
@@ -373,7 +389,7 @@ impl App {
             fonts,
             screen: size,
             updated,
-            settings_rows,
+            scroll_list_rows,
             ..
         } = ctx;
         let (screen_w, screen_h) = (size.w, size.h);
@@ -436,28 +452,32 @@ impl App {
                 // the descriptor that proves the arm reachable is the same value it draws
                 // from, so an arm cannot assert its way past a `None` any more.
                 let tile = match self.nav.screen {
-                    Screen::Settings(_) => {
-                        let (_, content) = view::settings::layout(self.settings_scope(), screen_w, screen_h);
-                        let rows = settings_rows.get_or_insert_with(|| self.settings_rows());
-                        let dropdown_open = self
-                            .settings_ui
-                            .dropdown
-                            .as_ref()
-                            .is_some_and(|dd| dd.row == self.nav.cursor(ScreenKey::Settings));
-                        let target_on = rows
-                            .get(self.nav.cursor(ScreenKey::Settings))
-                            .is_some_and(|r| r.value == "On");
-                        Some(ui::rasterize(
-                            ui::widgets::FocusRowTile {
-                                rows,
-                                content_width: content.width(),
-                                index: self.nav.cursor(ScreenKey::Settings),
-                                dropdown_open,
-                                switch_frac: self.toggle_frac(target_on, self.nav.cursor(ScreenKey::Settings)),
-                            },
-                            text_cache,
-                            fonts,
-                        )?)
+                    // The scrolling row lists: one focused row re-rendered on its own tile,
+                    // over the cropped strip the rest of the list is baked into.
+                    screen @ (Screen::Settings(_) | Screen::Collections) => {
+                        let index = self.nav.cursor(ScreenKey::of(screen));
+                        match (
+                            self.scroll_list_layout(screen, screen_w, screen_h),
+                            scroll_list_rows.get_or_insert_with(|| self.scroll_list_rows().unwrap_or_default()),
+                        ) {
+                            (Some((_, content)), rows) => {
+                                let dropdown_open =
+                                    self.settings_ui.dropdown.as_ref().is_some_and(|dd| dd.row == index);
+                                let target_on = rows.get(index).is_some_and(|r| r.value == "On");
+                                Some(ui::rasterize(
+                                    ui::widgets::FocusRowTile {
+                                        rows,
+                                        content_width: content.width(),
+                                        index,
+                                        dropdown_open,
+                                        switch_frac: self.toggle_frac(target_on, index),
+                                    },
+                                    text_cache,
+                                    fonts,
+                                )?)
+                            }
+                            (None, _) => None,
+                        }
                     }
                     // Every two-button confirm dialog shares the button geometry (one subtitle
                     // sizes the card, so one button row falls out of it) and describes its own
@@ -628,13 +648,13 @@ impl App {
             fonts,
             screen: size,
             updated,
-            settings_rows,
+            scroll_list_rows,
             ..
         } = ctx;
         let (screen_w, screen_h) = (size.w, size.h);
         // The settings-row band belongs to the settings screens alone; leaving them releases
         // it rather than holding a list's worth of textures behind whatever is on screen now.
-        if !matches!(self.nav.screen, Screen::Settings(_)) {
+        if !is_scroll_list(self.nav.screen) {
             self.evict_list_rows_from(0, tiles);
         }
         // Whichever modal's content overflows its viewport (Settings' rows, About's
@@ -670,30 +690,14 @@ impl App {
             self.sync_modal_scroll(self.nav.screen, total, visible, content.height(), stride);
 
             match self.nav.screen {
-                Screen::Settings(_) => {
+                screen if is_scroll_list(screen) => {
                     let dropdown_row = self.settings_ui.dropdown.as_ref().map(|dd| dd.row);
-                    let row_count = menu::settings_row_count(self.settings_scope());
-                    // What the whole list is derived from (see `App::settings_rows`). Checked
-                    // before the list is built at all: the per-row keys below still arbitrate
-                    // which row rebuilds, but on a pure animation frame — the common case
-                    // while Settings is open — this comparison is the entire cost.
-                    let rows_version = cache::version(&(
-                        self.nav.screen,
-                        *self.settings_target(),
-                        self.editing_override(),
-                        self.detected_gamepad_type,
-                        // The Controller row's caption turns on whether the pad is actually
-                        // bound to hid-playstation, which a hotplug can change on its own.
-                        crate::platform::webos::dualsense::hid_playstation_bound(),
-                        // The focused row carries the override-clear hint (`decorate_override`).
-                        self.nav.cursor(ScreenKey::Settings),
-                        dropdown_row,
-                        content.width(),
-                    ));
-                    let cached = self.render.modal.settings_rows_version == Some(rows_version)
+                    let row_count = self.scroll_list_row_count();
+                    let rows_version = self.scroll_list_rows_version(content.width());
+                    let cached = self.render.modal.scroll_list_rows_version_cached == Some(rows_version)
                         && (0..row_count).all(|i| tile::list_row(i).is_some_and(|id| tiles.contains(id)));
                     if !cached {
-                        let rows = settings_rows.get_or_insert_with(|| self.settings_rows());
+                        let rows = scroll_list_rows.get_or_insert_with(|| self.scroll_list_rows().unwrap_or_default());
                         // One tile per row, each keyed on that row's own content. Rebuilding the
                         // whole list as one strip cost 25-60ms on armv7 every time a single value
                         // moved; this pays for the row that actually changed and reads the rest
@@ -719,7 +723,7 @@ impl App {
                         // Slots past the end of a list that just got shorter (a sub-page is a
                         // shorter list on the same screen) would otherwise keep drawing.
                         self.evict_list_rows_from(rows.len(), tiles);
-                        self.render.modal.settings_rows_version = Some(rows_version);
+                        self.render.modal.scroll_list_rows_version_cached = Some(rows_version);
                     }
                     // Every row is baked, so the window is the whole list — the crop
                     // rebase in `scroll_src_rect` has nothing to shift.

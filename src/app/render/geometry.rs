@@ -5,7 +5,7 @@
 //! agree about a scrollable modal's extent, and deriving it twice is how they stop
 //! agreeing.
 use crate::app::nav::ScreenKey;
-use crate::app::{menu, view, App, PairingFocus, Screen, MODAL_TILE_PAD};
+use crate::app::{view, App, PairingFocus, Screen, MODAL_TILE_PAD};
 use crate::ui;
 use crate::ui::render::Rect;
 use crate::ui::Painter;
@@ -28,7 +28,8 @@ pub(crate) const fn is_confirm(screen: Screen) -> bool {
         | Screen::WakeSettings
         | Screen::Diagnostics
         | Screen::Experimental
-        | Screen::CursorSettings(_) => false,
+        | Screen::CursorSettings(_)
+        | Screen::Collections => false,
     }
 }
 
@@ -37,7 +38,7 @@ pub(crate) const fn is_confirm(screen: Screen) -> bool {
 /// [`is_confirm`].
 pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
     match screen {
-        Screen::Settings(_) => true,
+        Screen::Settings(_) | Screen::Collections => true,
         Screen::Home
         | Screen::Pairing
         | Screen::AddHost
@@ -77,7 +78,9 @@ pub(crate) const fn is_list_modal(screen: Screen) -> bool {
         | Screen::EditHost
         | Screen::About
         | Screen::SpeedTest
-        | Screen::SendLogs => false,
+        | Screen::SendLogs
+        // Collections is a scrolling list too.
+        | Screen::Collections => false,
     }
 }
 
@@ -111,10 +114,10 @@ impl App {
             // The scope comes off the passed screen, not `self.nav.screen`: a closing Settings(Game)
             // is asked about after `self.nav.screen` has moved on, and reading the live scope there
             // measures the global list instead of the one being faded out.
-            Screen::Settings(set) => {
-                let (card, content) = view::settings::layout(set, screen_w, screen_h);
-                let visible = view::settings::visible_rows(set, screen_h);
-                Some((menu::settings_row_count(set), visible, card, content))
+            Screen::Settings(_) | Screen::Collections => {
+                let total = self.scroll_list_row_count_for(screen);
+                let (card, content) = view::scrolllist::layout(total, screen_w, screen_h);
+                Some((total, view::scrolllist::visible_rows(total, screen_h), card, content))
             }
             Screen::About => {
                 let card = view::about::card_rect(screen_w, screen_h);
@@ -250,7 +253,7 @@ impl App {
     /// Same as `scroll_stride`, but for an explicit screen — see `scroll_geometry_for`.
     pub(crate) fn scroll_stride_for(&self, screen: Screen, fonts: &ui::text::Fonts) -> i32 {
         match screen {
-            Screen::Settings(_) => view::scrolllist::stride(),
+            Screen::Settings(_) | Screen::Collections => view::scrolllist::stride(),
             Screen::About => view::about::line_stride(fonts.raster, fonts.value),
             // Nothing else has a scrolling body. `1` rather than `0` because the stride is a
             // divisor in the scroll arithmetic, and this is only reached where
@@ -369,7 +372,8 @@ impl App {
         fonts: &ui::text::Fonts,
     ) -> Option<Rect> {
         match screen {
-            Screen::Settings(_) => {
+            // The scrolling row lists: one focused row, positioned the same way on both.
+            Screen::Settings(_) | Screen::Collections => {
                 let (total, _, _, content) = self.scroll_geometry_for(screen, screen_w, screen_h, fonts)?;
                 // Positioned from the animated pixel offset, not the row index: the baked
                 // list is cropped at that offset, and the focus tile *is* the focused row
@@ -379,7 +383,7 @@ impl App {
                 let px = self.clamped_scroll_px(total, stride, content.height());
                 Some(ui::widgets::focus_row_rect_at_px(
                     content,
-                    self.nav.cursor(ScreenKey::Settings),
+                    self.nav.cursor(ScreenKey::of(screen)),
                     px,
                 ))
             }
@@ -468,6 +472,10 @@ impl App {
             Screen::Settings(set) => f(&view::settings::Modal {
                 set,
                 game: self.editing_game().map(|gs| gs.title.as_str()),
+            }),
+            Screen::Collections => f(&view::collections::Modal {
+                rows: self.collections_row_count(),
+                card: Some(self.screens.collections.title.as_str()),
             }),
             Screen::Pairing => f(&view::pairing::Modal {
                 pin_digits: &self.screens.pin_digits,

@@ -25,7 +25,7 @@ pub(crate) struct ModalState {
     /// owned `FocusRow` per row — on every frame Settings was open, animation frames
     /// included. Keyed off the same values the rows are derived from, so a match means no
     /// row can have moved.
-    pub settings_rows_version: Option<u64>,
+    pub scroll_list_rows_version_cached: Option<u64>,
     /// Where the scrolling modal's viewport is *rendered*, in pixels, and where it is heading.
     ///
     /// `App::scroll.offset` stays an integral row/line index — focus logic and the scrollbar are
@@ -70,7 +70,7 @@ impl Default for ModalState {
     fn default() -> Self {
         Self {
             shell_version: None,
-            settings_rows_version: None,
+            scroll_list_rows_version_cached: None,
             scroll_px: 0,
             scroll_target_px: 0,
             scroll_screen: None,

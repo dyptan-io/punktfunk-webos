@@ -172,6 +172,12 @@ impl FocusRow {
         self
     }
 
+    /// Puts a [`FocusRow::mark`] dot in this row's right gutter.
+    pub fn marked(mut self, color: Color) -> Self {
+        self.mark = Some(color);
+        self
+    }
+
     /// [`with_subtext`](Self::with_subtext) for a caption a condition may not produce.
     pub fn with_subtext_opt(mut self, subtext: Option<RowSubtext>) -> Self {
         self.subtext = subtext;

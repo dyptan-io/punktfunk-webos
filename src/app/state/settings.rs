@@ -62,14 +62,14 @@ impl App {
                 if self.nav.cursor(ScreenKey::Settings) > 0 {
                     *self.nav.cursor_mut(ScreenKey::Settings) -= 1;
                     self.render.modal.focus_anim = Some(Instant::now());
-                    self.scroll_settings_into_view(screen_h);
+                    self.scroll_list_row_into_view(screen_h);
                 }
             }
             MenuEvent::Down => {
                 if self.nav.cursor(ScreenKey::Settings) + 1 < total {
                     *self.nav.cursor_mut(ScreenKey::Settings) += 1;
                     self.render.modal.focus_anim = Some(Instant::now());
-                    self.scroll_settings_into_view(screen_h);
+                    self.scroll_list_row_into_view(screen_h);
                 }
             }
             MenuEvent::Left => self.apply_setting_adjust(self.nav.cursor(ScreenKey::Settings), false),

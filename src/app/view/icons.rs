@@ -33,3 +33,5 @@ pub const ICON_GAMEPAD: &str = "\u{E338}";
 pub const ICON_PALETTE: &str = "\u{E40A}";
 pub const ICON_MOUSE: &str = "\u{E323}";
 pub const ICON_TOUCH: &str = "\u{E913}";
+/// Material `folder` — a collection of cards.
+pub const ICON_FOLDER: &str = "\u{E2C7}";

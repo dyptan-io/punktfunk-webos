@@ -365,17 +365,6 @@ impl App {
         rows
     }
 
-    /// Scrolls `settings_focused` into view.
-    pub(crate) fn scroll_settings_into_view(&mut self, screen_h: u32) {
-        let set = self.settings_scope();
-        let visible = view::settings::visible_rows(set, screen_h);
-        self.render.scroll.scroll_into_view(
-            self.nav.cursor(ScreenKey::Settings),
-            menu::settings_row_count(set),
-            visible,
-        );
-    }
-
     /// `(row, focused, alpha)` for the open dropdown or its close-fade; `None` if neither.
     pub(crate) fn dropdown_draw_state(&self) -> Option<(usize, usize, f32)> {
         if let Some(dd) = &self.settings_ui.dropdown {
@@ -710,15 +699,6 @@ impl App {
     /// Which of the selected host's collections holds `pin_id`, or `None` for Library.
     pub(crate) fn collection_of_card(&self, pin_id: &str) -> Option<usize> {
         self.selected_known_host()?.collection_of(pin_id)
-    }
-
-    /// The first non-dynamic collection in grid order — where a card with nowhere else to go
-    /// lands, and what "Pinned" is on a host that never renamed it.
-    pub(crate) fn first_user_collection(&self) -> Option<usize> {
-        self.selected_known_host()?
-            .collections()
-            .iter()
-            .position(|c| !c.dynamic)
     }
 
     pub(crate) fn known_host_mut(&mut self, host: &str, port: u16) -> Option<&mut KnownHost> {

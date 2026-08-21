@@ -13,6 +13,7 @@ use crate::app::grid::{GridLayout, CARD_BUILD_BUDGET, CARD_BUILD_BURST, CARD_KEE
 use crate::app::library::Library;
 use crate::app::render::ctx::RenderCtx;
 use crate::app::render::tile;
+use crate::app::state::cardmenu::CardMenuRow;
 use crate::app::{view, App, HomeFocus, Screen};
 use crate::ui;
 use crate::ui::cache;
@@ -355,16 +356,15 @@ impl App {
                 // to come back up.
                 let menu_open = self.card_menu.as_ref().is_some_and(|m| m.pin_id == pin_id);
                 if menu_open || (self.render.grid.reveal.is_revealed() && !pending) {
-                    let rows = self.card_menu_rows(pin_id);
+                    let kinds = self.card_menu_row_kinds(pin_id);
+                    let labels = self.card_menu_rows(pin_id);
+                    let rows: Vec<(&str, &str)> = labels.iter().map(|(i, l)| (*i, l.as_str())).collect();
                     // No focused row in this key: the selection band is composited over
                     // these tiles, so moving between the menu's rows rebuilds none of them.
                     // The labels are the exception — they carry the focused/muted split now,
                     // and get their own key below.
                     let version = cache::version(&(pin_id, card_w, card_h, &rows, overridden));
-                    let focused = self
-                        .card_menu
-                        .as_ref()
-                        .map_or(crate::app::state::cardmenu::ROW_PIN, |m| m.focused);
+                    let focused = self.card_menu.as_ref().map_or(0, |m| m.focused);
                     let rows_version = cache::version(&(pin_id, card_w, card_h, &rows, overridden, focused));
                     if tiles.ensure(tile::CARD_MENU, version, || {
                         ui::rasterize(
@@ -387,7 +387,9 @@ impl App {
                                 rows: &rows,
                                 // The dot follows what owns it: the title while the strip is
                                 // collapsed, the Settings row once the panel is up.
-                                marked: overridden.then_some(crate::app::state::cardmenu::ROW_SETTINGS),
+                                marked: overridden
+                                    .then(|| kinds.iter().position(|k| *k == CardMenuRow::Settings))
+                                    .flatten(),
                                 focused,
                             },
                             text_cache,

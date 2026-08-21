@@ -35,6 +35,9 @@ pub enum Screen {
     CursorSettings(SettingsScope),
     /// "Send logs to developer" confirmation (see `app/sendlogs.rs`).
     SendLogs,
+    /// Which collection a held card belongs to (see `app/collections.rs`). A scrolling row
+    /// list, since a host may have every one of `MAX_COLLECTIONS` plus Library.
+    Collections,
 }
 
 /// Pairing modal's focused input: PIN row or "Request access" button.

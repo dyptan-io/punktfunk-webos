@@ -5,21 +5,51 @@
 //! The panel itself is baked into one tile (`ui::tiles::render_card_menu_tile`) without any
 //! notion of focus, so everything the *selection* needs is here and nothing of it is in that
 //! tile's cache key: moving between rows rebuilds nothing.
-use crate::app::state::cardmenu::{MENU_FOCUS_SLIDE, ROW_COUNT};
+use crate::app::state::cardmenu::{CardMenuRow, MENU_FOCUS_SLIDE};
 use crate::app::{view, App};
 use crate::ui;
 use crate::ui::render::Rect;
 
 impl App {
-    /// The submenu's rows for `pin_id`'s card. Takes the card rather than reading the open
-    /// menu: the panel is baked when the card takes focus, before there is a menu to ask.
-    /// The move row's label is the action it performs, not the state it reads.
-    pub(crate) fn card_menu_rows(&self, pin_id: &str) -> [(&'static str, &'static str); ROW_COUNT] {
-        let collected = self.collection_of_card(pin_id).is_some();
-        [
-            (crate::ui::theme::icons().pin, if collected { "Remove" } else { "Pin" }),
-            (view::icons::ICON_SETTINGS, "Settings"),
-        ]
+    /// Which rows `pin_id`'s card shows. The one table over the submenu's shape: its labels,
+    /// its baked height, its tile key, its hit test and its handler all count rows through
+    /// here.
+    ///
+    /// Takes the card rather than reading the open menu: the panel is baked when the card
+    /// takes focus, before there is a menu to ask — membership is available there too, so the
+    /// count is safe at that point.
+    pub(crate) fn card_menu_row_kinds(&self, pin_id: &str) -> Vec<CardMenuRow> {
+        let mut rows = vec![CardMenuRow::MoveTo];
+        // Nothing to remove a Library card from — Library *is* "in no collection".
+        if self.collection_of_card(pin_id).is_some() {
+            rows.push(CardMenuRow::Remove);
+        }
+        rows.push(CardMenuRow::Settings);
+        rows
+    }
+
+    /// [`card_menu_row_kinds`](Self::card_menu_row_kinds) with the icon and label each row
+    /// draws. Both action rows name the collection they act on, so the menu says where the
+    /// card is without the user opening anything.
+    pub(crate) fn card_menu_rows(&self, pin_id: &str) -> Vec<(&'static str, String)> {
+        let here = self
+            .selected_known_host()
+            .and_then(|h| h.collection_name_of(pin_id))
+            .unwrap_or_default()
+            .to_string();
+        self.card_menu_row_kinds(pin_id)
+            .into_iter()
+            .map(|kind| match kind {
+                CardMenuRow::MoveTo => (crate::ui::theme::icons().pin, format!("Move from {here}")),
+                CardMenuRow::Remove => (view::icons::ICON_DELETE, format!("Remove from {here}")),
+                CardMenuRow::Settings => (view::icons::ICON_SETTINGS, "Settings".to_string()),
+            })
+            .collect()
+    }
+
+    /// How many rows the submenu on `pin_id`'s card has — what its geometry divides by.
+    pub(crate) fn card_menu_row_count(&self, pin_id: &str) -> usize {
+        self.card_menu_row_kinds(pin_id).len()
     }
 
     /// The open submenu's rows band in screen space, and the card it hangs off — the
@@ -41,7 +71,8 @@ impl App {
             return None;
         }
         let card = self.scrolled_card_rect(menu.idx, columns, ui::widgets::SIDEBAR_W as i32, available_w);
-        let panel_h = ui::widgets::card_menu_strip_h(fonts.raster, fonts.value, card.height(), ROW_COUNT);
+        let rows = self.card_menu_row_count(&menu.pin_id);
+        let panel_h = ui::widgets::card_menu_strip_h(fonts.raster, fonts.value, card.height(), rows);
         let title_h = ui::widgets::title_strip_h(fonts.raster, fonts.value, card.height());
         let top = card.bottom() - panel_h as i32 + title_h as i32;
         let band = Rect::new(card.x(), top, card.width(), panel_h.saturating_sub(title_h));
@@ -66,10 +97,11 @@ impl App {
         if !band.contains_point((x, y)) {
             return None;
         }
+        let count = self.card_menu_row_count(&self.card_menu.as_ref()?.pin_id);
         // Proportional, not by `CARD_MENU_ROW_H`: the band carries the focused card's scale
         // (see `card_menu_rows_rect`), so its rows are that much taller on screen too.
-        let row = ((y - band.y()) as f32 / band.height().max(1) as f32 * ROW_COUNT as f32) as usize;
-        (row < ROW_COUNT).then_some(row)
+        let row = ((y - band.y()) as f32 / band.height().max(1) as f32 * count as f32) as usize;
+        (row < count).then_some(row)
     }
 
     /// The selection band in screen space, clipped to the part of the panel the wipe has

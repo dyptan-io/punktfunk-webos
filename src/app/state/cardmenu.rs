@@ -1,4 +1,5 @@
-//! The submenu a held grid card raises over its own title strip: Pin/Unpin, and Settings.
+//! The submenu a held grid card raises over its own title strip: where the card lives, and
+//! its per-game settings.
 //!
 //! It is not a `Screen` — it lives on Home, over one card, and Home's own navigation is
 //! simply suspended while it is up (see `App::handle_home_event`). That keeps the card, its
@@ -16,11 +17,17 @@ use crate::ui;
 /// the only thing that says which row is picked, so the move has to finish inside a keypress.
 pub(crate) const MENU_FOCUS_SLIDE: Duration = Duration::from_millis(120);
 
-/// Rows, in order. Two, and both always shown — an unpinnable card still shows Pin and
-/// answers with the pin-limit alert, which says more than a missing row would.
-pub(crate) const ROW_PIN: usize = 0;
-pub(crate) const ROW_SETTINGS: usize = 1;
-pub(crate) const ROW_COUNT: usize = 2;
+/// What one submenu row does. Two or three, depending on whether the card is in a collection
+/// at all — [`App::card_menu_row_kinds`] is the one table, so the labels, the panel's baked
+/// height, its tile key, its hit test and this handler cannot disagree about the row count.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum CardMenuRow {
+    /// Opens `Screen::Collections` over this card.
+    MoveTo,
+    /// Back to Library, with no dialog. Only on a card a collection holds.
+    Remove,
+    Settings,
+}
 
 /// The line shown once, on the release that added this menu, when the first library lands: the
 /// feature is behind a hold, which nothing on screen would otherwise reveal. Phrased as what it
@@ -104,7 +111,7 @@ impl App {
             pin_id,
             idx,
             title,
-            focused: ROW_PIN,
+            focused: 0,
             leaving: None,
             since: Instant::now(),
             risen: false,
@@ -118,40 +125,34 @@ impl App {
     /// Handles one menu event while the submenu is up. Returns `false` when it isn't, so
     /// Home's own handler runs instead.
     pub(crate) fn handle_card_menu_event(&mut self, ev: MenuEvent, screen_w: u32, screen_h: u32) -> bool {
+        let Some(menu) = self.card_menu.as_ref() else {
+            return false;
+        };
+        let (pin_id, title) = (menu.pin_id.clone(), menu.title.clone());
+        let rows = self.card_menu_row_kinds(&pin_id);
         let Some(menu) = self.card_menu.as_mut() else {
             return false;
         };
         // Wraps, like every other row list in the app (`list_nav`); `focus` is what arms the
         // band's slide, so the move goes through it rather than writing `focused` directly.
         let mut next = menu.focused;
-        if ui::widgets::list_nav(&mut next, ROW_COUNT, nav_dir(ev)) {
+        if ui::widgets::list_nav(&mut next, rows.len(), nav_dir(ev)) {
             menu.focus(next);
             return true;
         }
-        match ev {
-            MenuEvent::Confirm => match menu.focused {
-                ROW_PIN => {
-                    let pin_id = menu.pin_id.clone();
-                    self.close_card_menu();
-                    // Interim of the Move to… row: the first user collection, or back to
-                    // Library. With one collection per host this is exactly the old pin.
-                    let to = match self.collection_of_card(&pin_id) {
-                        Some(_) => None,
-                        None => self.first_user_collection(),
-                    };
-                    self.move_focused_card(to, screen_w, screen_h);
-                }
-                ROW_SETTINGS => {
-                    // Left open behind the screen it raises, unlike Pin: the per-game settings
-                    // modal is a step *into* this menu, and collapsing the panel underneath it
-                    // makes going back read as having landed somewhere else. `Screen::Settings`
-                    // owns every event while it is up (this handler runs on Home only), and
-                    // leaving it closes the menu — see `state::settings`' `MenuEvent::Back`.
-                    let (pin_id, title) = (menu.pin_id.clone(), menu.title.clone());
-                    self.open_game_settings(&pin_id, &title);
-                }
-                _ => {}
-            },
+        match (ev, rows.get(menu.focused)) {
+            // Both leave the panel up behind what they raise: each is a step *into* this
+            // menu, and collapsing it underneath makes going back read as having landed
+            // somewhere else. The screen they open owns every event while it is up (this
+            // handler runs on Home only), and leaving it closes the menu.
+            (MenuEvent::Confirm, Some(CardMenuRow::MoveTo)) => self.open_collections(&pin_id, &title),
+            (MenuEvent::Confirm, Some(CardMenuRow::Settings)) => self.open_game_settings(&pin_id, &title),
+            // No dialog: the card is one press from wherever it was, and the section heading
+            // it lands under says where it went.
+            (MenuEvent::Confirm, Some(CardMenuRow::Remove)) => {
+                self.close_card_menu();
+                self.move_focused_card(None, screen_w, screen_h);
+            }
             // Left/Right have nothing to move to, and Secondary would otherwise forget a
             // host from under an open menu.
             _ => self.close_card_menu(),

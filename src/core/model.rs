@@ -49,7 +49,7 @@ pub struct KnownHost {
 
 /// One grid section: a named, ordered set of game ids. Exactly one per host is
 /// [`Collection::dynamic`] (Library), whose members are computed rather than stored.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Collection {
     pub name: String,

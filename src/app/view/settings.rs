@@ -171,10 +171,6 @@ pub(crate) fn rows(
 
 /// [`scrolllist`] geometry bound to a settings scope — which is the only thing that decides
 /// how many rows this list has.
-pub(crate) fn visible_rows(set: SettingsScope, screen_h: u32) -> usize {
-    scrolllist::visible_rows(menu::settings_row_count(set), screen_h)
-}
-
 pub(crate) fn layout(set: SettingsScope, screen_w: u32, screen_h: u32) -> (Rect, Rect) {
     scrolllist::layout(menu::settings_row_count(set), screen_w, screen_h)
 }

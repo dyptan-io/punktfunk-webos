@@ -6,6 +6,7 @@
 //! into the sidebar) are reset by the `open_*` that raises their screen.
 
 use crate::app::state::addhost::AddHostState;
+use crate::app::state::collections::CollectionsState;
 use crate::app::state::speedtest::SpeedTestState;
 use crate::app::WakeState;
 use crate::core::screen::PairingFocus;
@@ -26,6 +27,8 @@ pub(crate) struct ScreenSlots {
     /// The host being measured, for the status line.
     pub(crate) speed_test_name: String,
     pub(crate) add_host: AddHostState,
+    /// The card `Screen::Collections` is moving, and its title — see [`CollectionsState`].
+    pub(crate) collections: CollectionsState,
     /// The active "host unreachable — wake it?" prompt/wait, if any — see `WakeState`.
     pub(crate) wake: Option<WakeState>,
     /// PIN entry: 4 digits, each 0-9, edited one at a time.

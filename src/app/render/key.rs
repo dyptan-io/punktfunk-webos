@@ -41,6 +41,9 @@ pub enum ModalFocusKey<'a> {
     CursorSettingsRow(usize, bool, bool, SettingsOverride),
     /// Which `Screen::SendLogs` button is focused (0 = Cancel, 1 = Send).
     SendLogsButton(usize),
+    /// (focused row, the row's name, whether it is the one already holding the card) — what
+    /// the focused row draws, and nothing else: the list behind it is its own tiles.
+    CollectionRow(usize, &'a str, bool),
 }
 
 /// Scrollable modal content keys. Paired with Screen for staleness checks.
@@ -116,4 +119,11 @@ pub enum ModalShellKey<'a> {
     },
     /// Fixed warning copy + two buttons — nothing screen-specific left to key on.
     SendLogs,
+    /// The shell is title, rule and the card being moved — the rows are their own tiles, so
+    /// nothing about the collections themselves belongs here except how many there are (the
+    /// card's height follows the row count).
+    Collections {
+        card: &'a str,
+        rows: usize,
+    },
 }

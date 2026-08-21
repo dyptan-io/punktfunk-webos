@@ -195,8 +195,6 @@ impl App {
             let stride = self.scroll_stride_for(screen, fonts);
             let scroll_px = self.clamped_scroll_px(total, stride, content.height());
             let alpha = (255.0 * m) as u8;
-            // Settings' body is one tile per row (see `tile::list_row`), so it is
-            // placed row by row; every other scrolling modal crops its single baked tile.
             // The viewport's edge fades, resolved before the content is pushed: they ramp the
             // content's own alpha rather than being painted over it (see `push_faded`).
             //
@@ -222,10 +220,10 @@ impl App {
                     )
                 }),
             ];
-            // Settings' body is one tile per row (see `tile::list_row`), so it is
-            // placed row by row; every other scrolling modal crops its single baked tile.
-            if matches!(screen, Screen::Settings(_)) {
-                Self::push_settings_rows(cmds, total, content, scroll_px, dy, alpha, fades);
+            // A row list's body is one tile per row (see `tile::list_row`), so it is placed
+            // row by row; every other scrolling modal crops its single baked tile.
+            if crate::app::render::geometry::is_scroll_list(screen) {
+                Self::push_list_rows(cmds, total, content, scroll_px, dy, alpha, fades);
             } else if let Some((src, dst)) = self.scroll_src_rect(screen, screen_w, screen_h, fonts) {
                 Self::push_faded(cmds, tile::SCROLL_CONTENT, src, dst.offset(0, dy), alpha, fades);
             }
@@ -344,7 +342,7 @@ impl App {
         }
     }
 
-    fn push_settings_rows(
+    fn push_list_rows(
         cmds: &mut Vec<DrawCmd>,
         total: usize,
         content: Rect,

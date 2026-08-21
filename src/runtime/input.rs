@@ -640,6 +640,7 @@ pub(super) fn handle_ui_event(
             // List-modal screens (row-per-page, not pixel scroll): one detent
             // moves focus exactly one row, same as an Up/Down key press.
             Screen::Settings(_)
+            | Screen::Collections
             | Screen::HostMenu
             | Screen::WakeSettings
             | Screen::Diagnostics
