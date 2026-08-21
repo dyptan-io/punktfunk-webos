@@ -57,10 +57,14 @@ pub const GLOSSY: Theme = Theme {
     palette: PALETTE,
     icons: ICONS,
     glass: Some(Glass {
-        // The panel, made translucent. Derived rather than restated: two hand-written
-        // near-identical purples is one edit away from a glass card that does not match the
-        // opaque one it replaces.
-        panel: PALETTE.panel.with_alpha(0xda),
+        // The card itself: a third of the way from `panel` to `surface`, then thinned. Thin
+        // glass takes its darkness from whatever it covers, so the fill starts lighter than
+        // the opaque panel it stands in for to land in the same place — and it is the two
+        // palette entries that say which purple that is, not a hex of its own.
+        panel: Color {
+            a: 0xc0,
+            ..PALETTE.panel.mix(PALETTE.surface, 0x55)
+        },
         // As wide as anything here reads: at this spread the backdrop is a wash rather than a
         // recognisable image of what is behind it, which is the point. The compositor rounds
         // it down to whatever its chain can actually give.

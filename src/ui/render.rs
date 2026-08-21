@@ -114,11 +114,19 @@ impl Color {
         Self { r, g, b, a: 255 }
     }
 
-    /// The same colour at a different alpha — a translucent surface derived from the opaque
-    /// one it is the glass version of, rather than re-typed beside it and left to drift.
+    /// `self` moved `t/255` of the way toward `other`, keeping `self`'s alpha — a shade
+    /// derived from two palette entries rather than a third hex typed beside them.
     #[must_use]
-    pub const fn with_alpha(self, a: u8) -> Self {
-        Self { a, ..self }
+    pub const fn mix(self, other: Self, t: u8) -> Self {
+        const fn lerp(a: u8, b: u8, t: u8) -> u8 {
+            ((a as u16 * (255 - t as u16) + b as u16 * t as u16) / 255) as u8
+        }
+        Self {
+            r: lerp(self.r, other.r, t),
+            g: lerp(self.g, other.g, t),
+            b: lerp(self.b, other.b, t),
+            a: self.a,
+        }
     }
 }
 

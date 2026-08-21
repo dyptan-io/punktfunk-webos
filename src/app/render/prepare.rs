@@ -394,8 +394,18 @@ impl App {
             Some(_) => !tiles.contains(tile::MODAL) || self.render.modal.shell_version != shell_version,
             None => content_dirty || !tiles.contains(tile::MODAL),
         };
-        self.render.modal.shell_version = shell_version;
-        if modal_open && (screen_changed || modal_stale) {
+        // A list modal bakes its rows into the shell, and its shell key carries their values —
+        // so flipping a toggle invalidates the whole card. Re-rastering it (glass blur included)
+        // costs more than the 140ms slide, which then never gets a frame: the knob is already at
+        // the far end by the time the card comes back. The focused row is drawn by
+        // `tile::MODAL_FOCUS` on top of the shell anyway, so the stale shell underneath shows
+        // nothing wrong; the rebuild lands the tick after `switch_anim` retires. Settings needs
+        // none of this — its shell key holds no values (its rows are tiles of their own).
+        let defer_shell = self.render.modal.switch_anim.is_some() && tiles.contains(tile::MODAL) && !screen_changed;
+        if !defer_shell {
+            self.render.modal.shell_version = shell_version;
+        }
+        if modal_open && !defer_shell && (screen_changed || modal_stale) {
             // Sized to the card's bounding box, not the whole screen: the render fns
             // below draw at absolute, screen-centered coordinates, and the painter's
             // origin shift (see `Painter::set_origin`) maps that geometry into the
