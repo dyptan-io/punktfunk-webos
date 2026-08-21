@@ -7,10 +7,10 @@ use std::ops::Range;
 
 use crate::app::grid::GridLayout;
 use crate::app::render::tile;
+use crate::app::render::SnapshotBody;
 use crate::app::{
     hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP, CARD_POP_SHRINK, LAUNCH_GROWTH,
-    MODAL_FADE, MODAL_FADE_OUT, MODAL_TILE_PAD, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD, SCROLL_INDICATOR_TILE_W,
-    STATUS_BG_PAD,
+    MODAL_FADE, MODAL_TILE_PAD, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD, SCROLL_INDICATOR_TILE_W, STATUS_BG_PAD,
 };
 use crate::ui;
 use crate::ui::cache::TileStore;
@@ -35,6 +35,9 @@ const FADE_STEP: u32 = 8;
 /// A scrolling viewport's two edge fade bands, top then bottom, each present only while there
 /// is content past that edge — the fade *is* the "there is more" signal.
 type Fades = [Option<Rect>; 2];
+
+/// [`Fades`] for a viewport that wants none.
+const NO_FADES: Fades = [None; 2];
 
 impl App {
     /// Assembles the read-only view of state the render path consumes (see
@@ -64,18 +67,19 @@ impl App {
         // A left modal keeps drawing from its snapshot while its fade runs (see
         // `snapshot_closing_modal`) — the entering one owns `tile::MODAL` from this frame.
         // The two overlap, so leaving one modal for another cross-fades.
-        let closing = self
-            .render
-            .modal
-            .fade
-            .closing_frame(MODAL_FADE_OUT)
-            .and_then(|(alpha, _)| Some((alpha, self.render.modal.prev?)));
         let screen = self.nav.screen;
         let m = if matches!(screen, Screen::Home) {
             0.0
         } else {
             self.render.modal.fade.open_alpha(MODAL_FADE)
         };
+        // `m` is what a cross-fade's leaving card is drawn as the inverse of (see `ModalFade`).
+        let closing = self
+            .render
+            .modal
+            .prev
+            .zip(self.render.modal.fade.closing_frame_against(self.modal_close_dur(), m))
+            .map(|(prev, (alpha, _))| (alpha, prev));
         // The backdrop belongs to "a modal is up", not to either card: re-fading it
         // mid-step would brighten the whole screen and read as a blink. It only fades when
         // the modal layer itself appears or disappears.
@@ -125,13 +129,21 @@ impl App {
                 dst: prev.region.offset(0, dy),
                 alpha: a,
             });
-            if let Some((src, dst)) = prev.content {
-                cmds.push(DrawCmd::TexCropped {
+            // The leaving body, through whichever of the two live paths drew it: a crop of
+            // its own baked tile, or the settings rows still in their own tiles. No edge
+            // fades on the way out — the card is dissolving, and a ramp on top of a ramp
+            // reads as the list going first.
+            match prev.content {
+                Some(SnapshotBody::Cropped(src, dst)) => cmds.push(DrawCmd::TexCropped {
                     tile: tile::MODAL_PREV_CONTENT,
                     src,
                     dst: dst.offset(0, dy),
                     alpha: a,
-                });
+                }),
+                Some(SnapshotBody::Rows(total, content, scroll_px)) => {
+                    Self::push_list_rows(cmds, total, content, scroll_px, dy, a, &NO_FADES);
+                }
+                None => {}
             }
         }
     }
@@ -718,23 +730,30 @@ impl App {
                 // surface fill, so a label drawn beneath it would be covered outright.
                 // It rides `rows_top` too, staying on its row for the whole rise.
                 if let Some((band, tile)) = self
-                    .card_menu_band(r, panel_h, shown, rows_top)
+                    .card_menu_band(r, panel_h, rows_top)
                     .zip(tiles.get(tile::CARD_MENU_BAND))
                 {
-                    // The rise clips the band's *top*, so this crops from the bottom of the
-                    // tile: the band's own height plus `ROW_TILE_PAD` on every side, which is
-                    // the margin its shadow lives in (see `CardMenuBandTile`).
+                    // The rows block hangs off the *top* of the revealed window, so a row that
+                    // has not been reached yet is clipped at its bottom by the panel's own
+                    // edge — never at its top. The crop therefore starts at the tile's y=0,
+                    // exactly as `tile::CARD_MENU_ROWS` does below. Height is the visible
+                    // band plus `ROW_TILE_PAD` on every side, the margin its shadow lives in
+                    // (see `CardMenuBandTile`).
                     let pad = ui::tiles::ROW_TILE_PAD;
-                    let row_h = ui::widgets::CARD_MENU_ROW_H;
+                    // The focus pop, through the same helper every other focused widget in
+                    // the app is placed by — about the band's own centre, inside the card,
+                    // and then the card's transform on top of that. The inset the band is
+                    // drawn at (`CARD_MENU_BAND_INSET`) is what the growth spends, so a
+                    // focused row stays within the cover art.
+                    let popped = ui::animation::focus_tile_rect(
+                        band.inflate(pad),
+                        self.card_menu.as_ref().and_then(|m| m.focus_anim),
+                        ui::animation::Press::default(),
+                    );
                     cmds.push(DrawCmd::TexCropped {
                         tile: tile::CARD_MENU_BAND,
-                        src: Rect::new(
-                            0,
-                            row_h.saturating_sub(band.height()) as i32,
-                            tile.width(),
-                            band.height() + 2 * pad as u32,
-                        ),
-                        dst: ui::animation::scale_about(band.inflate(pad), r, card_scale),
+                        src: Rect::new(0, 0, tile.width(), band.height() + 2 * pad as u32),
+                        dst: ui::animation::scale_about(popped, r, card_scale),
                         alpha: (255.0 * pop) as u8,
                     });
                 }

@@ -18,6 +18,8 @@ pub const OVERLAY_FADE: Duration = Duration::from_millis(400);
 pub struct ModalFade<T = ()> {
     open_since: Option<Instant>,
     closing: Option<(Instant, T)>,
+    /// Whether the close in flight has something opening behind it — see [`Self::close_cross`].
+    cross: bool,
 }
 
 impl<T: Copy + PartialEq> Default for ModalFade<T> {
@@ -31,6 +33,7 @@ impl<T: Copy + PartialEq> ModalFade<T> {
         Self {
             open_since: None,
             closing: None,
+            cross: false,
         }
     }
 
@@ -45,9 +48,31 @@ impl<T: Copy + PartialEq> ModalFade<T> {
         self.closing = None;
     }
 
-    /// Starts the close fade, carrying `payload` for `closing_frame` to hand back.
+    /// Starts the close fade, carrying `payload` for [`Self::closing_frame`] to hand back.
     pub fn close(&mut self, payload: T) {
         self.closing = Some((Instant::now(), payload));
+        self.cross = false;
+    }
+
+    /// [`Self::close`] for an overlay with another one opening behind it: the two are made
+    /// each other's exact inverse (see [`Self::closing_frame_against`]) on one clock
+    /// ([`Self::close_dur`]).
+    ///
+    /// Their own curves do not compose — an ease-out closing against an ease-in opening sums
+    /// to a quarter at the halfway point, and whatever is behind both shows through the seam.
+    pub fn close_cross(&mut self, payload: T) {
+        self.close(payload);
+        self.cross = true;
+    }
+
+    /// How long the close in flight runs: a cross-fade matches the open exactly, a lone close
+    /// takes `solo`'s slower dissolve — there is nothing arriving to hide it.
+    pub fn close_dur(&self, open: Duration, solo: Duration) -> Duration {
+        if self.cross {
+            open
+        } else {
+            solo
+        }
     }
 
     /// Re-stamps whichever fades are in flight to now — for a caller that does expensive
@@ -75,6 +100,21 @@ impl<T: Copy + PartialEq> ModalFade<T> {
     pub fn closing_frame(&self, dur: Duration) -> Option<(f32, T)> {
         let (t, payload) = self.closing.filter(|(t, _)| t.elapsed() < dur)?;
         Some((1.0 - anim_frac(Some(t), dur), payload))
+    }
+
+    /// [`Self::closing_frame`] for the one caller that draws a cross-fade: `open` is the alpha
+    /// of whatever is opening this frame, and a cross-fade's closing overlay is its inverse
+    /// rather than its own ease, so the pair sums to one at every instant.
+    pub fn closing_frame_against(&self, dur: Duration, open: f32) -> Option<(f32, T)> {
+        match self.closing_frame(dur)? {
+            (_, payload) if self.cross => Some((1.0 - open, payload)),
+            frame => Some(frame),
+        }
+    }
+
+    /// Whether a close is in flight, for callers that need its presence but not its alpha.
+    pub fn is_closing(&self, dur: Duration) -> bool {
+        self.closing.is_some_and(|(t, _)| t.elapsed() < dur)
     }
 
     /// Open-fade alpha: eases 0.0 -> 1.0, `1.0` once finished or if never opened.

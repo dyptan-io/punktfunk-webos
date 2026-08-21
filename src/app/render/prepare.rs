@@ -14,9 +14,10 @@ use crate::app::render::ctx::RenderCtx;
 use crate::app::render::geometry::is_scroll_list;
 use crate::app::render::key::{ModalFocusKey, ModalShellKey, ScrollContentKey};
 use crate::app::render::tile;
+use crate::app::render::SnapshotBody;
 use crate::app::{
     menu, view, App, HomeFocus, PairingFocus, Screen, ABOUT_WINDOW_BUDGET, ABOUT_WINDOW_MARGIN, DROPDOWN_FADE,
-    MODAL_FADE_OUT, SCROLL_INDICATOR_TILE_W,
+    SCROLL_INDICATOR_TILE_W,
 };
 use crate::ui;
 use crate::ui::cache;
@@ -134,7 +135,9 @@ impl App {
         } = ctx;
         let screen_changed = *screen_changed;
         let (screen_w, screen_h) = (size.w, size.h);
-        let closing = self.render.modal.fade.closing_frame(MODAL_FADE_OUT);
+        // Presence only — this decides whether a snapshot is still wanted, not what it
+        // is drawn at, so it needs neither the entering alpha nor the exact duration.
+        let closing = self.render.modal.fade.closing_frame(self.modal_close_dur());
         if closing.is_none() {
             // Fade over (or cancelled by reopening the same screen) — drop the copies
             // rather than keep two card-sized textures alive for nothing.
@@ -154,54 +157,27 @@ impl App {
         };
         // Still the left card's — `modal_painter` moves it on later in this same call.
         let region = self.render.modal.tile_region;
-        // The crop `compose_modal` was drawing for this screen last frame, frozen. Settings
-        // has no single body tile to freeze — its rows are a tile each — so one is stitched
-        // from them at the geometry they were just drawn at. That is a blit per row and no
-        // rasterization, and it keeps the fade-out a snapshot rather than a live list the
-        // leaving screen would have to keep its tiles alive for.
-        let body = match left {
-            screen if is_scroll_list(screen) => self.stitch_list_body(left, tiles, screen_w, screen_h, fonts),
-            _ => tiles.get(tile::SCROLL_CONTENT).cloned(),
+        // What `compose_modal` was drawing for this screen last frame, frozen. Settings keeps
+        // its rows where they are and redraws from them; stitching them into one full-height
+        // painter here is what made leaving Settings slower than leaving any other modal.
+        let content = match left {
+            screen if is_scroll_list(screen) => self
+                .scroll_view_for(left, screen_w, screen_h, fonts)
+                .map(|(total, content, scroll_px)| SnapshotBody::Rows(total, content, scroll_px)),
+            // `src_rect` first: a screen whose body lives in its shell tile has no crop, and
+            // cloning the body pixmap before finding that out copies it for nothing.
+            _ => self
+                .scroll_src_rect(left, screen_w, screen_h, fonts)
+                .and_then(|(src, dst)| Some((src, dst, tiles.get(tile::SCROLL_CONTENT).cloned()?)))
+                .map(|(src, dst, body)| {
+                    tiles.put(tile::MODAL_PREV_CONTENT, cache::static_version(), body);
+                    updated.push(tile::MODAL_PREV_CONTENT);
+                    SnapshotBody::Cropped(src, dst)
+                }),
         };
-        let content = self
-            .scroll_src_rect(left, screen_w, screen_h, fonts)
-            .zip(body)
-            .map(|((src, dst), body)| (body, src, dst));
         tiles.put(tile::MODAL_PREV, cache::static_version(), shell);
         updated.push(tile::MODAL_PREV);
-        let content = content.map(|(body, src, dst)| {
-            tiles.put(tile::MODAL_PREV_CONTENT, cache::static_version(), body);
-            updated.push(tile::MODAL_PREV_CONTENT);
-            (src, dst)
-        });
         self.render.modal.prev = Some(crate::app::render::ModalSnapshot { region, content });
-    }
-
-    /// The settings list as one painter, at the full unscrolled height `scroll_src_rect`
-    /// crops against — the single body tile the row band deliberately does not keep. Built
-    /// only when a settings screen is being left (see `snapshot_closing_modal`).
-    ///
-    /// `screen` is the one being *left*, not `self.nav.screen` — that has already moved on, and
-    /// asking it for this geometry answers `None` (or the wrong scope's row count), which
-    /// drops the row list out of the fade instead of freezing it.
-    fn stitch_list_body(
-        &self,
-        screen: Screen,
-        tiles: &ui::cache::TileStore,
-        screen_w: u32,
-        screen_h: u32,
-        fonts: &ui::text::Fonts,
-    ) -> Option<Painter> {
-        let (total, _, _, content) = self.scroll_geometry_for(screen, screen_w, screen_h, fonts)?;
-        let stride = ui::widgets::focus_row_stride();
-        let mut body = Painter::new(content.width().max(1), (total as u32 * stride).max(1));
-        for i in 0..total {
-            let Some(row) = tile::list_row(i).and_then(|id| tiles.get(id)) else {
-                continue;
-            };
-            body.draw_painter(0, i as i32 * stride as i32, row);
-        }
-        Some(body)
     }
 
     /// The version [`tile::MODAL`] is valid at — a hash of everything the open screen's
@@ -641,7 +617,7 @@ impl App {
             })? {
                 updated.push(tile::DROPDOWN_FOCUS);
             }
-        } else if self.settings_ui.dropdown_fade.closing_frame(DROPDOWN_FADE).is_none() {
+        } else if !self.settings_ui.dropdown_fade.is_closing(DROPDOWN_FADE) {
             // Keep the tiles cached while a close-fade is in flight — `draw_list`
             // still composites them at falling alpha.
             tiles.remove(tile::DROPDOWN_OVERLAY);
@@ -675,7 +651,11 @@ impl App {
         let (screen_w, screen_h) = (size.w, size.h);
         // The settings-row band belongs to the settings screens alone; leaving them releases
         // it rather than holding a list's worth of textures behind whatever is on screen now.
-        if !is_scroll_list(self.nav.screen) {
+        // Stepping into a sub-page is not leaving them: the fade draws from that band, and
+        // keeping it makes the return a shell rebuild rather than a whole list of rows.
+        let keeps_rows = crate::app::nav::over_scroll_list(self.nav.screen)
+            || self.render.modal.prev.is_some_and(|p| p.holds_list_rows());
+        if !keeps_rows {
             self.evict_list_rows_from(0, tiles);
         }
         // Whichever modal's content overflows its viewport (Settings' rows, About's

@@ -5,17 +5,13 @@
 //! simply suspended while it is up (see `App::handle_home_event`). That keeps the card, its
 //! focus ring and its frosted title strip on screen underneath, which is the whole point:
 //! the menu belongs to *that* card, not to a modal that happens to know its id.
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::app::menu::nav_dir;
 use crate::app::{view, App};
 use crate::core::event::MenuEvent;
 use crate::core::screen::HomeFocus;
 use crate::ui;
-
-/// How long the selection band takes to travel from one row to the next. Short: the band is
-/// the only thing that says which row is picked, so the move has to finish inside a keypress.
-pub(crate) const MENU_FOCUS_SLIDE: Duration = Duration::from_millis(120);
 
 /// What one submenu row does. Two or three, depending on whether the card is in a collection
 /// at all — [`App::card_menu_row_kinds`] is the one table, so the labels, the panel's baked
@@ -48,9 +44,10 @@ pub struct CardMenu {
     /// That card's title — reused as the per-game settings screen's dim title suffix.
     pub title: String,
     pub focused: usize,
-    /// The row focus just left, and when — where the band slides *from* (see
-    /// [`MENU_FOCUS_SLIDE`]). `None` while it is settled on `focused`.
-    pub leaving: Option<(usize, Instant)>,
+    /// When focus last moved — the band's zoom-in clock, read through
+    /// `ui::animation::focus_tile_rect` exactly as a modal's focused row is
+    /// (`ModalState::focus_anim`). `None` once the pop has played out.
+    pub focus_anim: Option<Instant>,
     /// When it opened, for the panel's rise. Its own clock, not `focus_anim`: that one is
     /// re-armed by every focus move, and the panel must not restart with the card's zoom.
     pub since: Instant,
@@ -63,16 +60,16 @@ pub struct CardMenu {
 }
 
 impl CardMenu {
-    /// Moves focus and arms the band's slide. No-op when `row` is already focused, so a
-    /// pointer resting on a row can't restart a slide that goes nowhere.
+    /// Moves focus and arms the band's pop. No-op when `row` is already focused, so a
+    /// pointer resting on a row can't restart an animation that shows nothing.
     pub(crate) fn focus(&mut self, row: usize) {
         if row != self.focused {
-            self.leaving = Some((self.focused, Instant::now()));
+            self.focus_anim = Some(Instant::now());
             self.focused = row;
         }
     }
 
-    /// Whether the panel still owes frames — the rise, and the band's slide between rows.
+    /// Whether the panel still owes frames — the rise, and the band's focus pop.
     ///
     /// Both report `true` on the tick their clock *expires*, not just while it runs. That
     /// last tick is the one that draws the animation at its final value: report `false`
@@ -87,10 +84,10 @@ impl CardMenu {
             self.risen = self.since.elapsed() >= ui::animation::CARD_MENU_RISE;
             owed = true;
         }
-        match self.leaving {
-            Some((_, t)) if t.elapsed() < MENU_FOCUS_SLIDE => owed = true,
+        match self.focus_anim {
+            Some(t) if t.elapsed() < ui::animation::FOCUS_POP => owed = true,
             Some(_) => {
-                self.leaving = None;
+                self.focus_anim = None;
                 owed = true;
             }
             None => {}
@@ -116,7 +113,9 @@ impl App {
             idx,
             title,
             focused: 0,
-            leaving: None,
+            // Armed at open: the band pops in with the panel's rise, the same motion a row
+            // change plays later.
+            focus_anim: Some(Instant::now()),
             since: Instant::now(),
             risen: false,
             moved: false,

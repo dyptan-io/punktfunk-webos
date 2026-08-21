@@ -516,12 +516,17 @@ pub enum VideoBackend {
 
 /// Which look the menus draw in, picked on the Settings screen — the persisted name of a
 /// `ui::theme` preset, and the only part of a theme that belongs to the domain.
+///
+/// The default is the glass look, which is `ui::theme::PRESETS`' first entry: a fresh
+/// install has no `theme` key at all and draws frosted until someone picks otherwise. A
+/// document that names the flat look keeps it — the change is to what *absence* means, not
+/// to anyone's stored pick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThemeChoice {
+    Funk,
     #[default]
-    Default,
-    DefaultGlossy,
+    FunkGlass,
 }
 
 /// Anything but a name this build knows deserializes to [`ThemeChoice::default`].
@@ -534,8 +539,9 @@ impl<'de> Deserialize<'de> for ThemeChoice {
         // Through `Value` so any JSON shape at all lands here rather than failing to parse.
         let v = serde_json::Value::deserialize(d)?;
         Ok(match v.as_str() {
-            Some("default_glossy") => Self::DefaultGlossy,
-            _ => Self::Default,
+            // `"default"` is what older documents call the flat look.
+            Some("funk" | "default") => Self::Funk,
+            _ => Self::default(),
         })
     }
 }

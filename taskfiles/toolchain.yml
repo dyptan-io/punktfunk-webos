@@ -151,6 +151,7 @@ tasks:
         docker run --rm $TTY --platform linux/arm64 -e DEBIAN_FRONTEND=noninteractive \
           -e CARGO_PROFILE_RELEASE_LTO={{.RELEASE_LTO}} \
           -e CARGO_PROFILE_RELEASE_CODEGEN_UNITS={{.CODEGEN_UNITS}} \
+          -e PKG_VERSION={{.PKG_VERSION}} \
           {{.EXTRA_DOCKER}} {{.DOCKER_MOUNTS}} {{.RUST_IMAGE}} \
           sh -c '
             apt-get update -qq &&

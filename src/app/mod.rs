@@ -608,6 +608,12 @@ impl App {
         self.handle_menu_event(MenuEvent::Back, screen_w, screen_h, fonts)
     }
 
+    /// How long the modal close in flight runs — one answer, so the tick, the snapshot and
+    /// the compose path never disagree about when the fade is over.
+    pub(crate) fn modal_close_dur(&self) -> Duration {
+        self.render.modal.fade.close_dur(MODAL_FADE, MODAL_FADE_OUT)
+    }
+
     /// Advances every live animation one tick — the eased scroll, the focus pop,
     /// the modal fade — and reports whether anything is still moving (the main
     /// loop keeps rendering while true). Expired animations report one final
@@ -628,7 +634,8 @@ impl App {
             }
             animating = true;
         }
-        if self.render.modal.fade.tick_split(MODAL_FADE, MODAL_FADE_OUT) {
+        let close_dur = self.modal_close_dur();
+        if self.render.modal.fade.tick_split(MODAL_FADE, close_dur) {
             animating = true;
         }
         if self.settings_ui.dropdown_fade.tick(DROPDOWN_FADE) {
@@ -769,8 +776,14 @@ impl App {
         if screen_changed {
             let left = self.nav.last_screen;
             self.nav.last_screen = self.nav.screen;
+            // Modal-to-modal cross-fades: `ui::fade` makes the leaving card the entering
+            // one's inverse. Anything involving Home is a plain open or close.
             if !matches!(left, Screen::Home) {
-                self.render.modal.fade.close(left);
+                if matches!(self.nav.screen, Screen::Home) {
+                    self.render.modal.fade.close(left);
+                } else {
+                    self.render.modal.fade.close_cross(left);
+                }
             }
             if !matches!(self.nav.screen, Screen::Home) {
                 self.render.modal.fade.open();

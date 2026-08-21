@@ -318,7 +318,7 @@ pub fn override_is_set(over: &SettingsOverride, row: SettingsRow) -> bool {
 pub fn decorate_override(row: &mut FocusRow, over: &SettingsOverride, logical: SettingsRow, focused: bool) {
     row.mark = override_is_set(over, logical).then(|| crate::ui::theme::palette().warning);
     if row.mark.is_some() && focused && row.subtext.is_none() {
-        row.subtext = Some(RowSubtext::hint("Delete to use the global setting"));
+        row.subtext = Some(RowSubtext::hint("Reset to use the global setting"));
     }
 }
 

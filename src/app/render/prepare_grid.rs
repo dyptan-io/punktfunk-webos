@@ -359,13 +359,18 @@ impl App {
                     let kinds = self.card_menu_row_kinds(pin_id);
                     let labels = self.card_menu_rows(pin_id);
                     let rows: Vec<(&str, &str)> = labels.iter().map(|(i, l)| (*i, l.as_str())).collect();
-                    // No focused row in this key: the selection band is composited over
-                    // these tiles, so moving between the menu's rows rebuilds none of them.
-                    // The labels are the exception — they carry the focused/muted split now,
-                    // and get their own key below.
+                    // No focused row in this key: the glass and the title are composited
+                    // under the selection, so moving between the menu's rows rebuilds
+                    // neither. The two row tiles are the exception — the focused row moved
+                    // out of the list and into the band — and get their own keys below.
                     let version = cache::version(&(pin_id, card_w, card_h, &rows, overridden));
                     let focused = self.card_menu.as_ref().map_or(0, |m| m.focused);
                     let rows_version = cache::version(&(pin_id, card_w, card_h, &rows, overridden, focused));
+                    // The dot follows what owns it: the title while the strip is collapsed,
+                    // the Settings row once the panel is up.
+                    let marked = overridden
+                        .then(|| kinds.iter().position(|k| *k == CardMenuRow::Settings))
+                        .flatten();
                     if tiles.ensure(tile::CARD_MENU, version, || {
                         ui::rasterize(
                             ui::tiles::CardMenuTile {
@@ -385,11 +390,7 @@ impl App {
                                 card_w,
                                 card_h,
                                 rows: &rows,
-                                // The dot follows what owns it: the title while the strip is
-                                // collapsed, the Settings row once the panel is up.
-                                marked: overridden
-                                    .then(|| kinds.iter().position(|k| *k == CardMenuRow::Settings))
-                                    .flatten(),
+                                marked,
                                 focused,
                             },
                             text_cache,
@@ -407,13 +408,31 @@ impl App {
                     })? {
                         updated.push(tile::CARD_MENU_TITLE);
                     }
-                    // The selection band's rounded-bottom variant, for the row that ends
-                    // on the card's bottom edge. Keyed by width alone: it is one flat
-                    // colour, so nothing else about the card changes it.
-                    if tiles.ensure(tile::CARD_MENU_BAND, cache::version(&card_w), || {
-                        ui::rasterize(ui::tiles::CardMenuBandTile { card_w }, text_cache, fonts)
-                    })? {
-                        updated.push(tile::CARD_MENU_BAND);
+                    // The focused row, content and all — so keyed by that row, not by width
+                    // alone as it was while it held nothing but a flat fill. Built only with
+                    // the menu actually up, unlike its three siblings: nothing composites it
+                    // before the panel rises, and prefetching it for every focused card would
+                    // raster an icon and a label on each step across the grid.
+                    let band = menu_open.then(|| rows.get(focused).copied()).flatten();
+                    if let Some(row) = band {
+                        let band_marked = marked == Some(focused);
+                        if tiles.ensure(
+                            tile::CARD_MENU_BAND,
+                            cache::version(&(card_w, row, band_marked)),
+                            || {
+                                ui::rasterize(
+                                    ui::tiles::CardMenuBandTile {
+                                        card_w,
+                                        row,
+                                        marked: band_marked,
+                                    },
+                                    text_cache,
+                                    fonts,
+                                )
+                            },
+                        )? {
+                            updated.push(tile::CARD_MENU_BAND);
+                        }
                     }
                 }
             }

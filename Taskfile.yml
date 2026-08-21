@@ -40,7 +40,9 @@ vars:
   RUST_IMAGE: rust:bookworm
   PKG_VERSION:
     sh: |
-      if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+      if [ -n "${PKG_VERSION:-}" ]; then
+        echo "$PKG_VERSION"
+      elif [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
         echo "${GITHUB_REF_NAME#v}"
       else
         LATEST=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo 0.0.1)

@@ -173,6 +173,21 @@ impl App {
     ///
     /// `modal.scroll_px` is the raw target the ease writes; every reader wants it clamped, and
     /// the clamp used to be spelled out at each of them.
+    /// `screen`'s scrolling body as the compose and snapshot paths want it: `(row/line count,
+    /// viewport, clamped pixel offset)`. One derivation, so a screen with a non-row stride
+    /// cannot come out at two different offsets depending on who asked.
+    pub(crate) fn scroll_view_for(
+        &self,
+        screen: Screen,
+        screen_w: u32,
+        screen_h: u32,
+        fonts: &ui::text::Fonts,
+    ) -> Option<(usize, Rect, i32)> {
+        let (total, _, _, content) = self.scroll_geometry_for(screen, screen_w, screen_h, fonts)?;
+        let stride = self.scroll_stride_for(screen, fonts);
+        Some((total, content, self.clamped_scroll_px(total, stride, content.height())))
+    }
+
     pub(crate) fn clamped_scroll_px(&self, total: usize, stride: i32, viewport_h: u32) -> i32 {
         self.render
             .modal
