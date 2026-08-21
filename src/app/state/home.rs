@@ -239,15 +239,16 @@ impl App {
 
     /// [`Self::move_focused_card`] for a card named by id — what the collections modal
     /// confirms with, since the card it targets need not be the focused one by then.
-    pub(crate) fn move_card(&mut self, id: &str, to: Option<usize>, columns: usize, screen_w: u32, screen_h: u32) {
+    /// `false` when the card already sits in `to` and nothing moved.
+    pub(crate) fn move_card(&mut self, id: &str, to: Option<usize>, columns: usize, screen_w: u32, screen_h: u32) -> bool {
         let Some(known) = self.selected_known_host() else {
-            return;
+            return false;
         };
         if known.collection_of(id) == to {
-            return;
+            return false;
         }
         let Some(known) = self.selected_known_host_mut() else {
-            return;
+            return false;
         };
         known.move_to(id, to);
         self.persist();
@@ -262,6 +263,7 @@ impl App {
         // eye already follows — and re-arming the whole reshuffled tail read as the grid
         // reloading rather than as one card changing places.
         self.render.grid.arm_card_pop(id, Instant::now());
+        true
     }
 
     /// Re-lays the grid out over the selected host's collections — see
@@ -520,6 +522,7 @@ impl App {
             // The host answered — just not with a usable library — so Desktop is a
             // legitimate fallback here, unlike the `Unreachable` branch above.
             self.library.load_games(Vec::new());
+            self.regroup_games();
             self.home_status = Some(reason);
         }
     }

@@ -208,7 +208,7 @@ impl App {
                 game: self.editing_game().map(|gs| gs.title.as_str()),
             }),
             Screen::Collections => Some(ModalShellKey::Collections {
-                card: &self.screens.collections.title,
+                card: self.collections_heading(),
                 rows: self.collections_row_count(),
             }),
             Screen::Wake => self.screens.wake.as_ref().map(|w| ModalShellKey::Wake {

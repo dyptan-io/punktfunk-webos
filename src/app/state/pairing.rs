@@ -191,7 +191,8 @@ impl App {
     /// there is nothing left to undo — an all-zero PIN, or a ceremony already in flight
     /// (whose only meaningful key is the Back that cancels it).
     pub(crate) fn erase_pin_digit(&mut self) -> bool {
-        if self.screens.pairing_busy || self.screens.pin_digits == [0; 4] {
+        // Not `pin_digits == [0; 4]`: a typed leading 0 is still an erasable digit.
+        if self.screens.pairing_busy || (self.screens.pin_digit_index == 0 && self.screens.pin_digits[0] == 0) {
             return false;
         }
         self.screens.pairing_focus = PairingFocus::Pin;

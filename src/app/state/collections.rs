@@ -52,7 +52,7 @@ impl Default for CollectionsState {
 impl App {
     /// Raises the modal over the card `pin_id`, with the cursor on the collection already
     /// holding it.
-    pub(crate) fn open_collections(&mut self, pin_id: &str, title: &str) {
+    pub(crate) fn open_collections(&mut self, pin_id: &str, title: &str, screen_h: u32) {
         let holding = self.holding_row(pin_id);
         self.screens.collections = CollectionsState {
             target: Some(pin_id.to_string()),
@@ -63,6 +63,7 @@ impl App {
         self.nav.enter(Screen::Collections, holding);
         self.render.scroll = crate::ui::scroll::ScrollWindow::new();
         self.render.content_window = crate::ui::scroll::ContentWindow::new();
+        self.scroll_list_row_into_view(screen_h);
     }
 
     /// The row index of the collection holding `pin_id` — the Library row when nothing else
@@ -157,8 +158,9 @@ impl App {
         let columns = view::home::grid_columns_for_screen(screen_w);
         let moved = moved_toast(&self.screens.collections.title, &name);
         self.close_collections();
-        self.move_card(&target, to, columns, screen_w, screen_h);
-        self.toast(moved);
+        if self.move_card(&target, to, columns, screen_w, screen_h) {
+            self.toast(moved);
+        }
     }
 
     /// Raises the name dialog over the list: `at` is the collection being renamed, `None` to
