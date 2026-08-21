@@ -12,6 +12,15 @@ use std::time::{Duration, Instant};
 /// the same.
 pub const OVERLAY_FADE: Duration = Duration::from_millis(400);
 
+/// Modal open. Short: the card is the response to a keypress, and delay there reads as
+/// a slow TV, not as an animation.
+pub const MODAL_FADE: Duration = Duration::from_millis(75);
+
+/// Modal close, when nothing is opening behind it. Slower than the open — nothing is
+/// waiting on it, and outlasting the incoming card is what makes a modal-to-modal step
+/// read as one replacing the other.
+pub const MODAL_FADE_OUT: Duration = Duration::from_millis(150);
+
 /// `T` is whatever the caller needs preserved while closing (e.g. which screen was
 /// open) so the fade-out can keep rendering it after the live state has already moved
 /// on — use `()` if there's only ever one thing this could be.
@@ -20,20 +29,33 @@ pub struct ModalFade<T = ()> {
     closing: Option<(Instant, T)>,
     /// Whether the close in flight has something opening behind it — see [`Self::close_cross`].
     cross: bool,
-}
-
-impl<T: Copy + PartialEq> Default for ModalFade<T> {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// The two clocks, fixed when the fade is constructed rather than passed per call: a
+    /// caller that reads one alpha on the open duration and ticks on another retires a fade
+    /// half way through it, which is precisely how the quit dialog drifted out of step with
+    /// every other modal. Here that pair cannot be mismatched.
+    open_dur: Duration,
+    solo_close_dur: Duration,
 }
 
 impl<T: Copy + PartialEq> ModalFade<T> {
-    pub fn new() -> Self {
+    /// A modal layer: [`MODAL_FADE`] in, [`MODAL_FADE_OUT`] out (an open behind it shortens
+    /// the close back to the open's clock, see [`Self::close_cross`]).
+    pub fn modal() -> Self {
+        Self::new(MODAL_FADE, MODAL_FADE_OUT)
+    }
+
+    /// A transient in-stream overlay: [`OVERLAY_FADE`] both ways.
+    pub fn overlay() -> Self {
+        Self::new(OVERLAY_FADE, OVERLAY_FADE)
+    }
+
+    fn new(open_dur: Duration, solo_close_dur: Duration) -> Self {
         Self {
             open_since: None,
             closing: None,
             cross: false,
+            open_dur,
+            solo_close_dur,
         }
     }
 
@@ -66,12 +88,12 @@ impl<T: Copy + PartialEq> ModalFade<T> {
     }
 
     /// How long the close in flight runs: a cross-fade matches the open exactly, a lone close
-    /// takes `solo`'s slower dissolve — there is nothing arriving to hide it.
-    pub fn close_dur(&self, open: Duration, solo: Duration) -> Duration {
+    /// takes the slower dissolve — there is nothing arriving to hide it.
+    fn close_dur(&self) -> Duration {
         if self.cross {
-            open
+            self.open_dur
         } else {
-            solo
+            self.solo_close_dur
         }
     }
 
@@ -97,7 +119,8 @@ impl<T: Copy + PartialEq> ModalFade<T> {
     }
 
     /// Returns `(alpha, payload)` while a close is in flight; `None` otherwise.
-    pub fn closing_frame(&self, dur: Duration) -> Option<(f32, T)> {
+    pub fn closing_frame(&self) -> Option<(f32, T)> {
+        let dur = self.close_dur();
         let (t, payload) = self.closing.filter(|(t, _)| t.elapsed() < dur)?;
         Some((1.0 - anim_frac(Some(t), dur), payload))
     }
@@ -105,52 +128,49 @@ impl<T: Copy + PartialEq> ModalFade<T> {
     /// [`Self::closing_frame`] for the one caller that draws a cross-fade: `open` is the alpha
     /// of whatever is opening this frame, and a cross-fade's closing overlay is its inverse
     /// rather than its own ease, so the pair sums to one at every instant.
-    pub fn closing_frame_against(&self, dur: Duration, open: f32) -> Option<(f32, T)> {
-        match self.closing_frame(dur)? {
+    pub fn closing_frame_against(&self, open: f32) -> Option<(f32, T)> {
+        match self.closing_frame()? {
             (_, payload) if self.cross => Some((1.0 - open, payload)),
             frame => Some(frame),
         }
     }
 
     /// Whether a close is in flight, for callers that need its presence but not its alpha.
-    pub fn is_closing(&self, dur: Duration) -> bool {
+    pub fn is_closing(&self) -> bool {
+        let dur = self.close_dur();
         self.closing.is_some_and(|(t, _)| t.elapsed() < dur)
     }
 
     /// Open-fade alpha: eases 0.0 -> 1.0, `1.0` once finished or if never opened.
     /// Ease-*in*, so it is `closing_frame`'s curve played backwards.
-    pub fn open_alpha(&self, dur: Duration) -> f32 {
-        anim_frac_in(self.open_since, dur)
+    pub fn open_alpha(&self) -> f32 {
+        anim_frac_in(self.open_since, self.open_dur)
     }
 
     /// Alpha for a simple show/hide overlay driven by `shown`: `Some` through the close
     /// fade even after `shown` has already flipped to `false` (so the last frame doesn't
     /// cut instantly), and `None` once fully faded and hidden.
-    pub fn visibility_alpha(&self, dur: Duration, shown: bool) -> Option<f32> {
-        if let Some((alpha, _)) = self.closing_frame(dur) {
+    pub fn visibility_alpha(&self, shown: bool) -> Option<f32> {
+        if let Some((alpha, _)) = self.closing_frame() {
             return Some(alpha);
         }
-        shown.then(|| self.open_alpha(dur))
+        shown.then(|| self.open_alpha())
     }
 
     /// Whether an open or close fade is still mid-flight (i.e. hasn't yet reached its
     /// steady state). Pure and non-mutating, unlike `tick` — safe to call just to pick a
     /// redraw cadence.
-    pub fn is_animating(&self, dur: Duration) -> bool {
-        self.open_since.is_some_and(|t| t.elapsed() < dur) || self.closing.is_some_and(|(t, _)| t.elapsed() < dur)
+    pub fn is_animating(&self) -> bool {
+        self.open_since.is_some_and(|t| t.elapsed() < self.open_dur) || self.is_closing()
     }
 
-    /// Advances the clock; returns whether either fade is still in flight.
-    pub fn tick(&mut self, dur: Duration) -> bool {
-        self.tick_split(dur, dur)
-    }
-
-    /// [`tick`](Self::tick) for a caller whose two directions run at different speeds —
-    /// each clock clears on its own duration, or the shorter keeps asking for dead redraws.
-    pub fn tick_split(&mut self, open_dur: Duration, close_dur: Duration) -> bool {
+    /// Advances the clock; returns whether either fade is still in flight. Each direction
+    /// clears on its own duration, or the shorter keeps asking for dead redraws.
+    pub fn tick(&mut self) -> bool {
+        let close_dur = self.close_dur();
         let mut animating = false;
         if let Some(t) = self.open_since {
-            if t.elapsed() >= open_dur {
+            if t.elapsed() >= self.open_dur {
                 self.open_since = None;
             }
             animating = true;

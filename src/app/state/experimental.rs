@@ -57,7 +57,7 @@ impl App {
         // next visit rather than paying for it behind a screen that no longer asks.
         if !self.jobs.root_probe_owed
             || !matches!(self.nav.screen, Screen::Experimental)
-            || self.render.modal.fade.is_animating(crate::app::MODAL_FADE)
+            || self.render.modal.fade.is_animating()
         {
             return;
         }

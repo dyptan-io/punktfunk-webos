@@ -381,7 +381,7 @@ pub(super) fn run_ui_flow(
         // The quit dialog runs its own open/close fade and focus-pop, so keep ticking
         // while it (or its close-fade) is on screen, and force one redraw on the frame it
         // finally clears so it doesn't linger over the menu.
-        let quit_dialog_active = quit_dialog.frame(MODAL_FADE).is_some();
+        let quit_dialog_active = quit_dialog.frame().is_some();
         if quit_dialog_was_active && !quit_dialog_active {
             dirty = true;
         }

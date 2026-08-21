@@ -8,7 +8,7 @@ use sdl2::controller::GameController;
 
 use crate::app::hero::Connect;
 use crate::app::render::tile;
-use crate::app::{App, HomeFocus, Screen, MODAL_FADE};
+use crate::app::{App, HomeFocus, Screen};
 use crate::core::event::MenuEvent;
 use crate::platform::webos::compositor::Compositor;
 use crate::platform::webos::cursor;

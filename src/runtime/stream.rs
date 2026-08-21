@@ -273,11 +273,11 @@ pub(super) fn run_inner() -> Result<()> {
         // crashed an earlier attempt, see docs/NOTES.md). Green button flips it live, session-only.
         let mut stats_enabled = settings.stats_overlay;
         // Fades in/out on the same curve as the toast below — see `ModalFade::visibility_alpha`.
-        let mut stats_fade = crate::ui::fade::ModalFade::<()>::new();
+        let mut stats_fade = crate::ui::fade::ModalFade::<()>::overlay();
         if stats_enabled {
             stats_fade.open();
         }
-        let mut log_fade = crate::ui::fade::ModalFade::<()>::new();
+        let mut log_fade = crate::ui::fade::ModalFade::<()>::overlay();
         // Seeded from live key state, not `false`: these are rising-edge polls, and the launch
         // itself is a keypress. A key still down when the stream loop starts (webOS's EXIT
         // gesture in particular — a synthetic press whose key-up may never arrive) would read as
@@ -648,7 +648,7 @@ pub(super) fn run_inner() -> Result<()> {
             }
             // Wider than `is_open()`: a dismissed dialog still draws (fading out) a few more
             // ticks, used below to skip the stats overlay for exactly those ticks.
-            let dialog_frame = disconnect.frame(MODAL_FADE);
+            let dialog_frame = disconnect.frame();
             if dialog_frame.is_some() {
                 // Own clear/present pass over the punch-through video, unlike the menu's
                 // shared command list.
@@ -667,7 +667,7 @@ pub(super) fn run_inner() -> Result<()> {
                 canvas.clear();
                 compositor.present(&mut canvas, &cmds)?;
                 canvas.present();
-            } else if disconnect.fade.tick(MODAL_FADE) {
+            } else if disconnect.tick() {
                 // Close-fade just finished. Confirmed Disconnect: break now, nothing to wipe
                 // since the pre-stream UI takes the canvas next.
                 if let Some(outcome) = pending_outcome.take() {
@@ -695,9 +695,9 @@ pub(super) fn run_inner() -> Result<()> {
             let notif_active = notif_frame.is_some();
             // Fade in/out on the toast's curve instead of cutting instantly; `visibility_alpha`
             // keeps returning `Some` through the close fade after the toggle itself flips off.
-            let stats_alpha = stats_fade.visibility_alpha(crate::ui::fade::OVERLAY_FADE, stats_enabled);
+            let stats_alpha = stats_fade.visibility_alpha(stats_enabled);
             let log_overlay_on = log_overlay_state() != LogOverlayState::Off;
-            let log_alpha = log_fade.visibility_alpha(crate::ui::fade::OVERLAY_FADE, log_overlay_on);
+            let log_alpha = log_fade.visibility_alpha(log_overlay_on);
             let overlay_active = stats_alpha.is_some() || log_alpha.is_some() || notif_active;
             if overlay_was_active && !overlay_active {
                 // Nothing else clears this canvas — the faded-out tile would stick otherwise.
@@ -709,9 +709,7 @@ pub(super) fn run_inner() -> Result<()> {
             }
             overlay_was_active = overlay_active;
             // A fade in flight needs frequent frames; steady-state stats/log are fine at ~2Hz.
-            let fading = notif_active
-                || stats_fade.is_animating(crate::ui::fade::OVERLAY_FADE)
-                || log_fade.is_animating(crate::ui::fade::OVERLAY_FADE);
+            let fading = notif_active || stats_fade.is_animating() || log_fade.is_animating();
             let redraw_interval = if fading {
                 Duration::from_millis(33)
             } else {

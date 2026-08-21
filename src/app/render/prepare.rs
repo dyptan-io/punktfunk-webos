@@ -16,8 +16,7 @@ use crate::app::render::key::{ModalFocusKey, ModalShellKey, ScrollContentKey};
 use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
 use crate::app::{
-    menu, view, App, HomeFocus, PairingFocus, Screen, ABOUT_WINDOW_BUDGET, ABOUT_WINDOW_MARGIN, DROPDOWN_FADE,
-    SCROLL_INDICATOR_TILE_W,
+    menu, view, App, HomeFocus, PairingFocus, Screen, ABOUT_WINDOW_BUDGET, ABOUT_WINDOW_MARGIN, SCROLL_INDICATOR_TILE_W,
 };
 use crate::ui;
 use crate::ui::cache;
@@ -137,7 +136,7 @@ impl App {
         let (screen_w, screen_h) = (size.w, size.h);
         // Presence only — this decides whether a snapshot is still wanted, not what it
         // is drawn at, so it needs neither the entering alpha nor the exact duration.
-        let closing = self.render.modal.fade.closing_frame(self.modal_close_dur());
+        let closing = self.render.modal.fade.closing_frame();
         if closing.is_none() {
             // Fade over (or cancelled by reopening the same screen) — drop the copies
             // rather than keep two card-sized textures alive for nothing.
@@ -617,7 +616,7 @@ impl App {
             })? {
                 updated.push(tile::DROPDOWN_FOCUS);
             }
-        } else if !self.settings_ui.dropdown_fade.is_closing(DROPDOWN_FADE) {
+        } else if !self.settings_ui.dropdown_fade.is_closing() {
             // Keep the tiles cached while a close-fade is in flight — `draw_list`
             // still composites them at falling alpha.
             tiles.remove(tile::DROPDOWN_OVERLAY);

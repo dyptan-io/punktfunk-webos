@@ -33,7 +33,7 @@ impl SettingsUi {
             settings,
             game_settings: None,
             dropdown: None,
-            dropdown_fade: ui::fade::ModalFade::new(),
+            dropdown_fade: ui::fade::ModalFade::modal(),
             slider_drag: false,
         }
     }

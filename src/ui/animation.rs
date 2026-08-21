@@ -104,6 +104,17 @@ pub fn focus_tile_rect(base: Rect, focus_anim: Option<Instant>, press: Press) ->
     press.rect(zoom_rect(base, anim_frac(focus_anim, FOCUS_POP), FOCUS_GROWTH))
 }
 
+/// How far a modal card slides down as it fades out (and up as it fades in), in px.
+const MODAL_RISE: f32 = 26.0;
+
+/// How far a modal layer is still offset at fade progress `p` — the rise the entering card,
+/// the closing snapshot and the card's own frost pane all ride. Shared so the `App`'s
+/// `Screen` modals and the runtime-side confirm dialogs (which have no `App`) travel the
+/// same distance on the same curve.
+pub fn modal_rise(p: f32) -> i32 {
+    ((1.0 - p) * MODAL_RISE) as i32
+}
+
 /// Cubic ease-out function.
 pub fn ease(f: f32) -> f32 {
     1.0 - (1.0 - f).powi(3)
