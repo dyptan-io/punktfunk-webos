@@ -33,7 +33,9 @@ pub(crate) struct RenderState {
     pub(crate) hover_close: bool,
     pub(crate) sidebar_gen: u64,
     pub(crate) sidebar_dirty: bool,
-    /// Set when the Theme setting is switched: every tile that baked a glass fill is stale,
+    /// Tiles whose GPU texture this frame released — drained by the render loop, which does
+    /// the actual `drop_tile`. Nothing to do with the style: a Theme pick stales tiles through
+    /// `ui::theme::epoch` folded into every cache version, not through this list.
     pub(crate) evicted_tiles: Vec<TileId>,
     pub(crate) modal: modal::ModalState,
     pub(crate) grid: grid::GridState,

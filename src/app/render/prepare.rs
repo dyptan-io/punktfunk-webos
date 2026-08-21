@@ -809,7 +809,6 @@ impl App {
         Ok(())
     }
 
-
     /// Rasterizes every stale tile (tiny-skia, CPU — the only place rasterization
     /// happens) and returns which tiles need their GPU texture re-uploaded.
     /// `content_dirty` is the main loop's "an event/drain changed something this

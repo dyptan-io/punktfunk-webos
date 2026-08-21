@@ -625,7 +625,12 @@ impl Painter {
         let right = rect.x() as f32 + rect.width() as f32 - radius as f32;
         let cx = left + (right - left) * frac;
         self.fill_circle(cx + 1.0, cy + 2.0, knob_r, Color::RGBA(0x00, 0x00, 0x00, 0x40));
-        self.fill_circle(cx, cy, knob_r, if enabled { palette().text } else { palette().disabled });
+        self.fill_circle(
+            cx,
+            cy,
+            knob_r,
+            if enabled { palette().text } else { palette().disabled },
+        );
     }
 }
 

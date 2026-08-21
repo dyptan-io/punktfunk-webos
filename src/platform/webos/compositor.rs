@@ -50,6 +50,11 @@ struct Tile {
     /// The `(alpha, colour)` mod last applied, so a frame that doesn't move a fade issues no
     /// SDL calls at all. `None` until set — a recycled texture carries the previous tile's.
     mods: Option<(u8, u8)>,
+    /// A number unique to this texture's current *contents*, stamped by every upload. What
+    /// lets [`Compositor::backdrop_key`] tell "the same draw list" from "the same draw list,
+    /// but one of those tiles has new pixels in it" — per tile, so a tile uploaded this frame
+    /// only invalidates the frost capture when the capture actually referenced it.
+    gen: u64,
 }
 
 pub struct Compositor {
@@ -69,10 +74,9 @@ pub struct Compositor {
     /// first frame with focus, and a screen's worth of render target is allocated for the rest
     /// of the session. Only a stream that never returns to the menu avoids it.
     frost: Option<Frost>,
-    /// Bumped whenever any tile's pixels change identity — an upload, a drop, a clear. What
-    /// lets [`Chain::backdrop_key`] tell "the same draw list" from "the same draw list, but
-    /// one of those tiles has new pixels in it".
-    tile_epoch: u64,
+    /// Source of [`Tile::gen`] — bumped once per upload so no two contents ever share a
+    /// number, including across a drop and a re-acquire of the same id.
+    next_gen: u64,
 }
 
 /// Frosted glass, entirely in the sampler: the layers under the first frosted card are drawn
@@ -156,7 +160,7 @@ struct Chain {
     /// [`mask_blend`], composed once and accepted by this renderer.
     mask_mode: sdl2::sys::SDL_BlendMode,
     /// What [`backdrop`](Self::backdrop) and the levels under it currently hold — see
-    /// [`backdrop_key`]. `None` on a chain that has captured nothing yet.
+    /// [`Compositor::backdrop_key`]. `None` on a chain that has captured nothing yet.
     backdrop_key: Option<u64>,
 }
 
@@ -188,51 +192,6 @@ fn mask_blend() -> sdl2::sys::SDL_BlendMode {
             SDL_BlendOperation::SDL_BLENDOPERATION_ADD,
         )
     }
-}
-
-/// What the captured backdrop and the blur chain built off it currently hold: the commands
-/// drawn into it, the ground they were cleared to, the size of the target, and the tile epoch
-/// those commands resolved against.
-///
-/// A frosted frame whose key matches the last one reuses the capture instead of redrawing and
-/// re-minifying it — which is the common case by a wide margin: a card's title strip animates
-/// its wipe, a modal fades in, and the grid under either is identical frame to frame. That
-/// skips the under-layer's draws, all [`FROST_STEPS`] minifications and six render-target
-/// binds, leaving one full-screen blit as the whole cost of the backdrop.
-///
-/// Hashed rather than compared: keeping the previous list would mean cloning a frame's
-/// commands every frame to save comparing them, and a 64-bit hash of a draw list this size
-/// collides on a timescale nobody will be running this TV for.
-fn backdrop_key(cmds: &[DrawCmd], clear: sdl2::pixels::Color, size: (u32, u32), tile_epoch: u64) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    (size, tile_epoch, (clear.r, clear.g, clear.b, clear.a)).hash(&mut h);
-    for cmd in cmds {
-        match cmd {
-            DrawCmd::Tex { tile, dst, alpha } => (0u8, tile, rect_key(*dst), alpha).hash(&mut h),
-            DrawCmd::TexCropped { tile, src, dst, alpha } => {
-                (1u8, tile, rect_key(*src), rect_key(*dst), alpha).hash(&mut h);
-            }
-            // Through the bits: the fractional destination is the whole point of this variant,
-            // so rounding it here would let a sub-pixel pan reuse a stale capture.
-            DrawCmd::TexF { tile, dst, alpha } => (
-                2u8,
-                tile,
-                dst.x.to_bits(),
-                dst.y.to_bits(),
-                dst.w.to_bits(),
-                dst.h.to_bits(),
-                alpha,
-            )
-                .hash(&mut h),
-            DrawCmd::Fill { rect, color } => (3u8, rect_key(*rect), (color.r, color.g, color.b, color.a)).hash(&mut h),
-            // Unreachable: the slice hashed here ends at the frame's first frost. Hashed as a
-            // bare tag anyway rather than skipped, so a future caller that passes one cannot
-            // silently make two different lists key alike.
-            DrawCmd::Frost(_) => 4u8.hash(&mut h),
-        }
-    }
-    h.finish()
 }
 
 fn rect_key(r: Rect) -> (i32, i32, u32, u32) {
@@ -472,7 +431,7 @@ impl Compositor {
             staging: Vec::new(),
             premultiplied: None,
             frost: None,
-            tile_epoch: 0,
+            next_gen: 0,
         }
     }
 
@@ -494,6 +453,7 @@ impl Compositor {
                 shape,
                 premultiplied: false,
                 mods: None,
+                gen: 0,
             },
         );
         if let Some(old) = replaced {
@@ -524,8 +484,7 @@ impl Compositor {
             return cached;
         }
         let mode = premultiplied_blend();
-        let supported =
-            probe_blend_mode(creator.create_texture_static(PixelFormatEnum::RGBA32, 1, 1).ok(), mode);
+        let supported = probe_blend_mode(creator.create_texture_static(PixelFormatEnum::RGBA32, 1, 1).ok(), mode);
         tracing::info!("premultiplied texture blending: {supported}");
         let resolved = supported.then_some(mode);
         self.premultiplied = Some(resolved);
@@ -564,8 +523,10 @@ impl Compositor {
         if self.tiles.get(&tile).map(|t| t.shape) != Some(shape) {
             self.acquire(creator, tile, shape)?;
         }
-        self.tile_epoch = self.tile_epoch.wrapping_add(1);
+        self.next_gen = self.next_gen.wrapping_add(1);
+        let gen = self.next_gen;
         let entry = self.tiles.get_mut(&tile).expect("acquired above or already fresh");
+        entry.gen = gen;
         entry.premultiplied = false;
         entry
             .texture
@@ -596,8 +557,10 @@ impl Compositor {
         if self.tiles.get(&tile).map(|t| t.shape) != Some(shape) {
             self.acquire(creator, tile, shape)?;
         }
-        self.tile_epoch = self.tile_epoch.wrapping_add(1);
+        self.next_gen = self.next_gen.wrapping_add(1);
+        let gen = self.next_gen;
         let entry = self.tiles.get_mut(&tile).expect("acquired above or already fresh");
+        entry.gen = gen;
         entry.premultiplied = premultiplied.is_some();
         let tex = &mut entry.texture;
         let pitch = w as usize * 4;
@@ -658,7 +621,6 @@ impl Compositor {
 
     /// Destroys all cached GPU textures (call on stream start to free VRAM).
     pub fn clear_all(&mut self) {
-        self.tile_epoch = self.tile_epoch.wrapping_add(1);
         // SAFETY: `unsafe_textures` detaches each `Texture` from its creator's
         // lifetime, making the owner responsible for destruction. We drain both
         // collections so nothing can reach these textures again, then destroy each
@@ -676,7 +638,6 @@ impl Compositor {
     /// view; the texture goes to the pool for the row scrolling in to reuse, and is destroyed
     /// outright once that is full.
     pub fn drop_tile(&mut self, tile: TileId) {
-        self.tile_epoch = self.tile_epoch.wrapping_add(1);
         if let Some(tile) = self.tiles.remove(&tile) {
             self.release(tile);
         }
@@ -733,6 +694,63 @@ impl Compositor {
         Ok(())
     }
 
+    /// What the captured backdrop and the blur chain built off it currently hold: the commands
+    /// drawn into it, the ground they were cleared to, the size of the target, and the pixels the
+    /// tiles those commands name held at the time.
+    ///
+    /// A frosted frame whose key matches the last one reuses the capture instead of redrawing and
+    /// re-minifying it — which is the common case by a wide margin: a card's title strip animates
+    /// its wipe, a modal fades in, and the grid under either is identical frame to frame. That
+    /// skips the under-layer's draws, all [`FROST_STEPS`] minifications and six render-target
+    /// binds, leaving one full-screen blit as the whole cost of the backdrop.
+    ///
+    /// The tile contents fold in per *referenced* tile ([`Tile::gen`]), not as one counter over
+    /// every upload: the tiles that re-raster every frame — the modal's focused row through a
+    /// toggle slide, the card submenu's labels through a row move — are all drawn *above* the
+    /// first frost pane and so are not in this slice at all. Keyed off a global counter they
+    /// invalidated the capture on exactly the frames the effect is running, which is the whole of
+    /// what this cache exists to prevent. A tile with no entry (dropped, or cleared) keys as
+    /// absent, and a re-acquired one gets a fresh number, so neither can alias its old contents.
+    ///
+    /// Hashed rather than compared: keeping the previous list would mean cloning a frame's
+    /// commands every frame to save comparing them, and a 64-bit hash of a draw list this size
+    /// collides on a timescale nobody will be running this TV for.
+    fn backdrop_key(&self, cmds: &[DrawCmd], clear: sdl2::pixels::Color, size: (u32, u32)) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (size, (clear.r, clear.g, clear.b, clear.a)).hash(&mut h);
+        let gen = |tile: &TileId| self.tiles.get(tile).map(|t| t.gen);
+        for cmd in cmds {
+            match cmd {
+                DrawCmd::Tex { tile, dst, alpha } => (0u8, tile, gen(tile), rect_key(*dst), alpha).hash(&mut h),
+                DrawCmd::TexCropped { tile, src, dst, alpha } => {
+                    (1u8, tile, gen(tile), rect_key(*src), rect_key(*dst), alpha).hash(&mut h);
+                }
+                // Through the bits: the fractional destination is the whole point of this variant,
+                // so rounding it here would let a sub-pixel pan reuse a stale capture.
+                DrawCmd::TexF { tile, dst, alpha } => (
+                    2u8,
+                    tile,
+                    gen(tile),
+                    dst.x.to_bits(),
+                    dst.y.to_bits(),
+                    dst.w.to_bits(),
+                    dst.h.to_bits(),
+                    alpha,
+                )
+                    .hash(&mut h),
+                DrawCmd::Fill { rect, color } => {
+                    (3u8, rect_key(*rect), (color.r, color.g, color.b, color.a)).hash(&mut h);
+                }
+                // Unreachable: the slice hashed here ends at the frame's first frost. Hashed as a
+                // bare tag anyway rather than skipped, so a future caller that passes one cannot
+                // silently make two different lists key alike.
+                DrawCmd::Frost(_) => 4u8.hash(&mut h),
+            }
+        }
+        h.finish()
+    }
+
     /// [`present`](Self::present)'s frosted path: capture the under-layers offscreen, minify
     /// them twice, blit the capture back in their place, then run the rest of the list — the
     /// frost commands in it now have something to sample.
@@ -747,9 +765,8 @@ impl Compositor {
         size: (u32, u32),
         frost: &mut Frost,
     ) -> Result<()> {
-        let epoch = self.tile_epoch;
+        let key = self.backdrop_key(&cmds[..first_frost], clear, size);
         let rest = if let Some(chain) = frost.chain_for(creator, size) {
-            let key = backdrop_key(&cmds[..first_frost], clear, size, epoch);
             let stale = chain.backdrop_key != Some(key);
             // Cleared before the capture, not after: an error below leaves the texture holding
             // half a frame, and a key still naming it would show that half next frame.
@@ -899,16 +916,20 @@ fn draw_frost(
     } = chain;
     let blurred: &Texture = level.map_or(backdrop, |i| &levels[i]);
     let (scratch, _) = &mut scratches[scratch_i];
-    // The whole shape, not just the visible window: the scratch is shape-sized and cached, so
-    // blurring all of it costs one fixed copy instead of a per-frame resize during a wipe.
-    copy_into(canvas, scratch, blurred, Some(src))?;
     let (mask, _) = &masks[mask_i];
     set_raw_blend_mode(mask, mask_mode);
     let grain = grain.as_ref();
     let mut err = None;
+    // Blur, grain and mask in one binding of the scratch. Three separate `with_texture_canvas`
+    // calls would be three render-target switches per pane per frame, and on a tiled GPU each
+    // one resolves and reloads the whole attachment — far more than the copies cost.
     canvas
         .with_texture_canvas(scratch, |c| {
-            // Grain first, then the mask: the mask only writes alpha, so anything laid after
+            // The whole shape, not just the visible window: the scratch is shape-sized and
+            // cached, so blurring all of it is one fixed copy instead of a per-frame resize
+            // during a wipe.
+            err = c.copy(blurred, Some(to_sdl_rect(src)), None).err();
+            // Grain next, then the mask: the mask only writes alpha, so anything laid after
             // it would paint outside the rounded shape.
             if let Some(grain) = grain {
                 for ty in (0..h).step_by(GRAIN_TILE as usize) {
@@ -924,9 +945,9 @@ fn draw_frost(
                 err = c.copy(mask, None, None).err();
             }
         })
-        .map_err(|e| anyhow::anyhow!("frost mask target: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("frost scratch target: {e}"))?;
     if let Some(e) = err {
-        return Err(anyhow::anyhow!("frost mask copy: {e}"));
+        return Err(anyhow::anyhow!("frost scratch copy: {e}"));
     }
     scratch.set_blend_mode(BlendMode::Blend);
     scratch.set_alpha_mod(pane.alpha);
@@ -974,6 +995,14 @@ fn grain_tile(creator: &TextureCreator<WindowContext>, alpha: u8) -> Result<Text
 
 /// One pane's alpha mask, at its unscaled shape size. White throughout — only the alpha is read
 /// on the masking path, and the fallback's colour mod wants an unmodified base.
+///
+/// Forced back to *straight* alpha after rasterizing: a `Painter` hands back premultiplied
+/// pixels, so an antialiased corner texel is `(a, a, a, a)`. The mask path reads nothing but
+/// the alpha and cannot tell, but the fallback path blits this with an ordinary
+/// [`BlendMode::Blend`], which multiplies by the alpha a second time — the flat panes' rounded
+/// corners came out darker and harder than the shape they are cut from. White is the same in
+/// both encodings once the RGB is pinned at full, and it is what the fallback's colour mod
+/// wants anyway.
 fn frost_mask(creator: &TextureCreator<WindowContext>, w: u32, h: u32, mask: FrostMask) -> Result<Texture> {
     const WHITE: Color = Color::RGBA(0xff, 0xff, 0xff, 0xff);
     let mut p = Painter::new(w, h);
@@ -984,10 +1013,14 @@ fn frost_mask(creator: &TextureCreator<WindowContext>, w: u32, h: u32, mask: Fro
         Corners::Bottom => Rect::new(0, -mask.radius, w, h + mask.radius as u32),
     };
     p.fill_rounded_rect(shape, mask.radius, WHITE);
+    let mut px = p.data().to_vec();
+    for texel in px.chunks_exact_mut(4) {
+        texel[..3].fill(0xff);
+    }
     let mut tex = creator
         .create_texture_static(PixelFormatEnum::RGBA32, w, h)
         .map_err(|e| anyhow::anyhow!("frost mask {w}x{h}: {e}"))?;
-    tex.update(None, p.data(), w as usize * 4)
+    tex.update(None, &px, w as usize * 4)
         .map_err(|e| anyhow::anyhow!("frost mask upload: {e}"))?;
     Ok(tex)
 }

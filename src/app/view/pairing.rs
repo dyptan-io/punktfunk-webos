@@ -164,7 +164,13 @@ impl ModalScreen for Modal<'_> {
         let l = layout(card, c.fonts);
         c.modal_shell(card, hover_close)?;
 
-        c.modal_header(card, TITLE, ui::theme::palette().text, SUBTITLE, ui::theme::palette().muted)?;
+        c.modal_header(
+            card,
+            TITLE,
+            ui::theme::palette().text,
+            SUBTITLE,
+            ui::theme::palette().muted,
+        )?;
 
         // Primary first, and visually primary: approving on the host is the path that
         // always works, whereas the PIN needs the host's pairing page open and armed.

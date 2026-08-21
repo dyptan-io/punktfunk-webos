@@ -46,9 +46,9 @@ pub(crate) mod prelude {
     pub(crate) use crate::ui::layout::*;
     pub(crate) use crate::ui::painter::*;
     pub(crate) use crate::ui::render::{Color, Rect};
-    pub(crate) use crate::ui::theme::{icons, palette};
     pub(crate) use crate::ui::text::*;
     pub(crate) use crate::ui::text_raster::{FontId, TextRaster};
+    pub(crate) use crate::ui::theme::{icons, palette};
     pub(crate) use crate::ui::tiles::*;
     pub(crate) use crate::ui::widgets::*;
     pub(crate) use crate::ui::{Canvas, StatefulWidget, TileWidget, Widget};

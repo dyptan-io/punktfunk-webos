@@ -374,14 +374,7 @@ impl App {
     /// masked separately — and its seams showed against the card it was supposed to be part
     /// of. Dissolving the *content* instead adds no surface at all: the row thins out into
     /// whatever the card already is, on either theme, and there is nothing left to seam.
-    fn push_faded(
-        cmds: &mut Vec<DrawCmd>,
-        tile: ui::render::TileId,
-        src: Rect,
-        dst: Rect,
-        alpha: u8,
-        fades: &Fades,
-    ) {
+    fn push_faded(cmds: &mut Vec<DrawCmd>, tile: ui::render::TileId, src: Rect, dst: Rect, alpha: u8, fades: &Fades) {
         let strip = |y: i32, h: u32, alpha: u8| DrawCmd::TexCropped {
             tile,
             src: Rect::new(src.x(), src.y() + (y - dst.y()), src.width(), h),

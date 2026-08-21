@@ -58,8 +58,13 @@ impl ModalScreen for Modal<'_> {
         let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
         let (title, subtitle, typed) = (self.title, self.subtitle.as_str(), self.typed);
         c.modal_shell(card, hover_close)?;
-        let after_subtitle_y =
-            c.modal_header(card, title, ui::theme::palette().text, subtitle, ui::theme::palette().muted)?;
+        let after_subtitle_y = c.modal_header(
+            card,
+            title,
+            ui::theme::palette().text,
+            subtitle,
+            ui::theme::palette().muted,
+        )?;
         let field = Rect::new(
             card.x() + 32,
             after_subtitle_y + 20,
