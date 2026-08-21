@@ -184,6 +184,24 @@ impl App {
         }
     }
 
+    /// Undoes the last typed digit: `enter_pin_digit` writes then advances, so erasing
+    /// means stepping back onto the digit just written and clearing it. The row is a
+    /// fixed four-box odometer, so "clear" is 0 rather than an empty box. `false` when
+    /// there is nothing left to undo — an all-zero PIN, or a ceremony already in flight
+    /// (whose only meaningful key is the Back that cancels it).
+    pub(crate) fn erase_pin_digit(&mut self) -> bool {
+        if self.screens.pairing_busy || self.screens.pin_digits == [0; 4] {
+            return false;
+        }
+        self.screens.pairing_focus = PairingFocus::Pin;
+        if self.screens.pin_digits[self.screens.pin_digit_index] == 0 && self.screens.pin_digit_index > 0 {
+            self.screens.pin_digit_index -= 1;
+            self.render.modal.focus_anim = Some(Instant::now());
+        }
+        self.screens.pin_digits[self.screens.pin_digit_index] = 0;
+        true
+    }
+
     /// Start PIN pairing on background thread (30s timeout).
     pub(crate) fn try_pair(&mut self) {
         let entry = &self.hosts.entries[self.screens.pairing_entry];

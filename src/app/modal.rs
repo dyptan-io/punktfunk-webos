@@ -78,7 +78,7 @@ impl Default for ModalState {
             // composite of an unbuilt modal is a pixel, not a division by zero.
             tile_region: Rect::new(0, 0, 1, 1),
             prev: None,
-            fade: ui::fade::ModalFade::new(),
+            fade: ui::fade::ModalFade::modal(),
             focus_anim: None,
             switch_anim: None,
         }

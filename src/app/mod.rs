@@ -46,13 +46,6 @@ pub(crate) const LAUNCH_GROWTH: f32 = 3.5;
 const PIN_BADGE_MARGIN: i32 = 10;
 pub(crate) const CARD_POP: Duration = Duration::from_millis(300);
 pub(crate) const CARD_POP_SHRINK: f32 = 0.14;
-/// Modal open. Short: the card is the response to a keypress, and delay there reads as
-/// a slow TV, not as an animation.
-pub(crate) const MODAL_FADE: Duration = Duration::from_millis(75);
-/// Modal close. Slower than the open — nothing is waiting on it, and outlasting the
-/// incoming card is what makes a modal-to-modal step read as one replacing the other.
-pub(crate) const MODAL_FADE_OUT: Duration = Duration::from_millis(150);
-pub(crate) const DROPDOWN_FADE: Duration = MODAL_FADE;
 /// Transparent margin the modal tile leaves around the card so its drop shadow
 /// (`Painter::card_shadow`: blur `SHADOW_BLUR`=14, offset dy 5) fits inside the tile.
 /// The tile is sized to the card's bounding box plus this pad rather than the whole
@@ -383,12 +376,12 @@ impl App {
             Some((
                 dd.row,
                 dd.focused,
-                self.settings_ui.dropdown_fade.open_alpha(DROPDOWN_FADE),
+                self.settings_ui.dropdown_fade.open_alpha(),
             ))
         } else {
             self.settings_ui
                 .dropdown_fade
-                .closing_frame(DROPDOWN_FADE)
+                .closing_frame()
                 .map(|(alpha, (row, focused))| (row, focused, alpha))
         }
     }
@@ -588,6 +581,24 @@ impl App {
         }
         true
     }
+    /// Erases one character from whichever screen is currently editing text, reporting
+    /// whether it consumed the key. The counterpart to [`Self::back`]: one definition of
+    /// "what an erase means here", so the loop that sees the Backspace doesn't have to
+    /// know which screens edit what. `false` leaves the key to its normal `Back` meaning,
+    /// which is what makes an erase on an already-empty field still close the modal.
+    pub fn erase_text_entry(&mut self) -> bool {
+        match self.nav.screen {
+            Screen::AddHost | Screen::EditHost => {
+                !self.screens.add_host.text().is_empty() && {
+                    self.screens.add_host.backspace();
+                    true
+                }
+            }
+            Screen::Pairing => self.erase_pin_digit(),
+            _ => false,
+        }
+    }
+
     /// Applies a `Back` to whichever screen is current — the single shared
     /// definition of "what Back means here" for every caller that needs it
     /// pre-emptively rather than through the normal per-screen `MenuEvent`
@@ -617,12 +628,6 @@ impl App {
         self.handle_menu_event(MenuEvent::Back, screen_w, screen_h, fonts)
     }
 
-    /// How long the modal close in flight runs — one answer, so the tick, the snapshot and
-    /// the compose path never disagree about when the fade is over.
-    pub(crate) fn modal_close_dur(&self) -> Duration {
-        self.render.modal.fade.close_dur(MODAL_FADE, MODAL_FADE_OUT)
-    }
-
     /// Advances every live animation one tick — the eased scroll, the focus pop,
     /// the modal fade — and reports whether anything is still moving (the main
     /// loop keeps rendering while true). Expired animations report one final
@@ -643,11 +648,10 @@ impl App {
             }
             animating = true;
         }
-        let close_dur = self.modal_close_dur();
-        if self.render.modal.fade.tick_split(MODAL_FADE, close_dur) {
+        if self.render.modal.fade.tick() {
             animating = true;
         }
-        if self.settings_ui.dropdown_fade.tick(DROPDOWN_FADE) {
+        if self.settings_ui.dropdown_fade.tick() {
             animating = true;
         }
         // The hero loading screen keeps panning for as long as the launch is on screen,

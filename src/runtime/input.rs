@@ -109,7 +109,7 @@ pub(super) struct ConfirmDialog {
     subtitle: &'static str,
     buttons: [crate::ui::widgets::ConfirmButton<'static>; 2],
     focus: Option<usize>,
-    pub(super) fade: crate::ui::fade::ModalFade<usize>,
+    fade: crate::ui::fade::ModalFade<usize>,
     /// Re-render only on open; focused button is its own tile.
     shell_dirty: bool,
     focus_dirty: bool,
@@ -134,7 +134,7 @@ impl ConfirmDialog {
             subtitle,
             buttons,
             focus: None,
-            fade: crate::ui::fade::ModalFade::new(),
+            fade: crate::ui::fade::ModalFade::modal(),
             shell_dirty: false,
             focus_dirty: false,
             focus_anim: None,
@@ -178,11 +178,16 @@ impl ConfirmDialog {
     }
 
     /// Returns `(focus, alpha, is_closing)` to draw, or `None` if nothing to show.
-    pub(super) fn frame(&self, dur: Duration) -> Option<(usize, f32, bool)> {
-        if let Some((alpha, focus)) = self.fade.closing_frame(dur) {
+    pub(super) fn frame(&self) -> Option<(usize, f32, bool)> {
+        if let Some((alpha, focus)) = self.fade.closing_frame() {
             return Some((focus, alpha, true));
         }
-        self.focus.map(|focus| (focus, self.fade.open_alpha(dur), false))
+        self.focus.map(|focus| (focus, self.fade.open_alpha(), false))
+    }
+
+    /// Advances the fade; `true` while either direction is still in flight.
+    pub(super) fn tick(&mut self) -> bool {
+        self.fade.tick()
     }
 
     /// Feeds one SDL event to the open dialog. Fresh presses only, so an
@@ -278,7 +283,7 @@ impl ConfirmDialog {
         blurrable: bool,
         cmds: &mut Vec<DrawCmd>,
     ) -> Result<()> {
-        let Some((focus, m, _closing)) = self.frame(MODAL_FADE) else {
+        let Some((focus, m, _closing)) = self.frame() else {
             return Ok(());
         };
         let (w, h) = (screen.w, screen.h);
@@ -319,8 +324,8 @@ impl ConfirmDialog {
             compositor.upload(texture_creator, tile::DISCONNECT_FOCUS_BUTTON, &tile, false)?;
         }
         // Same open/close motion as the `App`'s `Screen` modals (see `compose_modal`):
-        // slide in/out ~26px while fading, same curve in both directions, no scale.
-        let dy = ((1.0 - m) * 26.0) as i32;
+        // the shared rise, same curve in both directions, no scale.
+        let dy = crate::ui::animation::modal_rise(m);
         let pad = crate::ui::tiles::ROW_TILE_PAD;
         let base = crate::ui::render::Rect::new(
             btn_rect.x() - pad,
@@ -700,6 +705,16 @@ pub(super) fn handle_ui_event(
                     Screen::AddHost | Screen::EditHost => app.enter_add_host_digit(digit),
                     _ => unreachable!(),
                 }
+                return EventAction::Next;
+            }
+            // Backspace is a *text* key here, not navigation: `menu_event_for_key` maps it to
+            // Back (a remote whose Back arrives as Backspace still has to work), which would
+            // close the modal on every attempt to correct a typo — from a USB keyboard and
+            // from webOS's on-screen keyboard alike, since the OSK's erase key is delivered
+            // as a synthetic Backspace rather than as `TextInput`. Consumed only when the
+            // screen had something to erase, so on such a remote Backspace still leaves an
+            // empty field the way Back does.
+            if k == sdl2::keyboard::Keycode::Backspace && app.erase_text_entry() {
                 return EventAction::Next;
             }
         }

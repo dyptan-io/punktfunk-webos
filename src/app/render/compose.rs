@@ -7,21 +7,12 @@ use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
 use crate::app::{
     hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP, CARD_POP_SHRINK, LAUNCH_GROWTH,
-    MODAL_FADE, MODAL_TILE_PAD, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD,
+    MODAL_TILE_PAD, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD,
     SCROLL_INDICATOR_TILE_W, STATUS_BG_PAD,
 };
 use crate::ui;
 use crate::ui::cache::TileStore;
 use crate::ui::render::{DrawCmd, Rect};
-
-/// How far a modal card slides down as it fades out (and up as it fades in), in px.
-const MODAL_RISE: f32 = 26.0;
-
-/// How far a modal layer is still offset at fade progress `p` — the rise both the entering
-/// card and the closing snapshot ride, and which its frost pane has to ride with it.
-fn modal_rise(p: f32) -> i32 {
-    ((1.0 - p) * MODAL_RISE) as i32
-}
 
 /// How tall each step of an edge fade's alpha ramp is. Every step is one `TexCropped` with its
 /// own alpha, and SDL cannot batch across an alpha-mod change, so this divides `SCROLL_FADE_H`
@@ -69,14 +60,14 @@ impl App {
         let m = if matches!(screen, Screen::Home) {
             0.0
         } else {
-            self.render.modal.fade.open_alpha(MODAL_FADE)
+            self.render.modal.fade.open_alpha()
         };
         // `m` is what a cross-fade's leaving card is drawn as the inverse of (see `ModalFade`).
         let closing = self
             .render
             .modal
             .prev
-            .zip(self.render.modal.fade.closing_frame_against(self.modal_close_dur(), m))
+            .zip(self.render.modal.fade.closing_frame_against(m))
             .map(|(prev, (alpha, _))| (alpha, prev));
         // The backdrop belongs to "a modal is up", not to either card: re-fading it
         // mid-step would brighten the whole screen and read as a blink. It only fades when
@@ -102,11 +93,11 @@ impl App {
         // had. The invariant to keep: nothing that tints the whole screen may be pushed
         // before a frost pane.
         if !matches!(screen, Screen::Home) {
-            let region = self.render.modal.tile_region.offset(0, modal_rise(m));
+            let region = self.render.modal.tile_region.offset(0, ui::animation::modal_rise(m));
             self.push_frost(cmds, region, (255.0 * m) as u8);
         }
         if let Some((alpha, prev)) = closing {
-            self.push_frost(cmds, prev.region.offset(0, modal_rise(alpha)), (255.0 * alpha) as u8);
+            self.push_frost(cmds, prev.region.offset(0, ui::animation::modal_rise(alpha)), (255.0 * alpha) as u8);
         }
         if scrim > 0.0 {
             cmds.push(DrawCmd::Fill {
@@ -120,7 +111,7 @@ impl App {
         // Last, so it fades away *over* what it uncovers: the entering card is often the
         // larger (a submenu returning to Settings) and would otherwise hide it entirely.
         if let Some((alpha, prev)) = closing {
-            let dy = modal_rise(alpha);
+            let dy = ui::animation::modal_rise(alpha);
             let a = (255.0 * alpha) as u8;
             cmds.push(DrawCmd::Tex {
                 tile: tile::MODAL_PREV,
@@ -189,7 +180,7 @@ impl App {
     ) {
         // Paired as one argument to stay inside clippy's `too_many_arguments` limit.
         let (screen_w, screen_h) = (size.w, size.h);
-        let dy = modal_rise(m);
+        let dy = ui::animation::modal_rise(m);
         // The tile now covers only the card region (see `prepare_modal`), so it
         // composites there rather than full-screen. Opening plays the same motion
         // `compose_modal`'s closing snapshot uses below, in reverse — fade + rise, no
