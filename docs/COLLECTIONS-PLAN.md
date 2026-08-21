@@ -3,6 +3,11 @@
 Pinned becomes an ordinary user collection; Library stays the dynamic remainder. Games move
 between collections from the card menu. Collections are per host, in `settings.json`.
 
+**Status: implemented on `collections-plan`.** Every phase below is committed; the deviations
+are marked inline and reasoned about in `docs/handovers/collections-plan.md`. What is left is
+the device pass — the migration against a real pre-collections `settings.json`, the collections
+modal's first open, and the on-screen keyboard in the add/rename dialog.
+
 ## Model
 
 `core::model`:
@@ -56,8 +61,10 @@ Rules, enforced by `KnownHost` methods so no caller can break them:
 Simplifications this unlocks:
 
 - `GamePrefs::pin`, `is_pinned`, `pinned_ids`, `pinned_count`, `can_toggle_pin`, `toggle_pin`,
-  `pinned_only`, `MAX_PINNED_GAMES` all go. `GamePrefs` collapses to the override map:
-  `games: BTreeMap<String, SettingsOverride>` (kills `is_empty`/`drop_if_empty` bookkeeping).
+  `pinned_only`, `MAX_PINNED_GAMES` all go. `GamePrefs` was to collapse to the override map:
+  `games: BTreeMap<String, SettingsOverride>` — *not done*: `pin` survives as
+  `GamePrefs::legacy_pin` (never serialized) because it is what the migration reads, and the
+  two pre-collections document routes would each need their own raw-JSON read of it instead.
 - `Screen::PinLimit`, `app/state/pinlimit.rs`, `app/view/pinlimit.rs`, `ScreenKey::PinLimit`
   and `PIN_LIMIT_MESSAGE` go — there is no per-collection cap, only 20 collections.
 - `tile::PIN_BADGE` / `PIN_BADGE_SIZE` / `PIN_BADGE_MARGIN` go: the section heading already
@@ -424,19 +431,29 @@ needs it, and the grid rewrite lands before anything can create a second collect
 
 1. **Model + migration + persistence.** No UI change — Pinned renders exactly as today through
    the generic group path. Device check: existing hosts keep their pinned block; a fresh install
-   gets Pinned + Desktop.
-2. **Grid → N groups.** `Library::groups`, the `Copy`-preserving `GridLayout`/`GridSections`, the
-   heading slot tiles, the borrow move onto `impl Library`. Still one collection, so any visible
-   change is a bug. Property tests are the gate; device check for scroll, focus, pointer, pops.
-3. **Scroll-list family.** Generalize Settings' scrolling row list; Settings itself must look and
-   behave identically afterwards (device check), because it is the only client so far.
-4. **Collections screen** + card menu `Move to…` / `Remove`, built on 3.
+   gets Pinned + Desktop. *(done, `100d416`, shipped with 2 — phase 1 alone would have needed
+   shims phase 2 deletes.)*
+2. **Grid → N groups.** `Library::groups`, the `Copy`-preserving `GridLayout`/`GridSections`,
+   the heading slot tiles, the borrow move onto `impl Library`. Still one collection, so any
+   visible change is a bug. Property tests are the gate; device check for scroll, focus,
+   pointer, pops. *(done, `100d416`.)*
+3. **Scroll-list family.** Generalize Settings' scrolling row list; Settings itself must look
+   and behave identically afterwards (device check), because it is the only client so far.
+   *(done, `c9685a2`.)*
+4. **Collections screen** + card menu `Move to…` / `Remove`, built on 3. *(done, `73a5aeb`.)*
 5. **Add / rename / remove dialogs**, `MAX_COLLECTIONS`, the name rules. Verify the webOS
    on-screen keyboard on the TV early — text entry there has a history (see `docs/NOTES.md`).
-6. **Drag-mode reordering** of collections.
-7. **In-collection card reordering** (swap, scrim, commit-on-exit).
-8. **`services::recents`** and Library's recency order.
-9. **Cleanup:** delete the pin APIs, `PinLimit`, the pin badge, collapse `GamePrefs`.
+   *(done, `0de4b3b`; the rename/remove entry points came with 6's trailing buttons, since
+   wiring them earlier would have been dead code.)*
+6. **Drag-mode reordering** of collections. *(done, `6e35aa2`, `e6c0524`.)*
+7. **In-collection card reordering** (swap, scrim, commit-on-exit). *(done, `e8388f3`. The
+   Desktop card heads its group, so it is never a slot to trade — `swap_within_collection`
+   skips it.)*
+8. **`services::recents`** and Library's recency order. *(done, `a29db6b`. No focus re-latch
+   needed: `run_ui_flow` builds a fresh `App` per menu entry.)*
+9. **Cleanup:** delete the pin APIs, `PinLimit`, the pin badge, collapse `GamePrefs`. *(done,
+   `de7437d`, except the `GamePrefs` collapse: `legacy_pin` is the migration's only input and
+   reaches `load` by two document routes.)*
 
 Phases 1-3 are refactors with no new feature surface; 4-8 are each independently shippable.
 
