@@ -22,7 +22,7 @@ use crate::ui::Painter;
 /// the style changes under it (a fade ramp, a focus ring at a fixed size). Distinct from any
 /// [`version`] output by the nudge there, which is what reserves this band.
 pub fn static_version() -> u64 {
-    crate::ui::style::style_epoch()
+    crate::ui::theme::epoch()
 }
 
 /// Hashes a tile's dependencies into the value [`TileStore`] compares against.
@@ -34,8 +34,8 @@ pub fn static_version() -> u64 {
 pub fn version(key: &impl Hash) -> u64 {
     let mut h = FxHasher::default();
     // Every tile depends on the style whether it names it or not, so the epoch is mixed in
-    // here rather than left to each key to remember (see `ui::style::STYLE_EPOCH`).
-    crate::ui::style::style_epoch().hash(&mut h);
+    // here rather than left to each key to remember (see `ui::theme::EPOCH`).
+    crate::ui::theme::epoch().hash(&mut h);
     key.hash(&mut h);
     // `static_version` is reserved for "depends on nothing but the palette"; nudge the one key
     // that would collide with it so a real dependency is never mistaken for a build-once tile.
@@ -280,7 +280,7 @@ mod tests {
         let target = static_version();
         let colliding = (0..5000u32).find(|i| {
             let mut h = FxHasher::default();
-            crate::ui::style::style_epoch().hash(&mut h);
+            crate::ui::theme::epoch().hash(&mut h);
             i.hash(&mut h);
             h.finish() == target
         });

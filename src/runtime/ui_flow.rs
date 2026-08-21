@@ -139,9 +139,9 @@ pub(super) fn run_ui_flow(
         "Quit app?",
         "Punktfunk will close and you'll return to the webOS home screen.",
         crate::ui::widgets::confirm_buttons(
-            Some(crate::app::view::icons::ICON_CLOSE),
+            Some(crate::ui::theme::icons().close),
             "Quit",
-            crate::ui::style::theme().error,
+            crate::ui::theme::palette().error,
         ),
     );
     let mut exit_held = false;
@@ -490,14 +490,15 @@ pub(super) fn run_ui_flow(
                 texture_creator,
                 fonts,
                 crate::ui::render::Size::new(display_mode.w as u32, display_mode.h as u32),
-                app.settings_ui.settings.theme.glossy(),
+                // Blurrable: this loop's backdrop is the framebuffer.
+                true,
                 &mut cmds,
             )?;
             Ok(cmds)
         })?;
         frame.stage(Stage::Present, || -> Result<()> {
             canvas.set_blend_mode(sdl2::render::BlendMode::None);
-            let bg = crate::ui::style::theme().bg;
+            let bg = crate::ui::theme::palette().bg;
             canvas.set_draw_color(sdl2::pixels::Color::RGBA(bg.r, bg.g, bg.b, bg.a));
             canvas.clear();
             compositor.present(canvas, &cmds)?;

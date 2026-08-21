@@ -113,6 +113,13 @@ impl Color {
     pub const fn RGB(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b, a: 255 }
     }
+
+    /// The same colour at a different alpha — a translucent surface derived from the opaque
+    /// one it is the glass version of, rather than re-typed beside it and left to drift.
+    #[must_use]
+    pub const fn with_alpha(self, a: u8) -> Self {
+        Self { a, ..self }
+    }
 }
 
 /// One cached tile's identity: an opaque number the *app* assigns.
@@ -156,11 +163,6 @@ pub enum DrawCmd {
     Frost(Box<FrostPane>),
 }
 
-/// Blur spread, in screen px, behind every piece of glass in the app — a modal card, a grid
-/// card's title strip, the submenu grown out of it, the quit dialog. One figure, so every
-/// frosted surface reads as the same material. Rounded to what the compositor's chain can give.
-pub const FROST_BLUR: u32 = 64;
-
 /// Which corners of a [`FrostPane`] are rounded.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Corners {
@@ -189,6 +191,13 @@ pub struct FrostMask {
 /// two cards of a modal cross-fade), but a pane stacked on top of another one's surface — a
 /// dropdown popup over a modal card — would blur what is under the *card*, not the card. Those
 /// surfaces take the glass fill without a frost; giving them one means capturing per pane.
+///
+/// The corollary the callers have to keep: **nothing that tints the whole screen may be pushed
+/// ahead of a pane.** A modal's scrim emitted before its own pane lands in the capture, so the
+/// same modal blurs a dimmed screen in the frames where its pane is the first one and an
+/// undimmed screen where some earlier pane already fixed the capture — visibly two different
+/// materials. Push the pane, then the scrim, then the tile: a uniform composite commutes with
+/// a blur, so the scrim on its way past dims every pane identically.
 #[derive(Clone, Copy, Debug)]
 pub struct FrostPane {
     /// The shape's *unscaled* size, and the resolution its mask and blur scratch are built

@@ -21,7 +21,7 @@ pub fn confirm_buttons(icon: Option<&'static str>, label: &'static str, color: C
         ConfirmButton {
             icon: None,
             label: "Cancel",
-            color: theme().text,
+            color: palette().text,
         },
     ]
 }
@@ -88,7 +88,7 @@ impl Canvas<'_, '_> {
     /// Draws one confirm button at normal size, focused or not.
     pub fn confirm_button(&mut self, button: &ConfirmButton<'_>, focused: bool, rect: Rect) -> Result<()> {
         self.painter.selectable_fixed(rect, focused);
-        let color = if focused { button.color } else { theme().muted };
+        let color = if focused { button.color } else { palette().muted };
 
         // Every inset here is derived from the label font's own line height, which
         // `load_font` already scales by the panel's height — the button's width scales with

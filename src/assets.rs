@@ -52,7 +52,7 @@ pub type SpinnerFrame = crate::ui::Painter;
 pub fn spinner_frames() -> &'static [SpinnerFrame] {
     static FRAMES: std::sync::OnceLock<Vec<SpinnerFrame>> = std::sync::OnceLock::new();
     FRAMES.get_or_init(|| {
-        let theme = crate::ui::style::theme();
+        let theme = crate::ui::theme::palette();
         (0..crate::ui::spinner::FRAMES)
             .map(|i| {
                 crate::ui::spinner::frame(

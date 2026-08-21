@@ -143,12 +143,12 @@ impl ModalScreen for Modal<'_> {
         c.modal_header(
             card,
             TITLE,
-            ui::style::theme().text,
+            ui::theme::palette().text,
             &status(state, host_name),
             if failed {
-                ui::style::theme().error
+                ui::theme::palette().error
             } else {
-                ui::style::theme().muted
+                ui::theme::palette().muted
             },
         )?;
         if let Some(confirm) = self.confirm {

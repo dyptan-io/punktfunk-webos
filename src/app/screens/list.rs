@@ -102,7 +102,7 @@ impl App {
     /// all measure against this, so a screen absorbed into the wrong table by a fallback
     /// would draw options it cannot land on. `display_row` is the on-screen row the dropdown
     /// hangs off.
-    pub(crate) fn dropdown_options(&self, display_row: usize) -> Vec<String> {
+    pub(crate) fn dropdown_options(&self, display_row: usize) -> Vec<crate::app::menu::Label> {
         match self.nav.screen {
             Screen::Diagnostics => crate::app::menu::log_level_dropdown_options(),
             Screen::Settings(set) => crate::app::menu::settings_logical_row(set, display_row)

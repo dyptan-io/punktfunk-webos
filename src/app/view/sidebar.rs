@@ -108,7 +108,7 @@ pub fn draw(
     let screen_h = c.screen_h;
     c.painter.fill_rect(
         Rect::new(0, 0, ui::widgets::SIDEBAR_W, screen_h),
-        ui::style::theme().panel,
+        ui::theme::palette().panel,
     );
     // Logo is 1:1 (no runtime scaling); bundled at exact display size.
     if let Some(logo) = crate::assets::logo_pixmap() {
@@ -168,11 +168,11 @@ pub fn draw_host_row(c: &mut Canvas, rect: Rect, name: &str, state: &HostRowStat
         // A ring of panel background first, so the dot reads as separate from the glyph
         // it overlaps rather than merging into it.
         c.painter
-            .fill_circle(cx, cy, PRESENCE_DOT / 2.0 + 2.0, ui::style::theme().panel);
+            .fill_circle(cx, cy, PRESENCE_DOT / 2.0 + 2.0, ui::theme::palette().panel);
         let color = if online {
-            ui::style::theme().ok
+            ui::theme::palette().ok
         } else {
-            ui::style::theme().muted
+            ui::theme::palette().muted
         };
         c.painter.fill_circle(cx, cy, PRESENCE_DOT / 2.0, color);
     }

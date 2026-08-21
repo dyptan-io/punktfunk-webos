@@ -6,11 +6,12 @@ use crate::core::event::MenuEvent;
 use crate::core::screen::{Screen, SettingsScope};
 
 impl App {
-    /// Applies `Settings::theme` to `ui::style`, which bumps the style epoch and so stales
-    /// every tile that baked the old fill. Called on the pick and once at startup, so the
-    /// two paths cannot disagree.
+    /// Installs `Settings::theme` as the look everything draws in. Bumps the theme epoch,
+    /// which stales every tile baked in the old one — and, on the next frame, releases the
+    /// compositor's blur chain when the new look has no glass. Called on the pick and once at
+    /// startup, so the two paths cannot disagree.
     pub(crate) fn restyle(&self) {
-        crate::ui::style::set_frosted(self.settings_ui.settings.theme.glossy());
+        crate::ui::theme::select(self.settings_ui.settings.theme);
     }
 
     /// Probes root access for the Game mode row, once per launch — rooting can come and go

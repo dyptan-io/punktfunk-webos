@@ -300,9 +300,9 @@ pub(super) fn run_inner() -> Result<()> {
             "Stop streaming?",
             "The stream will end and you'll return to the menu.",
             crate::ui::widgets::confirm_buttons(
-                Some(crate::app::view::icons::ICON_CLOSE),
+                Some(crate::ui::theme::icons().close),
                 "Stop streaming",
-                crate::ui::style::theme().error,
+                crate::ui::theme::palette().error,
             ),
         );
         // Gamepad routes to the disconnect dialog — see `DisconnectChord`.
@@ -618,6 +618,7 @@ pub(super) fn run_inner() -> Result<()> {
                     &texture_creator,
                     &fonts,
                     crate::ui::render::Size::new(display_mode.w as u32, display_mode.h as u32),
+                    // Not blurrable: NDL video is on a hardware plane below this surface.
                     false,
                     &mut cmds,
                 )?;

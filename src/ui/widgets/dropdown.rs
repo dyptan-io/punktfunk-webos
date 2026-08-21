@@ -1,8 +1,11 @@
 //! The expanded dropdown a [`RowKind::Dropdown`](super::RowKind) row opens: the option
 //! overlay, its option rows, and the popup chrome they sit on. The closed row's pill is the
 //! row's own business (see [`Canvas::focus_row`](super::Canvas)).
-use crate::ui::prelude::*;
+use std::borrow::Cow;
+
 use anyhow::Result;
+
+use crate::ui::prelude::*;
 
 /// Row height of one dropdown option — also `render_dropdown_option_tile`'s tile size.
 pub const DROPDOWN_OPTION_H: u32 = 56;
@@ -19,11 +22,11 @@ const DROPDOWN_FILL: Color = Color::RGBA(0x17, 0x11, 0x28, 0xf6);
 /// Renders every option unfocused, like the row lists: the focused one composites over it
 /// from [`render_dropdown_option_tile`].
 pub struct DropdownOverlay<'a> {
-    options: &'a [String],
+    options: &'a [Cow<'a, str>],
 }
 
 impl<'a> DropdownOverlay<'a> {
-    pub fn new(options: &'a [String]) -> Self {
+    pub fn new(options: &'a [Cow<'a, str>]) -> Self {
         Self { options }
     }
 }
@@ -86,7 +89,7 @@ impl Canvas<'_, '_> {
             self.painter.fill_rounded_rect(
                 highlight,
                 8,
-                Color::RGBA(theme().accent.r, theme().accent.g, theme().accent.b, 0x50),
+                Color::RGBA(palette().accent.r, palette().accent.g, palette().accent.b, 0x50),
             );
         }
         let font = self.fonts.value;
@@ -100,7 +103,7 @@ impl Canvas<'_, '_> {
             x,
             y,
             (row_rect.right() - x - DROPDOWN_OPTION_INSET).max(0) as u32,
-            if focused { theme().text } else { theme().muted },
+            if focused { palette().text } else { palette().muted },
         )?;
         Ok(())
     }

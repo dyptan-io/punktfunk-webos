@@ -9,7 +9,7 @@ use crate::app::view;
 use crate::app::App;
 use crate::core::screen::Screen;
 use crate::ui::render::Color;
-use crate::ui::style::theme;
+use crate::ui::theme::palette;
 use crate::ui::widgets::ConfirmButton;
 use std::borrow::Cow;
 
@@ -47,7 +47,7 @@ impl Confirm {
                 Button {
                     icon: None,
                     label: Cow::Borrowed(cancel),
-                    color: theme().text,
+                    color: palette().text,
                 },
             ],
         }
@@ -77,7 +77,7 @@ impl App {
             Screen::ForgetHost => Confirm::new(
                 Some(view::icons::ICON_DELETE),
                 "Forget",
-                theme().error,
+                palette().error,
                 "Cancel",
                 view::forget::subtitle(self.host_menu_host_name().unwrap_or_default()),
             ),
@@ -85,14 +85,14 @@ impl App {
                 Some(view::icons::ICON_SEND),
                 "Send",
                 // The same red as Forget: both are consequential.
-                theme().error,
+                palette().error,
                 "Cancel",
                 view::sendlogs::SUBTITLE.to_string(),
             ),
             Screen::Wake => Confirm::new(
                 Some(view::icons::ICON_POWER),
                 "Wake host",
-                theme().accent_bright,
+                palette().accent_bright,
                 "Cancel",
                 view::wake::status_text(self.screens.wake.as_ref().filter(|w| !w.mac.is_empty())?),
             ),
@@ -104,7 +104,7 @@ impl App {
                 Confirm::new(
                     Some(view::icons::ICON_SIGNAL),
                     view::speedtest::apply_label(view::speedtest::recommendation(state)),
-                    theme().accent_bright,
+                    palette().accent_bright,
                     // "Close" rather than "Cancel": the test has already run, so there is
                     // nothing left to call off.
                     "Close",

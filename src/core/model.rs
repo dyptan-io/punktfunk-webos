@@ -320,29 +320,14 @@ pub enum VideoBackend {
     Smp,
 }
 
-/// Which look the menus draw in, picked on the Settings screen.
-///
-/// The glossy look wants render targets and a composed blend mode, and which webOS
-/// generations give it both is not something a spec answers — the compositor probes, logs
-/// `frosted modals: <bool>` and falls back to flat fills on its own, so this is safe to offer
-/// everywhere.
+/// Which look the menus draw in, picked on the Settings screen — the persisted name of a
+/// `ui::theme` preset, and the only part of a theme that belongs to the domain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThemeChoice {
-    /// Flat opaque panels.
     #[default]
     Default,
-    /// Frosted glass: translucent cards over a blurred, grained copy of what they cover
-    /// (`ui::render::DrawCmd::Frost`).
     DefaultGlossy,
-}
-
-impl ThemeChoice {
-    /// Whether this look draws its panels as frosted glass.
-    #[must_use]
-    pub fn glossy(self) -> bool {
-        self == Self::DefaultGlossy
-    }
 }
 
 /// Anything but a name this build knows deserializes to [`ThemeChoice::default`].

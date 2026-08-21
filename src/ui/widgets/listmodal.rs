@@ -62,7 +62,7 @@ impl StatefulWidget for ListModal<'_> {
     type State = FocusRowsState;
 
     fn render(self, area: Rect, c: &mut Canvas, state: &mut Self::State) -> Result<()> {
-        c.modal_header(area, self.title, theme().text, self.subtitle, theme().muted)?;
+        c.modal_header(area, self.title, palette().text, self.subtitle, palette().muted)?;
         let content = list_modal_content_rect(area, c.fonts, self.subtitle, self.rows.len());
         c.render_stateful(FocusRows::new(self.rows), content, state)
     }

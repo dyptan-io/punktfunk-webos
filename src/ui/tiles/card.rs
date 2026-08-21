@@ -147,7 +147,7 @@ impl Widget for PinBadgeTile {
             .fill_circle(mid, mid, mid, Color::RGBA(0x00, 0x00, 0x00, 0x70));
         let icon = (d as f32 * 0.6) as u32;
         let inset = ((d - icon) / 2) as i32;
-        c.icon(Rect::new(inset, inset, icon, icon), icons().pin, theme().muted)
+        c.icon(Rect::new(inset, inset, icon, icon), icons().pin, palette().muted)
     }
 }
 

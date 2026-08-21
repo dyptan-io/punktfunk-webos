@@ -47,7 +47,7 @@ impl Painter {
     /// lets the blur supply only the tail beyond it, so the lit body is the card's shape
     /// rather than the rounder, larger figure a blurred-then-saturated shape becomes.
     pub fn focus_ring(&mut self, rect: Rect) {
-        self.fill_glow(rect, CARD_RADIUS, theme().accent_bright, FOCUS_GLOW_BLUR);
+        self.fill_glow(rect, CARD_RADIUS, palette().accent_bright, FOCUS_GLOW_BLUR);
     }
 
     /// A crisp lit edge right on the focused card's own outline, composited on top of the
@@ -55,7 +55,7 @@ impl Painter {
     /// glow reads as light coming off the card rather than fading into the art. Rounded to
     /// `CARD_RADIUS`, the same shape as the art, the placeholder poster and the glow.
     pub fn card_outline(&mut self, rect: Rect) {
-        let accent = theme().accent_bright;
+        let accent = palette().accent_bright;
         let color = Color::RGBA(accent.r, accent.g, accent.b, 0xd0);
         self.stroke_rounded_rect(rect, CARD_RADIUS, color, 1.5);
     }
@@ -64,7 +64,7 @@ impl Painter {
     pub fn card(&mut self, rect: Rect, focused: bool) -> Rect {
         let r = focus_zoom(rect, focused);
         self.card_shadow(r, CARD_RADIUS);
-        self.fill_rounded_rect(r, CARD_RADIUS, theme().surface);
+        self.fill_rounded_rect(r, CARD_RADIUS, palette().surface);
         r
     }
 
@@ -73,7 +73,7 @@ impl Painter {
         let r = focus_zoom(rect, focused);
         if focused {
             self.card_shadow(r, CARD_RADIUS);
-            self.fill_rounded_rect(r, CARD_RADIUS, theme().surface);
+            self.fill_rounded_rect(r, CARD_RADIUS, palette().surface);
         }
         r
     }
@@ -87,7 +87,7 @@ impl Painter {
     pub fn selectable_fixed(&mut self, rect: Rect, focused: bool) {
         if focused {
             self.card_shadow(rect, CARD_RADIUS);
-            self.fill_rounded_rect(rect, CARD_RADIUS, theme().surface);
+            self.fill_rounded_rect(rect, CARD_RADIUS, palette().surface);
         }
     }
 }
@@ -126,20 +126,20 @@ pub const CARD_MENU_ROW_H: u32 = 46;
 const TITLE_DOT_GAP: i32 = 8;
 
 /// The fill both of a card's glass surfaces pass to [`Canvas::poster_frost_panel`]: the same
-/// [`glass_fill`](crate::ui::style::glass_fill) every other raised surface takes. A card's
+/// [`glass_fill`](crate::ui::theme::glass_fill) every other raised surface takes. A card's
 /// glass was briefly thinner, to keep more of the cover art under it; at that strength it
 /// stopped matching the modals, and looking like one material everywhere won.
 ///
 /// On the default (non-glossy) look this goes opaque, which is what makes gating `App::card_frost`
 /// on the switch safe: the title keeps a solid backing instead of a bare tint over cover art.
 pub fn card_glass() -> Color {
-    crate::ui::style::glass_fill()
+    crate::ui::theme::glass_fill()
 }
 
 /// The colour both of a card's title surfaces pass to [`Canvas::poster_strip_label`]: the
 /// focused row's, so the card's name reads at the same weight as the row you are on.
 pub fn card_title_fg() -> Color {
-    theme().text
+    palette().text
 }
 
 /// Height of the whole frosted panel when `rows` submenu entries sit under the title.
@@ -287,7 +287,7 @@ impl Canvas<'_, '_> {
             self.mark_dot(
                 mark_dot_x(band),
                 y + self.fonts.raster.height(font) / 2,
-                theme().warning,
+                palette().warning,
             );
         }
         let avail = band
@@ -301,8 +301,8 @@ impl Canvas<'_, '_> {
     /// [`Self::poster_frost_panel`] has already laid down (which is why this takes the rows'
     /// band rather than drawing its own background).
     ///
-    /// `focused` gets [`Theme::text`](crate::ui::style::Theme::text) and the rest
-    /// [`Theme::muted`](crate::ui::style::Theme::muted) — the same two weights every other row
+    /// `focused` gets [`Theme::text`](crate::ui::theme::Theme::text) and the rest
+    /// [`Theme::muted`](crate::ui::theme::Theme::muted) — the same two weights every other row
     /// list in the app uses. The selection *band* under them stays the compose path's
     /// ([`super::super::tiles::CardMenuBandTile`]), so a row move slides that band and
     /// rebuilds only this tile:
@@ -325,7 +325,7 @@ impl Canvas<'_, '_> {
                 band.width(),
                 CARD_MENU_ROW_H,
             );
-            let fg = if i == focused { theme().text } else { theme().muted };
+            let fg = if i == focused { palette().text } else { palette().muted };
             self.poster_menu_row(row, glyph, label, marked == Some(i), fg)?;
         }
         Ok(())
@@ -348,7 +348,7 @@ impl Canvas<'_, '_> {
         let y = row.y() + (row.height() as i32 - self.fonts.raster.height(font)) / 2;
         self.text_faded(font, label, text_x, y, avail, fg)?;
         if marked {
-            self.mark_dot(mark_dot_x(row), row.y() + row.height() as i32 / 2, theme().warning);
+            self.mark_dot(mark_dot_x(row), row.y() + row.height() as i32 / 2, palette().warning);
         }
         Ok(())
     }
@@ -369,7 +369,7 @@ impl Widget for CardTextTile<'_> {
     fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
         let drawn = c.painter.card(area.inflate(-ROW_TILE_PAD), false);
         let text_y = drawn.y() + (drawn.height() as i32 - c.fonts.raster.height(self.font)) / 2;
-        c.text_centered(self.font, self.text, drawn, text_y, theme().text)?;
+        c.text_centered(self.font, self.text, drawn, text_y, palette().text)?;
         Ok(())
     }
 }

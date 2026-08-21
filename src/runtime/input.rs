@@ -117,9 +117,10 @@ pub(super) struct ConfirmDialog {
     /// The focused button's press dip, playing out over the close fade it starts.
     press: crate::ui::animation::Press,
     tc: crate::ui::text::TextCache,
-    /// Whether the shell tile currently baked is the glass one. Compared against what
-    /// [`Self::draw`] is passed, so switching Theme with the dialog up rebuilds it.
-    glass: bool,
+    /// The `ui::theme` epoch the shell tile was baked at, so picking a Theme with the dialog
+    /// up rebuilds it. This tile is hand-cached rather than going through `ui::cache`, which
+    /// folds the epoch in for everything else.
+    styled_at: u64,
 }
 
 impl ConfirmDialog {
@@ -139,7 +140,7 @@ impl ConfirmDialog {
             focus_anim: None,
             press: crate::ui::animation::Press::default(),
             tc: crate::ui::text::TextCache::new(),
-            glass: false,
+            styled_at: 0,
         }
     }
 
@@ -264,15 +265,17 @@ impl ConfirmDialog {
     /// Uploads any dirty tiles and appends this dialog's overlay (scrim + shell +
     /// popped focus button) for the current fade frame. No-op when nothing shows.
     ///
-    /// `glass` frosts the card, for the menu loop, whose backdrop is in the framebuffer and so
-    /// can be blurred; the streaming loop passes `false` (see `ConfirmDialogShellTile::glass`).
+    /// `blurrable` says whether this loop's backdrop is in the framebuffer at all: the menu
+    /// passes `true`, the streaming loop `false`, since NDL video lives on a hardware plane
+    /// *below* the SDL surface. Whether the card is then actually frosted is the theme's
+    /// answer, not the caller's.
     pub(super) fn draw(
         &mut self,
         compositor: &mut Compositor,
         texture_creator: &sdl2::render::TextureCreator<sdl2::video::WindowContext>,
         fonts: &crate::ui::text::Fonts<'_>,
         screen: crate::ui::render::Size,
-        glass: bool,
+        blurrable: bool,
         cmds: &mut Vec<DrawCmd>,
     ) -> Result<()> {
         let Some((focus, m, _closing)) = self.frame(MODAL_FADE) else {
@@ -280,7 +283,10 @@ impl ConfirmDialog {
         };
         let (w, h) = (screen.w, screen.h);
         let full = crate::ui::render::Rect::new(0, 0, w, h);
-        self.shell_dirty |= std::mem::replace(&mut self.glass, glass) != glass;
+        // The theme's glass, but only where there is a framebuffer backdrop to blur.
+        let glass = blurrable.then(crate::ui::theme::glass).flatten();
+        let styled_at = crate::ui::theme::epoch();
+        self.shell_dirty |= std::mem::replace(&mut self.styled_at, styled_at) != styled_at;
         if self.shell_dirty {
             self.shell_dirty = false;
             let shell = crate::ui::rasterize(
@@ -290,7 +296,7 @@ impl ConfirmDialog {
                     title: self.title,
                     subtitle: self.subtitle,
                     buttons: &self.buttons,
-                    glass,
+                    glass: glass.is_some(),
                 },
                 &mut self.tc,
                 fonts,
@@ -323,24 +329,26 @@ impl ConfirmDialog {
             btn_rect.height() + 2 * pad as u32,
         );
         let shell_dst = crate::ui::render::Rect::new(0, dy, w, h);
-        cmds.push(DrawCmd::Fill {
-            rect: full,
-            color: crate::ui::render::Color::RGBA(0, 0, 0, (f32::from(crate::ui::style::theme().scrim.a) * m) as u8),
-        });
-        if glass {
-            // Under the shell tile, which supplies the tint and the border — the same pairing
-            // `App::push_frost` makes for the `Screen` modals.
+        // Pane first, scrim second, shell tile third — the same order `App::compose_modal`
+        // keeps, and for the same reason: the compositor captures its blur source at the
+        // frame's first pane, so a scrim pushed ahead of one would be in some frames' blur and
+        // not others. The shell tile above supplies the tint and the border.
+        if let Some(g) = glass {
             cmds.push(DrawCmd::Frost(Box::new(crate::ui::render::FrostPane::whole(
                 card.offset(0, dy),
                 crate::ui::render::FrostMask {
                     radius: crate::ui::widgets::MODAL_RADIUS,
                     corners: crate::ui::render::Corners::All,
                 },
-                crate::ui::render::FROST_BLUR,
+                g.blur,
                 (255.0 * m) as u8,
-                Some(crate::ui::style::theme().panel),
+                Some(crate::ui::theme::palette().panel),
             ))));
         }
+        cmds.push(DrawCmd::Fill {
+            rect: full,
+            color: crate::ui::render::Color::RGBA(0, 0, 0, (f32::from(crate::ui::theme::palette().scrim.a) * m) as u8),
+        });
         cmds.push(DrawCmd::Tex {
             tile: tile::DISCONNECT_DIALOG,
             dst: shell_dst,

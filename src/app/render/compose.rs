@@ -16,6 +16,12 @@ use crate::ui::render::{DrawCmd, Rect};
 /// How far a modal card slides down as it fades out (and up as it fades in), in px.
 const MODAL_RISE: f32 = 26.0;
 
+/// How far a modal layer is still offset at fade progress `p` — the rise both the entering
+/// card and the closing snapshot ride, and which its frost pane has to ride with it.
+fn modal_rise(p: f32) -> i32 {
+    ((1.0 - p) * MODAL_RISE) as i32
+}
+
 /// How tall each step of an edge fade's alpha ramp is. Every step is one `TexCropped` with its
 /// own alpha, and SDL cannot batch across an alpha-mod change, so this divides `SCROLL_FADE_H`
 /// (92px) into the command count each band costs *per frame it is on screen*: 8 gives ~12 steps
@@ -75,10 +81,32 @@ impl App {
         } else {
             m.max(closing.map_or(0.0, |(alpha, _)| alpha))
         };
+        // Every frost pane of this layer, *before* the scrim — the one ordering rule the
+        // whole effect rests on.
+        //
+        // The compositor captures its blur source once per frame, at the frame's first
+        // `DrawCmd::Frost`. So whatever precedes that pane is baked into every pane's blur and
+        // whatever follows it is not. With the scrim emitted first, a modal opened from the
+        // sidebar (no focused card, so its own pane is the first) blurred a *dimmed* screen,
+        // while the same modal opened from a card (whose title strip pushed the first pane
+        // already) blurred an undimmed one — the same code, two different-looking modals.
+        //
+        // Emitted under the scrim instead, every pane is a blur of the same undimmed backdrop
+        // and the scrim fill dims all of them equally on its way past. A uniform black
+        // composite commutes with a blur, so this is also the look the sidebar case always
+        // had. The invariant to keep: nothing that tints the whole screen may be pushed
+        // before a frost pane.
+        if !matches!(screen, Screen::Home) {
+            let region = self.render.modal.tile_region.offset(0, modal_rise(m));
+            self.push_frost(cmds, region, (255.0 * m) as u8);
+        }
+        if let Some((alpha, prev)) = closing {
+            self.push_frost(cmds, prev.region.offset(0, modal_rise(alpha)), (255.0 * alpha) as u8);
+        }
         if scrim > 0.0 {
             cmds.push(DrawCmd::Fill {
                 rect: Rect::new(0, 0, screen_w, screen_h),
-                color: crate::ui::render::Color::RGBA(0, 0, 0, (f32::from(ui::style::theme().scrim.a) * scrim) as u8),
+                color: crate::ui::render::Color::RGBA(0, 0, 0, (f32::from(ui::theme::palette().scrim.a) * scrim) as u8),
             });
         }
         if !matches!(screen, Screen::Home) {
@@ -87,9 +115,8 @@ impl App {
         // Last, so it fades away *over* what it uncovers: the entering card is often the
         // larger (a submenu returning to Settings) and would otherwise hide it entirely.
         if let Some((alpha, prev)) = closing {
-            let dy = ((1.0 - alpha) * MODAL_RISE) as i32;
+            let dy = modal_rise(alpha);
             let a = (255.0 * alpha) as u8;
-            self.push_frost(cmds, prev.region.offset(0, dy), a);
             cmds.push(DrawCmd::Tex {
                 tile: tile::MODAL_PREV,
                 dst: prev.region.offset(0, dy),
@@ -108,7 +135,7 @@ impl App {
 
     /// The frosted-glass pane under a modal card: the compositor blurs what this frame has
     /// already drawn and masks it to the card's own rounded shape, so the translucent
-    /// `panel_glass` fill in the tile above lands on blurred backdrop rather than on a sharp
+    /// `Glass::panel` fill in the tile above lands on blurred backdrop rather than on a sharp
     /// one. `tile_region` is the card grown by [`MODAL_TILE_PAD`] for its shadow, so the
     /// shape comes back out of it by the same pad — frosting the padding would put a blurred
     /// square behind the shadow.
@@ -117,18 +144,21 @@ impl App {
     /// what keeps the frost off a frame whose video lives on a hardware plane the blur cannot
     /// see anyway.
     fn push_frost(&self, cmds: &mut Vec<DrawCmd>, tile_region: Rect, alpha: u8) {
-        if alpha == 0 || !self.settings_ui.settings.theme.glossy() {
+        if alpha == 0 {
             return;
         }
+        let Some(glass) = ui::theme::glass() else {
+            return;
+        };
         cmds.push(DrawCmd::Frost(Box::new(ui::render::FrostPane::whole(
             tile_region.inflate(-MODAL_TILE_PAD),
             ui::render::FrostMask {
                 radius: ui::widgets::MODAL_RADIUS,
                 corners: ui::render::Corners::All,
             },
-            ui::render::FROST_BLUR,
+            glass.blur,
             alpha,
-            Some(ui::style::theme().panel),
+            Some(ui::theme::palette().panel),
         ))));
     }
 
@@ -146,13 +176,13 @@ impl App {
     ) {
         // Paired as one argument to stay inside clippy's `too_many_arguments` limit.
         let (screen_w, screen_h) = (size.w, size.h);
-        let dy = ((1.0 - m) * MODAL_RISE) as i32;
+        let dy = modal_rise(m);
         // The tile now covers only the card region (see `prepare_modal`), so it
         // composites there rather than full-screen. Opening plays the same motion
         // `compose_modal`'s closing snapshot uses below, in reverse — fade + rise, no
         // scale.
+        // Its frost pane went in ahead of the scrim (see `compose_modal`), at this same rect.
         let modal_base = self.render.modal.tile_region.offset(0, dy);
-        self.push_frost(cmds, modal_base, (255.0 * m) as u8);
         cmds.push(DrawCmd::Tex {
             tile: tile::MODAL,
             dst: modal_base,
@@ -601,7 +631,7 @@ impl App {
     /// zoomed, scrolled, whatever art finished loading — blurred and cut to the card's own
     /// rounded bottom edge.
     ///
-    /// Gated on the Theme setting like [`push_frost`](Self::push_frost). The strip
+    /// Drawn only where the look has glass, like [`push_frost`](Self::push_frost). The strip
     /// stays readable with it off because `ui::widgets::card_glass` goes opaque at the same
     /// time — a blur is what lets a *translucent* strip carry a title over cover art, so the
     /// two have to move together or the title lands on bare art.
@@ -613,9 +643,9 @@ impl App {
     /// both unscaled. The mask and the blur scratch are built at the unscaled size and the
     /// zoom is applied in the blit, so a focus pop rebuilds neither (see `FrostPane::shape`).
     fn push_card_frost(&self, cmds: &mut Vec<DrawCmd>, r: Rect, card_scale: f32, panel_h: u32, shown: u32, alpha: u8) {
-        if !self.settings_ui.settings.theme.glossy() {
+        let Some(glass) = ui::theme::glass() else {
             return;
-        }
+        };
         let panel = Rect::new(r.x(), r.bottom() - panel_h as i32, r.width(), panel_h);
         let window = Rect::new(r.x(), r.bottom() - shown as i32, r.width(), shown);
         cmds.push(DrawCmd::Frost(Box::new(ui::render::FrostPane {
@@ -626,11 +656,11 @@ impl App {
                 radius: ui::widgets::CARD_RADIUS,
                 corners: ui::render::Corners::Bottom,
             },
-            blur: ui::render::FROST_BLUR,
+            blur: glass.blur,
             alpha,
             // The flat fallback where this renderer has no blur: the glass tint above still
             // covers the art, just without softening it.
-            fallback: Some(ui::style::theme().panel),
+            fallback: Some(ui::theme::palette().panel),
         })));
     }
 
@@ -825,7 +855,7 @@ impl App {
                 let box_y = screen_h as i32 - box_h as i32;
                 cmds.push(DrawCmd::Fill {
                     rect: Rect::new(grid_x, box_y, available_w, box_h),
-                    color: ui::style::theme().scrim,
+                    color: ui::theme::palette().scrim,
                 });
                 let y = box_y + (box_h as i32 - p.height() as i32) / 2;
                 cmds.push(DrawCmd::Tex {

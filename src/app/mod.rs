@@ -268,7 +268,7 @@ impl App {
             crate::runtime::set_log_overlay_enabled(true);
         }
         // Same call the Experimental toggle makes, so the persisted value and a live flip take
-        // exactly the same path into `ui::style`.
+        // exactly the same path into `ui::theme`.
         app.restyle();
         std::thread::spawn(crate::assets::spinner_frames);
         app

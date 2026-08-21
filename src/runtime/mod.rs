@@ -220,9 +220,6 @@ pub fn run() -> Result<()> {
     // Before settings load or any UI exists: `store::load` clamps against this and
     // `app::menu::row_shown` hides what it can't offer.
     crate::core::caps::install(crate::platform::webos::device::video_caps());
-    // The palette every widget draws in, before anything can draw (`ui::style` falls back
-    // to a neutral default until this lands).
-    crate::app::view::icons::install_style();
     // The backend pick widens the caps on a legacy TV, so it has to be applied before anything
     // clamps against them (`store::load`) — hence the raw read rather than the loaded document.
     crate::core::caps::set_backend(store::persisted_video_backend());

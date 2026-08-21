@@ -105,7 +105,7 @@ impl TileWidget for CardMenuRowsTile<'_> {
 }
 
 /// The selection band: one row, drawn through [`Painter::selectable_fixed`] — the same
-/// shadowed, [`CARD_RADIUS`]-rounded [`Theme::surface`](crate::ui::style::Theme::surface) card
+/// shadowed, [`CARD_RADIUS`]-rounded [`Theme::surface`](crate::ui::theme::Theme::surface) card
 /// a focused settings row is. Padded by [`ROW_TILE_PAD`] like [`FocusRowTile`](super::FocusRowTile),
 /// because a shadow needs somewhere to fall.
 ///

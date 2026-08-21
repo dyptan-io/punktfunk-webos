@@ -44,13 +44,13 @@ impl Widget for StatsOverlayTile<'_> {
         c.painter
             .fill_rounded_rect(Rect::new(0, 0, w, h), 14, Color::RGBA(0x14, 0x10, 0x1f, 0x70));
         for (i, line) in self.lines.iter().enumerate() {
-            let color = if i == 0 { theme().text } else { theme().muted };
+            let color = if i == 0 { palette().text } else { palette().muted };
             c.text(font, line, STATS_PAD, STATS_PAD + i as i32 * line_h, color)?;
         }
         let hint_y = STATS_PAD + self.lines.len() as i32 * line_h + (hint_h - caption_h);
         let hint_w = c.fonts.raster.measure(caption_font, self.hint).0 as i32;
         let hint_x = STATS_PAD + (w as i32 - 2 * STATS_PAD - hint_w) / 2;
-        c.text(caption_font, self.hint, hint_x, hint_y, theme().muted)?;
+        c.text(caption_font, self.hint, hint_x, hint_y, palette().muted)?;
         Ok(())
     }
 }
@@ -81,10 +81,10 @@ const LOG_OVERLAY_WRAP_INDENT: i32 = 20;
 /// Color for a log line by level prefix; errors/warnings highlighted to stand out.
 fn log_line_color(line: &str) -> Color {
     match line.split_whitespace().next() {
-        Some("ERROR") => theme().error,
-        Some("WARN") => theme().warning,
-        Some("INFO") => theme().text,
-        _ => theme().muted,
+        Some("ERROR") => palette().error,
+        Some("WARN") => palette().warning,
+        Some("INFO") => palette().text,
+        _ => palette().muted,
     }
 }
 

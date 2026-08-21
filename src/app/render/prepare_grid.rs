@@ -438,7 +438,7 @@ impl App {
                     ui::tiles::TextTile {
                         font: fonts.title,
                         text: label,
-                        color: ui::style::theme().muted,
+                        color: ui::theme::palette().muted,
                     },
                     text_cache,
                     fonts,
@@ -534,7 +534,7 @@ impl App {
                 ui::tiles::TextTile {
                     font: fonts.label,
                     text: "No host selected — pick one from the list, or add one.",
-                    color: ui::style::theme().muted,
+                    color: ui::theme::palette().muted,
                 },
                 text_cache,
                 fonts,

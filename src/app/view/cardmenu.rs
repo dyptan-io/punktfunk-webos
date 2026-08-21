@@ -17,7 +17,7 @@ impl App {
     pub(crate) fn card_menu_rows(&self, pin_id: &str) -> [(&'static str, &'static str); ROW_COUNT] {
         let pinned = self.selected_known_host().is_some_and(|h| h.is_pinned(pin_id));
         [
-            (view::icons::ICON_PIN, if pinned { "Unpin" } else { "Pin" }),
+            (crate::ui::theme::icons().pin, if pinned { "Unpin" } else { "Pin" }),
             (view::icons::ICON_SETTINGS, "Settings"),
         ]
     }

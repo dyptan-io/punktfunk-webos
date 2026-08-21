@@ -76,8 +76,8 @@ impl Widget for ConfirmDialogShellTile<'_> {
         }
         // These dialogs are remote/controller-driven (no local pointer over the overlay), so the
         // X is a visual affordance only — always in the unhovered color.
-        c.icon(modal_close_rect(card), icons().close, theme().muted)?;
-        c.modal_header(card, self.title, theme().text, self.subtitle, theme().muted)?;
+        c.icon(modal_close_rect(card), icons().close, palette().muted)?;
+        c.modal_header(card, self.title, palette().text, self.subtitle, palette().muted)?;
         c.render(ConfirmButtons::new(self.buttons), content)
     }
 }

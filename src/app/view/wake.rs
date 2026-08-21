@@ -85,9 +85,9 @@ impl ModalScreen for Modal<'_> {
         c.modal_header(
             card,
             title(wake),
-            ui::style::theme().text,
+            ui::theme::palette().text,
             &status,
-            ui::style::theme().muted,
+            ui::theme::palette().muted,
         )?;
         if let Some((content, confirm)) = button_row {
             // Every button drawn unfocused; the focused one is its own tile.

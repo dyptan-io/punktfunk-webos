@@ -39,9 +39,9 @@ impl ModalScreen for Modal<'_> {
         c.modal_header(
             card,
             TITLE,
-            ui::style::theme().text,
+            ui::theme::palette().text,
             self.message,
-            ui::style::theme().muted,
+            ui::theme::palette().muted,
         )?;
         let after_subtitle_y = ui::text::modal_header_end_y(c.fonts, card, self.message);
         // Single centred button, always focused (no separate focus tile).
@@ -55,7 +55,7 @@ impl ModalScreen for Modal<'_> {
             &ConfirmButton {
                 icon: None,
                 label: "OK",
-                color: ui::style::theme().text,
+                color: ui::theme::palette().text,
             },
             true,
             button,

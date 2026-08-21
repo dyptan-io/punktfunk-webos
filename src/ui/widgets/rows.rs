@@ -32,12 +32,12 @@ pub struct FocusRow {
     pub kind: RowKind,
     /// 0.0-1.0 fill fraction, only meaningful for `RowKind::Slider`.
     pub fraction: f32,
-    /// Destructive action (Forget host) — drawn in `theme().error` rather than the
+    /// Destructive action (Forget host) — drawn in `palette().error` rather than the
     /// normal muted/white pair, so it reads as dangerous before it's confirmed.
     pub danger: bool,
     /// The row is shown but its value cannot be changed here — dictated by another setting or
     /// by the hardware (e.g. HDR under an H.264 codec pick). Only the *control* greys out
-    /// (`theme().disabled`); icon and label keep their normal focus colors, so the row still
+    /// (`palette().disabled`); icon and label keep their normal focus colors, so the row still
     /// reads as a live list entry whose value happens to be fixed. Still focusable, so its
     /// [`subtext`](Self::subtext) — where the reason belongs — can be read. Rejecting the
     /// input is the caller's business, not this widget's.
@@ -76,7 +76,7 @@ impl RowSubtext {
     pub fn hint(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
-            color: theme().muted,
+            color: palette().muted,
         }
     }
 
@@ -84,17 +84,17 @@ impl RowSubtext {
     pub fn caution(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
-            color: theme().caution,
+            color: palette().caution,
         }
     }
 }
 
-/// The one rule every row control's color follows: a locked row is `theme().disabled`
+/// The one rule every row control's color follows: a locked row is `palette().disabled`
 /// regardless of `active` (focus, or an open dropdown) — locked overrides everything else,
 /// so every call site expresses that as data instead of repeating the same `if` three times.
 fn locked_fg(locked: bool, active: bool, active_color: Color, inactive_color: Color) -> Color {
     if locked {
-        theme().disabled
+        palette().disabled
     } else if active {
         active_color
     } else {
@@ -468,11 +468,11 @@ impl Canvas<'_, '_> {
         );
         // WHY: destructive rows stay red even unfocused — to signal danger before confirm.
         let fg = if row.danger {
-            theme().error
+            palette().error
         } else if focused {
-            theme().text
+            palette().text
         } else {
-            theme().muted
+            palette().muted
         };
         self.icon(icon_rect, row.icon, fg)?;
         let label_x = icon_rect.x() + FOCUS_ROW_ICON_SIZE as i32 + 20;
@@ -496,7 +496,7 @@ impl Canvas<'_, '_> {
         let value_y = row_rect.y() + (row_rect.height() as i32 - self.fonts.raster.height(value_font)) / 2;
         match row.kind {
             RowKind::Dropdown => {
-                let value_fg = locked_fg(row.locked, focused || dropdown_open, theme().text, theme().muted);
+                let value_fg = locked_fg(row.locked, focused || dropdown_open, palette().text, palette().muted);
                 self.dropdown_value(row_rect, geom.control_right, &row.value, value_fg)?;
             }
             RowKind::Slider => {
@@ -506,7 +506,7 @@ impl Canvas<'_, '_> {
                     &row.value,
                     geom.control_right - value_w as i32,
                     value_y,
-                    locked_fg(row.locked, focused, theme().text, theme().muted),
+                    locked_fg(row.locked, focused, palette().text, palette().muted),
                 )?;
                 self.painter
                     .slider_with_thumb(geom.track, row.fraction, focused, !row.locked);
@@ -530,7 +530,7 @@ impl Canvas<'_, '_> {
                         &row.value,
                         geom.control_right - menu_w - value_w as i32,
                         value_y,
-                        theme().muted,
+                        palette().muted,
                     )?;
                 }
             }
@@ -580,7 +580,7 @@ impl Painter {
             self.fill_rounded_rect(
                 filled,
                 track_h as i32 / 2,
-                if enabled { theme().accent } else { theme().disabled },
+                if enabled { palette().accent } else { palette().disabled },
             );
         }
         let thumb_r = 14.0;
@@ -591,7 +591,7 @@ impl Painter {
             cx,
             cy,
             thumb_r,
-            locked_fg(!enabled, focused, theme().text, theme().muted),
+            locked_fg(!enabled, focused, palette().text, palette().muted),
         );
     }
 }
@@ -617,7 +617,7 @@ impl Painter {
     pub fn switch(&mut self, rect: Rect, frac: f32, enabled: bool) {
         let frac = frac.clamp(0.0, 1.0);
         let radius = rect.height() as i32 / 2;
-        let on_track = if enabled { theme().accent } else { theme().disabled };
+        let on_track = if enabled { palette().accent } else { palette().disabled };
         self.fill_rounded_rect(rect, radius, lerp_color(SWITCH_OFF_TRACK, on_track, frac));
         let knob_r = radius as f32 - 4.0;
         let cy = rect.y() as f32 + rect.height() as f32 / 2.0;
@@ -625,7 +625,7 @@ impl Painter {
         let right = rect.x() as f32 + rect.width() as f32 - radius as f32;
         let cx = left + (right - left) * frac;
         self.fill_circle(cx + 1.0, cy + 2.0, knob_r, Color::RGBA(0x00, 0x00, 0x00, 0x40));
-        self.fill_circle(cx, cy, knob_r, if enabled { theme().text } else { theme().disabled });
+        self.fill_circle(cx, cy, knob_r, if enabled { palette().text } else { palette().disabled });
     }
 }
 

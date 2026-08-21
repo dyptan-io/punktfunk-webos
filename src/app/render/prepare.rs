@@ -580,7 +580,7 @@ impl App {
 
             let focused = cache::version(&(self.nav.screen, dd.row, dd.focused));
             if tiles.ensure(tile::DROPDOWN_FOCUS, focused, || {
-                let option = options.get(dd.focused).map_or("", String::as_str);
+                let option = options.get(dd.focused).map_or("", AsRef::as_ref);
                 ui::rasterize(
                     ui::widgets::DropdownOptionTile {
                         option,
@@ -827,7 +827,7 @@ impl App {
                             font: ctx.fonts.label,
                             text: s,
                             max_w,
-                            color: ui::style::theme().muted,
+                            color: ui::theme::palette().muted,
                             line_gap: 6,
                         },
                         ctx.text,

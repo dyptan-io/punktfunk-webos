@@ -140,7 +140,7 @@ pub fn draw_window(c: &mut Canvas, font: FontId, lines: &[String], start: usize,
         if line.is_empty() {
             continue;
         }
-        c.text_uncached(font, line, 0, i as i32 * step, ui::style::theme().muted)?;
+        c.text_uncached(font, line, 0, i as i32 * step, ui::theme::palette().muted)?;
     }
     Ok(())
 }
@@ -162,9 +162,9 @@ impl ModalScreen for Modal {
         c.modal_header(
             card,
             TITLE,
-            ui::style::theme().text,
+            ui::theme::palette().text,
             &subtitle(),
-            ui::style::theme().muted,
+            ui::theme::palette().muted,
         )?;
         Ok(())
     }

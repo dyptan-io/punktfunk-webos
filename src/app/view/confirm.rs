@@ -31,9 +31,9 @@ impl ModalScreen for Modal<'_> {
         c.modal_header(
             card,
             self.title,
-            ui::style::theme().text,
+            ui::theme::palette().text,
             &self.confirm.subtitle,
-            ui::style::theme().muted,
+            ui::theme::palette().muted,
         )?;
         // Every button drawn unfocused: the focused one is composited from its own tile.
         c.render(ui::widgets::ConfirmButtons::new(&self.confirm.widgets()), content)

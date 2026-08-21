@@ -160,7 +160,7 @@ pub(crate) fn rows(
         menu::SettingsRow::Theme => FocusRow::dropdown(
             crate::app::view::icons::ICON_PALETTE,
             "Theme",
-            menu::theme_label(settings.theme),
+            crate::ui::theme::for_choice(settings.theme).name,
         ),
         menu::SettingsRow::Experimental => FocusRow::action(crate::app::view::icons::ICON_BUG, "Experimental"),
         menu::SettingsRow::Diagnostics => FocusRow::action(crate::app::view::icons::ICON_WRENCH, "Diagnostics"),
@@ -284,7 +284,7 @@ pub(crate) fn render(c: &mut Canvas, set: SettingsScope, suffix: Option<&str>, h
     let column = content_column(card);
     let baseline = card.y() + 36;
     c.modal_shell(card, hover_close)?;
-    c.text(c.fonts.label, TITLE, column.x(), baseline, ui::style::theme().text)?;
+    c.text(c.fonts.label, TITLE, column.x(), baseline, ui::theme::palette().text)?;
     if let Some(suffix) = suffix {
         let font = c.fonts.label;
         let title_w = c.fonts.raster.measure(font, TITLE).0;
@@ -299,7 +299,7 @@ pub(crate) fn render(c: &mut Canvas, set: SettingsScope, suffix: Option<&str>, h
                 2 * SEP_DOT_R as u32,
             ),
             SEP_DOT_R,
-            ui::style::theme().muted,
+            ui::theme::palette().muted,
         );
         let used = title_w + (2 * SEP_DOT_GAP + 2 * SEP_DOT_R) as u32;
         // Faded rather than clipped: a long game name must not run under the close button.
@@ -310,7 +310,7 @@ pub(crate) fn render(c: &mut Canvas, set: SettingsScope, suffix: Option<&str>, h
             column.x() + used as i32,
             baseline,
             avail,
-            ui::style::theme().muted,
+            ui::theme::palette().muted,
         )?;
     }
     c.painter.rule(column.x(), card.y() + 88, column.width());

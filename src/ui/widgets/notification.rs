@@ -65,8 +65,8 @@ impl Widget for NotificationTile<'_> {
         // screen and needed a much brighter stroke to stay legible. The shared fill sits
         // clearly above the background on its own, so the shared hairline is enough.
         c.painter
-            .glass_face(area, NOTIFICATION_RADIUS, crate::ui::style::glass_fill());
-        c.text(self.font, self.text, NOTIFICATION_PAD, NOTIFICATION_PAD, theme().text)?;
+            .glass_face(area, NOTIFICATION_RADIUS, crate::ui::theme::glass_fill());
+        c.text(self.font, self.text, NOTIFICATION_PAD, NOTIFICATION_PAD, palette().text)?;
         Ok(())
     }
 }

@@ -15,6 +15,7 @@ use sdl2::render::{BlendMode, Canvas, ScaleMode, Texture, TextureCreator};
 use sdl2::video::{Window, WindowContext};
 
 use crate::ui::render::{Color, Corners, DrawCmd, FrostMask, FrostPane, Rect, TileId};
+use crate::ui::theme::Glass;
 use crate::ui::Painter;
 
 fn to_sdl_rect(r: Rect) -> sdl2::rect::Rect {
@@ -84,8 +85,12 @@ pub struct Compositor {
 /// box blur over a card-sized region is worse again (~4M read-modify-writes on a soft-float
 /// core). Both were rejected for this.
 struct Frost {
-    /// The blur chain, or `None` on a renderer with no render targets or no [`mask_blend`] —
-    /// the frost then degrades to a flat rounded fill of the caller's fallback colour.
+    /// The [`crate::ui::theme::epoch`] this was built at. A pick that moves it retires the
+    /// whole thing — see [`Compositor::release_theme`].
+    epoch: u64,
+    /// The blur chain, or `None` on a renderer with no render targets, no [`mask_blend`], or a
+    /// look with no glass at all — the frost then degrades to a flat rounded fill of the
+    /// caller's fallback colour.
     chain: Option<Chain>,
     /// Alpha masks, each with the shape it was rasterized for. Keyed off the pane's *unscaled*
     /// shape, so a card's focus zoom never touches one.
@@ -103,6 +108,9 @@ type MaskKey = (u32, u32, FrostMask);
 /// there is — a modal card over a focused card's title strip, or over the taller submenu panel
 /// grown out of it — and the spare absorbs a modal cross-fade on top of that. Note the
 /// eviction in [`slot_for`] is FIFO, not LRU, so a fourth live shape would thrash.
+///
+/// The compositor's own figure, not the theme's: the mask cache also serves the flat fallback,
+/// which runs on a renderer that has no [`Glass`] to ask.
 const FROST_SLOTS: usize = 4;
 
 /// Index of `key` in `slots`, building it with `build` and evicting the oldest entry when the
@@ -126,6 +134,10 @@ fn slot_for<K: PartialEq>(
 }
 
 struct Chain {
+    /// The material this chain was built for. Held rather than re-read per frame so the
+    /// textures and the numbers that sized them cannot disagree — a pick that changes them
+    /// drops the whole [`Frost`] instead (see [`Compositor::release_theme`]).
+    glass: Glass,
     /// This frame composed up to the first frosted card — the blur's source, and what gets
     /// blitted to the screen in place of those commands.
     backdrop: Texture,
@@ -243,6 +255,7 @@ impl Chain {
         creator: &TextureCreator<WindowContext>,
         (w, h): (u32, u32),
         mask_mode: sdl2::sys::SDL_BlendMode,
+        glass: Glass,
     ) -> Result<Self> {
         let mut size = (w, h);
         let mut levels = Vec::with_capacity(FROST_STEPS.len());
@@ -251,6 +264,7 @@ impl Chain {
             levels.push(blur_target(creator, size.0, size.1)?);
         }
         Ok(Self {
+            glass,
             backdrop: blur_target(creator, w, h)?,
             levels,
             screen: (w, h),
@@ -258,7 +272,7 @@ impl Chain {
             backdrop_key: None,
             // Optional: the grain is the finish, not the effect. A renderer that will not hand
             // one over still gets the blur.
-            grain: grain_tile(creator).ok(),
+            grain: grain_tile(creator, glass.grain).ok(),
             mask_mode,
         })
     }
@@ -320,16 +334,19 @@ impl Chain {
 impl Frost {
     /// Probes what this renderer can actually do, once. A refusal is not an error: the frost
     /// has a flat fallback, and a modal is still a modal without a blur behind it.
-    fn probe(canvas: &Canvas<Window>, creator: &TextureCreator<WindowContext>) -> Self {
+    fn probe(canvas: &Canvas<Window>, creator: &TextureCreator<WindowContext>, glass: Option<Glass>) -> Self {
         let mode = mask_blend();
-        let ok = canvas.render_target_supported()
+        let ok = glass.is_some()
+            && canvas.render_target_supported()
             && probe_blend_mode(creator.create_texture_target(PixelFormatEnum::RGBA32, 1, 1).ok(), mode);
         let chain = ok
             .then(|| canvas.output_size().ok())
             .flatten()
-            .and_then(|size| Chain::new(creator, size, mode).ok());
+            .zip(glass)
+            .and_then(|(size, glass)| Chain::new(creator, size, mode, glass).ok());
         tracing::info!("frosted modals: {}", chain.is_some());
         Self {
+            epoch: crate::ui::theme::epoch(),
             chain,
             masks: Vec::new(),
         }
@@ -340,8 +357,8 @@ impl Frost {
     fn chain_for(&mut self, creator: &TextureCreator<WindowContext>, size: (u32, u32)) -> Option<&mut Chain> {
         let chain = self.chain.as_mut()?;
         if chain.screen != size {
-            let mode = chain.mask_mode;
-            let fresh = Chain::new(creator, size, mode).ok()?;
+            let (mode, glass) = (chain.mask_mode, chain.glass);
+            let fresh = Chain::new(creator, size, mode, glass).ok()?;
             for tex in std::mem::replace(chain, fresh).textures() {
                 // SAFETY: `unsafe_textures`; the replaced chain has left the field.
                 unsafe { tex.destroy() };
@@ -625,6 +642,20 @@ impl Compositor {
         self.tiles.contains_key(&tile)
     }
 
+    /// Frees the blur chain when the look changed under it — the other half of
+    /// [`clear_all`](Self::clear_all)'s job, for a switch that never enters a stream.
+    ///
+    /// Checked every frame rather than pushed from `app`: it is one relaxed load, and the
+    /// alternative is a release call the one caller that picks a theme has to remember. The
+    /// next frosted frame re-probes and rebuilds from the new [`Glass`]; a look with no glass
+    /// never has one, so picking it hands a screen's worth of render targets straight back.
+    fn release_theme(&mut self) {
+        let epoch = crate::ui::theme::epoch();
+        if let Some(frost) = self.frost.take_if(|f| f.epoch != epoch) {
+            frost.destroy();
+        }
+    }
+
     /// Destroys all cached GPU textures (call on stream start to free VRAM).
     pub fn clear_all(&mut self) {
         self.tile_epoch = self.tile_epoch.wrapping_add(1);
@@ -676,6 +707,7 @@ impl Compositor {
         // wants before calling, so leaving one behind would silently blend the *next* frame's
         // clear. Restored below rather than set per command — the canvas keeps the state.
         let entry_blend = canvas.blend_mode();
+        self.release_theme();
         let Some(first_frost) = cmds.iter().position(|c| matches!(c, DrawCmd::Frost(_))) else {
             self.run(canvas, cmds, None, None)?;
             canvas.set_blend_mode(entry_blend);
@@ -689,7 +721,7 @@ impl Compositor {
         // in the same calls, and `with_texture_canvas` wants its target exclusively.
         let mut frost = match self.frost.take() {
             Some(frost) => frost,
-            None => Frost::probe(canvas, &creator),
+            None => Frost::probe(canvas, &creator, crate::ui::theme::glass().copied()),
         };
         // Every exit from here puts `frost` back before propagating: dropping it on an error
         // path would leak a screen's worth of textures per failing frame, since the next
@@ -835,7 +867,7 @@ fn draw_frost(
     if w == 0 || h == 0 || pane.alpha == 0 || pane.dst.width() == 0 || pane.dst.height() == 0 {
         return Ok(());
     }
-    let Frost { chain, masks } = frost;
+    let Frost { chain, masks, .. } = frost;
     let mask_i = slot_for(masks, (w, h, pane.mask), || frost_mask(creator, w, h, pane.mask))?;
     let Some(chain) = chain else {
         // No blur here, so a pane that only exists to re-lay one has nothing to say.
@@ -912,17 +944,13 @@ fn draw_frost(
 /// texture, where a 64px tile would cost ~500.
 const GRAIN_TILE: u32 = 256;
 
-/// How strongly the grain sits over the blur. Low: the point is a surface that catches light,
-/// not visible noise. Raise it and the glass starts to look like film grain.
-const GRAIN_ALPHA: u8 = 0x2e;
-
 /// One tile of neutral etch grain — per-texel white noise around mid grey, tiled over a pane's
 /// blur so the surface reads as *rough* rather than merely out of focus.
 ///
-/// Grey rather than white or black: at [`GRAIN_ALPHA`] a neutral wash pulls the blur very
-/// slightly toward mid and leaves the tint above it to set the level, so brightening and
+/// Grey rather than white or black: at [`Glass::grain`] strength a neutral wash pulls the blur
+/// very slightly toward mid and leaves the tint above it to set the level, so brightening and
 /// darkening cancel across the pane instead of fogging it.
-fn grain_tile(creator: &TextureCreator<WindowContext>) -> Result<Texture> {
+fn grain_tile(creator: &TextureCreator<WindowContext>, alpha: u8) -> Result<Texture> {
     let n = (GRAIN_TILE * GRAIN_TILE) as usize;
     let mut px = Vec::with_capacity(n * 4);
     // An LCG, not `rand`: the tile is built once and only has to be uncorrelated, not random.
@@ -940,7 +968,7 @@ fn grain_tile(creator: &TextureCreator<WindowContext>) -> Result<Texture> {
     tex.update(None, &px, GRAIN_TILE as usize * 4)
         .map_err(|e| anyhow::anyhow!("frost grain upload: {e}"))?;
     tex.set_blend_mode(BlendMode::Blend);
-    tex.set_alpha_mod(GRAIN_ALPHA);
+    tex.set_alpha_mod(alpha);
     Ok(tex)
 }
 

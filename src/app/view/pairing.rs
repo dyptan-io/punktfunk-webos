@@ -96,7 +96,7 @@ fn draw_centred_caption(c: &mut Canvas, content: Rect, y: i32, text: &str) -> Re
     let (raster, font) = (c.fonts.raster, c.fonts.value);
     let mut cursor_y = y;
     for line in ui::text::wrap_text(raster, font, text, content.width()) {
-        c.text_centered(font, &line, content, cursor_y, ui::style::theme().muted)?;
+        c.text_centered(font, &line, content, cursor_y, ui::theme::palette().muted)?;
         cursor_y += raster.height(font) + CAPTION_LINE_GAP;
     }
     Ok(())
@@ -164,7 +164,7 @@ impl ModalScreen for Modal<'_> {
         let l = layout(card, c.fonts);
         c.modal_shell(card, hover_close)?;
 
-        c.modal_header(card, TITLE, ui::style::theme().text, SUBTITLE, ui::style::theme().muted)?;
+        c.modal_header(card, TITLE, ui::theme::palette().text, SUBTITLE, ui::theme::palette().muted)?;
 
         // Primary first, and visually primary: approving on the host is the path that
         // always works, whereas the PIN needs the host's pairing page open and armed.
@@ -185,15 +185,15 @@ impl ModalScreen for Modal<'_> {
                 &digit.to_string(),
                 drawn,
                 text_y,
-                ui::style::theme().text,
+                ui::theme::palette().text,
             )?;
         }
 
         if let Some(status) = status {
             let color = if busy {
-                ui::style::theme().muted
+                ui::theme::palette().muted
             } else {
-                ui::style::theme().error
+                ui::theme::palette().error
             };
             c.text_wrapped(
                 c.fonts.value,

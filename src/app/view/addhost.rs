@@ -59,7 +59,7 @@ impl ModalScreen for Modal<'_> {
         let (title, subtitle, typed) = (self.title, self.subtitle.as_str(), self.typed);
         c.modal_shell(card, hover_close)?;
         let after_subtitle_y =
-            c.modal_header(card, title, ui::style::theme().text, subtitle, ui::style::theme().muted)?;
+            c.modal_header(card, title, ui::theme::palette().text, subtitle, ui::theme::palette().muted)?;
         let field = Rect::new(
             card.x() + 32,
             after_subtitle_y + 20,
@@ -74,7 +74,7 @@ impl ModalScreen for Modal<'_> {
             typed,
             text_x,
             drawn.y() + (drawn.height() as i32 - c.fonts.raster.height(c.fonts.title)) / 2,
-            ui::style::theme().text,
+            ui::theme::palette().text,
         )?;
         // A blinkless text-cursor bar right after what's typed so far — there's no fixed-width
         // mask anymore to show *where* editing happens, so this stands in for it.
@@ -84,7 +84,7 @@ impl ModalScreen for Modal<'_> {
             3,
             drawn.height().saturating_sub(32),
         );
-        c.painter.fill_rect(caret, ui::style::theme().accent_bright);
+        c.painter.fill_rect(caret, ui::theme::palette().accent_bright);
         Ok(())
     }
 }

@@ -108,7 +108,7 @@ impl<'a> SidebarRow<'a> {
 impl Widget for SidebarRow<'_> {
     fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
         let drawn = c.painter.selectable_with_selection(area, self.focused, self.selected);
-        let color = if self.focused { theme().text } else { theme().muted };
+        let color = if self.focused { palette().text } else { palette().muted };
         c.icon(sidebar_icon_rect(drawn), self.glyph, color)?;
         // Faded rather than clipped; `reserve_right` keeps it clear of the ⋯ button.
         let text_x = SIDEBAR_ICON_PAD + SIDEBAR_ICON_SIZE as i32 + 16;
@@ -126,7 +126,7 @@ impl Canvas<'_, '_> {
         let btn = sidebar_menu_button_rect(row_rect);
         if menu_focused {
             self.painter
-                .fill_rounded_rect(btn, (SIDEBAR_MENU_BTN / 2) as i32, theme().accent);
+                .fill_rounded_rect(btn, (SIDEBAR_MENU_BTN / 2) as i32, palette().accent);
         }
         let glyph_rect = Rect::new(
             btn.x() + (btn.width() as i32 - SIDEBAR_MENU_GLYPH as i32) / 2,
@@ -135,9 +135,9 @@ impl Canvas<'_, '_> {
             SIDEBAR_MENU_GLYPH,
         );
         let color = if menu_focused || row_focused {
-            theme().text
+            palette().text
         } else {
-            theme().muted
+            palette().muted
         };
         self.icon(glyph_rect, icons().overflow, color)
     }
