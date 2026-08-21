@@ -254,6 +254,12 @@ impl VideoPump {
         self.stats
             .render_backlog
             .store(backlog.unwrap_or(-1), Ordering::Relaxed);
+        let plane_lead = self.sink.audio_plane_lead_ms();
+        if let Some(ms) = plane_lead {
+            self.stats
+                .audio_plane_lead_ms
+                .store(i32::try_from(ms).unwrap_or(i32::MAX), Ordering::Relaxed);
+        }
         // `backlog` separates "the decoder is behind" from "frames are arriving late" —
         // indistinguishable before this, since play() decodes and presents in one opaque call.
         // Logged on its own slower cadence: the overlay wants a fresh depth, the log does not.
@@ -262,12 +268,15 @@ impl VideoPump {
         // on-device file sink is INFO-only (`logger::resolved_level`).
         if self.video_log.due() {
             tracing::debug!(
-                "video: {} frames, holding={}, dropped={}, backlog={}, pts_trim={}ms",
+                "video: {} frames, holding={}, dropped={}, backlog={}, pts_trim={}ms, plane_lead={}",
                 self.frames(),
                 self.sink.holding(),
                 self.client.frames_dropped(),
                 backlog.map_or_else(|| "n/a".to_string(), |b| b.to_string()),
                 self.sink.pts_trimmed_ms(),
+                // The audio plane's depth is a video figure: NDL paces the picture on it, and a
+                // lead sagging towards zero is what a stutter report should be read against.
+                plane_lead.map_or_else(|| "n/a".to_string(), |ms| format!("{ms}ms")),
             );
         }
     }

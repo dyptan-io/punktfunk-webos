@@ -322,6 +322,28 @@ make the A/V offset measurable rather than the estimate § "A/V sync" describes.
   offering a width the TV would fold down.
 - `NDL_DirectAudioRegisterCallback` itself is the pull-based feed, i.e. real hardware pacing. Not
   used; it is the next step if this route proves out.
+⚠ **Real audio on the plane must carry a lead, or the PICTURE stutters** (2026-08-21).
+`run_clock_plane` held the plane `PRIME_LEAD * PRIME_PACKET_MS` = 40 ms ahead of the player clock
+and topped it up every 20 ms; that queue depth is what NDL's audio renderer paces the video plane
+against. The PCM route makes real packets the only feed (`yields_to_real`), and fed straight off the
+wire they stamp at ≈ the player clock — a packet arrives *after* the frame it was captured with, and
+the PTS trim above pulled the shared offset another ~36 ms earlier. Depth ≈ 0, renderer at the edge
+of underrun, picture stutters on network jitter: the exact symptom the clock plane was introduced to
+cure, back again the moment real audio displaced the metronome. It was intermittent only because
+`derive_audio_skew` picked up whatever ceiling the metronome happened to reach during its 300 ms
+grace, which is a race.
+
+Fixed by `PLANE_LEAD_MS` (= the same 40 ms), added to every real stamp in `play_audio` and
+discounted in `derive_audio_skew` so the two don't stack. **Not** by interleaving silence in front
+of real audio — that raises `last_audio_pts_ms` and the real packets then floor onto it, which is a
+permanent session mute rather than a stutter. NDL takes no depth argument, so a stamp in the future
+is the only way to ask it for one. This is the same job the deleted SDL `JitterPolicy` did with its
+25 ms ring (adaptive to 90 under underruns); the route removed that ring and put nothing in its
+place. Cost is lip sync, `PLANE_LEAD_MS` behind the picture, roughly cancelling the trim's ~36 ms —
+walk it down on device against `lead` on the overlay's audio line and `plane_lead=` on the video
+heartbeat, which are the only places the depth is observable. Note the SDL path's own `AvSync` was
+measure-only, so there is no prior art for correcting the lip sync, only for holding the depth.
+
 - Unknowns, in order: the depth NDL holds on that plane (it is not `render_buffer_length` and
   there is no query), the 5.1 interleave order (§ "Audio"), and whether PCM beats plain Opus
   offload where offload works at all. The three routes are named on the overlay (`Opus SW` / `Opus HW` / `PCM HW`) and

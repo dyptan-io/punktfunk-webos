@@ -223,6 +223,10 @@ impl VideoPlayer {
         }
     }
 
+    fn audio_plane_lead_ms(&self) -> Option<i64> {
+        self.audio_plane_ndl().map(NdlVideo::audio_plane_lead_ms)
+    }
+
     /// Neither V1 nor SMP has a render-buffer to flush (SMP drains its own buffer and
     /// resets on an IDR) — the sink's freeze still holds frames.
     fn flush(&self) -> anyhow::Result<()> {
@@ -427,6 +431,13 @@ impl NdlSink {
     /// the session started with, and the only place it is observable (see [`HostPtsAnchor`]).
     pub fn pts_trimmed_ms(&self) -> u64 {
         self.host_anchor.trimmed_ns() / 1_000_000
+    }
+
+    /// Audio-plane queue depth in ms, or `None` on a session with no plane — see
+    /// `NdlVideo::audio_plane_lead_ms`. Here because it is a *video* symptom: the plane's depth is
+    /// what NDL paces the picture on, so it belongs next to the backlog in the video heartbeat.
+    pub fn audio_plane_lead_ms(&self) -> Option<i64> {
+        self.player.audio_plane_lead_ms()
     }
 
     /// Whether a freeze-until-reanchor hold is currently active (stats/logging).

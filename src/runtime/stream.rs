@@ -803,7 +803,15 @@ pub(super) fn run_inner() -> Result<()> {
                     // than printed as a pair of zeroes that look like a stalled plane.
                     let layout = connected.audio_layout();
                     if connected.audio_route.on_ndl_plane() {
-                        lines.push(format!("{} {layout} · NDL", connected.audio_route.overlay_tag()));
+                        // `lead` is how far the plane's stamps run ahead of NDL's player clock —
+                        // the one figure this route does publish, and the one that matters most:
+                        // NDL paces the PICTURE on that depth, so a lead sagging towards zero
+                        // reads as video stutter, not as an audio fault (see `PLANE_LEAD_MS`).
+                        lines.push(format!(
+                            "{} {layout} · NDL · lead {} ms",
+                            connected.audio_route.overlay_tag(),
+                            connected.stats().audio_plane_lead_ms.load(Ordering::Relaxed),
+                        ));
                     } else {
                         lines.push(format!("Opus SW {layout} · buf {} ms", connected.audio_buffer_ms()));
                     }

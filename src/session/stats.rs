@@ -16,6 +16,10 @@ pub struct StreamStats {
     pub feed_us: AtomicU32,
     /// NDL render-buffer backlog or -1 if unavailable.
     pub render_backlog: AtomicI32,
+    /// Audio-plane queue depth in ms (`NdlVideo::audio_plane_lead_ms`). A video figure as much as
+    /// an audio one — NDL paces the picture on this — and can legitimately be negative, so there
+    /// is no sentinel: the overlay prints it only on a route that has a plane.
+    pub audio_plane_lead_ms: AtomicI32,
 }
 
 /// Short display name for a resolved wire codec id (the stats overlay's header).

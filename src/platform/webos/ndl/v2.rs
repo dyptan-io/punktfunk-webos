@@ -55,6 +55,34 @@ const PRIME_PACKET_MS: i64 = 5;
 /// configure a decoder, and the bound on how far its `last_audio_pts_ms` ceiling overshoots.
 const PRIME_LEAD: i64 = 8;
 
+/// Lead the REAL stream's stamps carry over the player clock, i.e. the audio queue depth NDL is
+/// left holding — [`PRIME_LEAD`] packets, the same depth the metronome maintains while it is the
+/// only feed.
+///
+/// **This is not a sync tweak, it is what keeps the picture paced.** NDL regulates the video plane
+/// against its audio renderer, and the renderer's clock only advances smoothly while it has data
+/// queued ahead of it. Fed straight off the wire the real stream stamps at ≈ the player clock (a
+/// packet arrives *after* the frame it was captured with, and the PTS trim pulled the shared offset
+/// another ~36 ms earlier), so the renderer runs at the edge of underrun and the picture stutters
+/// on network jitter — the exact failure the clock plane was introduced to fix, back again the
+/// moment real audio displaced the metronome. Adding a constant here restores the depth without
+/// interleaving silence, which would raise the ceiling real packets then floor onto (see
+/// [`NdlVideo::play_audio`] — that is a permanent session mute, not a stutter).
+///
+/// **The SDL path did the same thing, in its own currency.** `JitterPolicy` primed and held a
+/// 25 ms ring ahead of the speaker (`base_target_ms`, adaptive to 90 under underruns, with a
+/// crossfaded shed so it returned to target rather than ratcheting) for exactly this reason: a
+/// renderer needs data queued ahead of it. Deleting that ring with the route left NOTHING in its
+/// place — NDL takes no depth argument, so the only way to ask it for one is a stamp in the future,
+/// which is this. Note what the SDL path did *not* do: its `AvSync` was measure-only and never
+/// steered anything, so there is no prior art here for correcting the resulting lip sync, only for
+/// holding the depth.
+///
+/// The cost is lip sync: sound lands this far behind the picture. The PTS trim already moved the
+/// picture ~36 ms earlier, so it roughly cancels — walk the value down on device against
+/// `plane_lead` in the video heartbeat, which is the only place the depth is observable.
+const PLANE_LEAD_MS: i64 = PRIME_LEAD * PRIME_PACKET_MS;
+
 /// Gap between prime bursts. Polled through, not slept through — the callback lands mid-gap,
 /// and this is launch-path time, i.e. black screen.
 const PRIME_RETRY: Duration = Duration::from_millis(20);
@@ -402,6 +430,10 @@ impl NdlVideo {
     /// Place the run that starts at `base_ms` one packet above the audio ceiling, so the resumed
     /// stream advances instead of flooring onto it — see [`Self::play_audio`].
     ///
+    /// The run's own first stamp is `base_ms + PLANE_LEAD_MS`, not `base_ms`, so the lead is
+    /// discounted here — charging skew for a gap the lead already closes would stack the two and
+    /// push audio a second lead behind the picture on every re-latch.
+    ///
     /// Under `lock_ffi` because the clock plane raises that ceiling from its own thread; the CAS
     /// above makes this the once-per-latch path, not the per-frame one, so the video thread pays
     /// for the guard only on a re-anchor.
@@ -410,7 +442,8 @@ impl NdlVideo {
             let _ffi = lock_ffi();
             // Never negative: a run already above the ceiling needs no help, and pulling it DOWN
             // to meet one is the rewind NDL mutes on.
-            let skew = (self.last_audio_pts_ms.load(Ordering::Relaxed) + PRIME_PACKET_MS - base_ms).max(0);
+            let skew =
+                (self.last_audio_pts_ms.load(Ordering::Relaxed) + PRIME_PACKET_MS - (base_ms + PLANE_LEAD_MS)).max(0);
             self.audio_skew_ms.store(skew, Ordering::Relaxed);
             skew
         };
@@ -436,6 +469,9 @@ impl NdlVideo {
     /// ([`NdlAudioConfig`]); the format lives in the load, so this path is blind to it. Called only
     /// when the real stream rides the plane. `host_pts_ns` is the packet's own host capture
     /// timestamp, NOT arrival time.
+    ///
+    /// Every stamp carries [`PLANE_LEAD_MS`] on top of the mapped host time, so NDL always holds
+    /// that much audio ahead of its renderer — read that constant before touching this arithmetic.
     ///
     /// **Both planes must be stamped in one time base** — NDL runs its own A/V synchronisation
     /// against these values, and regulating a video plane on host-capture cadence against an audio
@@ -487,7 +523,8 @@ impl NdlVideo {
                 return Ok(());
             }
             let raw_ms = ((host_pts_ns as i64).saturating_add(offset_ns).max(0) / 1_000_000)
-                .saturating_add(self.audio_skew_ms.load(Ordering::Relaxed));
+                .saturating_add(self.audio_skew_ms.load(Ordering::Relaxed))
+                .saturating_add(PLANE_LEAD_MS);
             let pts_ms = self.last_audio_pts_ms.fetch_max(raw_ms, Ordering::Relaxed).max(raw_ms);
             // SAFETY: NDL reads `size` bytes synchronously and does not retain the pointer.
             unsafe {
@@ -603,6 +640,14 @@ impl NdlVideo {
             std::thread::sleep(PRIME_RETRY);
         }
         tracing::info!("NDL clock plane ending at {pts_ms}ms");
+    }
+
+    /// How far the audio plane's stamps currently run ahead of the player clock, in ms — the queue
+    /// depth NDL paces the picture on ([`PLANE_LEAD_MS`]), and the only observable proxy for it.
+    /// Reads the ceiling, so it reports whichever feed last raised it. Sagging towards zero under
+    /// real audio is the stutter signature.
+    pub fn audio_plane_lead_ms(&self) -> i64 {
+        self.last_audio_pts_ms.load(Ordering::Relaxed) - (self.elapsed_ns() / 1_000_000) as i64
     }
 
     /// Nanoseconds since `load()` (NDL PTS domain). The sink anchors the host PTS onto this
