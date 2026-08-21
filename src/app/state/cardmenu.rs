@@ -131,9 +131,15 @@ impl App {
         match ev {
             MenuEvent::Confirm => match menu.focused {
                 ROW_PIN => {
+                    let pin_id = menu.pin_id.clone();
                     self.close_card_menu();
-                    // Keeps the pin-limit alert and the reorder animation it already owns.
-                    self.toggle_focused_pin(screen_w, screen_h);
+                    // Interim of the Move to… row: the first user collection, or back to
+                    // Library. With one collection per host this is exactly the old pin.
+                    let to = match self.collection_of_card(&pin_id) {
+                        Some(_) => None,
+                        None => self.first_user_collection(),
+                    };
+                    self.move_focused_card(to, screen_w, screen_h);
                 }
                 ROW_SETTINGS => {
                     // Left open behind the screen it raises, unlike Pin: the per-game settings

@@ -6,8 +6,8 @@
 use crate::app::render::tile;
 use crate::app::{
     hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP, CARD_POP_SHRINK, LAUNCH_GROWTH,
-    MODAL_FADE, MODAL_FADE_OUT, MODAL_TILE_PAD, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD,
-    SCROLL_INDICATOR_TILE_W, STATUS_BG_PAD,
+    MODAL_FADE, MODAL_FADE_OUT, MODAL_TILE_PAD, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD, SCROLL_INDICATOR_TILE_W,
+    STATUS_BG_PAD,
 };
 use crate::ui;
 use crate::ui::cache::TileStore;
@@ -450,23 +450,13 @@ impl App {
             HomeFocus::Grid(_) | HomeFocus::Sidebar(_) | HomeFocus::SidebarMenu(_) => None,
         };
         let pad = ui::tiles::CARD_SHADOW_PAD;
-        let layout = self.grid_layout(columns);
-        // One layout and one section shape for the whole frame: both rescan the host's pin
-        // list, and every card rect below would otherwise rebuild them (see `home_focus_map`).
-        let sections = layout.sections(self.library.games.len());
-        let card_rect =
-            |idx| view::home::scrolled_card_rect(idx, columns, grid_x, available_w, sections, self.render.grid.scroll);
+        // One layout for the whole frame: every card rect below would otherwise rebuild it
+        // (see `home_focus_map`).
+        let layout = self.library.layout(columns);
+        let card_rect = |idx| view::home::scrolled_card_rect(idx, grid_x, available_w, layout, self.render.grid.scroll);
         // The on-screen window, computed rather than found by testing every card in the
         // library once per frame (`view::home::visible_cards`).
-        let visible = view::home::visible_cards(
-            count,
-            columns,
-            available_w,
-            sections,
-            self.render.grid.scroll,
-            screen_h as i32,
-            pad,
-        );
+        let visible = view::home::visible_cards(available_w, layout, self.render.grid.scroll, screen_h as i32, pad);
         for idx in visible {
             if Some(idx) == focused {
                 continue; // drawn last, on top of its neighbors
@@ -495,29 +485,14 @@ impl App {
                 alpha,
             });
         }
-        // The two section headings, in place of the hairline that used to divide the blocks —
+        // One heading per section, in place of the hairline that used to divide the blocks —
         // scrolled with everything else (there's no separate fixed region), so they are just
         // tiles at their own scrolled positions, culled the same way. Bottom-aligned in their
         // band, sitting on the block they name.
-        for (shown, first_idx, id) in [
-            (sections.pinned_heading, 0, tile::SECTION_PINNED),
-            (
-                sections.library_heading,
-                sections.pinned_rows * columns.max(1),
-                tile::SECTION_LIBRARY,
-            ),
-        ] {
-            if !shown {
-                continue;
-            }
-            let band = view::home::section_heading_rect(
-                first_idx,
-                columns,
-                grid_x,
-                available_w,
-                sections,
-                self.render.grid.scroll,
-            );
+        for (i, (first_idx, _)) in layout.headings().enumerate() {
+            let Some(id) = tile::section(i) else { break };
+            let band =
+                view::home::section_heading_rect(first_idx, grid_x, available_w, layout, self.render.grid.scroll);
             if band.bottom() < 0 || band.y() > screen_h as i32 {
                 continue;
             }
@@ -601,22 +576,6 @@ impl App {
             )),
             alpha: (255.0 * f * pop) as u8,
         });
-        if self.selected_known_host().is_some_and(|h| h.is_pinned(pin_id)) {
-            let badge = ui::tiles::PIN_BADGE_SIZE;
-            let badge_base = Rect::new(
-                r.right() - badge as i32 - PIN_BADGE_MARGIN,
-                r.y() + PIN_BADGE_MARGIN,
-                badge,
-                badge,
-            );
-            // Corner-anchored, so it only fades — scaling it around its
-            // own center would drift it off the shrunken card.
-            cmds.push(DrawCmd::Tex {
-                tile: tile::PIN_BADGE,
-                dst: ui::animation::zoom_rect(badge_base, f, CARD_GROWTH),
-                alpha: (255.0 * pop) as u8,
-            });
-        }
     }
 
     /// The blur under a focused card's glass, whether that is the one-line title strip or the
@@ -868,7 +827,8 @@ impl App {
         // by the same clock — the card keeps zooming for the whole fade.
         if let (Some(t), Some(idx)) = (self.launch_anim, self.launch_anim_idx) {
             let f = ui::animation::anim_frac(Some(t), hero::LAUNCH_FADE);
-            let base = self.scrolled_card_rect(idx, columns, grid_x, available_w);
+            let layout = self.library.layout(columns);
+            let base = view::home::scrolled_card_rect(idx, grid_x, available_w, layout, self.render.grid.scroll);
             if let Some(card) = self
                 .pin_id_at_grid_idx(idx, columns)
                 .and_then(|pin_id| self.render.grid.card_ids.get(pin_id))

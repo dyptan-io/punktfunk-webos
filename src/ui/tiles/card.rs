@@ -20,10 +20,6 @@ pub const FOCUS_RING_PAD: i32 = 24;
 /// width/AA, not a blur radius like [`FOCUS_RING_PAD`].
 pub const CARD_OUTLINE_PAD: i32 = 4;
 
-/// Diameter of the pinned badge composited over the focused grid/pinned card's top-right
-/// corner (see `tile::PIN_BADGE`).
-pub const PIN_BADGE_SIZE: u32 = 28;
-
 /// The card drop shadow, composited *behind* each card rather than baked into it. Every card's
 /// shadow is identical, so baking it in bought nothing and cost every card tile a 20px margin a
 /// side — ~35% more pixels rasterized, uploaded and blended per card.
@@ -132,27 +128,5 @@ impl Widget for CardTitleTile<'_> {
 impl TileWidget for CardTitleTile<'_> {
     fn size(&self, fonts: &Fonts) -> (u32, u32) {
         (self.card_w.max(1), self.strip_h(fonts))
-    }
-}
-
-/// Pinned badge: dark disc with a PIN icon. One shared tile, composited over the focused card
-/// in the draw list rather than baked into individual card tiles.
-pub struct PinBadgeTile;
-
-impl Widget for PinBadgeTile {
-    fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
-        let d = area.width();
-        let mid = d as f32 / 2.0;
-        c.painter
-            .fill_circle(mid, mid, mid, Color::RGBA(0x00, 0x00, 0x00, 0x70));
-        let icon = (d as f32 * 0.6) as u32;
-        let inset = ((d - icon) / 2) as i32;
-        c.icon(Rect::new(inset, inset, icon, icon), icons().pin, palette().muted)
-    }
-}
-
-impl TileWidget for PinBadgeTile {
-    fn size(&self, _fonts: &Fonts) -> (u32, u32) {
-        (PIN_BADGE_SIZE, PIN_BADGE_SIZE)
     }
 }

@@ -69,7 +69,6 @@ impl App {
             | Screen::EditHost
             | Screen::About
             | Screen::SpeedTest
-            | Screen::PinLimit
             | Screen::SendLogs => 0,
         }
     }
@@ -121,7 +120,6 @@ impl App {
             | Screen::About
             | Screen::SpeedTest
             | Screen::WakeSettings
-            | Screen::PinLimit
             | Screen::Experimental
             | Screen::CursorSettings(_)
             | Screen::SendLogs => Vec::new(),

@@ -1,21 +1,8 @@
-//! Home screen geometry: the game grid (columns, card rects, scroll extent) and its
-//! pinned/library section split. Navigation/selection logic lives in `app::state::home`;
-//! `App` supplies `grid_sections`/`grid_scroll` from there.
+//! Home screen geometry: the game grid (columns, card rects, scroll extent) and the pixel
+//! placement of its sections. The section *arithmetic* (which group a row is in, what offset
+//! it carries) is `app::grid::GridLayout`; navigation/selection is `app::state::home`.
+use crate::app::grid::GridLayout;
 use crate::ui::render::Rect;
-
-/// The grid's vertical section shape: how many rows the pinned block takes, and which of the
-/// two headings ("Pinned" / "Library") are drawn — each pushes every row below it down by its
-/// own height, so nothing that positions a card can ignore them.
-///
-/// A heading is drawn iff its section has cards (`GridLayout::sections`), so neither can end up
-/// naming an empty block or hanging under the last row. "Library" therefore shows even with
-/// nothing pinned, where it is the only heading and there is no gap to bridge.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct GridSections {
-    pub pinned_rows: usize,
-    pub pinned_heading: bool,
-    pub library_heading: bool,
-}
 
 /// Height reserved for one section heading: one line of the title font plus air under it. A
 /// constant rather than a measured line — the grid's geometry is used from the pointer path
@@ -23,91 +10,39 @@ pub(crate) struct GridSections {
 pub const SECTION_HEADING_H: i32 = 60;
 /// Of that height, the air between the heading and the cards under it.
 pub const SECTION_HEADING_PAD: i32 = 14;
-impl GridSections {
-    /// Extra vertical offset carried by grid row `row`: whatever headings and gaps stack above
-    /// it. Non-decreasing in `row`, which is what makes a card's y monotone in its index — see
-    /// [`visible_cards`].
-    fn row_offset_at(&self, row: usize) -> i32 {
-        let heading = |shown: bool| if shown { SECTION_HEADING_H } else { 0 };
-        if row >= self.pinned_rows {
-            let pinned_block = if self.pinned_heading {
-                SECTION_HEADING_H + PINNED_SECTION_GAP
-            } else {
-                0
-            };
-            pinned_block + heading(self.library_heading)
-        } else {
-            heading(self.pinned_heading)
-        }
-    }
-
-    /// [`row_offset_at`](Self::row_offset_at) for the row grid index `idx` sits in.
-    fn row_offset(&self, idx: usize, columns: usize) -> i32 {
-        self.row_offset_at(idx / columns.max(1))
-    }
-
-    /// The grid's rows split into the two bands that share a vertical offset, each with its
-    /// own. Every row inside a band is uniformly spaced, so a band's visible rows are a
-    /// closed-form range.
-    fn row_bands(&self, rows: usize) -> [(std::ops::Range<usize>, i32); 2] {
-        let split = self.pinned_rows.min(rows);
-        [
-            (0..split, self.row_offset_at(0)),
-            (split..rows, self.row_offset_at(self.pinned_rows)),
-        ]
-    }
-
-    /// What the sections add to the grid's total height — the offset its last row carries.
-    pub fn total_extra(&self) -> i32 {
-        // `library_heading` is exactly "the library section has rows", so it also says which
-        // section the last row is in. With everything pinned that row carries the pinned
-        // heading alone; counting the gap too would let the grid scroll past its content.
-        self.row_offset(if self.library_heading { self.pinned_rows } else { 0 }, 1)
-    }
-}
+/// Gap above every heading after the first — what makes the block above it read as finished
+/// (there is no dividing line; the headings say it).
+pub const SECTION_GAP: i32 = 32;
 
 /// [`grid_card_rect`] translated by the sections above it — everything except the current
 /// scroll offset, which [`scrolled_card_rect`] applies on top.
-pub(crate) fn unscrolled_card_rect(
-    idx: usize,
-    columns: usize,
-    grid_x: i32,
-    available_w: u32,
-    sections: GridSections,
-) -> Rect {
-    grid_card_rect(idx, columns, grid_x, available_w).offset(0, sections.row_offset(idx, columns))
+pub(crate) fn unscrolled_card_rect(idx: usize, grid_x: i32, available_w: u32, layout: GridLayout) -> Rect {
+    grid_card_rect(idx, layout.columns(), grid_x, available_w).offset(0, layout.row_offset(idx))
 }
 
 /// [`unscrolled_card_rect`] translated by the current scroll offset — every draw-list card
 /// position starts from this.
 pub(crate) fn scrolled_card_rect(
     idx: usize,
-    columns: usize,
     grid_x: i32,
     available_w: u32,
-    sections: GridSections,
+    layout: GridLayout,
     grid_scroll: i32,
 ) -> Rect {
-    unscrolled_card_rect(idx, columns, grid_x, available_w, sections).offset(0, -grid_scroll)
+    unscrolled_card_rect(idx, grid_x, available_w, layout).offset(0, -grid_scroll)
 }
-
-/// The headings' text. Here rather than at the draw site: the tile that rasterizes them and
-/// the tile cache's key both want the same strings.
-pub const SECTION_PINNED_LABEL: &str = "Pinned";
-pub const SECTION_LIBRARY_LABEL: &str = "Library";
 
 /// The band a section heading is drawn in, scrolled like any other grid content: directly
 /// above `first_idx`, the first card of the section it names, so heading and block move
 /// together. Positioned off [`scrolled_card_rect`], which is what keeps them aligned.
 pub(crate) fn section_heading_rect(
     first_idx: usize,
-    columns: usize,
     grid_x: i32,
     available_w: u32,
-    sections: GridSections,
+    layout: GridLayout,
     grid_scroll: i32,
 ) -> Rect {
-    let row = scrolled_card_rect(first_idx, columns, grid_x, available_w, sections, grid_scroll);
+    let row = scrolled_card_rect(first_idx, grid_x, available_w, layout, grid_scroll);
     Rect::new(
         grid_x,
         row.y() - SECTION_HEADING_H,
@@ -125,21 +60,19 @@ pub(crate) fn section_heading_rect(
 /// is one contiguous range whose ends are a division. The compose path used to ask every card
 /// in the library whether it was on screen, once per frame, to learn the same thing.
 pub(crate) fn visible_cards(
-    count: usize,
-    columns: usize,
     available_w: u32,
-    sections: GridSections,
+    layout: GridLayout,
     grid_scroll: i32,
     screen_h: i32,
     pad: i32,
 ) -> std::ops::Range<usize> {
-    let cols = columns.max(1);
-    let (_, card_h) = grid_card_size(available_w, columns);
+    let cols = layout.columns();
+    let count = layout.len();
+    let (_, card_h) = grid_card_size(available_w, cols);
     let row_h = card_h as i32 + GRID_GAP;
-    let rows = count.div_ceil(cols);
-    let mut first = rows;
+    let mut first = layout.rows();
     let mut last = 0;
-    for (band, offset) in sections.row_bands(rows) {
+    for (band, offset) in layout.row_bands() {
         if band.is_empty() {
             continue;
         }
@@ -175,10 +108,6 @@ pub const GRID_PAD: i32 = 32;
 pub const GRID_GAP: i32 = 24;
 pub const GRID_TOP_Y: i32 = 160;
 pub const CARD_MIN_W: u32 = 220;
-
-/// Gap between the pinned block's last row and the "Library" heading under it — what makes
-/// the two sections read as separate blocks (there is no dividing line; the headings say it).
-pub const PINNED_SECTION_GAP: i32 = 32;
 
 /// `clamp(2, available_w / (min_card_w + gap), 5)` — moonlight-tv's own formula.
 pub fn grid_columns(available_w: u32) -> usize {
@@ -227,16 +156,15 @@ const FOCUS_WINDOW_ROWS: usize = 2;
 /// that can only ever land one row away. Focus itself must always be in the window or
 /// [`FocusMap::navigate`](crate::ui::focus::FocusMap::navigate) finds no origin to move from.
 pub(crate) fn focus_window(
-    count: usize,
-    columns: usize,
     available_w: u32,
-    sections: GridSections,
+    layout: GridLayout,
     grid_scroll: i32,
     screen_h: i32,
     focus: Option<usize>,
 ) -> std::ops::Range<usize> {
-    let cols = columns.max(1);
-    let visible = visible_cards(count, columns, available_w, sections, grid_scroll, screen_h, 0);
+    let cols = layout.columns();
+    let count = layout.len();
+    let visible = visible_cards(available_w, layout, grid_scroll, screen_h, 0);
     let focus = focus.filter(|&i| i < count);
     // A band can be empty with the grid scrolled clear of the viewport; the focused card is
     // then the only anchor there is, and with no focus either there is nothing to navigate.
@@ -263,44 +191,48 @@ pub(crate) fn focus_window(
 /// every card in the library the same question on every motion event. The candidate row is
 /// arithmetic but the answer still comes from [`unscrolled_card_rect`], so a point in the
 /// grid's gutters matches nothing here exactly as it did before.
-pub(crate) fn card_at_point(
-    count: usize,
-    columns: usize,
-    grid_x: i32,
-    available_w: u32,
-    sections: GridSections,
-    (x, y): (i32, i32),
-) -> Option<usize> {
-    let cols = columns.max(1);
-    let (_, card_h) = grid_card_size(available_w, columns);
+pub(crate) fn card_at_point(grid_x: i32, available_w: u32, layout: GridLayout, (x, y): (i32, i32)) -> Option<usize> {
+    let cols = layout.columns();
+    let count = layout.len();
+    let (_, card_h) = grid_card_size(available_w, cols);
     let row_h = card_h as i32 + GRID_GAP;
-    let rows = count.div_ceil(cols);
-    sections.row_bands(rows).into_iter().find_map(|(band, offset)| {
+    layout.row_bands().find_map(|(band, offset)| {
         let row = div_floor(y - GRID_TOP_Y - offset, row_h);
         let row = usize::try_from(row).ok().filter(|r| band.contains(r))?;
         (row * cols..((row + 1) * cols).min(count))
-            .find(|&idx| unscrolled_card_rect(idx, columns, grid_x, available_w, sections).contains_point((x, y)))
+            .find(|&idx| unscrolled_card_rect(idx, grid_x, available_w, layout).contains_point((x, y)))
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::grid::Group;
 
     const COLUMNS: usize = 5;
     const AVAILABLE_W: u32 = 1920 - crate::ui::widgets::SIDEBAR_W;
     const SCREEN_H: i32 = 1080;
 
-    fn sections() -> GridSections {
-        GridSections {
-            pinned_rows: 1,
-            pinned_heading: true,
-            library_heading: true,
-        }
+    /// Two sections, the first exactly one row wide — the pre-collections shape, and the
+    /// one every offset here was tuned against.
+    fn groups(count: usize) -> Vec<Group> {
+        let pinned = COLUMNS.min(count);
+        // Empty sections never reach the grid, so the fixture must not build one either.
+        [("Pinned", 0, pinned), ("Library", pinned, count - pinned)]
+            .into_iter()
+            .filter(|&(_, _, len)| len > 0)
+            .map(|(name, games_start, len)| Group {
+                name: name.into(),
+                len,
+                games_start,
+                desktop: false,
+            })
+            .collect()
     }
 
     fn window(count: usize, scroll: i32, focus: Option<usize>) -> std::ops::Range<usize> {
-        focus_window(count, COLUMNS, AVAILABLE_W, sections(), scroll, SCREEN_H, focus)
+        let groups = groups(count);
+        focus_window(AVAILABLE_W, GridLayout::new(&groups, COLUMNS), scroll, SCREEN_H, focus)
     }
 
     /// The invariant that silently freezes focus when broken: `FocusMap::navigate` needs the
@@ -350,7 +282,10 @@ mod tests {
 
     #[test]
     fn an_empty_grid_has_nothing_to_navigate() {
-        assert_eq!(window(0, 0, None), 0..0);
+        assert_eq!(
+            focus_window(AVAILABLE_W, GridLayout::new(&[], COLUMNS), 0, SCREEN_H, None),
+            0..0
+        );
     }
 
     /// Scrolled clear of the viewport there is no visible band, so the focused card is the

@@ -13,7 +13,6 @@ pub(crate) mod gamesettings;
 mod home;
 pub(crate) mod hostmenu;
 mod pairing;
-mod pinlimit;
 pub(crate) mod reach;
 pub(crate) mod sendlogs;
 mod settings;

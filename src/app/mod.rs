@@ -43,7 +43,6 @@ use crate::ui;
 /// around it to grow into.
 pub(crate) const CARD_GROWTH: f32 = 0.045;
 pub(crate) const LAUNCH_GROWTH: f32 = 3.5;
-const PIN_BADGE_MARGIN: i32 = 10;
 pub(crate) const CARD_POP: Duration = Duration::from_millis(300);
 pub(crate) const CARD_POP_SHRINK: f32 = 0.14;
 /// Modal open. Short: the card is the response to a keypress, and delay there reads as
@@ -396,16 +395,15 @@ impl App {
     /// Grid geometry bridges — `view::home` is pure geometry, so these supply the two
     /// pieces of live state (the section shape and the scroll offset) it takes.
     pub(crate) fn unscrolled_card_rect(&self, idx: usize, columns: usize, grid_x: i32, available_w: u32) -> Rect {
-        view::home::unscrolled_card_rect(idx, columns, grid_x, available_w, self.grid_sections(columns))
+        view::home::unscrolled_card_rect(idx, grid_x, available_w, self.library.layout(columns))
     }
 
     pub(crate) fn scrolled_card_rect(&self, idx: usize, columns: usize, grid_x: i32, available_w: u32) -> Rect {
         view::home::scrolled_card_rect(
             idx,
-            columns,
             grid_x,
             available_w,
-            self.grid_sections(columns),
+            self.library.layout(columns),
             self.render.grid.scroll,
         )
     }
@@ -419,11 +417,9 @@ impl App {
             return None;
         }
         view::home::card_at_point(
-            self.grid_len(columns),
-            columns,
             grid_x,
             available_w,
-            self.grid_sections(columns),
+            self.library.layout(columns),
             (x, y + self.render.grid.scroll),
         )
     }
@@ -709,6 +705,20 @@ impl App {
     pub(crate) fn selected_known_host(&self) -> Option<&KnownHost> {
         let (host, port) = self.library.selected_host.as_ref()?;
         self.known_host(host, *port)
+    }
+
+    /// Which of the selected host's collections holds `pin_id`, or `None` for Library.
+    pub(crate) fn collection_of_card(&self, pin_id: &str) -> Option<usize> {
+        self.selected_known_host()?.collection_of(pin_id)
+    }
+
+    /// The first non-dynamic collection in grid order — where a card with nowhere else to go
+    /// lands, and what "Pinned" is on a host that never renamed it.
+    pub(crate) fn first_user_collection(&self) -> Option<usize> {
+        self.selected_known_host()?
+            .collections()
+            .iter()
+            .position(|c| !c.dynamic)
     }
 
     pub(crate) fn known_host_mut(&mut self, host: &str, port: u16) -> Option<&mut KnownHost> {

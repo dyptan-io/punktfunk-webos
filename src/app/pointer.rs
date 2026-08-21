@@ -205,7 +205,7 @@ impl App {
                 self.set_confirm_focused(i)
             }
             // No positional focus to move: single-card info/entry modals (AddHost,
-            // EditHost, About, PinLimit) and Settings with a dropdown open.
+            // EditHost, About) and Settings with a dropdown open.
             _ => false,
         }
     }
@@ -509,8 +509,8 @@ impl App {
                 *self.list_modal_focused_mut()? = row;
             }
             // Nothing positional to hit: the confirm dialogs confirm whichever button
-            // already has focus, and PinLimit has a single OK.
-            Screen::Wake | Screen::ForgetHost | Screen::SpeedTest | Screen::SendLogs | Screen::PinLimit => {}
+            // already has focus.
+            Screen::Wake | Screen::ForgetHost | Screen::SpeedTest | Screen::SendLogs => {}
             // Nothing clickable but the close button (handled above).
             Screen::AddHost | Screen::EditHost | Screen::About => return None,
         }

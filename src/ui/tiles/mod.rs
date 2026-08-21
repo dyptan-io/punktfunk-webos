@@ -18,8 +18,8 @@ mod overlay;
 mod text;
 
 pub use card::{
-    CardOutlineTile, CardShadowTile, CardTile, CardTitleTile, FocusRingTile, PinBadgeTile, CARD_OUTLINE_PAD,
-    CARD_SHADOW_PAD, FOCUS_RING_PAD, PIN_BADGE_SIZE,
+    CardOutlineTile, CardShadowTile, CardTile, CardTitleTile, FocusRingTile, CARD_OUTLINE_PAD, CARD_SHADOW_PAD,
+    FOCUS_RING_PAD,
 };
 pub use cardmenu::{CardMenuBandTile, CardMenuRowsTile, CardMenuTile, CardMenuTitleTile};
 pub use confirm::{confirm_button_at, confirm_dialog_card, confirm_dialog_layout, ConfirmDialogShellTile};

@@ -25,7 +25,6 @@ pub enum Screen {
     About,
     SpeedTest,
     WakeSettings,
-    PinLimit,
     /// Log level debug aid (see `app/diagnostics.rs`).
     Diagnostics,
     /// Experimental/unstable toggles (see `app/experimental.rs`).

@@ -16,8 +16,6 @@ pub const FOCUS_ROW: TileId = TileId(1);
 pub const RING: TileId = TileId(2);
 /// The focused card's crisp lit edge, composited over its art.
 pub const CARD_OUTLINE: TileId = TileId(3);
-/// The pinned badge, composited over a focused pinned card.
-pub const PIN_BADGE: TileId = TileId(4);
 /// The open modal's shell — chrome, header, every widget drawn unfocused.
 pub const MODAL: TileId = TileId(5);
 /// The open modal's single focused, zoom-animated widget, composited over [`MODAL`].
@@ -78,10 +76,6 @@ pub const CARD_MENU_TITLE: TileId = TileId(27);
 /// That panel's selection band, one row tall with the card's rounded bottom corners — used
 /// for the bottom row, whose band ends on that edge; higher rows are a plain square fill.
 pub const CARD_MENU_BAND: TileId = TileId(28);
-/// The grid's two section headings — "Pinned" over the front block, "Library" over the rest.
-/// Static text, so one tile each for the life of the process.
-pub const SECTION_PINNED: TileId = TileId(29);
-pub const SECTION_LIBRARY: TileId = TileId(30);
 
 /// First id of the settings-row band — one slot per on-screen row of the open settings
 /// list (see [`settings_row`]). Fixed rather than interned: the list is short, its rows are
@@ -91,8 +85,17 @@ const SETTINGS_ROW_BASE: u32 = 32;
 /// [`settings_row`] refuses anything past it rather than colliding with the spinner band.
 pub const SETTINGS_ROW_SLOTS: usize = 32;
 
+/// First id of the grid's section-heading band — one slot per drawn section, addressed by
+/// position in grid order (see [`section`]). Not `ensure_static` like the old fixed
+/// "Pinned"/"Library" pair: the labels are user-typed collection names now, so each slot is
+/// versioned by the text it holds.
+const SECTION_BASE: u32 = 64;
+/// Slots in that band — every collection a host can have, plus the dynamic Library entry,
+/// rounded up so the band's width is a power of two and the spinner's ids stay out of reach.
+pub const SECTION_SLOTS: usize = crate::app::grid::MAX_GROUPS.next_power_of_two();
+
 /// First id of the spinner band. One per frame, so animation is a swap not an upload.
-const SPINNER_BASE: u32 = 64;
+const SPINNER_BASE: u32 = 96;
 /// First id of the grid-card band, interned by pin id (see [`CardIds`]).
 const CARD_BASE: u32 = 256;
 
@@ -101,6 +104,13 @@ const CARD_BASE: u32 = 256;
 /// spinner's ids.
 pub fn settings_row(index: usize) -> Option<TileId> {
     (index < SETTINGS_ROW_SLOTS).then(|| TileId(SETTINGS_ROW_BASE + index as u32))
+}
+
+/// The tile for grid section `index`, or `None` past the band — a grid with more sections
+/// than [`SECTION_SLOTS`] draws the tail's headings unbaked rather than reaching into the
+/// spinner's ids. [`MAX_GROUPS`](crate::app::grid::MAX_GROUPS) is well under it.
+pub fn section(index: usize) -> Option<TileId> {
+    (index < SECTION_SLOTS).then(|| TileId(SECTION_BASE + index as u32))
 }
 
 /// The tile for spinner frame `idx`.

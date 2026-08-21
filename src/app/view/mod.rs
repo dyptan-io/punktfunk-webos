@@ -18,7 +18,6 @@ pub(crate) mod home;
 pub(crate) mod hostmenu;
 pub(crate) mod icons;
 pub(crate) mod pairing;
-pub(crate) mod pinlimit;
 pub(crate) mod sendlogs;
 pub(crate) mod settings;
 pub(crate) mod sidebar;

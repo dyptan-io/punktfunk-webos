@@ -38,7 +38,6 @@ impl App {
             Screen::SpeedTest => self.handle_speed_test_event(ev),
             Screen::EditHost => self.handle_edit_host_event(ev),
             Screen::About => self.handle_about_event(ev, screen_w, screen_h, fonts),
-            Screen::PinLimit => self.handle_pin_limit_event(ev),
             Screen::Diagnostics => self.handle_diagnostics_event(ev),
             Screen::Experimental => self.handle_experimental_event(ev),
             Screen::CursorSettings(_) => self.handle_cursor_settings_event(ev),
@@ -99,7 +98,6 @@ impl App {
             | Screen::About
             | Screen::HostMenu
             | Screen::WakeSettings
-            | Screen::PinLimit
             | Screen::Diagnostics
             | Screen::Experimental
             | Screen::CursorSettings(_) => false,

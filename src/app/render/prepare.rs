@@ -280,9 +280,8 @@ impl App {
             Screen::SendLogs => Some(ModalShellKey::SendLogs),
             // `EditHost` joins `AddHost` in having no shell key: its typed-digit
             // display has no separate focus tile to protect, so it just redraws on
-            // any `content_dirty` tick — same for `PinLimit`, which is a fixed
-            // message plus one always-focused button.
-            Screen::Home | Screen::AddHost | Screen::EditHost | Screen::PinLimit => None,
+            // any `content_dirty` tick.
+            Screen::Home | Screen::AddHost | Screen::EditHost => None,
         };
         // Hashed with the key rather than carried inside it: the close-button hover changes
         // every shell alike (see `ModalShellKey`).
@@ -355,10 +354,9 @@ impl App {
                 self.editing_override(),
             )),
             Screen::SendLogs => Some(ModalFocusKey::SendLogsButton(self.nav.cursor(ScreenKey::SendLogs))),
-            // Neither has a single focused widget: the address form is one always-active
-            // field, About is a scrolling document, and `PinLimit`'s one button is
-            // always drawn focused directly in `render_pin_limit`.
-            Screen::Home | Screen::AddHost | Screen::EditHost | Screen::About | Screen::PinLimit => None,
+            // None has a single focused widget: the address form is one always-active
+            // field, and About is a scrolling document.
+            Screen::Home | Screen::AddHost | Screen::EditHost | Screen::About => None,
         };
         key.as_ref().map(cache::version)
     }
@@ -540,7 +538,7 @@ impl App {
                     }
                     // No single focused widget to draw — `modal_focus_version` is `None` on
                     // these, so this is the arm that never runs rather than one that panics.
-                    Screen::Home | Screen::AddHost | Screen::EditHost | Screen::About | Screen::PinLimit => None,
+                    Screen::Home | Screen::AddHost | Screen::EditHost | Screen::About => None,
                 };
                 if let Some(tile) = tile {
                     tiles.put(tile::MODAL_FOCUS, version, tile);

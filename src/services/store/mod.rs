@@ -13,8 +13,9 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 pub use crate::core::model::{
-    desktop_capture_override, new_host_games, upsert_known_host, CodecPref, GamepadType, KnownHost, LogLevelOverride,
-    OverrideField, Persisted, Settings, SettingsOverride, VideoBackend, DESKTOP_PIN_ID,
+    desktop_capture_override, new_host_collections, new_host_games, upsert_known_host, CodecPref, Collection,
+    GamepadType, KnownHost, LogLevelOverride, OverrideField, Persisted, Settings, SettingsOverride, VideoBackend,
+    DESKTOP_PIN_ID,
 };
 pub use crate::services::paths::app_dir;
 pub use identity::load_or_create_identity;
@@ -51,6 +52,7 @@ pub fn load() -> Loaded {
     };
     apply_launch_overrides(&mut state);
     let new_build = stamp_version(&mut state);
+    migrate_collections(&mut state);
     // A document written on a more capable TV can hold HEVC, HDR and 7.1 on a device with none
     // of them — leaving a *set* value whose row the UI hides.
     state.settings.clamp_to_caps();
@@ -100,19 +102,56 @@ fn stamp_version(state: &mut Persisted) -> bool {
 }
 
 /// Puts [`desktop_capture_override`] on every host whose Desktop card is pinned and
-/// which carries no overrides yet. A host that already overrides something is left alone — the
-/// user has found the feature and this must not talk over them.
+/// which carries no overrides yet. Reads the *legacy* pin, so it must run before
+/// [`migrate_collections`] — a document with no version is one that still has pins.
+///
+/// A host that already overrides something is left alone — the user has found the feature and
+/// this must not talk over them.
 fn seed_desktop_capture(state: &mut Persisted) {
     let Some(capture) = desktop_capture_override(&state.settings) else {
         return;
     };
     for host in &mut state.known_hosts {
         let untouched = host.games.values().all(|g| g.over.is_empty());
-        if !untouched || !host.is_pinned(DESKTOP_PIN_ID) {
+        if !untouched || !host.games.get(DESKTOP_PIN_ID).is_some_and(|g| g.legacy_pin.is_some()) {
             continue;
         }
         host.edit_overrides(DESKTOP_PIN_ID, |over| over.cursor_capture = Some(capture));
         tracing::info!("seeded Desktop cursor-capture override on {}", host.name);
+    }
+}
+
+/// Gives every host that predates collections the vector it now needs: its old pins, in pin
+/// order, as one "Pinned" collection, then the dynamic Library entry — which is exactly the
+/// grid it was already drawing. A host with no pins gets Library alone.
+///
+/// Runs after [`stamp_version`], whose `seed_desktop_capture` is the last reader of the legacy
+/// pin. One-shot in practice, since the first save writes `collections` and stops serializing
+/// `pin` — but idempotent regardless: a host that already has the vector is skipped.
+fn migrate_collections(state: &mut Persisted) {
+    for host in &mut state.known_hosts {
+        if !host.needs_migration() {
+            continue;
+        }
+        let mut pinned: Vec<(u32, &str)> = host
+            .games
+            .iter()
+            .filter_map(|(id, g)| g.legacy_pin.map(|p| (p, id.as_str())))
+            .collect();
+        pinned.sort_unstable();
+        let mut collections = Vec::with_capacity(2);
+        if !pinned.is_empty() {
+            let mut collection = Collection::new(crate::core::model::PINNED_COLLECTION);
+            collection.games = pinned.into_iter().map(|(_, id)| id.to_string()).collect();
+            tracing::info!(
+                "migrated {} pins on {} into a collection",
+                collection.games.len(),
+                host.name
+            );
+            collections.push(collection);
+        }
+        collections.push(Collection::library());
+        host.set_collections(collections);
     }
 }
 

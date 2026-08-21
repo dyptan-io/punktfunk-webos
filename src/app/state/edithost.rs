@@ -65,6 +65,7 @@ impl App {
                 mac: old.mac.clone(),
                 wol_auto: old.wol_auto,
                 games: old.games.clone(),
+                collections: old.collections.clone(),
             },
         );
         // The address is the cache key, so the old one's art is now orphaned.

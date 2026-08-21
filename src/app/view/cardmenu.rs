@@ -13,11 +13,11 @@ use crate::ui::render::Rect;
 impl App {
     /// The submenu's rows for `pin_id`'s card. Takes the card rather than reading the open
     /// menu: the panel is baked when the card takes focus, before there is a menu to ask.
-    /// Pin's label is the action it performs, not the state it reads.
+    /// The move row's label is the action it performs, not the state it reads.
     pub(crate) fn card_menu_rows(&self, pin_id: &str) -> [(&'static str, &'static str); ROW_COUNT] {
-        let pinned = self.selected_known_host().is_some_and(|h| h.is_pinned(pin_id));
+        let collected = self.collection_of_card(pin_id).is_some();
         [
-            (crate::ui::theme::icons().pin, if pinned { "Unpin" } else { "Pin" }),
+            (crate::ui::theme::icons().pin, if collected { "Remove" } else { "Pin" }),
             (view::icons::ICON_SETTINGS, "Settings"),
         ]
     }

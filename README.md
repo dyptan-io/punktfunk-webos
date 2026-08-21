@@ -32,18 +32,14 @@ video decode, and webOS packaging.
 - **Bitrate** — Automatic mode adjusts to the network, or set a fixed rate from 10 to 200 Mbps.
   A per-host network speed test measures over the real data plane and applies a recommended rate.
 - **Audio** — stereo, 5.1 or 7.1, decoded on the TV.
-- **Library** — the host's game library, alphabetically sorted, launched with one press. Pinned
-  games appear in the top row.
+- **Library** — the host's game library, custom collections and ordering.
 - **Per-game overrides** — any game can override the global resolution, frame rate, bitrate, codec,
   HDR, audio or controller settings.
 - **Input** — Magic Remote pointer, gamepads, USB keyboard and mouse. Pointer capture for games,
-  absolute pointing for the desktop. D-pad navigation, number-pad PIN/IP entry, and the Red button
-  as a Back/disconnect substitute.
+  absolute pointing for the desktop, gestures.
 - **DualSense** — adaptive triggers, lightbar, player LEDs, touchpad, gyro and rumble over
   Bluetooth (see the note below).
-- **Hosts** — LAN discovery (mDNS) or add a host by IP; PIN pairing with persisted trust, a live
-  reachability dot per host, and per-host actions behind a ⋯ button: connect, pair, speed test,
-  wake, edit address, forget.
+- **Hosts** — LAN discovery (mDNS) or add a host by IP; PIN pairing with persisted trust, per-host settings.
 - **Game mode (rooted TVs)** — optional setting that switches picture and sound to Game mode while
   streaming and restores the previous settings on exit.
 

@@ -150,6 +150,7 @@ impl App {
                         // Only reaches a genuinely new host — `upsert_known_host` keeps an
                         // existing record's pins and wol_auto.
                         games: store::new_host_games(&self.settings_ui.settings),
+                        collections: Some(store::new_host_collections()),
                         ..KnownHost::default()
                     },
                 );

@@ -26,7 +26,6 @@ pub(crate) const fn is_confirm(screen: Screen) -> bool {
         | Screen::EditHost
         | Screen::About
         | Screen::WakeSettings
-        | Screen::PinLimit
         | Screen::Diagnostics
         | Screen::Experimental
         | Screen::CursorSettings(_) => false,
@@ -54,7 +53,6 @@ pub(crate) const fn is_list_modal(screen: Screen) -> bool {
         | Screen::EditHost
         | Screen::About
         | Screen::SpeedTest
-        | Screen::PinLimit
         | Screen::SendLogs => false,
     }
 }
@@ -240,7 +238,6 @@ impl App {
             | Screen::EditHost
             | Screen::SpeedTest
             | Screen::WakeSettings
-            | Screen::PinLimit
             | Screen::Diagnostics
             | Screen::Experimental
             | Screen::CursorSettings(_)
@@ -383,7 +380,7 @@ impl App {
             | Screen::Diagnostics
             | Screen::Experimental
             | Screen::CursorSettings(_) => self.list_modal_focus_rect(screen_w, screen_h, fonts),
-            Screen::Home | Screen::AddHost | Screen::EditHost | Screen::About | Screen::PinLimit => None,
+            Screen::Home | Screen::AddHost | Screen::EditHost | Screen::About => None,
         }
     }
 
@@ -482,9 +479,6 @@ impl App {
                 state: self.screens.speed_test.as_ref(),
                 host_name: &self.screens.speed_test_name,
                 confirm: confirm.as_ref(),
-            }),
-            Screen::PinLimit => f(&view::pinlimit::Modal {
-                message: Self::PIN_LIMIT_MESSAGE,
             }),
             Screen::Diagnostics => f(&view::diagnostics::Modal {
                 settings: &self.settings_ui.settings,

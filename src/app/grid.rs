@@ -1,17 +1,19 @@
 //! The game grid: its layout vocabulary, its tuning, and the state the render path keeps for it.
 //!
-//! [`GridLayout`] is the pinned/library shape a given column count implies — pure arithmetic over
-//! the games list, so the pointer path and the focus map can both ask it without a rasterizer.
-//! [`GridState`] is what `App` holds across frames: which tile each card owns, the pop clocks, the
-//! eased scroll, and the dirty flags the event side sets for the render side.
+//! [`GridLayout`] is the shape a given column count gives the library's [`Group`]s — pure
+//! arithmetic over a bounded run list, so the pointer path and the focus map can both ask it
+//! without a rasterizer. [`GridState`] is what `App` holds across frames: which tile each card
+//! owns, the pop clocks, the eased scroll, and the dirty flags the event side sets for the
+//! render side.
 //!
 //! Pixel geometry (card rects, the visible band) is `app::view::home`; navigation is
-//! `app::state::home`.
+//! `app::state::home`; the groups themselves are built in `app::library`.
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use crate::app::render::tile;
 use crate::app::spinner::GridReveal;
-use crate::app::view;
+use crate::app::view::home::{SECTION_GAP, SECTION_HEADING_H};
 use crate::core::model::GameEntry;
 use crate::services::store;
 
@@ -32,84 +34,146 @@ pub(crate) const CARD_BUILD_BUDGET: Duration = Duration::from_millis(6);
 /// since the upload is charged to a later stage that the budget above cannot see.
 pub(crate) const CARD_BUILD_BURST: usize = 8;
 
-/// Grid card: Desktop or game (both pinnable).
+/// Grid card: Desktop or game.
 pub(crate) enum GridCard<'a> {
     Desktop,
     Game(&'a GameEntry),
 }
 
-/// Grid layout shape: pinned block (owns whole rows) + rest section (padding-aware).
-#[derive(Clone, Copy)]
-pub(crate) struct GridLayout {
-    pub(crate) pinned_count: usize,
-    pub(crate) desktop_pinned: bool,
-    pub(crate) desktop_in_rest: bool,
-    pub(crate) front_count: usize,
-    pub(crate) pinned_rows: usize,
-    pub(crate) unpinned_start: usize,
+/// Upper bound on grid sections: [`MAX_COLLECTIONS`](crate::core::model::MAX_COLLECTIONS)
+/// plus the dynamic Library entry. Every geometry query below scans the group list, so this
+/// is what makes them O(1) in the library's size.
+pub(crate) const MAX_GROUPS: usize = crate::core::model::MAX_COLLECTIONS + 1;
+
+/// One grid section: a collection's cards, laid out as a run of whole rows. Built once per
+/// change by [`Library::regroup`](crate::app::library::Library::regroup) and read by every
+/// geometry path; deliberately column-independent, so a width change needs no rebuild.
+pub(crate) struct Group {
+    /// The collection's name, as the section heading draws it.
+    pub name: String,
+    /// Cards in it: its games, plus the Desktop card when [`Self::desktop`].
+    pub len: usize,
+    /// Index into `Library::games` of this group's first game — the games are laid out
+    /// group by group, so each group's are one contiguous run.
+    pub games_start: usize,
+    /// This group holds `DESKTOP_PIN_ID`, and it heads the group.
+    pub desktop: bool,
 }
 
-impl GridLayout {
-    /// The shape `pinned_count` pinned games and the Desktop pin imply at `columns` columns.
-    /// Pure arithmetic over counts the caller already keeps — `App::grid_layout` supplies them
-    /// from its fields, tests supply them directly.
-    pub(crate) fn new(pinned_count: usize, desktop_pin: bool, games_loaded: bool, columns: usize) -> Self {
-        let desktop_pinned = games_loaded && desktop_pin;
-        let front_count = pinned_count + usize::from(desktop_pinned);
-        let pinned_rows = if front_count == 0 {
-            0
-        } else {
-            front_count.div_ceil(columns.max(1))
-        };
+impl Group {
+    /// Games in this group — [`Self::len`] without the Desktop card.
+    fn games(&self) -> usize {
+        self.len - usize::from(self.desktop)
+    }
+}
+
+/// A [`Group`] with the geometry `columns` gives it. Yielded by [`GridLayout::placed`]; never
+/// stored, so a column change cannot leave a stale copy behind.
+#[derive(Clone, Copy)]
+pub(crate) struct Placed<'a> {
+    pub group: &'a Group,
+    /// First grid slot. Whole rows: a partial last row pads rather than letting the next
+    /// group's first card share it.
+    pub first_idx: usize,
+    pub first_row: usize,
+    pub rows: usize,
+    /// Heading and gap pixels stacked above this group's first row.
+    pub y_offset: i32,
+}
+
+impl Placed<'_> {
+    /// The slots this group actually fills — [`Self::first_idx`] plus its cards, so the
+    /// padding at the end of a partial last row is outside it.
+    fn slots(&self) -> Range<usize> {
+        self.first_idx..self.first_idx + self.group.len
+    }
+
+    fn rows_range(&self) -> Range<usize> {
+        self.first_row..self.first_row + self.rows
+    }
+}
+
+/// The grid's shape at one column count: the library's groups plus the arithmetic that turns
+/// them into slots, rows and vertical offsets.
+///
+/// `Copy` and borrowing only the group list, so a caller can hold one and still mutate the
+/// rest of `App` — which is why the accessors that build one live on
+/// [`Library`](crate::app::library::Library) rather than on `App`.
+#[derive(Clone, Copy)]
+pub(crate) struct GridLayout<'a> {
+    groups: &'a [Group],
+    columns: usize,
+}
+
+impl<'a> GridLayout<'a> {
+    pub(crate) fn new(groups: &'a [Group], columns: usize) -> Self {
         Self {
-            pinned_count,
-            desktop_pinned,
-            desktop_in_rest: games_loaded && !desktop_pinned,
-            front_count,
-            pinned_rows,
-            unpinned_start: pinned_rows * columns.max(1),
+            groups,
+            columns: columns.max(1),
         }
     }
 
-    /// The vertical section shape this layout implies: the pinned block's row count, and one
-    /// heading per section that actually has cards — so neither names an empty block, and the
-    /// gap between them only exists when both do.
-    pub(crate) fn sections(&self, games: usize) -> view::home::GridSections {
-        view::home::GridSections {
-            pinned_rows: self.pinned_rows,
-            pinned_heading: self.pinned_rows > 0,
-            library_heading: self.len(games) > self.unpinned_start,
-        }
+    pub(crate) fn columns(&self) -> usize {
+        self.columns
     }
 
-    pub(crate) fn len(&self, games: usize) -> usize {
-        self.unpinned_start + usize::from(self.desktop_in_rest) + games.saturating_sub(self.pinned_count)
-    }
-
-    pub(crate) fn card_at<'a>(&self, games: &'a [GameEntry], idx: usize) -> Option<GridCard<'a>> {
-        if idx < self.front_count {
-            if self.desktop_pinned {
-                return if idx == 0 {
-                    Some(GridCard::Desktop)
-                } else {
-                    games.get(idx - 1).map(GridCard::Game)
-                };
-            }
-            return games.get(idx).map(GridCard::Game);
-        }
-        let rest_pos = idx.checked_sub(self.unpinned_start)?;
-        if self.desktop_in_rest {
-            return if rest_pos == 0 {
-                Some(GridCard::Desktop)
-            } else {
-                games.get(self.pinned_count + rest_pos - 1).map(GridCard::Game)
+    /// Every group with its geometry, in grid order. One pass of integer adds over at most
+    /// [`MAX_GROUPS`] entries and no allocation — the whole reason the derived fields are not
+    /// stored: nothing can go stale when the column count changes.
+    pub(crate) fn placed(&self) -> impl Iterator<Item = Placed<'a>> + '_ {
+        let columns = self.columns;
+        let mut first_row = 0;
+        let mut y_offset = 0;
+        self.groups.iter().enumerate().map(move |(i, group)| {
+            let rows = group.len.div_ceil(columns);
+            // Every heading takes a line; every one after the first also takes the gap that
+            // makes the block above it read as finished.
+            y_offset += SECTION_HEADING_H + if i == 0 { 0 } else { SECTION_GAP };
+            let placed = Placed {
+                group,
+                first_idx: first_row * columns,
+                first_row,
+                rows,
+                y_offset,
             };
-        }
-        games.get(self.pinned_count + rest_pos).map(GridCard::Game)
+            first_row += rows;
+            placed
+        })
     }
 
-    /// Like `card_at` but only games (not Desktop or padding).
-    pub(crate) fn game_at<'a>(&self, games: &'a [GameEntry], idx: usize) -> Option<&'a GameEntry> {
+    /// The group holding grid slot `idx`, skipping the padding after a partial last row.
+    fn at_idx(&self, idx: usize) -> Option<Placed<'a>> {
+        self.placed().find(|p| p.slots().contains(&idx))
+    }
+
+    /// Grid slots in total, padding between groups included but none after the last.
+    pub(crate) fn len(&self) -> usize {
+        self.placed().last().map_or(0, |p| p.slots().end)
+    }
+
+    pub(crate) fn rows(&self) -> usize {
+        self.len().div_ceil(self.columns)
+    }
+
+    /// Section headings to draw: each group's name and the slot it sits above. Empty groups
+    /// never reach here — [`Library::regroup`](crate::app::library::Library::regroup) drops
+    /// them, since a zero-row section has nothing to hang a heading on.
+    pub(crate) fn headings(&self) -> impl Iterator<Item = (usize, &'a Group)> + '_ {
+        self.placed().map(|p| (p.first_idx, p.group))
+    }
+
+    pub(crate) fn card_at(&self, games: &'a [GameEntry], idx: usize) -> Option<GridCard<'a>> {
+        let placed = self.at_idx(idx)?;
+        let pos = idx - placed.first_idx;
+        if placed.group.desktop && pos == 0 {
+            return Some(GridCard::Desktop);
+        }
+        let pos = pos - usize::from(placed.group.desktop);
+        games.get(placed.group.games_start + pos).map(GridCard::Game)
+    }
+
+    /// Like [`Self::card_at`] but only games (not Desktop or padding).
+    pub(crate) fn game_at(&self, games: &'a [GameEntry], idx: usize) -> Option<&'a GameEntry> {
         match self.card_at(games, idx)? {
             GridCard::Game(g) => Some(g),
             GridCard::Desktop => None,
@@ -117,11 +181,10 @@ impl GridLayout {
     }
 
     /// The pin id for whatever's at grid index `idx` — a `GameEntry::id`, or
-    /// `store::DESKTOP_PIN_ID` for "Desktop" — `None` for the padding after a
-    /// partial pinned row. The one place this mapping is spelled out; every
-    /// caller (`App::pin_id_at_grid_idx`, tile build/evict, `draw_list`)
-    /// delegates here instead of matching `card_at` itself.
-    pub(crate) fn pin_id_at<'a>(&self, games: &'a [GameEntry], idx: usize) -> Option<&'a str> {
+    /// `store::DESKTOP_PIN_ID` for "Desktop" — `None` for the padding after a partial last
+    /// row. The one place this mapping is spelled out; every caller (`App::pin_id_at_grid_idx`,
+    /// tile build/evict, `draw_list`) delegates here instead of matching `card_at` itself.
+    pub(crate) fn pin_id_at(&self, games: &'a [GameEntry], idx: usize) -> Option<&'a str> {
         match self.card_at(games, idx)? {
             GridCard::Desktop => Some(store::DESKTOP_PIN_ID),
             GridCard::Game(g) => Some(g.id.as_str()),
@@ -130,14 +193,39 @@ impl GridLayout {
 
     pub(crate) fn idx_for_pin_id(&self, games: &[GameEntry], id: &str) -> Option<usize> {
         if id == store::DESKTOP_PIN_ID {
-            return Some(if self.desktop_pinned { 0 } else { self.unpinned_start });
+            return self.placed().find(|p| p.group.desktop).map(|p| p.first_idx);
         }
         let pos = games.iter().position(|g| g.id == id)?;
-        Some(if pos < self.pinned_count {
-            usize::from(self.desktop_pinned) + pos
-        } else {
-            self.unpinned_start + usize::from(self.desktop_in_rest) + (pos - self.pinned_count)
-        })
+        let placed = self
+            .placed()
+            .find(|p| (p.group.games_start..p.group.games_start + p.group.games()).contains(&pos))?;
+        Some(placed.first_idx + usize::from(placed.group.desktop) + (pos - placed.group.games_start))
+    }
+
+    /// The grid's rows split into the bands that share a vertical offset — one per group, each
+    /// uniformly spaced inside itself, so a band's visible rows are a closed-form range.
+    pub(crate) fn row_bands(&self) -> impl Iterator<Item = (Range<usize>, i32)> + '_ {
+        self.placed().map(|p| (p.rows_range(), p.y_offset))
+    }
+
+    /// Extra vertical offset carried by grid row `row`: whatever headings and gaps stack above
+    /// it. Non-decreasing in `row`, which is what makes a card's y monotone in its index — see
+    /// [`visible_cards`](crate::app::view::home::visible_cards).
+    pub(crate) fn row_offset_at(&self, row: usize) -> i32 {
+        self.placed()
+            .take_while(|p| p.first_row <= row)
+            .last()
+            .map_or(0, |p| p.y_offset)
+    }
+
+    /// [`Self::row_offset_at`] for the row grid index `idx` sits in.
+    pub(crate) fn row_offset(&self, idx: usize) -> i32 {
+        self.row_offset_at(idx / self.columns)
+    }
+
+    /// What the sections add to the grid's total height — the offset its last row carries.
+    pub(crate) fn total_extra(&self) -> i32 {
+        self.placed().last().map_or(0, |p| p.y_offset)
     }
 }
 
@@ -272,22 +360,82 @@ mod tests {
             .collect()
     }
 
-    fn pin_ids(layout: &GridLayout, games: &[GameEntry]) -> Vec<Option<String>> {
-        (0..layout.len(games.len()))
-            .map(|i| layout.pin_id_at(games, i).map(str::to_owned))
-            .collect()
+    /// One arrangement of the grid: the groups, the column count and the library behind them.
+    struct Case {
+        groups: Vec<Group>,
+        columns: usize,
+        games: Vec<GameEntry>,
     }
 
-    /// Every arrangement the grid can be in: pin counts either side of a row boundary,
-    /// the Desktop pinned or in the rest section, and an empty library.
-    fn arrangements() -> Vec<(usize, bool, bool, usize, usize)> {
+    impl Case {
+        fn layout(&self) -> GridLayout<'_> {
+            GridLayout::new(&self.groups, self.columns)
+        }
+
+        fn pin_ids(&self) -> Vec<Option<String>> {
+            let layout = self.layout();
+            (0..layout.len())
+                .map(|i| layout.pin_id_at(&self.games, i).map(str::to_owned))
+                .collect()
+        }
+
+        fn label(&self) -> String {
+            let shape: Vec<(usize, bool)> = self.groups.iter().map(|g| (g.len, g.desktop)).collect();
+            format!("cols {} games {} groups {shape:?}", self.columns, self.games.len())
+        }
+    }
+
+    /// Builds the groups a split of `games` into runs of the given sizes implies, with the
+    /// Desktop card heading group `desktop` (`None` for an unloaded library, which has no
+    /// Desktop card at all). Empty groups are dropped, exactly as `Library::regroup` drops
+    /// them.
+    fn case(columns: usize, splits: &[usize], desktop: Option<usize>) -> Case {
+        let total: usize = splits.iter().sum();
+        let mut groups = Vec::new();
+        let mut games_start = 0;
+        for (i, &len) in splits.iter().enumerate() {
+            let has_desktop = desktop == Some(i);
+            if len + usize::from(has_desktop) > 0 {
+                groups.push(Group {
+                    name: format!("Group {i}"),
+                    len: len + usize::from(has_desktop),
+                    games_start,
+                    desktop: has_desktop,
+                });
+            }
+            games_start += len;
+        }
+        Case {
+            groups,
+            columns,
+            games: games(total),
+        }
+    }
+
+    /// Every shape the grid can take: splits either side of a row boundary, the Desktop card
+    /// in the first, a middle and the last group, empty groups interleaved, and an unloaded
+    /// library with no cards at all.
+    fn arrangements() -> Vec<Case> {
+        let splits: &[&[usize]] = &[
+            &[],
+            &[0],
+            &[1],
+            &[7],
+            &[1, 1],
+            &[3, 4],
+            &[5, 7],
+            &[6, 6],
+            &[0, 5],
+            &[5, 0],
+            &[2, 0, 9],
+            &[1, 3, 5, 7],
+            &[4, 4, 4, 4, 4],
+        ];
         let mut out = Vec::new();
         for &columns in &[1usize, 3, 5] {
-            for &desktop_pin in &[false, true] {
-                for &games in &[0usize, 1, 7, 12] {
-                    for pinned in 0..=games.min(6) {
-                        out.push((pinned, desktop_pin, true, columns, games));
-                    }
+            for split in splits {
+                for desktop in std::iter::once(None).chain((0..split.len()).map(Some)) {
+                    out.push(case(columns, split, desktop));
                 }
             }
         }
@@ -296,18 +444,18 @@ mod tests {
 
     #[test]
     fn pin_id_round_trips_through_idx_for_every_arrangement() {
-        for (pinned, desktop_pin, loaded, columns, count) in arrangements() {
-            let games = games(count);
-            let layout = GridLayout::new(pinned, desktop_pin, loaded, columns);
-            for idx in 0..layout.len(games.len()) {
-                let Some(id) = layout.pin_id_at(&games, idx) else {
-                    continue; // padding after a partial pinned row
+        for case in arrangements() {
+            let layout = case.layout();
+            for idx in 0..layout.len() {
+                let Some(id) = layout.pin_id_at(&case.games, idx) else {
+                    continue; // padding after a partial last row
                 };
                 let id = id.to_owned();
                 assert_eq!(
-                    layout.idx_for_pin_id(&games, &id),
+                    layout.idx_for_pin_id(&case.games, &id),
                     Some(idx),
-                    "idx {idx} id {id} pinned {pinned} desktop {desktop_pin} cols {columns} games {count}"
+                    "idx {idx} id {id} — {}",
+                    case.label()
                 );
             }
         }
@@ -315,75 +463,108 @@ mod tests {
 
     #[test]
     fn every_card_appears_exactly_once() {
-        for (pinned, desktop_pin, loaded, columns, count) in arrangements() {
-            let games = games(count);
-            let layout = GridLayout::new(pinned, desktop_pin, loaded, columns);
-            let mut seen: Vec<String> = pin_ids(&layout, &games).into_iter().flatten().collect();
+        for case in arrangements() {
+            let mut seen: Vec<String> = case.pin_ids().into_iter().flatten().collect();
             let total = seen.len();
             seen.sort();
             seen.dedup();
-            assert_eq!(seen.len(), total, "duplicate card in the grid");
-            let mut expected: Vec<String> = games.iter().map(|g| g.id.clone()).collect();
-            expected.push(store::DESKTOP_PIN_ID.to_owned());
+            assert_eq!(seen.len(), total, "duplicate card — {}", case.label());
+            let mut expected: Vec<String> = case.games.iter().map(|g| g.id.clone()).collect();
+            if case.groups.iter().any(|g| g.desktop) {
+                expected.push(store::DESKTOP_PIN_ID.to_owned());
+            }
             expected.sort();
-            assert_eq!(seen, expected);
+            assert_eq!(seen, expected, "{}", case.label());
         }
     }
 
     #[test]
-    fn holes_are_only_the_padding_after_a_partial_pinned_row() {
-        let games = games(12);
-        // 4 pinned games + Desktop = 5 cards in a 3-wide pinned block of 6 slots.
-        let layout = GridLayout::new(4, true, true, 3);
-        assert_eq!(layout.pinned_rows, 2);
-        assert_eq!(layout.unpinned_start, 6);
-        let ids = pin_ids(&layout, &games);
-        let holes: Vec<usize> = ids
-            .iter()
-            .enumerate()
-            .filter_map(|(i, id)| id.is_none().then_some(i))
-            .collect();
-        assert_eq!(holes, vec![5]);
+    fn holes_are_only_the_padding_after_a_partial_group() {
+        for case in arrangements() {
+            let layout = case.layout();
+            let holes: Vec<usize> = case
+                .pin_ids()
+                .iter()
+                .enumerate()
+                .filter_map(|(i, id)| id.is_none().then_some(i))
+                .collect();
+            // A hole is always past its group's last card and inside that group's last row.
+            for hole in holes {
+                let group = layout
+                    .placed()
+                    .find(|p| (p.first_idx..p.first_idx + p.rows * case.columns).contains(&hole))
+                    .unwrap_or_else(|| panic!("hole {hole} outside every group — {}", case.label()));
+                assert!(
+                    hole >= group.first_idx + group.group.len,
+                    "hole {hole} inside a group's cards — {}",
+                    case.label()
+                );
+            }
+        }
     }
 
     #[test]
-    fn desktop_sits_at_index_zero_when_pinned_and_heads_the_rest_when_not() {
-        let games = games(5);
-        let pinned = GridLayout::new(2, true, true, 5);
-        assert_eq!(pinned.pin_id_at(&games, 0), Some(store::DESKTOP_PIN_ID));
-        let unpinned = GridLayout::new(2, false, true, 5);
-        assert_eq!(
-            unpinned.pin_id_at(&games, unpinned.unpinned_start),
-            Some(store::DESKTOP_PIN_ID)
-        );
+    fn a_group_starts_on_its_own_row() {
+        for case in arrangements() {
+            for placed in case.layout().placed() {
+                assert_eq!(placed.first_idx % case.columns, 0, "{}", case.label());
+            }
+        }
     }
 
     #[test]
-    fn an_unloaded_library_has_no_desktop_card_at_all() {
-        let layout = GridLayout::new(0, true, false, 5);
-        assert_eq!(layout.len(0), 0);
+    fn desktop_heads_whichever_group_holds_it() {
+        let case = case(5, &[2, 3], Some(1));
+        let layout = case.layout();
+        // Group 0's two games fill slots 0-1, so group 1 starts on the next row.
+        assert_eq!(layout.idx_for_pin_id(&case.games, store::DESKTOP_PIN_ID), Some(5));
+        assert_eq!(layout.pin_id_at(&case.games, 5), Some(store::DESKTOP_PIN_ID));
+        assert_eq!(layout.pin_id_at(&case.games, 6), Some("steam:2"));
+    }
+
+    #[test]
+    fn an_unloaded_library_has_no_cards_and_no_headings() {
+        let layout = GridLayout::new(&[], 5);
+        assert_eq!(layout.len(), 0);
+        assert_eq!(layout.rows(), 0);
+        assert_eq!(layout.total_extra(), 0);
         assert!(layout.pin_id_at(&[], 0).is_none());
+        assert_eq!(layout.headings().count(), 0);
     }
 
     #[test]
-    fn sections_never_name_an_empty_block() {
-        let empty = GridLayout::new(0, false, true, 5);
-        let s = empty.sections(0);
-        assert!(!s.pinned_heading);
-        // Desktop alone still lives in the rest section, so the Library heading stands.
-        assert!(s.library_heading);
+    fn each_group_carries_one_more_heading_and_one_more_gap() {
+        let case = case(5, &[5, 5, 5], None);
+        let offsets: Vec<i32> = case.layout().placed().map(|p| p.y_offset).collect();
+        assert_eq!(
+            offsets,
+            vec![
+                SECTION_HEADING_H,
+                2 * SECTION_HEADING_H + SECTION_GAP,
+                3 * SECTION_HEADING_H + 2 * SECTION_GAP,
+            ]
+        );
+        assert_eq!(case.layout().total_extra(), *offsets.last().expect("three groups"));
+    }
 
-        let all_pinned = GridLayout::new(3, true, true, 5);
-        let s = all_pinned.sections(3);
-        assert!(s.pinned_heading);
-        assert!(!s.library_heading, "nothing left under Library");
+    #[test]
+    fn row_offsets_never_decrease() {
+        for case in arrangements() {
+            let layout = case.layout();
+            let mut last = 0;
+            for row in 0..layout.rows() {
+                let offset = layout.row_offset_at(row);
+                assert!(offset >= last, "row {row} went backwards — {}", case.label());
+                last = offset;
+            }
+        }
     }
 
     #[test]
     fn game_at_skips_the_desktop_card() {
-        let games = games(3);
-        let layout = GridLayout::new(1, true, true, 5);
-        assert!(layout.game_at(&games, 0).is_none());
-        assert_eq!(layout.game_at(&games, 1).map(|g| g.id.as_str()), Some("steam:0"));
+        let case = case(5, &[3], Some(0));
+        let layout = case.layout();
+        assert!(layout.game_at(&case.games, 0).is_none());
+        assert_eq!(layout.game_at(&case.games, 1).map(|g| g.id.as_str()), Some("steam:0"));
     }
 }

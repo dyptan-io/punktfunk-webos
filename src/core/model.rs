@@ -36,6 +36,49 @@ pub struct KnownHost {
     /// A `BTreeMap` so the file's key order is stable and diffable.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub games: BTreeMap<String, GamePrefs>,
+    /// Grid section order, Library included as the [`Collection::dynamic`] entry. One vector
+    /// carries everything: order, names and membership. `None` means "never migrated" — see
+    /// `services::store::load`, which is the only place that may leave it so.
+    ///
+    /// Visible only so the add/pair flows can seed it in a struct literal. Read it through
+    /// [`KnownHost::collections`] and change it through the methods below, which are what
+    /// keep a game in at most one collection and Library unremovable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) collections: Option<Vec<Collection>>,
+}
+
+/// One grid section: a named, ordered set of game ids. Exactly one per host is
+/// [`Collection::dynamic`] (Library), whose members are computed rather than stored.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Collection {
+    pub name: String,
+    /// Member ids ([`GameEntry::id`] or [`DESKTOP_PIN_ID`]), in user order. Unbounded — there
+    /// is no per-collection card limit.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub games: Vec<String>,
+    /// Library: holds whatever is in no other collection, so `games` is always empty on disk.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub dynamic: bool,
+}
+
+impl Collection {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            games: Vec::new(),
+            dynamic: false,
+        }
+    }
+
+    /// The one dynamic entry. Never removable, members never stored.
+    pub fn library() -> Self {
+        Self {
+            name: LIBRARY_COLLECTION.to_string(),
+            games: Vec::new(),
+            dynamic: true,
+        }
+    }
 }
 
 /// What one game carries on one host. Absent from `KnownHost::games` entirely when it holds
@@ -43,19 +86,20 @@ pub struct KnownHost {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GamePrefs {
-    /// Pin slot — the ordering key of the pinned block. `None` = not pinned. Values are
-    /// monotonic per host, not dense: unpinning leaves a hole rather than renumbering.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pin: Option<u32>,
+    /// Pre-collections pin slot, read once by the migration in `services::store::load` and
+    /// never written again — collections carry the ordering now.
+    #[serde(rename = "pin", skip_serializing)]
+    pub legacy_pin: Option<u32>,
     /// Settings this game overrides; every unset field falls through to the global [`Settings`].
     #[serde(skip_serializing_if = "SettingsOverride::is_empty")]
     pub over: SettingsOverride,
 }
 
 impl GamePrefs {
-    /// Nothing worth persisting — the prune drops these.
+    /// Nothing worth persisting — the prune drops these. `legacy_pin` never serializes, so
+    /// it does not keep an entry alive.
     fn is_empty(&self) -> bool {
-        self.pin.is_none() && self.over.is_empty()
+        self.over.is_empty()
     }
 }
 
@@ -170,11 +214,20 @@ impl SettingsOverride {
     }
 }
 
-/// Max games pinned to one host's always-visible grid row at once.
-pub const MAX_PINNED_GAMES: usize = 5;
+/// Max *user* collections per host. The dynamic Library entry is not one of them.
+pub const MAX_COLLECTIONS: usize = 20;
 
-/// Pin ID for the "Desktop" card — a `games` key like any other, and it counts toward
-/// `MAX_PINNED_GAMES`. Never pruned, since no library listing contains it.
+/// Max collection name length, in chars.
+pub const MAX_COLLECTION_NAME: usize = 24;
+
+/// The dynamic entry's name on a freshly migrated host — renameable like any other.
+pub const LIBRARY_COLLECTION: &str = "Library";
+
+/// The collection a migrated host's old pins land in, and the one a new host starts with.
+pub const PINNED_COLLECTION: &str = "Pinned";
+
+/// Pin ID for the "Desktop" card — a `games` key and a collection member like any other.
+/// Never pruned, since no library listing contains it.
 pub const DESKTOP_PIN_ID: &str = "__desktop__";
 
 impl KnownHost {
@@ -182,43 +235,51 @@ impl KnownHost {
         self.fingerprint.is_some()
     }
 
-    pub fn is_pinned(&self, id: &str) -> bool {
-        self.games.get(id).is_some_and(|g| g.pin.is_some())
+    /// The grid sections, in order. Empty only on a host `store::load` never migrated —
+    /// every path that builds or loads a host leaves at least the Library entry here.
+    pub fn collections(&self) -> &[Collection] {
+        self.collections.as_deref().unwrap_or_default()
     }
 
-    /// Pinned ids, in pin order.
-    pub fn pinned_ids(&self) -> Vec<&str> {
-        let mut pinned: Vec<(u32, &str)> = self
-            .games
+    /// Whether this host still needs the pre-collections migration (see `services::store`).
+    pub(crate) fn needs_migration(&self) -> bool {
+        self.collections.is_none()
+    }
+
+    /// Installs the migrated vector. Only `services::store`'s migration calls this; every
+    /// other mutation goes through the methods below, which cannot break the invariants.
+    pub(crate) fn set_collections(&mut self, collections: Vec<Collection>) {
+        self.collections = Some(collections);
+    }
+
+    fn collections_mut(&mut self) -> &mut Vec<Collection> {
+        self.collections.get_or_insert_with(|| vec![Collection::library()])
+    }
+
+    /// Index of the dynamic (Library) entry. Present on every migrated host; `None` only
+    /// before migration, where there is nothing to draw anyway.
+    pub fn library_index(&self) -> Option<usize> {
+        self.collections().iter().position(|c| c.dynamic)
+    }
+
+    /// Which collection holds `id`, or `None` for Library — where every id that no
+    /// collection names implicitly lives.
+    pub fn collection_of(&self, id: &str) -> Option<usize> {
+        self.collections()
             .iter()
-            .filter_map(|(id, g)| g.pin.map(|p| (p, id.as_str())))
-            .collect();
-        pinned.sort_unstable();
-        pinned.into_iter().map(|(_, id)| id).collect()
+            .position(|c| !c.dynamic && c.games.iter().any(|g| g == id))
     }
 
-    pub fn pinned_count(&self) -> usize {
-        self.games.values().filter(|g| g.pin.is_some()).count()
-    }
-
-    /// Whether toggling id would do anything (unpin always ok, pin only if under `MAX_PINNED_GAMES`).
-    pub fn can_toggle_pin(&self, id: &str) -> bool {
-        self.is_pinned(id) || self.pinned_count() < MAX_PINNED_GAMES
-    }
-
-    /// Toggles `id`'s pinned state (a `GameEntry::id`, or `DESKTOP_PIN_ID`) —
-    /// a no-op when `can_toggle_pin` is false.
-    pub fn toggle_pin(&mut self, id: &str) {
-        if self.is_pinned(id) {
-            if let Some(g) = self.games.get_mut(id) {
-                g.pin = None;
-            }
-            self.drop_if_empty(id);
-        } else if self.can_toggle_pin(id) {
-            // Monotonic, never renumbered: a re-pin lands at the end of the block, which is
-            // where someone who just pinned it expects to find it.
-            let next = self.games.values().filter_map(|g| g.pin).max().map_or(0, |m| m + 1);
-            self.games.entry(id.to_string()).or_default().pin = Some(next);
+    /// Moves `id` into collection `to`, or back to Library with `None`. A game is in at
+    /// most one collection, so this removes it from any other first. Appends: a just-moved
+    /// card is looked for at the end of the block it joined.
+    pub fn move_to(&mut self, id: &str, to: Option<usize>) {
+        let collections = self.collections_mut();
+        for entry in collections.iter_mut() {
+            entry.games.retain(|g| g != id);
+        }
+        if let Some(entry) = to.and_then(|i| collections.get_mut(i)).filter(|c| !c.dynamic) {
+            entry.games.push(id.to_string());
         }
     }
 
@@ -247,20 +308,125 @@ impl KnownHost {
     pub fn prune_games(&mut self, live: impl Fn(&str) -> bool) -> bool {
         let before = self.games.len();
         self.games.retain(|id, _| id == DESKTOP_PIN_ID || live(id));
-        self.games.len() != before
+        let mut dropped = self.games.len() != before;
+        for entry in self.collections.iter_mut().flatten() {
+            let before = entry.games.len();
+            entry.games.retain(|id| id == DESKTOP_PIN_ID || live(id));
+            dropped |= entry.games.len() != before;
+        }
+        dropped
     }
 }
 
-/// A fresh host's per-game map: just `id` pinned. What every add/pair flow seeds
-/// [`KnownHost::games`] with, so the Desktop card starts in the pinned block.
-pub fn pinned_only(id: &str) -> BTreeMap<String, GamePrefs> {
-    BTreeMap::from([(
-        id.to_string(),
-        GamePrefs {
-            pin: Some(0),
-            ..GamePrefs::default()
-        },
-    )])
+/// Editing a host's collections: what the collections modal and its dialogs drive. Split out
+/// so the invariants have one home — a game in at most one collection, Library unremovable,
+/// names trimmed and unique — and so no caller can reach past them into the vector itself.
+///
+/// `dead_code` while the screens that call these are still landing (see
+/// `docs/COLLECTIONS-PLAN.md`, phases 4-7); every method here is covered by the tests below.
+#[allow(dead_code)]
+impl KnownHost {
+    /// Swaps `id` with its neighbour inside its own collection — the in-collection card
+    /// reorder. `false` at either end, and in Library, whose order is recency.
+    pub fn swap_within_collection(&mut self, id: &str, forward: bool) -> bool {
+        let Some(at) = self.collection_of(id) else {
+            return false;
+        };
+        let Some(entry) = self.collections_mut().get_mut(at) else {
+            return false;
+        };
+        let Some(pos) = entry.games.iter().position(|g| g == id) else {
+            return false;
+        };
+        let Some(other) = (if forward {
+            pos.checked_add(1)
+        } else {
+            pos.checked_sub(1)
+        })
+        .filter(|&o| o < entry.games.len()) else {
+            return false;
+        };
+        entry.games.swap(pos, other);
+        true
+    }
+
+    /// The name of the collection holding `id`, Library included.
+    pub fn collection_name_of(&self, id: &str) -> Option<&str> {
+        let idx = self.collection_of(id).or_else(|| self.library_index())?;
+        self.collections().get(idx).map(|c| c.name.as_str())
+    }
+
+    /// Number of user collections — what [`MAX_COLLECTIONS`] bounds.
+    pub fn user_collection_count(&self) -> usize {
+        self.collections().iter().filter(|c| !c.dynamic).count()
+    }
+
+    pub fn can_add_collection(&self) -> bool {
+        self.user_collection_count() < MAX_COLLECTIONS
+    }
+
+    /// Whether `name` may be used for collection `at` (`None` when adding): trimmed,
+    /// non-empty, within [`MAX_COLLECTION_NAME`] and unique case-insensitively. What gates
+    /// the add/rename confirm button.
+    pub fn can_name(&self, at: Option<usize>, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > MAX_COLLECTION_NAME {
+            return false;
+        }
+        !self
+            .collections()
+            .iter()
+            .enumerate()
+            .any(|(i, c)| Some(i) != at && c.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Appends a user collection, returning its index. `None` when the name is refused or
+    /// the host is at [`MAX_COLLECTIONS`].
+    pub fn add_collection(&mut self, name: &str) -> Option<usize> {
+        if !self.can_add_collection() || !self.can_name(None, name) {
+            return None;
+        }
+        let collections = self.collections_mut();
+        collections.push(Collection::new(name.trim()));
+        Some(collections.len() - 1)
+    }
+
+    /// Renames any entry, Library included. `false` when the name is refused.
+    pub fn rename_collection(&mut self, at: usize, name: &str) -> bool {
+        if !self.can_name(Some(at), name) {
+            return false;
+        }
+        let name = name.trim().to_string();
+        match self.collections_mut().get_mut(at) {
+            Some(entry) => {
+                entry.name = name;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Removes a user collection; its members fall back to Library. Refuses the dynamic
+    /// entry — the missing Remove icon on that row is not this rule's only enforcement.
+    pub fn remove_collection(&mut self, at: usize) -> bool {
+        if self.collections().get(at).is_none_or(|c| c.dynamic) {
+            return false;
+        }
+        self.collections_mut().remove(at);
+        true
+    }
+
+    /// Moves an entry within the order, the dynamic one included: this vector *is* the grid
+    /// section order.
+    pub fn reorder_collection(&mut self, from: usize, to: usize) -> bool {
+        let collections = self.collections_mut();
+        if from >= collections.len() || to >= collections.len() || from == to {
+            return false;
+        }
+        let entry = collections.remove(from);
+        collections.insert(to, entry);
+        true
+    }
 }
 
 /// The cursor-capture override the Desktop card carries: *off*, since capture is on globally
@@ -275,22 +441,34 @@ pub fn desktop_capture_override(global: &Settings) -> Option<bool> {
     global.cursor_capture.then_some(false)
 }
 
-/// The `games` map a genuinely new host starts with: Desktop pinned, wearing
-/// [`desktop_capture_override`].
+/// The `games` map a genuinely new host starts with: the Desktop card wearing
+/// [`desktop_capture_override`]. Its *placement* is [`new_host_collections`]'s job.
 pub fn new_host_games(global: &Settings) -> BTreeMap<String, GamePrefs> {
-    let mut games = pinned_only(DESKTOP_PIN_ID);
-    if let Some(prefs) = games.get_mut(DESKTOP_PIN_ID) {
-        prefs.over.cursor_capture = desktop_capture_override(global);
+    let mut games = BTreeMap::new();
+    if let Some(capture) = desktop_capture_override(global) {
+        games
+            .entry(DESKTOP_PIN_ID.to_string())
+            .or_insert_with(GamePrefs::default)
+            .over
+            .cursor_capture = Some(capture);
     }
     games
+}
+
+/// The collections a genuinely new host starts with: "Pinned" holding the Desktop card,
+/// then Library — which is what a pre-collections install looked like after its first pair.
+pub fn new_host_collections() -> Vec<Collection> {
+    let mut pinned = Collection::new(PINNED_COLLECTION);
+    pinned.games.push(DESKTOP_PIN_ID.to_string());
+    vec![pinned, Collection::library()]
 }
 
 /// Upserts by `(host, port)`, keeping the existing fingerprint if the new record is unpaired
 /// (a fresh mDNS discovery shouldn't clobber a paired host) — same reasoning for `mac`,
 /// learned separately (see `App::drain_discovery`) and not necessarily known again at the
 /// point something else re-upserts this host. `games` and `wol_auto` are *always* kept from the
-/// existing record: only [`KnownHost::toggle_pin`], the per-game settings screen and the Wake
-/// screen change them, so no add/edit/re-pair flow may clobber any of it.
+/// existing record — as are `collections`: only the collections screen, the per-game settings
+/// screen and the Wake screen change them, so no add/edit/re-pair flow may clobber any of it.
 pub fn upsert_known_host(hosts: &mut Vec<KnownHost>, mut new: KnownHost) {
     let Some(existing) = hosts.iter_mut().find(|h| h.host == new.host && h.port == new.port) else {
         hosts.push(new);
@@ -303,6 +481,7 @@ pub fn upsert_known_host(hosts: &mut Vec<KnownHost>, mut new: KnownHost) {
         new.mac.clone_from(&existing.mac);
     }
     new.games.clone_from(&existing.games);
+    new.collections.clone_from(&existing.collections);
     new.wol_auto = existing.wol_auto;
     *existing = new;
 }
@@ -670,10 +849,12 @@ mod tests {
     use super::*;
 
     fn host() -> KnownHost {
-        KnownHost {
-            games: pinned_only(DESKTOP_PIN_ID),
+        let mut h = KnownHost {
+            games: new_host_games(&Settings::default()),
             ..KnownHost::default()
-        }
+        };
+        h.set_collections(new_host_collections());
+        h
     }
 
     #[test]
@@ -771,31 +952,107 @@ mod tests {
     }
 
     #[test]
-    fn pins_keep_their_order_and_respect_the_limit() {
+    fn a_game_lives_in_at_most_one_collection() {
         let mut h = host();
-        for i in 0..MAX_PINNED_GAMES {
-            h.toggle_pin(&format!("g{i}"));
+        let other = h.add_collection("Racing").expect("under the limit");
+        h.move_to("g0", Some(0));
+        h.move_to("g0", Some(other));
+        assert_eq!(h.collection_of("g0"), Some(other));
+        assert_eq!(h.collections()[0].games, [DESKTOP_PIN_ID]);
+        // Back to Library: named by no collection at all.
+        h.move_to("g0", None);
+        assert_eq!(h.collection_of("g0"), None);
+        assert_eq!(h.collection_name_of("g0"), Some(LIBRARY_COLLECTION));
+    }
+
+    #[test]
+    fn moving_appends_so_a_just_moved_card_is_last() {
+        let mut h = host();
+        h.move_to("g0", Some(0));
+        h.move_to("g1", Some(0));
+        assert_eq!(h.collections()[0].games, [DESKTOP_PIN_ID, "g0", "g1"]);
+    }
+
+    #[test]
+    fn names_are_trimmed_bounded_and_unique_case_insensitively() {
+        let mut h = host();
+        assert!(!h.can_name(None, "  "));
+        assert!(!h.can_name(None, &"x".repeat(MAX_COLLECTION_NAME + 1)));
+        assert!(!h.can_name(None, "pinned"), "duplicate of the existing Pinned");
+        assert!(h.can_name(Some(0), "PINNED"), "a rename may keep its own name");
+        assert_eq!(
+            h.add_collection("  Racing  ")
+                .and_then(|i| h.collections().get(i))
+                .map(|c| c.name.as_str()),
+            Some("Racing")
+        );
+    }
+
+    #[test]
+    fn the_library_entry_is_renameable_but_never_removable() {
+        let mut h = host();
+        let library = h.library_index().expect("bootstrapped");
+        assert!(!h.remove_collection(library));
+        assert!(h.rename_collection(library, "All games"));
+        assert_eq!(h.collections()[library].name, "All games");
+    }
+
+    #[test]
+    fn removing_a_collection_returns_its_games_to_library() {
+        let mut h = host();
+        h.move_to("g0", Some(0));
+        assert!(h.remove_collection(0));
+        assert_eq!(h.collection_of("g0"), None);
+        assert_eq!(h.user_collection_count(), 0);
+    }
+
+    #[test]
+    fn the_collection_limit_counts_only_user_collections() {
+        let mut h = host();
+        while h.can_add_collection() {
+            let n = h.user_collection_count();
+            assert!(h.add_collection(&format!("c{n}")).is_some());
         }
-        // Desktop was already pinned, so the last one had no slot left.
-        assert_eq!(h.pinned_count(), MAX_PINNED_GAMES);
-        assert_eq!(h.pinned_ids()[0], DESKTOP_PIN_ID);
-        assert!(!h.is_pinned(&format!("g{}", MAX_PINNED_GAMES - 1)));
-        // Unpinning frees a slot, and a re-pin lands at the end of the block.
-        h.toggle_pin("g0");
-        assert!(!h.is_pinned("g0"));
-        h.toggle_pin("g0");
-        assert_eq!(*h.pinned_ids().last().expect("just pinned"), "g0");
+        assert_eq!(h.user_collection_count(), MAX_COLLECTIONS);
+        assert!(h.add_collection("one too many").is_none());
+    }
+
+    #[test]
+    fn reordering_moves_the_entry_library_included() {
+        let mut h = host();
+        assert!(h.reorder_collection(1, 0));
+        assert_eq!(h.library_index(), Some(0));
+        assert!(!h.reorder_collection(0, 0));
+        assert!(!h.reorder_collection(0, 9));
+    }
+
+    #[test]
+    fn swapping_within_a_collection_stops_at_its_ends() {
+        let mut h = host();
+        h.move_to("g0", Some(0));
+        h.move_to("g1", Some(0));
+        assert!(h.swap_within_collection("g0", false));
+        assert_eq!(h.collections()[0].games, ["g0", DESKTOP_PIN_ID, "g1"]);
+        assert!(!h.swap_within_collection("g0", false), "already first");
+        assert!(!h.swap_within_collection("g1", true), "already last");
+        assert!(!h.swap_within_collection("stranger", true), "in Library, not orderable");
     }
 
     #[test]
     fn pruning_drops_vanished_games_but_never_desktop() {
         let mut h = host();
-        h.toggle_pin("steam:gone");
+        h.move_to("steam:gone", Some(0));
+        h.edit_overrides("steam:gone", |o| o.hdr_enabled = Some(true));
         h.edit_overrides("steam:here", |o| o.hdr_enabled = Some(false));
         assert!(h.prune_games(|id| id == "steam:here"));
         assert!(h.games.contains_key(DESKTOP_PIN_ID));
         assert!(h.games.contains_key("steam:here"));
         assert!(!h.games.contains_key("steam:gone"));
+        assert_eq!(
+            h.collections()[0].games,
+            [DESKTOP_PIN_ID],
+            "and out of its collection too"
+        );
         assert!(!h.prune_games(|id| id == "steam:here"), "a second pass is a no-op");
     }
 
@@ -805,6 +1062,10 @@ mod tests {
         hosts[0].edit_overrides("steam:1", |o| o.codec = Some(CodecPref::Hevc));
         upsert_known_host(&mut hosts, KnownHost::default());
         assert_eq!(hosts[0].overrides("steam:1").codec, Some(CodecPref::Hevc));
-        assert!(hosts[0].is_pinned(DESKTOP_PIN_ID));
+        assert_eq!(
+            hosts[0].collection_of(DESKTOP_PIN_ID),
+            Some(0),
+            "collections survive an upsert"
+        );
     }
 }
