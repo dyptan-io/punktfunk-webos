@@ -17,7 +17,7 @@ use crate::ui::Painter;
 /// absorbed by a `_ =>` arm into the wrong geometry.
 pub(crate) const fn is_confirm(screen: Screen) -> bool {
     match screen {
-        Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest => true,
+        Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest | Screen::RemoveCollection => true,
         Screen::Home
         | Screen::Pairing
         | Screen::Settings(_)
@@ -55,7 +55,8 @@ pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
         | Screen::Experimental
         | Screen::CursorSettings(_)
         | Screen::SendLogs
-        | Screen::RenameCollection => false,
+        | Screen::RenameCollection
+        | Screen::RemoveCollection => false,
     }
 }
 
@@ -83,7 +84,8 @@ pub(crate) const fn is_list_modal(screen: Screen) -> bool {
         | Screen::SendLogs
         // Collections is a scrolling list too, and its name dialog is a text form.
         | Screen::Collections
-        | Screen::RenameCollection => false,
+        | Screen::RenameCollection
+        | Screen::RemoveCollection => false,
     }
 }
 
@@ -274,7 +276,8 @@ impl App {
             | Screen::Experimental
             | Screen::CursorSettings(_)
             | Screen::SendLogs
-            | Screen::RenameCollection => 1,
+            | Screen::RenameCollection
+            | Screen::RemoveCollection => 1,
         }
     }
 
@@ -430,7 +433,7 @@ impl App {
             }
             // Every two-button confirm dialog: one subtitle drives the card, so one
             // button-row geometry serves all four.
-            Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest => self
+            Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest | Screen::RemoveCollection => self
                 .confirm_subtitle()
                 .zip(self.confirm_focused())
                 .map(|(subtitle, i)| Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &subtitle, i)),
@@ -563,6 +566,10 @@ impl App {
             }),
             Screen::SendLogs => f(&view::confirm::Modal {
                 title: view::sendlogs::TITLE,
+                confirm: confirm.as_ref()?,
+            }),
+            Screen::RemoveCollection => f(&view::confirm::Modal {
+                title: view::collections::REMOVE_TITLE,
                 confirm: confirm.as_ref()?,
             }),
         })

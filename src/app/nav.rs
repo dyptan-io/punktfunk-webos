@@ -29,10 +29,11 @@ pub(crate) enum ScreenKey {
     SendLogs,
     Collections,
     RenameCollection,
+    RemoveCollection,
 }
 
 impl ScreenKey {
-    pub const COUNT: usize = Self::RenameCollection as usize + 1;
+    pub const COUNT: usize = Self::RemoveCollection as usize + 1;
 
     pub const fn of(screen: Screen) -> Self {
         match screen {
@@ -53,6 +54,7 @@ impl ScreenKey {
             Screen::SendLogs => Self::SendLogs,
             Screen::Collections => Self::Collections,
             Screen::RenameCollection => Self::RenameCollection,
+            Screen::RemoveCollection => Self::RemoveCollection,
         }
     }
 }

@@ -16,10 +16,11 @@ pub(crate) struct ScreenSlots {
     /// The sidebar row the host menu (and everything reached from it) is acting on, `None`
     /// otherwise.
     pub(crate) host_menu_index: Option<usize>,
-    /// Whether focus is on the ⋯ button of the host menu's focused row rather than on the row
-    /// body — the list-modal counterpart of `HomeFocus::SidebarMenu`. Only the "Wake host" row
-    /// has one (see `host_menu_actions`).
-    pub(crate) host_menu_dots: bool,
+    /// Which of the focused row's trailing buttons has focus, rather than the row body — the
+    /// row-list counterpart of `HomeFocus::SidebarMenu`. Shared by every screen whose rows
+    /// carry them (the host menu's ⋯, a collection's rename/remove), because focus is only
+    /// ever on one row of one list at a time. Cleared by any vertical move.
+    pub(crate) row_button: Option<usize>,
     /// The sidebar row `Screen::EditHost` is editing, `None` otherwise.
     pub(crate) edit_host_index: Option<usize>,
     /// The in-flight/finished speed test, `None` when that screen isn't open.

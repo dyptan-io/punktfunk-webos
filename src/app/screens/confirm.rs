@@ -81,6 +81,16 @@ impl App {
                 "Cancel",
                 view::forget::subtitle(self.host_menu_host_name().unwrap_or_default()),
             ),
+            Screen::RemoveCollection => {
+                let (name, games) = self.removed_collection()?;
+                Confirm::new(
+                    Some(view::icons::ICON_DELETE),
+                    "Remove",
+                    palette().error,
+                    "Cancel",
+                    view::collections::remove_subtitle(name, games),
+                )
+            }
             Screen::SendLogs => Confirm::new(
                 Some(view::icons::ICON_SEND),
                 "Send",

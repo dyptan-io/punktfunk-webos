@@ -16,6 +16,7 @@ use anyhow::Result;
 
 pub(crate) const TITLE: &str = "Move to";
 pub(crate) const ADD_ROW: &str = "Add collection";
+pub(crate) const REMOVE_TITLE: &str = "Remove collection?";
 pub(crate) const ADD_TITLE: &str = "New collection";
 pub(crate) const RENAME_TITLE: &str = "Rename collection";
 
@@ -27,6 +28,28 @@ pub(crate) fn name_subtitle(renaming: Option<&str>, card: &str) -> String {
         Some(old) => format!("A new name for {old}."),
         None => format!("Name it, and {card} moves into it."),
     }
+}
+
+/// What a collection row's trailing buttons are. Library keeps Rename but has no Remove at
+/// all — `KnownHost::remove_collection` refuses it too, so the missing icon is the affordance
+/// rather than the rule.
+pub(crate) fn trailing(dynamic: bool) -> &'static [&'static str] {
+    if dynamic {
+        &[icons::ICON_EDIT]
+    } else {
+        &[icons::ICON_EDIT, icons::ICON_DELETE]
+    }
+}
+
+/// The remove dialog's subtitle: what happens to the cards it holds, which is the whole
+/// question — nothing is deleted, the games come back to Library.
+pub(crate) fn remove_subtitle(name: &str, games: usize) -> String {
+    let games = match games {
+        0 => "It holds no games".to_string(),
+        1 => "Its 1 game returns to Library".to_string(),
+        n => format!("Its {n} games return to Library"),
+    };
+    format!("{name} will be removed. {games}.")
 }
 
 /// Why the typed name cannot be committed — `None` while it can. Blank reads as unfinished
@@ -54,7 +77,8 @@ pub(crate) fn rows(host: &KnownHost, holding: Option<usize>) -> Vec<FocusRow> {
             } else {
                 Some(collection.games.len())
             };
-            let row = FocusRow::action_with_value(icons::ICON_FOLDER, collection.name.clone(), count_label(count));
+            let row = FocusRow::action_with_value(icons::ICON_FOLDER, collection.name.clone(), count_label(count))
+                .with_trailing(trailing(collection.dynamic));
             let row = match count {
                 // An empty collection is hidden in the grid, which reads as a vanished one
                 // unless the row that still lists it says so.
@@ -146,6 +170,16 @@ mod tests {
             "no row that would refuse itself"
         );
         assert!(rows(&host, None).iter().all(|r| r.label != ADD_ROW));
+    }
+
+    #[test]
+    fn library_offers_no_remove_button() {
+        let host = host();
+        let rows = rows(&host, None);
+        assert_eq!(rows[0].trailing, vec![icons::ICON_EDIT, icons::ICON_DELETE]);
+        assert_eq!(rows[1].label, LIBRARY_COLLECTION);
+        assert_eq!(rows[1].trailing, vec![icons::ICON_EDIT], "Library cannot be removed");
+        assert!(rows[2].trailing.is_empty(), "nor can the add row be acted on");
     }
 
     #[test]

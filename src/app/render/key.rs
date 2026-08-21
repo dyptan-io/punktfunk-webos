@@ -29,10 +29,10 @@ pub enum ModalFocusKey<'a> {
     ForgetButton(usize),
     /// Carries label to prevent stale tiles across screen changes.
     SpeedTestButton(usize, &'a str),
-    /// (focused row, its action, the host's pairing state, ⋯ focused). The action and the
-    /// pairing state are what the row's label is derived from, so they stand in for it —
-    /// see `app::state::hostmenu::host_menu_row`.
-    MenuRow(usize, HostAction, bool, bool),
+    /// (focused row, its action, the host's pairing state, which trailing button is focused).
+    /// The action and the pairing state are what the row's label is derived from, so they
+    /// stand in for it — see `app::state::hostmenu::host_menu_row`.
+    MenuRow(usize, HostAction, bool, Option<usize>),
     /// (focused row, log level, stats-overlay on, show-logs on) — any change invalidates the tile.
     DiagnosticsRow(usize, LogLevelOverride, bool, bool),
     ExperimentalRow(usize, bool, bool, Option<bool>),
@@ -41,9 +41,12 @@ pub enum ModalFocusKey<'a> {
     CursorSettingsRow(usize, bool, bool, SettingsOverride),
     /// Which `Screen::SendLogs` button is focused (0 = Cancel, 1 = Send).
     SendLogsButton(usize),
-    /// (focused row, the row's name, whether it is the one already holding the card) — what
-    /// the focused row draws, and nothing else: the list behind it is its own tiles.
-    CollectionRow(usize, &'a str, bool),
+    /// Which `Screen::RemoveCollection` button is focused (0 = Remove, 1 = Cancel).
+    RemoveCollectionButton(usize),
+    /// (focused row, the row's name, whether it is the one already holding the card, which
+    /// trailing button is focused) — what the focused row draws, and nothing else: the list
+    /// behind it is its own tiles.
+    CollectionRow(usize, &'a str, bool, Option<usize>),
 }
 
 /// Scrollable modal content keys. Paired with Screen for staleness checks.
@@ -119,6 +122,11 @@ pub enum ModalShellKey<'a> {
     },
     /// Fixed warning copy + two buttons — nothing screen-specific left to key on.
     SendLogs,
+    /// The card it asks about, by what the subtitle is derived from.
+    RemoveCollection {
+        name: &'a str,
+        games: usize,
+    },
     /// The shell is title, rule and the card being moved — the rows are their own tiles, so
     /// nothing about the collections themselves belongs here except how many there are (the
     /// card's height follows the row count).

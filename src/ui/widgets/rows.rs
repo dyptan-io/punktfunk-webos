@@ -42,12 +42,18 @@ pub struct FocusRow {
     /// [`subtext`](Self::subtext) — where the reason belongs — can be read. Rejecting the
     /// input is the caller's business, not this widget's.
     pub locked: bool,
-    /// `Some` gives this row its own ⋯ actions button, drawn and focused exactly like
-    /// a sidebar host row's ([`Canvas::sidebar_menu_button`]) — the bool is whether the
-    /// *button* has focus rather than the row body. A row with one has a second thing
-    /// Confirm can mean, reached with Right, so the row's own action stays a single
-    /// press. `None` (the default) draws no button at all.
-    pub menu: Option<bool>,
+    /// Icon buttons at the row's right end, in left-to-right order — drawn and focused
+    /// exactly like a sidebar host row's ⋯ ([`Canvas::sidebar_menu_button`]). Each is a
+    /// further thing Confirm can mean on this row, reached with Right, so the row's own
+    /// action stays a single press. Per-row, so one row in a list can offer fewer than its
+    /// neighbours (Library has no Remove). Empty (the default) draws nothing.
+    pub trailing: Vec<&'static str>,
+    /// Which trailing button has focus, if any — `None` means focus is on the row body.
+    pub trailing_focused: Option<usize>,
+    /// A trailing button held *open*: the drag handle while its row is being moved. Drawn
+    /// lit whether or not it also has focus, so drag mode reads as a mode rather than as a
+    /// focused button.
+    pub trailing_active: Option<usize>,
     /// A small dot in the row's right gutter, in this colour — what marks a row as differing
     /// from whatever it inherits (a per-game settings override, say). Purely an indicator:
     /// not focusable, not clickable, carrying no action; what it means, and how it goes away,
@@ -113,7 +119,9 @@ impl FocusRow {
             fraction: 0.0,
             danger: false,
             locked: false,
-            menu: None,
+            trailing: Vec::new(),
+            trailing_focused: None,
+            trailing_active: None,
             mark: None,
             subtext: None,
         }
@@ -184,9 +192,11 @@ impl FocusRow {
         self
     }
 
-    /// Adds a ⋯ actions button; `focused` indicates button vs row focus.
-    pub fn with_menu(mut self, focused: bool) -> Self {
-        self.menu = Some(focused);
+    /// Gives this row [`trailing`](Self::trailing) buttons. Always built unfocused: which
+    /// one is lit belongs to the focused-row tile alone (see `App::list_focus_rows`), so a
+    /// shell underneath cannot bake in a highlight that outlives the focus that put it there.
+    pub fn with_trailing(mut self, icons: &[&'static str]) -> Self {
+        self.trailing = icons.to_vec();
         self
     }
 }
@@ -263,6 +273,30 @@ pub fn row_layout(row_rect: Rect, marked: bool) -> RowGeom {
     }
 }
 
+/// How much room `count` trailing buttons take off a row's right end — what the row's own
+/// value label is pushed left by, so text never runs under a button.
+pub fn trailing_width(count: usize) -> i32 {
+    count as i32 * (SIDEBAR_MENU_BTN as i32 + TRAILING_GAP)
+}
+
+/// Gap between two trailing buttons, and between the last one and the row's edge.
+const TRAILING_GAP: i32 = 10;
+
+/// Trailing button `i` of `count`, packed from the row's right edge in the order they are
+/// drawn. The one-button case is exactly a sidebar row's ⋯, which is what the host menu's
+/// Wake row draws — one geometry, so the pointer's per-icon hit test and the painter cannot
+/// disagree about where a button is.
+pub fn trailing_button_rect(row_rect: Rect, count: usize, i: usize) -> Rect {
+    let from_right = count.saturating_sub(i + 1) as i32;
+    let stride = SIDEBAR_MENU_BTN as i32 + TRAILING_GAP;
+    Rect::new(
+        row_rect.right() - SIDEBAR_MENU_BTN as i32 - TRAILING_GAP - from_right * stride,
+        row_rect.y() + (row_rect.height() as i32 - SIDEBAR_MENU_BTN as i32) / 2,
+        SIDEBAR_MENU_BTN,
+        SIDEBAR_MENU_BTN,
+    )
+}
+
 /// A modal's focus-row list: icon + label left, control right, one row per
 /// [`FocusRow`] stacked at [`focus_row_stride`]. Only the focused row gets a background
 /// card; others draw bare. Rows render at normal size — the focused row's zoom is a GPU
@@ -332,13 +366,28 @@ pub struct FocusRowTile<'a> {
     pub index: usize,
     pub dropdown_open: bool,
     pub switch_frac: f32,
+    /// Which of the row's trailing buttons is lit. Applied here rather than baked into the
+    /// row list, because the shell underneath draws the same rows and a highlight baked
+    /// there would outlive the focus that put it on.
+    pub trailing_focused: Option<usize>,
+    /// A trailing button held open — the drag handle of a row being moved.
+    pub trailing_active: Option<usize>,
 }
 
 impl Widget for FocusRowTile<'_> {
     fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
         let inner = area.inflate(-ROW_TILE_PAD);
         match self.rows.get(self.index) {
-            Some(row) => c.focus_row(row, true, self.dropdown_open, self.switch_frac, inner),
+            // Cloned to carry this tile's button state: one row, at raster time, next to a
+            // full re-render of it.
+            Some(row) => {
+                let row = FocusRow {
+                    trailing_focused: self.trailing_focused,
+                    trailing_active: self.trailing_active,
+                    ..row.clone()
+                };
+                c.focus_row(&row, true, self.dropdown_open, self.switch_frac, inner)
+            }
             None => Ok(()),
         }
     }
@@ -408,7 +457,9 @@ pub struct FocusRowKey<'a> {
     fraction_bits: u32,
     danger: bool,
     locked: bool,
-    menu: Option<bool>,
+    trailing: &'a [&'static str],
+    trailing_focused: Option<usize>,
+    trailing_active: Option<usize>,
     mark: Option<Rgba8>,
     subtext: Option<(&'a str, Rgba8)>,
 }
@@ -428,7 +479,9 @@ impl FocusRow {
             fraction_bits: self.fraction.to_bits(),
             danger: self.danger,
             locked: self.locked,
-            menu: self.menu,
+            trailing: &self.trailing,
+            trailing_focused: self.trailing_focused,
+            trailing_active: self.trailing_active,
             mark: self.mark.map(color_bytes),
             subtext: self.subtext.as_ref().map(|s| (s.text.as_str(), color_bytes(s.color))),
         }
@@ -529,7 +582,7 @@ impl Canvas<'_, '_> {
             // Action rows have no control; `value` is a muted hint only, never interactive.
             RowKind::Action => {
                 if !row.value.is_empty() {
-                    let menu_w = row.menu.map_or(0, |_| SIDEBAR_MENU_BTN as i32 + 10);
+                    let menu_w = trailing_width(row.trailing.len());
                     let value_w = self.fonts.raster.measure(value_font, &row.value).0;
                     self.text(
                         value_font,
@@ -541,8 +594,14 @@ impl Canvas<'_, '_> {
                 }
             }
         }
-        if let Some(menu_focused) = row.menu {
-            self.sidebar_menu_button(row_rect, focused, menu_focused)?;
+        for (i, &icon) in row.trailing.iter().enumerate() {
+            self.row_button(
+                trailing_button_rect(row_rect, row.trailing.len(), i),
+                icon,
+                focused,
+                row.trailing_focused == Some(i),
+                row.trailing_active == Some(i),
+            )?;
         }
         Ok(())
     }

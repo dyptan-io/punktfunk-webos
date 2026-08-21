@@ -49,6 +49,7 @@ impl App {
             title: title.to_string(),
             ..CollectionsState::default()
         };
+        self.screens.row_button = None;
         self.nav.enter(Screen::Collections, holding);
         self.render.scroll = crate::ui::scroll::ScrollWindow::new();
         self.render.content_window = crate::ui::scroll::ContentWindow::new();
@@ -81,6 +82,8 @@ impl App {
             return;
         }
         match ev {
+            // Right/Left step onto the row's rename/remove buttons before leaving it.
+            MenuEvent::Right | MenuEvent::Left if self.step_row_button(ev == MenuEvent::Right) => {}
             MenuEvent::Confirm => self.confirm_collections_row(screen_w, screen_h),
             MenuEvent::Back | MenuEvent::Secondary => self.close_collections(),
             MenuEvent::Up | MenuEvent::Down | MenuEvent::Left | MenuEvent::Right => {}
@@ -91,6 +94,16 @@ impl App {
     /// the Library row — then closes both this modal and the menu it came from.
     pub(crate) fn confirm_collections_row(&mut self, screen_w: u32, screen_h: u32) {
         let row = self.nav.cursor(ScreenKey::Collections);
+        // A trailing button acts on the row it is on rather than on the card being moved.
+        // Read by icon, not by index: Library carries one button fewer.
+        if let Some(button) = self.screens.row_button {
+            match self.row_trailing(row).get(button) {
+                Some(&view::icons::ICON_EDIT) => self.open_name_collection(Some(row)),
+                Some(&view::icons::ICON_DELETE) => self.open_remove_collection(row),
+                _ => {}
+            }
+            return;
+        }
         let Some(target) = self.screens.collections.target.clone() else {
             return;
         };
@@ -185,10 +198,74 @@ impl App {
         }
     }
 
+    /// Raises the remove confirmation over the list, focused on Cancel — the destructive
+    /// button is never the one a stray Confirm lands on.
+    pub(crate) fn open_remove_collection(&mut self, at: usize) {
+        self.screens.collections.index = Some(at);
+        self.nav.enter(Screen::RemoveCollection, 1);
+    }
+
+    /// The collection the remove dialog is asking about — its name and how many games come
+    /// back to Library with it.
+    pub(crate) fn removed_collection(&self) -> Option<(&str, usize)> {
+        let at = self.screens.collections.index?;
+        let collection = self.selected_known_host()?.collections().get(at)?;
+        Some((collection.name.as_str(), collection.games.len()))
+    }
+
+    /// Handles one menu event on [`Screen::RemoveCollection`].
+    pub(crate) fn handle_remove_collection_event(&mut self, ev: MenuEvent) {
+        match ev {
+            MenuEvent::Left | MenuEvent::Right => {
+                self.nav.set_cursor(
+                    ScreenKey::RemoveCollection,
+                    1 - self.nav.cursor(ScreenKey::RemoveCollection),
+                );
+                self.render.modal.focus_anim = Some(std::time::Instant::now());
+            }
+            MenuEvent::Confirm => {
+                if self.nav.cursor(ScreenKey::RemoveCollection) == 0 {
+                    self.remove_collection();
+                }
+                self.back_to_collections();
+            }
+            MenuEvent::Back | MenuEvent::Secondary => self.back_to_collections(),
+            MenuEvent::Up | MenuEvent::Down => {}
+        }
+    }
+
+    /// Removes the collection the dialog was opened on; its games fall back to Library, which
+    /// is a change to the grid's sections, so the layout is rebuilt with it.
+    fn remove_collection(&mut self) {
+        let Some(at) = self.screens.collections.index else {
+            return;
+        };
+        let Some(host) = self.selected_known_host_mut() else {
+            return;
+        };
+        if !host.remove_collection(at) {
+            return;
+        }
+        self.persist();
+        self.regroup_games();
+    }
+
+    /// Back to the list the dialog was raised over, with its cursor held inside it — the row
+    /// that was focused may have just been the one removed.
+    fn back_to_collections(&mut self) {
+        self.screens.collections.index = None;
+        self.screens.row_button = None;
+        let last = self.collections_row_count().saturating_sub(1);
+        let key = ScreenKey::Collections;
+        let at = self.nav.cursor(key).min(last);
+        self.nav.enter(Screen::Collections, at);
+    }
+
     /// Leaves the modal and the submenu behind it together: the move it confirms reorders the
     /// grid, and a menu latched to the card's old index would then point at a stranger.
     pub(crate) fn close_collections(&mut self) {
         self.screens.collections = CollectionsState::default();
+        self.screens.row_button = None;
         self.close_card_menu();
         self.nav.screen = Screen::Home;
     }

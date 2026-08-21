@@ -34,20 +34,6 @@ impl App {
         })
     }
 
-    /// [`list_modal_rows`](Self::list_modal_rows) as the *focused-row* tile wants them: the
-    /// focused row's ⋯ button lit, where it has one. The only place that highlight is drawn —
-    /// the shell underneath must not bake one in, or it would outlive the focus that put it
-    /// there (see `App::host_menu_actions`).
-    pub(crate) fn list_focus_rows(&self) -> Option<Vec<FocusRow>> {
-        let mut rows = self.list_modal_rows()?;
-        if matches!(self.nav.screen, Screen::HostMenu) {
-            if let Some(row) = rows.get_mut(self.nav.cursor(ScreenKey::HostMenu)) {
-                row.menu = row.menu.map(|_| self.screens.host_menu_dots);
-            }
-        }
-        Some(rows)
-    }
-
     /// How many rows the open list modal has — the count without the labels, for the paths
     /// that only navigate (see `app::view::hostmenu::Metrics` for why that matters).
     pub(crate) fn list_modal_row_count(&self) -> usize {
@@ -73,7 +59,8 @@ impl App {
             // A scrolling list, counted by `scroll_list_row_count`; its name dialog is a
             // text form with no rows at all.
             | Screen::Collections
-            | Screen::RenameCollection => 0,
+            | Screen::RenameCollection
+            | Screen::RemoveCollection => 0,
         }
     }
 
@@ -81,9 +68,17 @@ impl App {
     /// pop, reporting whether the event was spent doing so. Every list handler starts here,
     /// and none of them counts its own rows any more.
     pub(crate) fn list_nav_event(&mut self, ev: MenuEvent) -> bool {
-        let len = self.list_modal_row_count();
+        // Whichever family the screen is in: a scrolling list counts its rows elsewhere, and
+        // navigating it against the plain-list table (0 rows) freezes its cursor.
+        let len = if crate::app::render::geometry::is_scroll_list(self.nav.screen) {
+            self.scroll_list_row_count()
+        } else {
+            self.list_modal_row_count()
+        };
         let key = ScreenKey::of(self.nav.screen);
         if crate::ui::widgets::list_nav(self.nav.cursor_mut(key), len, crate::app::menu::nav_dir(ev)) {
+            // A trailing button belongs to the row it is on, so leaving that row leaves it.
+            self.screens.row_button = None;
             self.render.modal.focus_anim = Some(Instant::now());
             return true;
         }
@@ -128,7 +123,8 @@ impl App {
             | Screen::CursorSettings(_)
             | Screen::SendLogs
             | Screen::Collections
-            | Screen::RenameCollection => Vec::new(),
+            | Screen::RenameCollection
+            | Screen::RemoveCollection => Vec::new(),
         }
     }
 

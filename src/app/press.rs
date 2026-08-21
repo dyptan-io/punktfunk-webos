@@ -44,6 +44,7 @@ impl App {
             Screen::SendLogs => self.handle_send_logs_event(ev),
             Screen::Collections => self.handle_collections_event(ev, screen_w, screen_h),
             Screen::RenameCollection => self.handle_name_collection_event(ev, screen_w, screen_h),
+            Screen::RemoveCollection => self.handle_remove_collection_event(ev),
         }
         None
     }
@@ -92,7 +93,7 @@ impl App {
             Screen::Home => matches!(self.home_focus, HomeFocus::Sidebar(_) | HomeFocus::SidebarMenu(_)),
             // The button only; the PIN digits above it are a field.
             Screen::Pairing => matches!(self.screens.pairing_focus, PairingFocus::RequestAccess),
-            Screen::Wake | Screen::ForgetHost | Screen::SpeedTest | Screen::SendLogs => true,
+            Screen::Wake | Screen::ForgetHost | Screen::SpeedTest | Screen::SendLogs | Screen::RemoveCollection => true,
             // Rows, not buttons.
             Screen::Settings(_)
             | Screen::AddHost

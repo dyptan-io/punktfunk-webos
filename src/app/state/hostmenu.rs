@@ -10,7 +10,6 @@ use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
 use crate::ui::widgets::FocusRow;
-use std::time::Instant;
 
 /// Host action (enum instead of bare index so conditional rows don't silently shift indices).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -72,13 +71,12 @@ fn host_menu_row(action: HostAction, paired: bool) -> FocusRow {
         HostAction::Connect => FocusRow::action_with_value(icons::ICON_TV, "Connect", "pairs first"),
         HostAction::Pair => FocusRow::action(icons::ICON_LOCK, "Pair with PIN…"),
         HostAction::SpeedTest => FocusRow::action(icons::ICON_SIGNAL, "Test network speed…"),
-        // The one row with a ⋯: Confirm wakes now, the button holds the per-host wake
-        // settings (`Screen::WakeSettings`). Same affordance and the same Right-to-reach-it
-        // gesture as a sidebar host row's. Always built *un*focused — whether the button is
-        // lit is `host_menu_dots`, applied by the focused-row tile alone (see
-        // `App::modal_focus_tile`), so the shell underneath can't bake in a highlight that
-        // outlives it.
-        HostAction::Wake => FocusRow::action(icons::ICON_POWER, "Wake host").with_menu(false),
+        // The one row with a trailing button: Confirm wakes now, the ⋯ holds the per-host
+        // wake settings (`Screen::WakeSettings`). Same affordance and the same
+        // Right-to-reach-it gesture as a sidebar host row's.
+        HostAction::Wake => {
+            FocusRow::action(icons::ICON_POWER, "Wake host").with_trailing(&[crate::ui::theme::icons().overflow])
+        }
         HostAction::Edit => FocusRow::action(icons::ICON_EDIT, "Edit address…"),
         HostAction::Forget => FocusRow::action(icons::ICON_DELETE, "Forget host").danger(),
     }
@@ -106,13 +104,8 @@ impl App {
     /// Opens host menu for sidebar row `idx` (⋯ button, pointer, or Right key).
     pub(crate) fn open_host_menu(&mut self, idx: usize) {
         self.screens.host_menu_index = Some(idx);
-        self.screens.host_menu_dots = false;
+        self.screens.row_button = None;
         self.nav.enter(Screen::HostMenu, 0);
-    }
-
-    /// Whether focused row's ⋯ button exists (only "Wake host" has one).
-    pub(crate) fn host_menu_row_has_dots(&self) -> bool {
-        self.host_menu_actions().get(self.nav.cursor(ScreenKey::HostMenu)) == Some(&HostAction::Wake)
     }
 
     /// The actions offered; conditional on host state (saved/discovered, has MAC).
@@ -163,23 +156,13 @@ impl App {
     /// Handles host menu events.
     pub(crate) fn handle_host_menu_event(&mut self, ev: MenuEvent) {
         if self.list_nav_event(ev) {
-            // Vertical movement always lands on the row body — a ⋯ belongs to the row
-            // it's on, so leaving that row leaves the button too.
-            self.screens.host_menu_dots = false;
             return;
         }
         match ev {
             // Right/Left move onto and off the focused row's ⋯, mirroring the sidebar's
             // `HomeFocus::SidebarMenu`; on a row without one they do nothing.
-            MenuEvent::Right if !self.screens.host_menu_dots && self.host_menu_row_has_dots() => {
-                self.screens.host_menu_dots = true;
-                self.render.modal.focus_anim = Some(Instant::now());
-            }
-            MenuEvent::Left if self.screens.host_menu_dots => {
-                self.screens.host_menu_dots = false;
-                self.render.modal.focus_anim = Some(Instant::now());
-            }
-            MenuEvent::Confirm if self.screens.host_menu_dots => self.open_wake_settings(),
+            MenuEvent::Right | MenuEvent::Left if self.step_row_button(ev == MenuEvent::Right) => {}
+            MenuEvent::Confirm if self.screens.row_button.is_some() => self.open_wake_settings(),
             MenuEvent::Confirm => self.confirm_host_menu_row(),
             MenuEvent::Back => {
                 self.screens.host_menu_index = None;

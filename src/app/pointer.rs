@@ -155,18 +155,20 @@ impl App {
                 let Some(row) = self.scroll_list_row_at(x, y, screen_w, screen_h) else {
                     return false;
                 };
+                let button = self.scroll_list_row_button_at(x, y, screen_w, screen_h);
                 let key = ScreenKey::of(screen);
-                let changed = self.nav.cursor(key) != row;
+                let changed = self.nav.cursor(key) != row || self.screens.row_button != button;
                 self.nav.set_cursor(key, row);
+                self.screens.row_button = button;
                 changed
             }
             Screen::HostMenu => {
-                let Some((i, dots)) = self.host_menu_row_at(x, y, screen_w, screen_h, fonts) else {
+                let Some((i, button)) = self.host_menu_row_at(x, y, screen_w, screen_h, fonts) else {
                     return false;
                 };
-                let changed = self.nav.cursor(ScreenKey::HostMenu) != i || self.screens.host_menu_dots != dots;
+                let changed = self.nav.cursor(ScreenKey::HostMenu) != i || self.screens.row_button != button;
                 self.nav.set_cursor(ScreenKey::HostMenu, i);
-                self.screens.host_menu_dots = dots;
+                self.screens.row_button = button;
                 changed
             }
             // Identical row-list geometry; only which focus field they carry differs.
@@ -198,7 +200,7 @@ impl App {
             // so the pointer can pick action-vs-Cancel, not just confirm whatever the D-pad
             // last focused. `confirm_subtitle` is `None` for the variants with no buttons up
             // (a Wake with no MAC, a test still running), which reads as nothing to hover.
-            Screen::ForgetHost | Screen::SendLogs | Screen::Wake | Screen::SpeedTest => {
+            Screen::ForgetHost | Screen::SendLogs | Screen::Wake | Screen::SpeedTest | Screen::RemoveCollection => {
                 let Some(subtitle) = self.confirm_subtitle() else {
                     return false;
                 };
@@ -325,10 +327,10 @@ impl App {
         }
     }
 
-    /// `(row index, on its ⋯ button)` under the pointer on the host menu. Hover and click
-    /// both go through this, so hovering previews exactly what clicking will do — a click
-    /// on a row's ⋯ opens that instead of the row's own action, the same split as a sidebar
-    /// host row's button.
+    /// `(row index, which of its trailing buttons)` under the pointer on the host menu.
+    /// Hover and click both go through this, so hovering previews exactly what clicking will
+    /// do — a click on a row's ⋯ opens that instead of the row's own action, the same split
+    /// as a sidebar host row's button.
     fn host_menu_row_at(
         &self,
         x: i32,
@@ -336,12 +338,19 @@ impl App {
         screen_w: u32,
         screen_h: u32,
         fonts: &ui::text::Fonts,
-    ) -> Option<(usize, bool)> {
+    ) -> Option<(usize, Option<usize>)> {
         let row = self.modal_list_row_at(x, y, screen_w, screen_h, fonts)?;
         let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
-        let dots = self.host_menu_row_has_dots()
-            && ui::widgets::sidebar_menu_button_rect(ui::widgets::focus_row_rect(content, row)).contains_point((x, y));
-        Some((row, dots))
+        let button = self.row_button_at(row, ui::widgets::focus_row_rect(content, row), x, y);
+        Some((row, button))
+    }
+
+    /// The same, on a scrolling list — measured at the animated scroll offset the rows are
+    /// drawn at, so a button is clickable exactly where it looks.
+    fn scroll_list_row_button_at(&self, x: i32, y: i32, screen_w: u32, screen_h: u32) -> Option<usize> {
+        let (content, scroll_px) = self.scroll_list_content_scroll(screen_w, screen_h)?;
+        let row = self.scroll_list_row_at(x, y, screen_w, screen_h)?;
+        self.row_button_at(row, ui::widgets::focus_row_rect_at_px(content, row, scroll_px), x, y)
     }
 
     /// The list-modal row index under the pointer. `None` on a screen with no row list, or
@@ -469,10 +478,13 @@ impl App {
             }
             // `?` bails if the click hit the gap between rows or outside the viewport —
             // nothing to focus or confirm.
-            Screen::Collections => self.nav.set_cursor(
-                ScreenKey::Collections,
-                self.scroll_list_row_at(x, y, screen_w, screen_h)?,
-            ),
+            Screen::Collections => {
+                self.nav.set_cursor(
+                    ScreenKey::Collections,
+                    self.scroll_list_row_at(x, y, screen_w, screen_h)?,
+                );
+                self.screens.row_button = self.scroll_list_row_button_at(x, y, screen_w, screen_h);
+            }
             Screen::Settings(_) => {
                 self.nav
                     .set_cursor(ScreenKey::Settings, self.scroll_list_row_at(x, y, screen_w, screen_h)?);
@@ -510,9 +522,9 @@ impl App {
                 self.screens.pairing_focus = PairingFocus::RequestAccess;
             }
             Screen::HostMenu => {
-                let (i, dots) = self.host_menu_row_at(x, y, screen_w, screen_h, fonts)?;
+                let (i, button) = self.host_menu_row_at(x, y, screen_w, screen_h, fonts)?;
                 self.nav.set_cursor(ScreenKey::HostMenu, i);
-                self.screens.host_menu_dots = dots;
+                self.screens.row_button = button;
             }
             // Identical row-list geometry; only which focus field they carry differs.
             Screen::WakeSettings | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
@@ -521,7 +533,7 @@ impl App {
             }
             // Nothing positional to hit: the confirm dialogs confirm whichever button
             // already has focus.
-            Screen::Wake | Screen::ForgetHost | Screen::SpeedTest | Screen::SendLogs => {}
+            Screen::Wake | Screen::ForgetHost | Screen::SpeedTest | Screen::SendLogs | Screen::RemoveCollection => {}
             // Nothing clickable but the close button (handled above).
             Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::About => return None,
         }

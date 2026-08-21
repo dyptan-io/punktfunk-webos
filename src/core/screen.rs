@@ -42,6 +42,8 @@ pub enum Screen {
     /// One screen, because the two differ only in what they start from and what they commit
     /// to.
     RenameCollection,
+    /// "Remove collection?" — its games return to Library (see `app/state/collections.rs`).
+    RemoveCollection,
 }
 
 /// Pairing modal's focused input: PIN row or "Request access" button.

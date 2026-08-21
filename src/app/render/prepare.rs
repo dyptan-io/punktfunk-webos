@@ -283,6 +283,9 @@ impl App {
                 over: self.editing_override(),
             }),
             Screen::SendLogs => Some(ModalShellKey::SendLogs),
+            Screen::RemoveCollection => self
+                .removed_collection()
+                .map(|(name, games)| ModalShellKey::RemoveCollection { name, games }),
             // `EditHost` joins `AddHost` in having no shell key: its typed-digit
             // display has no separate focus tile to protect, so it just redraws on
             // any `content_dirty` tick.
@@ -318,7 +321,12 @@ impl App {
                 let name = host
                     .and_then(|h| h.collections().get(row))
                     .map_or("", |c| c.name.as_str());
-                Some(ModalFocusKey::CollectionRow(row, name, holding))
+                Some(ModalFocusKey::CollectionRow(
+                    row,
+                    name,
+                    holding,
+                    self.screens.row_button,
+                ))
             }
             Screen::Wake => self
                 .screens
@@ -341,7 +349,7 @@ impl App {
                         self.nav.cursor(ScreenKey::HostMenu),
                         action,
                         self.host_menu_paired(),
-                        self.screens.host_menu_dots,
+                        self.screens.row_button,
                     )
                 }),
             Screen::WakeSettings => Some(ModalFocusKey::WakeToggle(
@@ -370,6 +378,9 @@ impl App {
                 self.editing_override(),
             )),
             Screen::SendLogs => Some(ModalFocusKey::SendLogsButton(self.nav.cursor(ScreenKey::SendLogs))),
+            Screen::RemoveCollection => Some(ModalFocusKey::RemoveCollectionButton(
+                self.nav.cursor(ScreenKey::RemoveCollection),
+            )),
             // None has a single focused widget: the address form is one always-active
             // field, and About is a scrolling document.
             Screen::Home | Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::About => None,
@@ -471,6 +482,8 @@ impl App {
                                         index,
                                         dropdown_open,
                                         switch_frac: self.toggle_frac(target_on, index),
+                                        trailing_focused: self.screens.row_button,
+                                        trailing_active: None,
                                     },
                                     text_cache,
                                     fonts,
@@ -482,24 +495,25 @@ impl App {
                     // Every two-button confirm dialog shares the button geometry (one subtitle
                     // sizes the card, so one button row falls out of it) and describes its own
                     // labels — one value, not a match arm per screen.
-                    Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest => {
-                        match (self.confirm_of(), self.confirm_focused()) {
-                            (Some(confirm), Some(i)) => {
-                                let rect =
-                                    Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &confirm.subtitle, i);
-                                Some(ui::rasterize(
-                                    ui::widgets::ConfirmButtonTile {
-                                        button: &confirm.widgets()[i],
-                                        w: rect.width(),
-                                        h: rect.height(),
-                                    },
-                                    text_cache,
-                                    fonts,
-                                )?)
-                            }
-                            _ => None,
+                    Screen::Wake
+                    | Screen::ForgetHost
+                    | Screen::SendLogs
+                    | Screen::SpeedTest
+                    | Screen::RemoveCollection => match (self.confirm_of(), self.confirm_focused()) {
+                        (Some(confirm), Some(i)) => {
+                            let rect = Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &confirm.subtitle, i);
+                            Some(ui::rasterize(
+                                ui::widgets::ConfirmButtonTile {
+                                    button: &confirm.widgets()[i],
+                                    w: rect.width(),
+                                    h: rect.height(),
+                                },
+                                text_cache,
+                                fonts,
+                            )?)
                         }
-                    }
+                        _ => None,
+                    },
                     Screen::Pairing => Some(match self.screens.pairing_focus {
                         PairingFocus::Pin => {
                             let digit = self.screens.pin_digits[self.screens.pin_digit_index].to_string();
@@ -535,7 +549,7 @@ impl App {
                     | Screen::Diagnostics
                     | Screen::Experimental
                     | Screen::CursorSettings(_) => {
-                        let rows = self.list_focus_rows().unwrap_or_default();
+                        let rows = self.list_modal_rows().unwrap_or_default();
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
                         self.list_modal_focused()
                             .map(|focused| {
@@ -549,6 +563,8 @@ impl App {
                                         index: focused,
                                         dropdown_open,
                                         switch_frac: self.toggle_frac(target_on, focused),
+                                        trailing_focused: self.screens.row_button,
+                                        trailing_active: None,
                                     },
                                     text_cache,
                                     fonts,
@@ -806,6 +822,8 @@ impl App {
                 index: 0,
                 dropdown_open: false,
                 switch_frac: 0.0,
+                trailing_focused: None,
+                trailing_active: None,
             },
             text_cache,
             fonts,
