@@ -3,7 +3,8 @@
 **Original request:** "Read collections plan and implement it step by step, commit big phases.
 Don't skip worthy improvements and optimization as you go, don't be afraid to go out of plan
 scope. Make sure changes are structurally correct to current layout, rust canonical, OOP style."
-**Branch:** `collections-plan` — **Status:** in progress, phases 1-6 of 9 committed and green
+**Branch:** `collections-plan` — **Status:** all nine phases committed and green; only the
+device check is left (see Left).
 
 ## Scope
 `docs/COLLECTIONS-PLAN.md` in full: pins become per-host, user-ordered collections with Library
@@ -41,14 +42,35 @@ noted under Key decisions. Out of scope: anything the plan files under "Worth it
   family. Drag mode is `CollectionsState.dragging`, committed by any non-vertical input.
 
 ## Left
-1. **Phase 7** — in-collection card swap. `KnownHost::swap_within_collection` already exists
-   and is tested. Split `cardmenu`'s `_ => self.close_card_menu()` arm on Left/Right.
-2. **Phase 8** — `services::recents` + Library recency order in `Library::regroup`.
-3. **Phase 9** — remove the `#[allow(dead_code)]` (see Gotchas) once phases 5-7 consume it.
-4. **Device check** — none of this has run on a TV yet. The plan wants a real pre-collections
-   `settings.json` copied off a TV tested against the migration before shipping phase 1.
+1. **Device check** — none of this has run on a TV yet. The plan wants a real pre-collections
+   `settings.json` copied off a TV tested against the migration before shipping phase 1. Also
+   worth measuring there: the collections modal's first open (raster budget) and the webOS
+   on-screen keyboard in the add/rename dialog.
+2. **`GamePrefs` does not collapse** to `games: BTreeMap<String, SettingsOverride>` as the
+   plan's "simplifications this unlocks" list hoped — see Key decisions.
 
 ## Key decisions
+- **Phase 7 (`e8388f3`)** — `CardMenu::moved` is the whole unfixed state: it dims the rest of
+  the collection in `compose_grid` (one alpha multiply, no `Fill`) and drives the commit in
+  `close_card_menu`, which is now the only place `card_menu` is cleared. The commit re-arms the
+  pop over the *collection's members*, not a grid range, so it needs neither a layout nor a
+  column count. The reject nudge is `press_dip(Screen::Home)` applied to the focused card's
+  rect in `compose_grid` — one line, and the panel, ring and frost all ride it because they
+  derive from that rect.
+- **`KnownHost::swap_within_collection` now skips `DESKTOP_PIN_ID`** and is defined in terms of
+  a new `collection_neighbour`. The Desktop card always heads its group, so the model's notion
+  of "neighbour" has to match the grid's or `Library::swap_games` mirrors the wrong pair.
+- **Phase 8 (`a29db6b`)** — `services::recents` is a plain file cache: every failure is silent,
+  mutators are pure and the caller saves, except `record`, which writes immediately because a
+  stream follows it. `regroup` takes a `&HostRecents` and sorts the dynamic run with a stable
+  `sort_by_key(Reverse(..))`, so the never-played keep the host's order. The plan's "re-latch
+  focus after returning from a stream" turned out to be unnecessary: `run_ui_flow` builds a
+  fresh `App` per menu entry, which reloads `recents.json` and regroups from scratch.
+- **`GamePrefs` keeps `legacy_pin`.** Collapsing it would mean reading the old pins out of the
+  raw JSON instead, and pre-collections documents reach `load` by two different routes (the
+  current shape, and `legacy::migrate`, which pulls `known-hosts.json` from another file
+  entirely). Duplicating the migration's only input across both, on the one migration that is
+  irreversible and still untested on hardware, buys nothing the user can see.
 - **Phases 1 and 2 shipped together.** Phase 1 alone would have needed throwaway shims
   (`pinned_ids`, `toggle_pin`) that phase 2 deletes, because the grid is the only consumer.
 - **`GridLayout` derives its geometry per call rather than caching it.** `Group` holds only
