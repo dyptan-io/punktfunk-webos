@@ -56,14 +56,15 @@ pub(crate) struct Group {
     /// Index into `Library::games` of this group's first game — the games are laid out
     /// group by group, so each group's are one contiguous run.
     pub games_start: usize,
-    /// This group holds `DESKTOP_PIN_ID`, and it heads the group.
-    pub desktop: bool,
+    /// Slot offset of `DESKTOP_PIN_ID` inside this group, when the group holds it. The
+    /// Desktop card is an ordinary member: it sits wherever the collection lists it.
+    pub desktop: Option<usize>,
 }
 
 impl Group {
     /// Games in this group — [`Self::len`] without the Desktop card.
-    fn games(&self) -> usize {
-        self.len - usize::from(self.desktop)
+    pub(crate) fn games(&self) -> usize {
+        self.len - usize::from(self.desktop.is_some())
     }
 }
 
@@ -165,10 +166,10 @@ impl<'a> GridLayout<'a> {
     pub(crate) fn card_at(&self, games: &'a [GameEntry], idx: usize) -> Option<GridCard<'a>> {
         let placed = self.at_idx(idx)?;
         let pos = idx - placed.first_idx;
-        if placed.group.desktop && pos == 0 {
+        if placed.group.desktop == Some(pos) {
             return Some(GridCard::Desktop);
         }
-        let pos = pos - usize::from(placed.group.desktop);
+        let pos = pos - usize::from(placed.group.desktop.is_some_and(|d| d < pos));
         games.get(placed.group.games_start + pos).map(GridCard::Game)
     }
 
@@ -193,13 +194,14 @@ impl<'a> GridLayout<'a> {
 
     pub(crate) fn idx_for_pin_id(&self, games: &[GameEntry], id: &str) -> Option<usize> {
         if id == store::DESKTOP_PIN_ID {
-            return self.placed().find(|p| p.group.desktop).map(|p| p.first_idx);
+            return self.placed().find_map(|p| Some(p.first_idx + p.group.desktop?));
         }
         let pos = games.iter().position(|g| g.id == id)?;
         let placed = self
             .placed()
             .find(|p| (p.group.games_start..p.group.games_start + p.group.games()).contains(&pos))?;
-        Some(placed.first_idx + usize::from(placed.group.desktop) + (pos - placed.group.games_start))
+        let off = pos - placed.group.games_start;
+        Some(placed.first_idx + off + usize::from(placed.group.desktop.is_some_and(|d| d <= off)))
     }
 
     /// The grid's rows split into the bands that share a vertical offset — one per group, each
@@ -380,7 +382,7 @@ mod tests {
         }
 
         fn label(&self) -> String {
-            let shape: Vec<(usize, bool)> = self.groups.iter().map(|g| (g.len, g.desktop)).collect();
+            let shape: Vec<(usize, Option<usize>)> = self.groups.iter().map(|g| (g.len, g.desktop)).collect();
             format!("cols {} games {} groups {shape:?}", self.columns, self.games.len())
         }
     }
@@ -400,7 +402,7 @@ mod tests {
                     name: format!("Group {i}"),
                     len: len + usize::from(has_desktop),
                     games_start,
-                    desktop: has_desktop,
+                    desktop: has_desktop.then_some(0),
                 });
             }
             games_start += len;
@@ -470,7 +472,7 @@ mod tests {
             seen.dedup();
             assert_eq!(seen.len(), total, "duplicate card — {}", case.label());
             let mut expected: Vec<String> = case.games.iter().map(|g| g.id.clone()).collect();
-            if case.groups.iter().any(|g| g.desktop) {
+            if case.groups.iter().any(|g| g.desktop.is_some()) {
                 expected.push(store::DESKTOP_PIN_ID.to_owned());
             }
             expected.sort();
@@ -513,13 +515,27 @@ mod tests {
     }
 
     #[test]
-    fn desktop_heads_whichever_group_holds_it() {
+    fn desktop_sits_in_whichever_group_holds_it() {
         let case = case(5, &[2, 3], Some(1));
         let layout = case.layout();
         // Group 0's two games fill slots 0-1, so group 1 starts on the next row.
         assert_eq!(layout.idx_for_pin_id(&case.games, store::DESKTOP_PIN_ID), Some(5));
         assert_eq!(layout.pin_id_at(&case.games, 5), Some(store::DESKTOP_PIN_ID));
         assert_eq!(layout.pin_id_at(&case.games, 6), Some("steam:2"));
+    }
+
+    #[test]
+    fn desktop_can_sit_anywhere_in_its_group() {
+        let mut case = case(5, &[2, 3], Some(1));
+        // Third slot of group 1: one game ahead of it, two behind.
+        case.groups[1].desktop = Some(1);
+        let layout = case.layout();
+        assert_eq!(layout.pin_id_at(&case.games, 5), Some("steam:2"));
+        assert_eq!(layout.pin_id_at(&case.games, 6), Some(store::DESKTOP_PIN_ID));
+        assert_eq!(layout.pin_id_at(&case.games, 7), Some("steam:3"));
+        assert_eq!(layout.idx_for_pin_id(&case.games, store::DESKTOP_PIN_ID), Some(6));
+        assert_eq!(layout.idx_for_pin_id(&case.games, "steam:2"), Some(5));
+        assert_eq!(layout.idx_for_pin_id(&case.games, "steam:3"), Some(7));
     }
 
     #[test]

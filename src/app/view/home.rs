@@ -225,7 +225,7 @@ mod tests {
                 name: name.into(),
                 len,
                 games_start,
-                desktop: false,
+                desktop: None,
             })
             .collect()
     }

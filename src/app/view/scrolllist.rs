@@ -86,16 +86,23 @@ pub(crate) fn content_h(total: usize, screen_h: u32) -> u32 {
     visible as u32 * ui::widgets::focus_row_stride() + peeks
 }
 
+/// Settings' card width. Wider than a plain list modal: its rows carry a label, a value and
+/// an override hint on one line, and the scroll indicator rides the right edge.
+pub(crate) const SETTINGS_WIDTH_FRAC: f32 = 0.62;
+
+/// Collections' card width — the host menu's, since its rows hold the same thing a list
+/// modal's do (an icon, a name, a short count) and nothing that wants Settings' extra column.
+pub(crate) const COLLECTIONS_WIDTH_FRAC: f32 = ui::widgets::LIST_MODAL_WIDTH_FRAC;
+
 /// Card and content rects, shared by render and hit-test. One split, read twice: the card's
 /// height is what its own stack adds up to, and the viewport is the middle slot of it.
-pub(crate) fn layout(total: usize, screen_w: u32, screen_h: u32) -> (Rect, Rect) {
+pub(crate) fn layout(total: usize, screen_w: u32, screen_h: u32, width_frac: f32) -> (Rect, Rect) {
     let stack = ui::layout::Layout::vertical([
         ui::layout::Constraint::Length(CHROME_TOP),
         ui::layout::Constraint::Length(content_h(total, screen_h)),
         ui::layout::Constraint::Length(CHROME_BOTTOM),
     ]);
-    // Widened from 0.56 to fit the scroll indicator on the right edge.
-    let card = ui::widgets::modal_card_rect(screen_w, screen_h, 0.62, stack.total_length());
+    let card = ui::widgets::modal_card_rect(screen_w, screen_h, width_frac, stack.total_length());
     (card, content_column(stack.split(card)[1]))
 }
 
@@ -119,8 +126,15 @@ pub(crate) fn dropdown_overlay_rect_at_px(content: Rect, row: usize, scroll_px: 
 ///
 /// `suffix` is appended after the title in the muted text colour — the per-game settings
 /// screen names its game there, dimmer so the heading still reads as the heading.
-pub(crate) fn render(c: &mut Canvas, total: usize, title: &str, suffix: Option<&str>, hover_close: bool) -> Result<()> {
-    let (card, _content) = layout(total, c.screen_w, c.screen_h);
+pub(crate) fn render(
+    c: &mut Canvas,
+    total: usize,
+    width_frac: f32,
+    title: &str,
+    suffix: Option<&str>,
+    hover_close: bool,
+) -> Result<()> {
+    let (card, _content) = layout(total, c.screen_w, c.screen_h, width_frac);
     let column = content_column(card);
     let baseline = card.y() + 36;
     c.modal_shell(card, hover_close)?;

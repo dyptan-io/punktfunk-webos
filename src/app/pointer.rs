@@ -12,6 +12,7 @@
 use std::time::Instant;
 
 use crate::app::nav::ScreenKey;
+use crate::app::screens::rowbuttons::RowButton;
 use crate::app::{menu, view, App, ConnectTarget, HomeFocus, PairingFocus, Screen};
 use crate::core::event::MenuEvent;
 use crate::ui;
@@ -343,7 +344,7 @@ impl App {
         screen_w: u32,
         screen_h: u32,
         fonts: &ui::text::Fonts,
-    ) -> Option<(usize, Option<usize>)> {
+    ) -> Option<(usize, Option<RowButton>)> {
         let row = self.modal_list_row_at(x, y, screen_w, screen_h, fonts)?;
         let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
         let button = self.row_button_at(row, ui::widgets::focus_row_rect(content, row), x, y);
@@ -352,7 +353,7 @@ impl App {
 
     /// The same, on a scrolling list — measured at the animated scroll offset the rows are
     /// drawn at, so a button is clickable exactly where it looks.
-    fn scroll_list_row_button_at(&self, x: i32, y: i32, screen_w: u32, screen_h: u32) -> Option<usize> {
+    fn scroll_list_row_button_at(&self, x: i32, y: i32, screen_w: u32, screen_h: u32) -> Option<RowButton> {
         let (content, scroll_px) = self.scroll_list_content_scroll(screen_w, screen_h)?;
         let row = self.scroll_list_row_at(x, y, screen_w, screen_h)?;
         self.row_button_at(row, ui::widgets::focus_row_rect_at_px(content, row, scroll_px), x, y)
@@ -449,6 +450,11 @@ impl App {
             Screen::Home if self.card_menu.is_some() => {
                 // The held card's submenu is over the grid: a click either picks one of its
                 // rows or dismisses it. Nothing underneath is reachable while it is up.
+                // Mid-reorder the panel is collapsed and there are no rows: the click means
+                // "leave it there", exactly as an OK press does.
+                if self.fix_card_position() {
+                    return None;
+                }
                 let Some(row) = self.card_menu_row_at(x, y, screen_w, fonts) else {
                     self.close_card_menu();
                     return None;

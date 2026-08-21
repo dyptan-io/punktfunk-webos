@@ -54,8 +54,8 @@ pub struct CardMenu {
     /// The rise has had its final frame drawn (see [`CardMenu::tick`]).
     risen: bool,
     /// The card has been moved inside its collection and the new order is not written yet
-    /// (see [`App::swap_card_in_collection`]). Drives the rest of the collection's dim, and
-    /// the commit on the way out.
+    /// (see [`App::swap_card_in_collection`]). Drives the rest of the collection's dim, the
+    /// collapse of the panel to a bare title strip, and the commit on the way out.
     pub moved: bool,
 }
 
@@ -67,6 +67,14 @@ impl CardMenu {
             self.focus_anim = Some(Instant::now());
             self.focused = row;
         }
+    }
+
+    /// Plays the panel's rise again from now — what leaving reorder mode does, since the
+    /// panel was collapsed to a title strip for the duration and has to come back the way it
+    /// arrived rather than snapping to full height.
+    pub(crate) fn rise_again(&mut self) {
+        self.since = Instant::now();
+        self.risen = false;
     }
 
     /// Whether the panel still owes frames — the rise, and the band's focus pop.
@@ -131,8 +139,8 @@ impl App {
 
     /// Moves the held card one slot inside its own collection: a swap, so every other card
     /// keeps its slot and the grid needs no new geometry (see `docs/COLLECTIONS-PLAN.md`).
-    /// `false` when there is nowhere to go — either end of the block, the Desktop card, or
-    /// Library, whose order is recency.
+    /// `false` when there is nowhere to go — either end of the block, or Library, whose
+    /// order is recency.
     fn swap_card_in_collection(&mut self, forward: bool, screen_w: u32, screen_h: u32) -> bool {
         let Some(pin_id) = self.card_menu.as_ref().map(|m| m.pin_id.clone()) else {
             return false;
@@ -176,23 +184,30 @@ impl App {
     /// in" gesture a move between collections plays, scoped to the collection that changed.
     /// Costs nothing when nothing moved.
     fn commit_card_reorder(&mut self) {
-        let Some(pin_id) = self.card_menu.as_ref().filter(|m| m.moved).map(|m| m.pin_id.clone()) else {
-            return;
-        };
-        self.persist();
-        // The collection's members rather than a grid range: no layout, no column count, and
-        // a card outside the scroll window simply has no tile to re-arm.
-        let members: Vec<String> = self
-            .selected_known_host()
-            .and_then(|h| {
-                let at = h.collection_of(&pin_id)?;
-                Some(h.collections().get(at)?.games.clone())
-            })
-            .unwrap_or_default();
-        let now = Instant::now();
-        for id in members {
-            self.render.grid.arm_card_pop(&id, now);
+        if self.card_menu.as_ref().is_some_and(|m| m.moved) {
+            self.persist();
         }
+    }
+
+    /// Whether the held card is mid-reorder: the rest of its collection is dimmed, the panel
+    /// is collapsed to its title strip, and the next Confirm fixes the card where it sits.
+    pub(crate) fn card_menu_reordering(&self) -> bool {
+        self.card_menu.as_ref().is_some_and(|m| m.moved)
+    }
+
+    /// Fixes the held card where it now sits: writes the order and leaves reorder mode with
+    /// the menu still up, so the panel rises again over the card. `false` when no reorder was
+    /// under way, which is what lets Confirm go on to mean the focused row.
+    pub(crate) fn fix_card_position(&mut self) -> bool {
+        if !self.card_menu_reordering() {
+            return false;
+        }
+        self.commit_card_reorder();
+        if let Some(menu) = self.card_menu.as_mut() {
+            menu.moved = false;
+            menu.rise_again();
+        }
+        true
     }
 
     /// Handles one menu event while the submenu is up. Returns `false` when it isn't, so
@@ -213,6 +228,14 @@ impl App {
             menu.focus(next);
             return true;
         }
+        // The first Confirm after a move means "there", not "open what this row does" — the
+        // panel is collapsed while reordering, so there is no row on screen to have meant.
+        if ev == MenuEvent::Confirm && self.fix_card_position() {
+            return true;
+        }
+        let Some(menu) = self.card_menu.as_ref() else {
+            return true;
+        };
         match (ev, rows.get(menu.focused)) {
             // Both leave the panel up behind what they raise: each is a step *into* this
             // menu, and collapsing it underneath makes going back read as having landed

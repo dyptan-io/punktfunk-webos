@@ -29,20 +29,14 @@ impl App {
     }
 
     /// [`card_menu_row_kinds`](Self::card_menu_row_kinds) with the icon and label each row
-    /// draws. Both action rows name the collection they act on, so the menu says where the
-    /// card is without the user opening anything.
-    pub(crate) fn card_menu_rows(&self, pin_id: &str) -> Vec<(&'static str, String)> {
-        let here = self
-            .selected_known_host()
-            .and_then(|h| h.collection_name_of(pin_id))
-            .unwrap_or_default()
-            .to_string();
+    /// draws.
+    pub(crate) fn card_menu_rows(&self, pin_id: &str) -> Vec<(&'static str, &'static str)> {
         self.card_menu_row_kinds(pin_id)
             .into_iter()
             .map(|kind| match kind {
-                CardMenuRow::MoveTo => (crate::ui::theme::icons().pin, format!("Move from {here}")),
-                CardMenuRow::Remove => (view::icons::ICON_DELETE, format!("Remove from {here}")),
-                CardMenuRow::Settings => (view::icons::ICON_SETTINGS, "Settings".to_string()),
+                CardMenuRow::MoveTo => (crate::ui::theme::icons().pin, "Add to\u{2026}"),
+                CardMenuRow::Remove => (view::icons::ICON_DELETE, "Remove"),
+                CardMenuRow::Settings => (view::icons::ICON_SETTINGS, "Settings"),
             })
             .collect()
     }
@@ -61,7 +55,8 @@ impl App {
     /// above the rows on screen — enough to mispick at a row boundary, and to drop clicks in
     /// the panel's bottom edge (which read as "clicked outside" and dismiss the menu).
     pub(crate) fn card_menu_rows_rect(&self, screen_w: u32, fonts: &ui::text::Fonts) -> Option<Rect> {
-        let menu = self.card_menu.as_ref()?;
+        // Nothing to hit while the panel is collapsed for a reorder (see `compose_grid`).
+        let menu = self.card_menu.as_ref().filter(|m| !m.moved)?;
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
         // The latch is only good while the grid still holds that card at that index — a

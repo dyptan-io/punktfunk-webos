@@ -5,6 +5,7 @@
 //! agree about a scrollable modal's extent, and deriving it twice is how they stop
 //! agreeing.
 use crate::app::nav::ScreenKey;
+use crate::app::screens::scrolllist::scroll_list_width_frac;
 use crate::app::{view, App, PairingFocus, Screen, MODAL_TILE_PAD};
 use crate::ui;
 use crate::ui::render::Rect;
@@ -121,7 +122,8 @@ impl App {
             // measures the global list instead of the one being faded out.
             Screen::Settings(_) | Screen::Collections => {
                 let total = self.scroll_list_row_count_for(screen);
-                let (card, content) = view::scrolllist::layout(total, screen_w, screen_h);
+                let (card, content) =
+                    view::scrolllist::layout(total, screen_w, screen_h, scroll_list_width_frac(screen));
                 Some((total, view::scrolllist::visible_rows(total, screen_h), card, content))
             }
             Screen::About => {

@@ -20,7 +20,7 @@ pub(crate) struct ScreenSlots {
     /// row-list counterpart of `HomeFocus::SidebarMenu`. Shared by every screen whose rows
     /// carry them (the host menu's ⋯, a collection's rename/remove), because focus is only
     /// ever on one row of one list at a time. Cleared by any vertical move.
-    pub(crate) row_button: Option<usize>,
+    pub(crate) row_button: Option<super::rowbuttons::RowButton>,
     /// The sidebar row `Screen::EditHost` is editing, `None` otherwise.
     pub(crate) edit_host_index: Option<usize>,
     /// The in-flight/finished speed test, `None` when that screen isn't open.

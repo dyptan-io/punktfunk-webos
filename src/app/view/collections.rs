@@ -1,4 +1,4 @@
-//! The "move this card to…" modal — presentation: its rows and its shell. Logic lives in
+//! The "add this card to…" modal — presentation: its rows and its shell. Logic lives in
 //! `app::state::collections`.
 //!
 //! A scrolling row list rather than a plain one: a host may hold every collection
@@ -14,7 +14,7 @@ use crate::ui::ModalMetrics;
 use crate::ui::ModalScreen;
 use anyhow::Result;
 
-pub(crate) const TITLE: &str = "Move to";
+pub(crate) const TITLE: &str = "Add to";
 pub(crate) const ADD_ROW: &str = "Add collection";
 pub(crate) const REMOVE_TITLE: &str = "Remove collection?";
 /// Replaces the card's name in the heading while a row is being dragged: the list is doing
@@ -33,14 +33,15 @@ pub(crate) fn name_subtitle(renaming: Option<&str>, card: &str) -> String {
     }
 }
 
-/// What a collection row's trailing buttons are. Library keeps Rename but has no Remove at
-/// all — `KnownHost::remove_collection` refuses it too, so the missing icon is the affordance
+/// What a collection row's trailing buttons are — the reorder grip is not among them: it is
+/// the row's leading button, in the icon slot (see [`rows`]). Library keeps Rename but has no
+/// Remove at all — `KnownHost::remove_collection` refuses it too, so the missing icon is the affordance
 /// rather than the rule.
 pub(crate) fn trailing(dynamic: bool) -> &'static [&'static str] {
     if dynamic {
-        &[icons::ICON_REORDER, icons::ICON_EDIT]
+        &[icons::ICON_EDIT]
     } else {
-        &[icons::ICON_REORDER, icons::ICON_EDIT, icons::ICON_DELETE]
+        &[icons::ICON_EDIT, icons::ICON_DELETE]
     }
 }
 
@@ -80,8 +81,12 @@ pub(crate) fn rows(host: &KnownHost, holding: Option<usize>) -> Vec<FocusRow> {
             } else {
                 Some(collection.games.len())
             };
-            let row = FocusRow::action_with_value(icons::ICON_FOLDER, collection.name.clone(), count_label(count))
-                .with_trailing(trailing(collection.dynamic));
+            // The grip stands in for the folder pictogram rather than sitting beside it: a
+            // row this wide with an icon at each end reads as two controls and a label
+            // between them, and the drag handle is the one worth pointing at.
+            let row = FocusRow::action_with_value(icons::ICON_REORDER, collection.name.clone(), count_label(count))
+                .with_trailing(trailing(collection.dynamic))
+                .with_leading_button();
             let row = match count {
                 // An empty collection is hidden in the grid, which reads as a vanished one
                 // unless the row that still lists it says so.
@@ -126,13 +131,20 @@ pub(crate) struct Modal<'a> {
 
 impl ModalMetrics for Modal<'_> {
     fn card_rect(&self, screen_w: u32, screen_h: u32, _fonts: &ui::text::Fonts) -> Rect {
-        scrolllist::layout(self.rows, screen_w, screen_h).0
+        scrolllist::layout(self.rows, screen_w, screen_h, scrolllist::COLLECTIONS_WIDTH_FRAC).0
     }
 }
 
 impl ModalScreen for Modal<'_> {
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
-        scrolllist::render(c, self.rows, TITLE, self.card, hover_close)
+        scrolllist::render(
+            c,
+            self.rows,
+            scrolllist::COLLECTIONS_WIDTH_FRAC,
+            TITLE,
+            self.card,
+            hover_close,
+        )
     }
 }
 
@@ -179,17 +191,16 @@ mod tests {
     fn library_offers_no_remove_button() {
         let host = host();
         let rows = rows(&host, None);
-        assert_eq!(
-            rows[0].trailing,
-            vec![icons::ICON_REORDER, icons::ICON_EDIT, icons::ICON_DELETE]
-        );
+        assert_eq!(rows[0].trailing, vec![icons::ICON_EDIT, icons::ICON_DELETE]);
+        assert!(rows[0].leading_button, "the grip is the row's own icon");
         assert_eq!(rows[1].label, LIBRARY_COLLECTION);
         assert_eq!(
             rows[1].trailing,
-            vec![icons::ICON_REORDER, icons::ICON_EDIT],
+            vec![icons::ICON_EDIT],
             "Library reorders and renames, but cannot be removed"
         );
         assert!(rows[2].trailing.is_empty(), "nor can the add row be acted on");
+        assert!(!rows[2].leading_button, "nor dragged");
     }
 
     #[test]

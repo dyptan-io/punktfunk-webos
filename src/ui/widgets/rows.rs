@@ -48,6 +48,17 @@ pub struct FocusRow {
     /// action stays a single press. Per-row, so one row in a list can offer fewer than its
     /// neighbours (Library has no Remove). Empty (the default) draws nothing.
     pub trailing: Vec<&'static str>,
+    /// The row's own [`icon`](Self::icon) is a button too, in the slot it already draws in —
+    /// reached with Left, where [`trailing`](Self::trailing) is reached with Right. For the
+    /// action a row wants *before* its label rather than after it (a collection's drag
+    /// handle), so the grip sits where the eye starts the row.
+    pub leading_button: bool,
+    /// That leading button has focus. Mutually exclusive with
+    /// [`trailing_focused`](Self::trailing_focused) — the two sides are one cursor.
+    pub leading_focused: bool,
+    /// The leading button is held *open* — the drag handle of a row being moved. Drawn lit
+    /// whether or not it also has focus, exactly as [`trailing_active`](Self::trailing_active).
+    pub leading_active: bool,
     /// Which trailing button has focus, if any — `None` means focus is on the row body.
     pub trailing_focused: Option<usize>,
     /// A trailing button held *open*: the drag handle while its row is being moved. Drawn
@@ -122,6 +133,9 @@ impl FocusRow {
             trailing: Vec::new(),
             trailing_focused: None,
             trailing_active: None,
+            leading_button: false,
+            leading_focused: false,
+            leading_active: false,
             mark: None,
             subtext: None,
         }
@@ -199,6 +213,13 @@ impl FocusRow {
         self.trailing = icons.to_vec();
         self
     }
+
+    /// Makes this row's icon a [`leading_button`](Self::leading_button). Always built
+    /// unfocused, for the same reason [`with_trailing`](Self::with_trailing) is.
+    pub fn with_leading_button(mut self) -> Self {
+        self.leading_button = true;
+        self
+    }
 }
 
 // Generous, TV-scale rows — each is its own focusable card (icon + label left,
@@ -207,6 +228,8 @@ impl FocusRow {
 pub const FOCUS_ROW_H: u32 = 92;
 pub const FOCUS_ROW_GAP: i32 = 8;
 pub const FOCUS_ROW_ICON_SIZE: u32 = 30;
+/// Gap between a row's left edge and its icon.
+const ICON_PAD: i32 = 24;
 
 /// Pixels between the tops of consecutive focus rows.
 pub const fn focus_row_stride() -> u32 {
@@ -271,6 +294,18 @@ pub fn row_layout(row_rect: Rect, marked: bool) -> RowGeom {
             2 * MARK_DOT_R as u32,
         ),
     }
+}
+
+/// The leading button's rect: the row's icon slot, grown to a button's footprint so the two
+/// ends of a row wear the same chrome. Shared by the painter and the pointer hit test.
+pub fn leading_button_rect(row_rect: Rect) -> Rect {
+    let cy = row_rect.y() + row_rect.height() as i32 / 2;
+    Rect::new(
+        row_rect.x() + ICON_PAD + (FOCUS_ROW_ICON_SIZE as i32 - SIDEBAR_MENU_BTN as i32) / 2,
+        cy - SIDEBAR_MENU_BTN as i32 / 2,
+        SIDEBAR_MENU_BTN,
+        SIDEBAR_MENU_BTN,
+    )
 }
 
 /// How much room `count` trailing buttons take off a row's right end — what the row's own
@@ -370,8 +405,11 @@ pub struct FocusRowTile<'a> {
     /// row list, because the shell underneath draws the same rows and a highlight baked
     /// there would outlive the focus that put it on.
     pub trailing_focused: Option<usize>,
-    /// A trailing button held open — the drag handle of a row being moved.
+    /// A trailing button held open.
     pub trailing_active: Option<usize>,
+    /// Same two, for the row's leading button — the drag handle of a row being moved.
+    pub leading_focused: bool,
+    pub leading_active: bool,
 }
 
 impl Widget for FocusRowTile<'_> {
@@ -384,6 +422,8 @@ impl Widget for FocusRowTile<'_> {
                 let row = FocusRow {
                     trailing_focused: self.trailing_focused,
                     trailing_active: self.trailing_active,
+                    leading_focused: self.leading_focused,
+                    leading_active: self.leading_active,
                     ..row.clone()
                 };
                 c.focus_row(&row, true, self.dropdown_open, self.switch_frac, inner)
@@ -460,6 +500,9 @@ pub struct FocusRowKey<'a> {
     trailing: &'a [&'static str],
     trailing_focused: Option<usize>,
     trailing_active: Option<usize>,
+    leading_button: bool,
+    leading_focused: bool,
+    leading_active: bool,
     mark: Option<Rgba8>,
     subtext: Option<(&'a str, Rgba8)>,
 }
@@ -482,6 +525,9 @@ impl FocusRow {
             trailing: &self.trailing,
             trailing_focused: self.trailing_focused,
             trailing_active: self.trailing_active,
+            leading_button: self.leading_button,
+            leading_focused: self.leading_focused,
+            leading_active: self.leading_active,
             mark: self.mark.map(color_bytes),
             subtext: self.subtext.as_ref().map(|s| (s.text.as_str(), color_bytes(s.color))),
         }
@@ -518,9 +564,8 @@ impl Canvas<'_, '_> {
             self.painter.fill_rounded_rect(geom.mark, MARK_DOT_R, color);
         }
 
-        let icon_pad = 24;
         let icon_rect = Rect::new(
-            row_rect.x() + icon_pad,
+            row_rect.x() + ICON_PAD,
             row_rect.y() + (row_rect.height() as i32 - FOCUS_ROW_ICON_SIZE as i32) / 2,
             FOCUS_ROW_ICON_SIZE,
             FOCUS_ROW_ICON_SIZE,
@@ -533,7 +578,17 @@ impl Canvas<'_, '_> {
         } else {
             palette().muted
         };
-        self.icon(icon_rect, row.icon, fg)?;
+        if row.leading_button {
+            self.row_button(
+                leading_button_rect(row_rect),
+                row.icon,
+                focused,
+                row.leading_focused,
+                row.leading_active,
+            )?;
+        } else {
+            self.icon(icon_rect, row.icon, fg)?;
+        }
         let label_x = icon_rect.x() + FOCUS_ROW_ICON_SIZE as i32 + 20;
         // A caption belongs to the focused row only: unfocused rows keep the label centred
         // (the common case), while a focused row with one centres label + caption as a block.

@@ -386,6 +386,10 @@ pub(super) fn run_ui_flow(
             dirty = true;
         }
         quit_dialog_was_active = quit_dialog_active;
+        // Anything the state machine queued this tick (`App::toast`) — a card move, so far.
+        if let Some(msg) = app.take_toast() {
+            notif.show(msg);
+        }
         // Polled every tick like the streaming loop's toast, not gated behind
         // `content_dirty` — its own fade needs frames regardless of anything else.
         let notif_frame = notif.frame();

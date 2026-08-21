@@ -5,6 +5,7 @@
 //! stays up behind it, like the per-game settings screen: this is a step *into* that menu,
 //! and collapsing the panel underneath would make going back read as having landed elsewhere.
 use crate::app::nav::ScreenKey;
+use crate::app::screens::rowbuttons::RowButton;
 use crate::app::state::textfield::TextField;
 use crate::app::view;
 use crate::app::App;
@@ -80,13 +81,10 @@ impl App {
         }
     }
 
-    /// Which trailing button of the focused row is held open on `screen` — the drag handle,
-    /// which is a collection row's first, and nothing on any other scrolling list.
-    pub(crate) fn dragged_handle(&self, screen: Screen) -> Option<usize> {
-        matches!(screen, Screen::Collections)
-            .then_some(self.screens.collections.dragging)
-            .flatten()
-            .map(|_| 0)
+    /// Whether the focused row's leading button is held open on `screen` — the drag handle
+    /// of a collection row being moved, and nothing on any other scrolling list.
+    pub(crate) fn dragged_handle(&self, screen: Screen) -> bool {
+        matches!(screen, Screen::Collections) && self.screens.collections.dragging.is_some()
     }
 
     /// The modal's rows, `None` off the screen or with no host selected.
@@ -111,7 +109,8 @@ impl App {
             return;
         }
         match ev {
-            // Right/Left step onto the row's rename/remove buttons before leaving it.
+            // Right steps onto the row's rename/remove buttons and Left onto its grip,
+            // before either leaves the row.
             MenuEvent::Right | MenuEvent::Left if self.step_row_button(ev == MenuEvent::Right) => {}
             MenuEvent::Confirm => self.confirm_collections_row(screen_w, screen_h),
             MenuEvent::Back | MenuEvent::Secondary => self.close_collections(),
@@ -123,14 +122,16 @@ impl App {
     /// the Library row — then closes both this modal and the menu it came from.
     pub(crate) fn confirm_collections_row(&mut self, screen_w: u32, screen_h: u32) {
         let row = self.nav.cursor(ScreenKey::Collections);
-        // A trailing button acts on the row it is on rather than on the card being moved.
-        // Read by icon, not by index: Library carries one button fewer.
+        // A button acts on the row it is on rather than on the card being moved. The
+        // trailing ones are read by icon, not by index: Library carries one button fewer.
         if let Some(button) = self.screens.row_button {
-            match self.row_trailing(row).get(button) {
-                Some(&view::icons::ICON_REORDER) => self.start_collection_drag(row),
-                Some(&view::icons::ICON_EDIT) => self.open_name_collection(Some(row)),
-                Some(&view::icons::ICON_DELETE) => self.open_remove_collection(row),
-                _ => {}
+            match button {
+                RowButton::Leading => self.start_collection_drag(row),
+                RowButton::Trailing(i) => match self.row_trailing(row).get(i) {
+                    Some(&view::icons::ICON_EDIT) => self.open_name_collection(Some(row)),
+                    Some(&view::icons::ICON_DELETE) => self.open_remove_collection(row),
+                    _ => {}
+                },
             }
             return;
         }
@@ -149,9 +150,10 @@ impl App {
         // Library is "in no collection", so it commits as `None` rather than as its index.
         let (to, name) = ((!collection.dynamic).then_some(row), collection.name.clone());
         let columns = view::home::grid_columns(screen_w.saturating_sub(crate::ui::widgets::SIDEBAR_W));
+        let moved = moved_toast(&self.screens.collections.title, &name);
         self.close_collections();
         self.move_card(&target, to, columns, screen_w, screen_h);
-        self.home_status = Some(format!("Moved to {name}"));
+        self.toast(moved);
     }
 
     /// Raises the name dialog over the list: `at` is the collection being renamed, `None` to
@@ -193,7 +195,7 @@ impl App {
     }
 
     /// Commits the typed name: renames the collection it was opened on, or creates one and —
-    /// since the only way here is a card's "Move to…" — moves the held card straight into it,
+    /// since the only way here is a card's "Add to…" — moves the held card straight into it,
     /// rather than dropping the user back on the list to pick what they just named.
     pub(crate) fn confirm_collection_name(&mut self, screen_w: u32, screen_h: u32) {
         let typed = self.screens.collections.name.text().trim().to_string();
@@ -221,9 +223,10 @@ impl App {
                     return;
                 };
                 let columns = view::home::grid_columns(screen_w.saturating_sub(crate::ui::widgets::SIDEBAR_W));
+                let moved = moved_toast(&self.screens.collections.title, &typed);
                 self.close_collections();
                 self.move_card(&target, Some(added), columns, screen_w, screen_h);
-                self.home_status = Some(format!("Moved to {typed}"));
+                self.toast(moved);
             }
         }
     }
@@ -346,4 +349,13 @@ impl App {
         self.close_card_menu();
         self.nav.screen = Screen::Home;
     }
+}
+
+/// What the move says once it is done. A toast rather than the Home status line: the line sits
+/// under the grid, far from the card that just moved, and outlives the moment it describes —
+/// this is a confirmation, not state.
+///
+/// Read before `close_collections`, which resets the state holding the card's title.
+fn moved_toast(card: &str, to: &str) -> String {
+    format!("{card} added to {to}")
 }

@@ -172,12 +172,24 @@ pub(crate) fn rows(
 /// [`scrolllist`] geometry bound to a settings scope — which is the only thing that decides
 /// how many rows this list has.
 pub(crate) fn layout(set: SettingsScope, screen_w: u32, screen_h: u32) -> (Rect, Rect) {
-    scrolllist::layout(menu::settings_row_count(set), screen_w, screen_h)
+    scrolllist::layout(
+        menu::settings_row_count(set),
+        screen_w,
+        screen_h,
+        scrolllist::SETTINGS_WIDTH_FRAC,
+    )
 }
 
 /// The shell only — see [`scrolllist::render`]. `suffix` is the per-game screen's game name.
 pub(crate) fn render(c: &mut Canvas, set: SettingsScope, suffix: Option<&str>, hover_close: bool) -> Result<()> {
-    scrolllist::render(c, menu::settings_row_count(set), TITLE, suffix, hover_close)
+    scrolllist::render(
+        c,
+        menu::settings_row_count(set),
+        scrolllist::SETTINGS_WIDTH_FRAC,
+        TITLE,
+        suffix,
+        hover_close,
+    )
 }
 
 /// The settings modal as a [`ModalScreen`]. `game` names the per-game variant's title suffix;

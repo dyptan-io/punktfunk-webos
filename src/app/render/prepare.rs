@@ -15,6 +15,7 @@ use crate::app::render::geometry::is_scroll_list;
 use crate::app::render::key::{ModalFocusKey, ModalShellKey, ScrollContentKey};
 use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
+use crate::app::screens::rowbuttons::RowButton;
 use crate::app::{
     menu, view, App, HomeFocus, PairingFocus, Screen, ABOUT_WINDOW_BUDGET, ABOUT_WINDOW_MARGIN, SCROLL_INDICATOR_TILE_W,
 };
@@ -458,10 +459,12 @@ impl App {
                                         index,
                                         dropdown_open,
                                         switch_frac: self.toggle_frac(target_on, index),
-                                        trailing_focused: self.screens.row_button,
+                                        trailing_focused: self.screens.row_button.and_then(RowButton::trailing),
+                                        trailing_active: None,
+                                        leading_focused: self.screens.row_button == Some(RowButton::Leading),
                                         // The handle of a held row, lit for as long as it
                                         // is held: a mode must look different from a focus.
-                                        trailing_active: self.dragged_handle(screen),
+                                        leading_active: self.dragged_handle(screen),
                                     },
                                     text_cache,
                                     fonts,
@@ -541,8 +544,10 @@ impl App {
                                         index: focused,
                                         dropdown_open,
                                         switch_frac: self.toggle_frac(target_on, focused),
-                                        trailing_focused: self.screens.row_button,
+                                        trailing_focused: self.screens.row_button.and_then(RowButton::trailing),
                                         trailing_active: None,
+                                        leading_focused: self.screens.row_button == Some(RowButton::Leading),
+                                        leading_active: false,
                                     },
                                     text_cache,
                                     fonts,
@@ -806,6 +811,8 @@ impl App {
                 switch_frac: 0.0,
                 trailing_focused: None,
                 trailing_active: None,
+                leading_focused: false,
+                leading_active: false,
             },
             text_cache,
             fonts,

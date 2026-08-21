@@ -324,21 +324,17 @@ impl KnownHost {
 ///
 impl KnownHost {
     /// The member `id` trades places with inside its own collection: its neighbour in
-    /// *grid* order. [`DESKTOP_PIN_ID`] is skipped over and never returned — the Desktop
-    /// card always heads the group it is in, so it has no slot to trade. `None` at either
-    /// end of the block, and in Library, whose order is recency rather than the user's.
+    /// *grid* order. [`DESKTOP_PIN_ID`] is an ordinary member here — it moves, and is moved
+    /// past, like any card. `None` at either end of the block, and in Library, whose order
+    /// is recency rather than the user's.
     pub fn collection_neighbour(&self, id: &str, forward: bool) -> Option<&str> {
-        if id == DESKTOP_PIN_ID {
-            return None;
-        }
         let at = self.collection_of(id)?;
         let games = &self.collections().get(at)?.games;
         let pos = games.iter().position(|g| g == id)?;
-        let orderable = |g: &&String| g.as_str() != DESKTOP_PIN_ID;
         if forward {
-            games[pos + 1..].iter().find(orderable)
+            games.get(pos + 1)
         } else {
-            games[..pos].iter().rev().find(orderable)
+            games[..pos].last()
         }
         .map(String::as_str)
     }
@@ -363,12 +359,6 @@ impl KnownHost {
         };
         entry.games.swap(a, b);
         true
-    }
-
-    /// The name of the collection holding `id`, Library included.
-    pub fn collection_name_of(&self, id: &str) -> Option<&str> {
-        let idx = self.collection_of(id).or_else(|| self.library_index())?;
-        self.collections().get(idx).map(|c| c.name.as_str())
     }
 
     /// Number of user collections — what [`MAX_COLLECTIONS`] bounds.
@@ -983,7 +973,6 @@ mod tests {
         // Back to Library: named by no collection at all.
         h.move_to("g0", None);
         assert_eq!(h.collection_of("g0"), None);
-        assert_eq!(h.collection_name_of("g0"), Some(LIBRARY_COLLECTION));
     }
 
     #[test]
@@ -1054,21 +1043,22 @@ mod tests {
         h.move_to("g1", Some(0));
         assert!(h.swap_within_collection("g1", false));
         assert_eq!(h.collections()[0].games, [DESKTOP_PIN_ID, "g1", "g0"]);
+        assert!(h.swap_within_collection("g1", false), "trades with Desktop");
+        assert_eq!(h.collections()[0].games, ["g1", DESKTOP_PIN_ID, "g0"]);
         assert!(!h.swap_within_collection("g1", false), "already first");
         assert!(!h.swap_within_collection("g0", true), "already last");
         assert!(!h.swap_within_collection("stranger", true), "in Library, not orderable");
     }
 
     #[test]
-    fn the_desktop_card_is_never_swapped_it_heads_its_group() {
+    fn the_desktop_card_reorders_like_any_other() {
         let mut h = host();
         h.move_to("g0", Some(0));
         assert_eq!(h.collections()[0].games, [DESKTOP_PIN_ID, "g0"]);
-        assert!(!h.swap_within_collection("g0", false), "Desktop is not a slot to trade");
-        assert!(!h.swap_within_collection(DESKTOP_PIN_ID, true));
-        assert_eq!(h.collection_neighbour("g0", false), None);
-        h.move_to("g1", Some(0));
-        assert_eq!(h.collection_neighbour("g1", false), Some("g0"), "skipping over Desktop");
+        assert_eq!(h.collection_neighbour("g0", false), Some(DESKTOP_PIN_ID));
+        assert!(h.swap_within_collection(DESKTOP_PIN_ID, true));
+        assert_eq!(h.collections()[0].games, ["g0", DESKTOP_PIN_ID]);
+        assert!(!h.swap_within_collection(DESKTOP_PIN_ID, true), "already last");
     }
 
     #[test]

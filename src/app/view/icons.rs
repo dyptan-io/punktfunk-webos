@@ -33,7 +33,5 @@ pub const ICON_GAMEPAD: &str = "\u{E338}";
 pub const ICON_PALETTE: &str = "\u{E40A}";
 pub const ICON_MOUSE: &str = "\u{E323}";
 pub const ICON_TOUCH: &str = "\u{E913}";
-/// Material `folder` — a collection of cards.
-pub const ICON_FOLDER: &str = "\u{E2C7}";
-/// Material `drag_handle` — the grip that puts a row into drag mode.
+/// Material `drag_indicator` — the grip that puts a row into drag mode.
 pub const ICON_REORDER: &str = "\u{E945}";

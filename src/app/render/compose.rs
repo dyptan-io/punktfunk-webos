@@ -666,7 +666,11 @@ impl App {
         // so they can ride the growing window's top edge. Falls back to the plain
         // strip until all three are built, which is what the first frames after
         // launch see.
-        let menu = self.card_menu.as_ref().and_then(|_| {
+        // Collapsed to a bare title strip while the card is being reordered: the panel names
+        // what Confirm does, and mid-reorder Confirm means "leave it there" rather than any
+        // of its rows (see `App::fix_card_position`). Dropping to `None` here is the whole
+        // collapse — the arm below draws the plain strip.
+        let menu = self.card_menu.as_ref().filter(|m| !m.moved).and_then(|_| {
             tiles.get(tile::CARD_MENU_TITLE)?;
             Some((
                 tiles.get(tile::CARD_MENU).map(ui::Painter::height)?,

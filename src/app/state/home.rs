@@ -244,13 +244,9 @@ impl App {
         let Some(known) = self.selected_known_host() else {
             return;
         };
-        let from = known.collection_of(id);
-        if from == to {
+        if known.collection_of(id) == to {
             return;
         }
-        // The boundary the reshuffle starts at: everything before the first group either the
-        // card left or joined keeps its slot, so only what follows replays the pop.
-        let boundary = self.reorder_boundary(from, to, columns);
         let Some(known) = self.selected_known_host_mut() else {
             return;
         };
@@ -263,60 +259,10 @@ impl App {
             self.render.grid.focus_last = new_idx;
             self.ensure_grid_visible(new_idx, columns, screen_w, screen_h);
         }
-        self.replay_reorder_pop(id, boundary, columns);
-    }
-
-    /// The first grid slot a move between collections `from` and `to` can disturb: the start
-    /// of the earlier of the two groups. Read *before* the move, while the old layout stands.
-    fn reorder_boundary(&self, from: Option<usize>, to: Option<usize>, columns: usize) -> usize {
-        let Some(host) = self.selected_known_host() else {
-            return 0;
-        };
-        // `None` is Library, wherever in the order it sits.
-        let resolve = |c: Option<usize>| c.or_else(|| host.library_index()).unwrap_or(0);
-        let earliest = resolve(from).min(resolve(to));
-        // Groups skip empty collections, so a collection index is not a group index: match by
-        // name, and fall back to the whole grid when the group isn't drawn (it was empty).
-        let Some(name) = host.collections().get(earliest).map(|c| c.name.as_str()) else {
-            return 0;
-        };
-        self.library
-            .layout(columns)
-            .placed()
-            .find(|p| p.group.name == name)
-            .map_or(0, |p| p.first_idx)
-    }
-
-    /// Reorder's appear animation — the same "every card pops in together" look as a fresh
-    /// library reveal (see `app::spinner::GridReveal`), scoped to what actually needs it: the
-    /// moved card, plus every rasterized card at or after `boundary`, which is where the
-    /// reshuffle starts. Card tiles themselves need no rebuilding either way — they're keyed
-    /// by pin id (see `card_tiles`), which reordering never changes.
-    fn replay_reorder_pop(&mut self, id: &str, boundary: usize, columns: usize) {
-        let now = Instant::now();
-        // Driven off what is rasterized, not off the library: a card outside the scroll window
-        // has no pop on screen to replay, and `prepare_grid` arms its clock when it is built.
-        // One pass to index the library, rather than an `idx_for_pin_id` scan per tile.
-        let layout = self.library.layout(columns);
-        let moved: Vec<String> = self
-            .render
-            .grid
-            .card_ids
-            .pin_ids()
-            .filter(|id| {
-                layout
-                    .idx_for_pin_id(&self.library.games, id)
-                    .is_some_and(|idx| idx >= boundary)
-            })
-            .map(str::to_string)
-            .collect();
-        // Re-arm the pop clock unconditionally (not gated on a built tile like the old
-        // per-`CardTile` clock): a not-yet-built card has no visible pop to replay, and
-        // its clock is overwritten with a fresh one when `prepare_grid` builds it.
-        self.render.grid.arm_card_pop(id, now);
-        for pin_id in moved {
-            self.render.grid.arm_card_pop(&pin_id, now);
-        }
+        // Only the card that moved pops. Every other card slides one slot along — a shift the
+        // eye already follows — and re-arming the whole reshuffled tail read as the grid
+        // reloading rather than as one card changing places.
+        self.render.grid.arm_card_pop(id, Instant::now());
     }
 
     /// Re-lays the grid out over the selected host's collections — see

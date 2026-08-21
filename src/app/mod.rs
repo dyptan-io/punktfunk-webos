@@ -119,6 +119,11 @@ pub struct App {
     /// success, which wiped the error a second after the user landed back on the grid. Anything
     /// the user's own actions produce replaces it as usual.
     pub(crate) home_status_sticky: bool,
+    /// A one-shot toast the state machine wants shown, waiting for the loop that owns the
+    /// [`Notification`](crate::ui::widgets::Notification) to pick it up (`take_toast`). An
+    /// outbox rather than a call, since `App` has no handle on the overlay: this is the same
+    /// arrangement `launch_ready` uses for a launch.
+    pub(crate) toast: Option<String>,
     pub(crate) launch_ready: Option<ConnectTarget>,
     pub(crate) launch_anim: Option<Instant>,
     pub(crate) launch_anim_idx: Option<usize>,
@@ -192,6 +197,17 @@ impl App {
         self.home_status_sticky = sticky;
     }
 
+    /// Queues a transient toast. Replaces any still waiting — a second action before the loop
+    /// has ticked means the first is already stale.
+    pub(crate) fn toast(&mut self, message: impl Into<String>) {
+        self.toast = Some(message.into());
+    }
+
+    /// Takes whatever [`toast`](Self::toast) queued, for the loop to hand its overlay.
+    pub fn take_toast(&mut self) -> Option<String> {
+        self.toast.take()
+    }
+
     /// Ends a bitrate-slider drag; the button can only come up on the loop that owns events.
     pub fn end_slider_drag(&mut self) {
         self.settings_ui.slider_drag = false;
@@ -234,6 +250,7 @@ impl App {
             home_focus: HomeFocus::Sidebar(0),
             home_status: None,
             home_status_sticky: false,
+            toast: None,
             launch_ready: None,
             launch_anim: None,
             launch_anim_idx: None,

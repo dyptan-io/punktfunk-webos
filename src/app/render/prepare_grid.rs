@@ -357,8 +357,7 @@ impl App {
                 let menu_open = self.card_menu.as_ref().is_some_and(|m| m.pin_id == pin_id);
                 if menu_open || (self.render.grid.reveal.is_revealed() && !pending) {
                     let kinds = self.card_menu_row_kinds(pin_id);
-                    let labels = self.card_menu_rows(pin_id);
-                    let rows: Vec<(&str, &str)> = labels.iter().map(|(i, l)| (*i, l.as_str())).collect();
+                    let rows = self.card_menu_rows(pin_id);
                     // No focused row in this key: the glass and the title are composited
                     // under the selection, so moving between the menu's rows rebuilds
                     // neither. The two row tiles are the exception — the focused row moved

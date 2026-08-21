@@ -47,8 +47,14 @@ impl App {
 
     /// Card and content rects of the open scrolling list, `None` on any other screen.
     pub(crate) fn scroll_list_layout(&self, screen: Screen, screen_w: u32, screen_h: u32) -> Option<(Rect, Rect)> {
-        is_scroll_list(screen)
-            .then(|| view::scrolllist::layout(self.scroll_list_row_count_for(screen), screen_w, screen_h))
+        is_scroll_list(screen).then(|| {
+            view::scrolllist::layout(
+                self.scroll_list_row_count_for(screen),
+                screen_w,
+                screen_h,
+                scroll_list_width_frac(screen),
+            )
+        })
     }
 
     /// What the whole row list is derived from. Checked before the list is built at all: the
@@ -90,5 +96,15 @@ impl App {
         self.render
             .scroll
             .scroll_into_view(self.nav.cursor(ScreenKey::of(self.nav.screen)), total, visible);
+    }
+}
+
+/// Which card width this family member wears. The third value in the table, alongside its rows
+/// and its invalidation key — the geometry and the render path both read it, so a screen
+/// cannot be measured at one width and drawn at another.
+pub(crate) fn scroll_list_width_frac(screen: Screen) -> f32 {
+    match screen {
+        Screen::Collections => view::scrolllist::COLLECTIONS_WIDTH_FRAC,
+        _ => view::scrolllist::SETTINGS_WIDTH_FRAC,
     }
 }
