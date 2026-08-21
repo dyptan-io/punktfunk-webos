@@ -5,20 +5,38 @@
 //! stays up behind it, like the per-game settings screen: this is a step *into* that menu,
 //! and collapsing the panel underneath would make going back read as having landed elsewhere.
 use crate::app::nav::ScreenKey;
+use crate::app::state::textfield::TextField;
 use crate::app::view;
 use crate::app::App;
 use crate::core::event::MenuEvent;
+use crate::core::model::MAX_COLLECTION_NAME;
 use crate::core::screen::Screen;
 use crate::ui::widgets::FocusRow;
 
-/// What [`Screen::Collections`] is acting on. Reset by `open_collections`, so a stale target
-/// cannot outlive the menu that set it.
-#[derive(Default)]
+/// What [`Screen::Collections`] and the name dialog over it are acting on. Reset by
+/// `open_collections`, so a stale target cannot outlive the menu that set it.
 pub(crate) struct CollectionsState {
     /// The card being moved (a `GameEntry::id`, or `store::DESKTOP_PIN_ID`).
     pub(crate) target: Option<String>,
     /// That card's title, for the modal heading.
     pub(crate) title: String,
+    /// The collection [`Screen::RenameCollection`] is naming — `None` while it is naming one
+    /// that does not exist yet.
+    pub(crate) index: Option<usize>,
+    /// The name being typed there.
+    pub(crate) name: TextField,
+}
+
+/// Hand-written: the shared [`TextField`] defaults to an address, and this one holds a name.
+impl Default for CollectionsState {
+    fn default() -> Self {
+        Self {
+            target: None,
+            title: String::new(),
+            index: None,
+            name: TextField::name(MAX_COLLECTION_NAME, ""),
+        }
+    }
 }
 
 impl App {
@@ -29,6 +47,7 @@ impl App {
         self.screens.collections = CollectionsState {
             target: Some(pin_id.to_string()),
             title: title.to_string(),
+            ..CollectionsState::default()
         };
         self.nav.enter(Screen::Collections, holding);
         self.render.scroll = crate::ui::scroll::ScrollWindow::new();
@@ -52,7 +71,7 @@ impl App {
     }
 
     pub(crate) fn collections_row_count(&self) -> usize {
-        self.selected_known_host().map_or(0, |h| h.collections().len())
+        self.selected_known_host().map_or(0, view::collections::row_count)
     }
 
     /// Handles one menu event on [`Screen::Collections`].
@@ -79,6 +98,9 @@ impl App {
             return;
         };
         let Some(collection) = host.collections().get(row) else {
+            // Past the last collection is the add row, which names one instead of moving into
+            // it — and then moves the card there itself (see `confirm_collection_name`).
+            self.open_name_collection(None);
             return;
         };
         // Library is "in no collection", so it commits as `None` rather than as its index.
@@ -87,6 +109,80 @@ impl App {
         self.close_collections();
         self.move_card(&target, to, columns, screen_w, screen_h);
         self.home_status = Some(format!("Moved to {name}"));
+    }
+
+    /// Raises the name dialog over the list: `at` is the collection being renamed, `None` to
+    /// name a new one. The list stays behind it, like every other step *into* a screen.
+    pub(crate) fn open_name_collection(&mut self, at: Option<usize>) {
+        let existing = at
+            .and_then(|i| self.selected_known_host()?.collections().get(i))
+            .map_or(String::new(), |c| c.name.clone());
+        self.screens.collections.index = at;
+        self.screens.collections.name = TextField::name(MAX_COLLECTION_NAME, &existing);
+        self.nav.screen = Screen::RenameCollection;
+    }
+
+    /// Handles one menu event on [`Screen::RenameCollection`]. Left is backspace, as on the
+    /// address form — the remote has no delete key.
+    pub(crate) fn handle_name_collection_event(&mut self, ev: MenuEvent, screen_w: u32, screen_h: u32) {
+        match ev {
+            MenuEvent::Left => self.screens.collections.name.backspace(),
+            MenuEvent::Confirm => self.confirm_collection_name(screen_w, screen_h),
+            MenuEvent::Back | MenuEvent::Secondary => self.nav.resume(Screen::Collections),
+            MenuEvent::Right | MenuEvent::Up | MenuEvent::Down => {}
+        }
+    }
+
+    /// One character from the on-screen keyboard or the remote's number pad.
+    pub(crate) fn enter_collection_name_char(&mut self, c: char) {
+        self.screens.collections.name.enter_char(c);
+    }
+
+    /// Why the typed name is refused, `None` while it is not — what the dialog says instead of
+    /// greying its confirm with no explanation.
+    pub(crate) fn collection_name_hint(&self) -> Option<&'static str> {
+        let host = self.selected_known_host()?;
+        view::collections::name_hint(
+            host,
+            self.screens.collections.index,
+            self.screens.collections.name.text(),
+        )
+    }
+
+    /// Commits the typed name: renames the collection it was opened on, or creates one and —
+    /// since the only way here is a card's "Move to…" — moves the held card straight into it,
+    /// rather than dropping the user back on the list to pick what they just named.
+    pub(crate) fn confirm_collection_name(&mut self, screen_w: u32, screen_h: u32) {
+        let typed = self.screens.collections.name.text().trim().to_string();
+        let at = self.screens.collections.index;
+        let Some(host) = self.selected_known_host_mut() else {
+            return;
+        };
+        if !host.can_name(at, &typed) {
+            return;
+        }
+        match at {
+            Some(i) => {
+                host.rename_collection(i, &typed);
+                self.persist();
+                self.regroup_games();
+                self.nav.resume(Screen::Collections);
+            }
+            None => {
+                let Some(added) = host.add_collection(&typed) else {
+                    return;
+                };
+                self.persist();
+                let Some(target) = self.screens.collections.target.clone() else {
+                    self.nav.enter(Screen::Collections, added);
+                    return;
+                };
+                let columns = view::home::grid_columns(screen_w.saturating_sub(crate::ui::widgets::SIDEBAR_W));
+                self.close_collections();
+                self.move_card(&target, Some(added), columns, screen_w, screen_h);
+                self.home_status = Some(format!("Moved to {typed}"));
+            }
+        }
     }
 
     /// Leaves the modal and the submenu behind it together: the move it confirms reorders the

@@ -15,6 +15,26 @@ use crate::ui::ModalScreen;
 use anyhow::Result;
 
 pub(crate) const TITLE: &str = "Move to";
+pub(crate) const ADD_ROW: &str = "Add collection";
+pub(crate) const ADD_TITLE: &str = "New collection";
+pub(crate) const RENAME_TITLE: &str = "Rename collection";
+
+/// The name dialog's subtitle. Adding says where the card is about to land, because the add
+/// row moves it in one go rather than dropping the user back on the list to pick what they
+/// just named.
+pub(crate) fn name_subtitle(renaming: Option<&str>, card: &str) -> String {
+    match renaming {
+        Some(old) => format!("A new name for {old}."),
+        None => format!("Name it, and {card} moves into it."),
+    }
+}
+
+/// Why the typed name cannot be committed — `None` while it can. Blank reads as unfinished
+/// rather than as an error, so only a name that is taken says anything.
+pub(crate) fn name_hint(host: &KnownHost, at: Option<usize>, typed: &str) -> Option<&'static str> {
+    let typed = typed.trim();
+    (!typed.is_empty() && !host.can_name(at, typed)).then_some("Already used")
+}
 
 /// One row per entry in grid order, Library included. `holding` is the collection the card
 /// being moved is in right now (`None` for Library, its implicit home) — that row wears the
@@ -22,7 +42,8 @@ pub(crate) const TITLE: &str = "Move to";
 /// to work it out.
 pub(crate) fn rows(host: &KnownHost, holding: Option<usize>) -> Vec<FocusRow> {
     let library = host.library_index();
-    host.collections()
+    let mut rows: Vec<FocusRow> = host
+        .collections()
         .iter()
         .enumerate()
         .map(|(i, collection)| {
@@ -46,7 +67,19 @@ pub(crate) fn rows(host: &KnownHost, holding: Option<usize>) -> Vec<FocusRow> {
                 row
             }
         })
-        .collect()
+        .collect();
+    // Last, and only while there is room: a row that would refuse the dialog it opens is
+    // worse than no row (`MAX_COLLECTIONS`).
+    if host.can_add_collection() {
+        rows.push(FocusRow::action(icons::ICON_ADD, ADD_ROW.to_string()));
+    }
+    rows
+}
+
+/// How many rows [`rows`] builds — the count without their labels, which the compose,
+/// hit-test and scroll paths ask for per frame.
+pub(crate) fn row_count(host: &KnownHost) -> usize {
+    host.collections().len() + usize::from(host.can_add_collection())
 }
 
 fn count_label(count: Option<usize>) -> String {
@@ -97,6 +130,31 @@ mod tests {
         let stranger = rows(&host, host.collection_of("steam:1"));
         assert!(stranger[0].mark.is_none());
         assert!(stranger[1].mark.is_some());
+    }
+
+    #[test]
+    fn the_add_row_is_last_and_only_while_there_is_room() {
+        let mut host = host();
+        assert_eq!(rows(&host, None).last().map(|r| r.label.as_str()), Some(ADD_ROW));
+        assert_eq!(row_count(&host), host.collections().len() + 1);
+        for i in 0..crate::core::model::MAX_COLLECTIONS - 1 {
+            host.add_collection(&format!("C{i}")).expect("under the limit");
+        }
+        assert_eq!(
+            row_count(&host),
+            host.collections().len(),
+            "no row that would refuse itself"
+        );
+        assert!(rows(&host, None).iter().all(|r| r.label != ADD_ROW));
+    }
+
+    #[test]
+    fn only_a_taken_name_is_refused_out_loud() {
+        let host = host();
+        assert_eq!(name_hint(&host, None, ""), None, "blank is unfinished, not wrong");
+        assert_eq!(name_hint(&host, None, " pinned "), Some("Already used"));
+        assert_eq!(name_hint(&host, Some(0), "Pinned"), None, "its own name, renaming it");
+        assert_eq!(name_hint(&host, None, "Racing"), None);
     }
 
     #[test]

@@ -18,5 +18,6 @@ pub(crate) mod reach;
 pub(crate) mod sendlogs;
 mod settings;
 pub(crate) mod speedtest;
+pub(crate) mod textfield;
 mod wake;
 mod wakesettings;

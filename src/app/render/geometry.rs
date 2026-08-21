@@ -29,7 +29,8 @@ pub(crate) const fn is_confirm(screen: Screen) -> bool {
         | Screen::Diagnostics
         | Screen::Experimental
         | Screen::CursorSettings(_)
-        | Screen::Collections => false,
+        | Screen::Collections
+        | Screen::RenameCollection => false,
     }
 }
 
@@ -53,7 +54,8 @@ pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
         | Screen::Diagnostics
         | Screen::Experimental
         | Screen::CursorSettings(_)
-        | Screen::SendLogs => false,
+        | Screen::SendLogs
+        | Screen::RenameCollection => false,
     }
 }
 
@@ -79,8 +81,9 @@ pub(crate) const fn is_list_modal(screen: Screen) -> bool {
         | Screen::About
         | Screen::SpeedTest
         | Screen::SendLogs
-        // Collections is a scrolling list too.
-        | Screen::Collections => false,
+        // Collections is a scrolling list too, and its name dialog is a text form.
+        | Screen::Collections
+        | Screen::RenameCollection => false,
     }
 }
 
@@ -270,26 +273,64 @@ impl App {
             | Screen::Diagnostics
             | Screen::Experimental
             | Screen::CursorSettings(_)
-            | Screen::SendLogs => 1,
+            | Screen::SendLogs
+            | Screen::RenameCollection => 1,
         }
     }
 
-    /// Title and subtitle of the address form, which serves both Add host and Edit
-    /// address — the only difference between the two screens.
-    /// `None` off the two address screens — the copy is the only thing that separates them,
-    /// so a third screen falling in here would silently render as an address form.
-    pub(crate) fn address_copy(&self) -> Option<(&'static str, String)> {
-        Some(match self.nav.screen {
+    /// The open text form — the address form (Add host / Edit address) or the collection
+    /// name dialog — built from whichever screen is up. `None` off them, so a screen that
+    /// types into nothing cannot fall in here and render as a form.
+    ///
+    /// One value rather than a copy table plus a construction site: the geometry, the
+    /// painter and `SDL_SetTextInputRect` all measure the same form.
+    pub(crate) fn text_form(&self) -> Option<view::addhost::Modal<'_>> {
+        let (title, subtitle, typed, hint) = match self.nav.screen {
             Screen::EditHost => {
                 let name = self
                     .screens
                     .edit_host_index
                     .and_then(|i| self.hosts.entries.get(i))
                     .map_or_else(String::new, |e| e.name().to_string());
-                (view::addhost::EDIT_TITLE, view::addhost::edit_subtitle(&name))
+                (
+                    view::addhost::EDIT_TITLE,
+                    view::addhost::edit_subtitle(&name),
+                    self.screens.add_host.text(),
+                    None,
+                )
             }
-            Screen::AddHost => (view::addhost::ADD_TITLE, view::addhost::ADD_SUBTITLE.to_string()),
+            Screen::AddHost => (
+                view::addhost::ADD_TITLE,
+                view::addhost::ADD_SUBTITLE.to_string(),
+                self.screens.add_host.text(),
+                None,
+            ),
+            Screen::RenameCollection => {
+                let renaming = self
+                    .screens
+                    .collections
+                    .index
+                    .and_then(|i| self.selected_known_host()?.collections().get(i))
+                    .map(|c| c.name.clone());
+                (
+                    if renaming.is_some() {
+                        view::collections::RENAME_TITLE
+                    } else {
+                        view::collections::ADD_TITLE
+                    },
+                    view::collections::name_subtitle(renaming.as_deref(), &self.screens.collections.title),
+                    self.screens.collections.name.text(),
+                    self.collection_name_hint(),
+                )
+            }
             _ => return None,
+        };
+        Some(view::addhost::Modal {
+            title,
+            subtitle,
+            typed,
+            hint,
+            keyboard_shown: self.keyboard_shown,
         })
     }
 
@@ -410,7 +451,9 @@ impl App {
             | Screen::Diagnostics
             | Screen::Experimental
             | Screen::CursorSettings(_) => self.list_modal_focus_rect(screen_w, screen_h, fonts),
-            Screen::Home | Screen::AddHost | Screen::EditHost | Screen::About => None,
+            // No single focused widget: a text form is one always-active field, and About is
+            // a scrolling document.
+            Screen::Home | Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::About => None,
         }
     }
 
@@ -482,15 +525,8 @@ impl App {
                 status: self.screens.pairing_status.as_ref(),
                 busy: self.screens.pairing_busy,
             }),
-            Screen::AddHost | Screen::EditHost => {
-                let (title, subtitle) = self.address_copy()?;
-                f(&view::addhost::Modal {
-                    title,
-                    subtitle,
-                    typed: self.screens.add_host.text(),
-                    keyboard_shown: self.keyboard_shown,
-                })
-            }
+            // Every one-field text form, described once by `text_form`.
+            Screen::AddHost | Screen::EditHost | Screen::RenameCollection => f(&self.text_form()?),
             Screen::Wake => f(&view::wake::Modal {
                 wake: self.screens.wake.as_ref()?,
                 confirm: confirm.as_ref(),

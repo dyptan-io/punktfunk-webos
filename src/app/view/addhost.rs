@@ -1,5 +1,6 @@
-//! The host address form — presentation, shared by Add host and Edit address. Logic lives
-//! in `app::state::addhost` / `app::state::edithost`.
+//! The one-field text form — presentation, shared by Add host, Edit address and naming a
+//! collection. Logic lives in `app::state::addhost` / `app::state::edithost` /
+//! `app::state::collections`.
 use crate::ui;
 use crate::ui::render::Rect;
 use crate::ui::text::Fonts;
@@ -18,17 +19,35 @@ pub(crate) fn edit_subtitle(host_name: &str) -> String {
     format!("New IP address for {host_name}. Its pairing is kept.")
 }
 
+/// The caution line under the field, when the form has one — a refused name says why rather
+/// than greying its confirm with no explanation.
+const HINT_H: i32 = 34;
+
 /// Lifted clear of the on-screen keyboard when it's up.
-pub(crate) fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, subtitle: &str, keyboard_shown: bool) -> Rect {
+pub(crate) fn card_rect(
+    screen_w: u32,
+    screen_h: u32,
+    fonts: &Fonts,
+    subtitle: &str,
+    hint: bool,
+    keyboard_shown: bool,
+) -> Rect {
     ui::widgets::simple_modal_card_above_keyboard(screen_w, screen_h, keyboard_shown, |probe| {
         let header_end = ui::text::modal_header_end_y(fonts, probe, subtitle);
-        (header_end + 20 + 80 + 32) as u32 // field + bottom margin
+        (header_end + 20 + 80 + 32 + if hint { HINT_H } else { 0 }) as u32 // field + hint + bottom margin
     })
 }
 
 /// The text field, also handed to `SDL_SetTextInputRect` (which the webOS OSK ignores).
-pub(crate) fn field_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, subtitle: &str, keyboard_shown: bool) -> Rect {
-    let card = card_rect(screen_w, screen_h, fonts, subtitle, keyboard_shown);
+pub(crate) fn field_rect(
+    screen_w: u32,
+    screen_h: u32,
+    fonts: &Fonts,
+    subtitle: &str,
+    hint: bool,
+    keyboard_shown: bool,
+) -> Rect {
+    let card = card_rect(screen_w, screen_h, fonts, subtitle, hint, keyboard_shown);
     let after_subtitle_y = ui::text::modal_header_end_y(fonts, card, subtitle);
     Rect::new(
         card.x() + 32,
@@ -38,18 +57,27 @@ pub(crate) fn field_rect(screen_w: u32, screen_h: u32, fonts: &Fonts, subtitle: 
     )
 }
 
-/// The add/edit-host address form as a [`ModalScreen`]. Both screens share it; the
-/// caller passes the copy that tells them apart.
+/// The text form as a [`ModalScreen`]. Every screen that types into one field shares it; the
+/// caller passes the copy that tells them apart, and the hint that says why what is typed
+/// cannot be committed yet.
 pub(crate) struct Modal<'a> {
     pub title: &'static str,
     pub subtitle: String,
     pub typed: &'a str,
+    pub hint: Option<&'a str>,
     pub keyboard_shown: bool,
 }
 
 impl ModalMetrics for Modal<'_> {
     fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
-        card_rect(screen_w, screen_h, fonts, &self.subtitle, self.keyboard_shown)
+        card_rect(
+            screen_w,
+            screen_h,
+            fonts,
+            &self.subtitle,
+            self.hint.is_some(),
+            self.keyboard_shown,
+        )
     }
 }
 
@@ -90,6 +118,15 @@ impl ModalScreen for Modal<'_> {
             drawn.height().saturating_sub(32),
         );
         c.painter.fill_rect(caret, ui::theme::palette().accent_bright);
+        if let Some(hint) = self.hint {
+            c.text(
+                c.fonts.value,
+                hint,
+                text_x,
+                drawn.bottom() + 10,
+                ui::theme::palette().error,
+            )?;
+        }
         Ok(())
     }
 }

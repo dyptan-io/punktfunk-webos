@@ -5,9 +5,9 @@
 //! that are `Option` are `None` off-screen; the flat ones (pairing's PIN, the host-menu cursor
 //! into the sidebar) are reset by the `open_*` that raises their screen.
 
-use crate::app::state::addhost::AddHostState;
 use crate::app::state::collections::CollectionsState;
 use crate::app::state::speedtest::SpeedTestState;
+use crate::app::state::textfield::TextField;
 use crate::app::WakeState;
 use crate::core::screen::PairingFocus;
 
@@ -26,7 +26,7 @@ pub(crate) struct ScreenSlots {
     pub(crate) speed_test: Option<SpeedTestState>,
     /// The host being measured, for the status line.
     pub(crate) speed_test_name: String,
-    pub(crate) add_host: AddHostState,
+    pub(crate) add_host: TextField,
     /// The card `Screen::Collections` is moving, and its title — see [`CollectionsState`].
     pub(crate) collections: CollectionsState,
     /// The active "host unreachable — wake it?" prompt/wait, if any — see `WakeState`.

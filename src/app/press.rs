@@ -43,6 +43,7 @@ impl App {
             Screen::CursorSettings(_) => self.handle_cursor_settings_event(ev),
             Screen::SendLogs => self.handle_send_logs_event(ev),
             Screen::Collections => self.handle_collections_event(ev, screen_w, screen_h),
+            Screen::RenameCollection => self.handle_name_collection_event(ev, screen_w, screen_h),
         }
         None
     }
@@ -102,7 +103,8 @@ impl App {
             | Screen::Diagnostics
             | Screen::Experimental
             | Screen::CursorSettings(_)
-            | Screen::Collections => false,
+            | Screen::Collections
+            | Screen::RenameCollection => false,
         }
     }
 

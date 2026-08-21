@@ -2,7 +2,7 @@
 //! address changes unchanged since it identifies the certificate, not the network
 //! location. Rendering lives in `app::view::edithost`.
 use crate::app::hosts::HostEntry;
-use crate::app::state::addhost::AddHostState;
+use crate::app::state::textfield::TextField;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::{HomeFocus, Screen};
@@ -14,7 +14,7 @@ impl App {
         let Some(HostEntry::Known(h)) = self.hosts.entries.get(idx) else {
             return;
         };
-        self.screens.add_host = AddHostState::from_host_port(&h.host, h.port);
+        self.screens.add_host = TextField::from_host_port(&h.host, h.port);
         self.screens.edit_host_index = Some(idx);
         self.screens.host_menu_index = None;
         self.nav.screen = Screen::EditHost;

@@ -70,8 +70,10 @@ impl App {
             | Screen::About
             | Screen::SpeedTest
             | Screen::SendLogs
-            // A scrolling list, counted by `scroll_list_row_count`.
-            | Screen::Collections => 0,
+            // A scrolling list, counted by `scroll_list_row_count`; its name dialog is a
+            // text form with no rows at all.
+            | Screen::Collections
+            | Screen::RenameCollection => 0,
         }
     }
 
@@ -125,7 +127,8 @@ impl App {
             | Screen::Experimental
             | Screen::CursorSettings(_)
             | Screen::SendLogs
-            | Screen::Collections => Vec::new(),
+            | Screen::Collections
+            | Screen::RenameCollection => Vec::new(),
         }
     }
 

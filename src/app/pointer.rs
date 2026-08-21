@@ -18,15 +18,16 @@ use crate::ui;
 use crate::ui::render::Rect;
 
 impl App {
-    /// Handed to `SDL_SetTextInputRect` by the render loop. `None` off the address screens,
-    /// which are the only ones that take text input at all.
+    /// Handed to `SDL_SetTextInputRect` by the render loop. `None` off the text forms, which
+    /// are the only screens that take text input at all.
     pub fn address_field_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<Rect> {
-        let (_, subtitle) = self.address_copy()?;
+        let form = self.text_form()?;
         Some(view::addhost::field_rect(
             screen_w,
             screen_h,
             fonts,
-            &subtitle,
+            &form.subtitle,
+            form.hint.is_some(),
             self.keyboard_shown,
         ))
     }
@@ -522,7 +523,7 @@ impl App {
             // already has focus.
             Screen::Wake | Screen::ForgetHost | Screen::SpeedTest | Screen::SendLogs => {}
             // Nothing clickable but the close button (handled above).
-            Screen::AddHost | Screen::EditHost | Screen::About => return None,
+            Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::About => return None,
         }
         self.press(screen_w, screen_h, fonts)
     }

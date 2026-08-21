@@ -3,7 +3,7 @@
 use crate::app::grid::GridCard;
 use crate::app::hosts::HostEntry;
 use crate::app::nav::ScreenKey;
-use crate::app::state::addhost::AddHostState;
+use crate::app::state::textfield::TextField;
 use crate::app::view;
 use crate::app::App;
 use crate::app::ConnectTarget;
@@ -186,7 +186,7 @@ impl App {
                     self.confirm_sidebar_host(i);
                 }
                 HomeFocus::Sidebar(i) if i == self.hosts.entries.len() => {
-                    self.screens.add_host = AddHostState::default();
+                    self.screens.add_host = TextField::ipv4();
                     self.nav.screen = Screen::AddHost;
                 }
                 HomeFocus::Sidebar(_) => {

@@ -28,10 +28,11 @@ pub(crate) enum ScreenKey {
     CursorSettings,
     SendLogs,
     Collections,
+    RenameCollection,
 }
 
 impl ScreenKey {
-    pub const COUNT: usize = Self::Collections as usize + 1;
+    pub const COUNT: usize = Self::RenameCollection as usize + 1;
 
     pub const fn of(screen: Screen) -> Self {
         match screen {
@@ -51,6 +52,7 @@ impl ScreenKey {
             Screen::CursorSettings(_) => Self::CursorSettings,
             Screen::SendLogs => Self::SendLogs,
             Screen::Collections => Self::Collections,
+            Screen::RenameCollection => Self::RenameCollection,
         }
     }
 }

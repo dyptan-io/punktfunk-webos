@@ -38,6 +38,10 @@ pub enum Screen {
     /// Which collection a held card belongs to (see `app/collections.rs`). A scrolling row
     /// list, since a host may have every one of `MAX_COLLECTIONS` plus Library.
     Collections,
+    /// Naming a collection: a new one, or one being renamed (see `app/state/collections.rs`).
+    /// One screen, because the two differ only in what they start from and what they commit
+    /// to.
+    RenameCollection,
 }
 
 /// Pairing modal's focused input: PIN row or "Request access" button.
