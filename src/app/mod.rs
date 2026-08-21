@@ -53,6 +53,10 @@ pub(crate) const SCROLL_INDICATOR_HOLD: Duration = Duration::from_millis(700);
 pub(crate) const SCROLL_INDICATOR_FADE: Duration = Duration::from_millis(350);
 pub(crate) const SCROLL_INDICATOR_LIFETIME: Duration =
     Duration::from_millis(SCROLL_INDICATOR_HOLD.as_millis() as u64 + SCROLL_INDICATOR_FADE.as_millis() as u64);
+/// How long a Home status line stays up before it clears itself. Every line here is
+/// ambient (a load result, a wake report, a launch error) and none of them stay true
+/// forever, so the grid gets its bottom edge back instead of keeping stale text.
+pub(crate) const HOME_STATUS_LIFETIME: Duration = Duration::from_secs(15);
 /// Wider than track for rounded caps not to clip.
 const SCROLL_INDICATOR_TILE_W: u32 = 10;
 
@@ -123,6 +127,9 @@ pub struct App {
     /// outbox rather than a call, since `App` has no handle on the overlay: this is the same
     /// arrangement `launch_ready` uses for a launch.
     pub(crate) toast: Option<String>,
+    /// When the current status line went up, so `tick_animations` can expire it after
+    /// `HOME_STATUS_LIFETIME`. Stamped by `set_home_status`, which every writer goes through.
+    home_status_shown_at: Option<Instant>,
     pub(crate) launch_ready: Option<ConnectTarget>,
     pub(crate) launch_anim: Option<Instant>,
     pub(crate) launch_anim_idx: Option<usize>,
@@ -191,7 +198,8 @@ impl App {
     /// The Home status line. `sticky` marks a line that must survive the library reload a
     /// fresh menu entry starts — that reload clears the status on success, which otherwise
     /// wiped a launch error a second after the user landed back on the grid.
-    pub fn set_home_status(&mut self, status: Option<String>, sticky: bool) {
+    pub(crate) fn set_home_status(&mut self, status: Option<String>, sticky: bool) {
+        self.home_status_shown_at = status.is_some().then(Instant::now);
         self.home_status = status;
         self.home_status_sticky = sticky;
     }
@@ -250,6 +258,7 @@ impl App {
             home_status: None,
             home_status_sticky: false,
             toast: None,
+            home_status_shown_at: None,
             launch_ready: None,
             launch_anim: None,
             launch_anim_idx: None,
@@ -548,7 +557,7 @@ impl App {
         // have run for minutes with no modal up, the bar's job is to report that the
         // host came back, not just that a fetch started.
         if let Some(name) = name {
-            self.home_status = Some(format!("{name} is back online — loading its library…"));
+            self.set_home_status(Some(format!("{name} is back online — loading its library…")), false);
         }
     }
 
@@ -685,6 +694,15 @@ impl App {
             if t.elapsed() >= ui::animation::FOCUS_POP {
                 self.render.modal.switch_anim = None;
             }
+            animating = true;
+        }
+        // The lifetime outranks `home_status_sticky`: sticky defends a line against the
+        // library reload's clear, not against the clock.
+        // Only the expiring frame reports `animating` — the idle branch's `wait_for_event`
+        // still times out at `TICK_BUDGET`, so this runs on schedule without holding the
+        // SoC at 60Hz for the whole 15s.
+        if self.home_status_shown_at.is_some_and(|t| t.elapsed() >= HOME_STATUS_LIFETIME) {
+            self.set_home_status(None, false);
             animating = true;
         }
         if let Some(t) = self.render.scroll.shown_at {

@@ -106,10 +106,18 @@ fn log_file_path(app_dir: &Path) -> PathBuf {
     app_dir.join(format!("punktfunk-webos-{VERSION}.log"))
 }
 
-/// Newest log file by mtime across all rotations *and* app versions — a version bump
-/// changes `VERSION` in `log_file_path`, so matching only the current name would
-/// orphan older logs. `None` if nothing has been logged yet.
+/// The log file to hand to a user-facing report — the one currently being written
+/// when there is one, else the newest across all rotations *and* app versions (a
+/// version bump changes `VERSION` in `log_file_path`, so matching only the current
+/// name would orphan older logs). The active file is preferred outright rather than
+/// by mtime: `rotate` renames carry the source mtime, so a just-rotated `.1` can look
+/// newer than the active file the process is still appending to.
+/// `None` if nothing has been logged yet.
 pub fn latest_log_file(app_dir: &Path) -> Option<PathBuf> {
+    let active = log_file_path(app_dir);
+    if active.metadata().is_ok_and(|m| m.len() > 0) {
+        return Some(active);
+    }
     std::fs::read_dir(app_dir)
         .ok()?
         .filter_map(Result::ok)

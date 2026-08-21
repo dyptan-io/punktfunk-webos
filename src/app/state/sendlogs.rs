@@ -58,12 +58,12 @@ impl App {
     /// "sending…" status; the outcome replaces it via `drain_send_logs`.
     fn start_log_upload(&mut self) {
         let Some(path) = crate::logger::latest_log_file(&crate::services::store::app_dir()) else {
-            self.home_status = Some("No logs to send yet.".into());
+            self.set_home_status(Some("No logs to send yet.".into()), false);
             return;
         };
         let (tx, rx) = std::sync::mpsc::channel();
         self.jobs.send_logs = Some(rx);
-        self.home_status = Some("Sending logs to the developer…".into());
+        self.set_home_status(Some("Sending logs to the developer…".into()), false);
         tracing::info!("send logs: uploading {}", path.display());
         std::thread::spawn(move || {
             let _ = tx.send(upload_logs(&path));
@@ -79,11 +79,11 @@ impl App {
                 match msg {
                     SendLogsMsg::Ok(s) => {
                         tracing::info!("send logs: {s}");
-                        self.home_status = Some(s);
+                        self.set_home_status(Some(s), false);
                     }
                     SendLogsMsg::Err(s) => {
                         tracing::warn!("send logs failed: {s}");
-                        self.home_status = Some(s);
+                        self.set_home_status(Some(s), false);
                     }
                 }
                 self.jobs.send_logs = None;

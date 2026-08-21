@@ -37,7 +37,7 @@ impl App {
             // No modal is up in this branch, so the Home bar is the only place the
             // wait is visible at all — without this it would sit on `select_host`'s
             // stale "Loading library…" until the host came back (or didn't).
-            self.home_status = Some(Self::wake_home_status(&wake));
+            self.set_home_status(Some(Self::wake_home_status(&wake)), false);
         } else {
             self.nav.screen = Screen::Wake;
         }
@@ -123,7 +123,7 @@ impl App {
             self.nav.screen = Screen::Wake;
         }
         if let Some(status) = new_status {
-            self.home_status = Some(status);
+            self.set_home_status(Some(status), false);
         }
         changed
     }
@@ -173,14 +173,15 @@ impl App {
     /// Unsent wakes drop entirely, leaving error text behind.
     fn dismiss_wake(&mut self) {
         self.nav.screen = Screen::Home;
-        match self.screens.wake.as_mut() {
+        let status = match self.screens.wake.as_mut() {
             Some(wake) if wake.sent => {
                 // WHY: set silent=false so tick_wake won't re-pop the prompt after user dismisses.
                 wake.silent = false;
-                self.home_status = Some(Self::wake_home_status(wake));
+                Some(Self::wake_home_status(wake))
             }
-            _ => self.home_status = self.screens.wake.take().map(|w| w.reason),
-        }
+            _ => self.screens.wake.take().map(|w| w.reason),
+        };
+        self.set_home_status(status, false);
     }
 
     /// Home status bar line for background wake (auto-send or dismissed modal).
