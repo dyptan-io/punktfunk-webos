@@ -32,10 +32,34 @@ pub(crate) const fn is_confirm(screen: Screen) -> bool {
     }
 }
 
-/// Whether `screen` is a plain list modal: a card holding one `FocusRow` per line, hit-tested
-/// and focused by row index. Same contract as [`is_confirm`], and the same reason it is
-/// exhaustive — `WakeSettings` silently missing from a table like this is the bug in
-/// `docs/APP-REWORK-PLAN.md` §1, P3.
+/// Whether `screen` is a *scrolling* row list: a shell tile plus one tile per row, cropped to
+/// a viewport that scrolls under edge fades (see `view::scrolllist`). Same contract as
+/// [`is_confirm`].
+pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
+    match screen {
+        Screen::Settings(_) => true,
+        Screen::Home
+        | Screen::Pairing
+        | Screen::AddHost
+        | Screen::Wake
+        | Screen::ForgetHost
+        | Screen::HostMenu
+        | Screen::EditHost
+        // About scrolls, but wrapped text rather than rows.
+        | Screen::About
+        | Screen::SpeedTest
+        | Screen::WakeSettings
+        | Screen::Diagnostics
+        | Screen::Experimental
+        | Screen::CursorSettings(_)
+        | Screen::SendLogs => false,
+    }
+}
+
+/// Whether `screen` is a plain list modal: a card holding one `FocusRow` per line, baked into
+/// one tile and hit-tested by row index. Same contract as [`is_confirm`] — and the reason it
+/// stays exhaustive is that a screen silently missing from a table like this inherits the
+/// wrong geometry in silence.
 pub(crate) const fn is_list_modal(screen: Screen) -> bool {
     match screen {
         Screen::HostMenu
@@ -45,7 +69,7 @@ pub(crate) const fn is_list_modal(screen: Screen) -> bool {
         | Screen::CursorSettings(_) => true,
         Screen::Home
         | Screen::Pairing
-        // Settings is a list, but a scrolling one that owns its own geometry.
+        // Settings is a list too, but a scrolling one — see `is_scroll_list`.
         | Screen::Settings(_)
         | Screen::AddHost
         | Screen::Wake
@@ -198,11 +222,13 @@ impl App {
         let offset = self.render.scroll.clamped(total, visible);
         // Biased back by one peek so the *top* edge also cuts mid-row: sitting on the row grid
         // would put nothing but the gap between rows under the top fade, which is invisible
-        // (see `view::settings::PEEK`). The clamps then pin the first and last positions flush,
-        // where there is genuinely nothing beyond the edge to hint at.
-        let bias = match screen {
-            Screen::Settings(_) => view::settings::PEEK as i32,
-            _ => 0,
+        // (see `view::scrolllist::PEEK`). The clamps then pin the first and last positions
+        // flush, where there is genuinely nothing beyond the edge to hint at. About scrolls
+        // wrapped text, not rows, and has no peek.
+        let bias = if is_scroll_list(screen) {
+            view::scrolllist::PEEK as i32
+        } else {
+            0
         };
         let target = (offset as i32 * stride - bias)
             .min(Self::max_scroll_px(total, stride, viewport_h))
@@ -224,7 +250,7 @@ impl App {
     /// Same as `scroll_stride`, but for an explicit screen — see `scroll_geometry_for`.
     pub(crate) fn scroll_stride_for(&self, screen: Screen, fonts: &ui::text::Fonts) -> i32 {
         match screen {
-            Screen::Settings(_) => ui::widgets::FOCUS_ROW_H as i32 + ui::widgets::FOCUS_ROW_GAP,
+            Screen::Settings(_) => view::scrolllist::stride(),
             Screen::About => view::about::line_stride(fonts.raster, fonts.value),
             // Nothing else has a scrolling body. `1` rather than `0` because the stride is a
             // divisor in the scroll arithmetic, and this is only reached where

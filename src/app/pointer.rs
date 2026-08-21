@@ -244,16 +244,8 @@ impl App {
     /// off once the list has scrolled. `None` outside the viewport or in a row gap.
     pub(crate) fn settings_row_at(&self, x: i32, y: i32, screen_w: u32, screen_h: u32) -> Option<usize> {
         let (content, scroll_px) = self.settings_content_scroll(screen_w, screen_h);
-        if !content.contains_point((x, y)) {
-            return None;
-        }
         let total = menu::settings_row_count(self.settings_scope());
-        (0..total).find(|&r| {
-            let rect = ui::widgets::focus_row_rect_at_px(content, r, scroll_px);
-            // Clipped edge rows aren't hoverable: a focused row composites on its own
-            // unclipped tile, so hovering one would pop it outside the card.
-            rect.y() >= content.y() && rect.bottom() <= content.bottom() && rect.contains_point((x, y))
-        })
+        Self::row_at(content, total, scroll_px, x, y)
     }
 
     /// Settings' content viewport and its current animated scroll offset — the shared
@@ -314,7 +306,7 @@ impl App {
     ) -> Option<usize> {
         let dd = self.settings_ui.dropdown.as_ref()?;
         let (content, scroll_px) = self.dropdown_geom(screen_w, screen_h, fonts)?;
-        let overlay = view::settings::dropdown_overlay_rect_at_px(content, dd.row, scroll_px);
+        let overlay = view::scrolllist::dropdown_overlay_rect_at_px(content, dd.row, scroll_px);
         let options_len = self.dropdown_len(dd.row);
         (0..options_len).find(|&i| ui::widgets::dropdown_option_rect(overlay, i).contains_point((x, y)))
     }
@@ -342,8 +334,8 @@ impl App {
         screen_h: u32,
         fonts: &ui::text::Fonts,
     ) -> Option<(usize, bool)> {
+        let row = self.modal_list_row_at(x, y, screen_w, screen_h, fonts)?;
         let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
-        let row = Self::list_row_at(content, x, y)?;
         let dots = self.host_menu_row_has_dots()
             && ui::widgets::sidebar_menu_button_rect(ui::widgets::focus_row_rect(content, row)).contains_point((x, y));
         Some((row, dots))
@@ -361,15 +353,27 @@ impl App {
         fonts: &ui::text::Fonts,
     ) -> Option<usize> {
         let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
-        Self::list_row_at(content, x, y)
+        // A non-scrolling list modal is its rows' exact height, so the count comes off the
+        // viewport rather than a per-screen table — a second table is a second thing to keep
+        // in step — and its scroll offset is always zero.
+        let rows = (content.height() / ui::widgets::focus_row_stride()) as usize;
+        Self::row_at(content, rows, 0, x, y)
     }
 
-    /// Which row of a list modal's `content` viewport `(x, y)` is on, if any. The row count
-    /// comes from the viewport's own height rather than a per-screen table: the content rect
-    /// *is* `row_count` strides tall, and a second table is a second thing to keep in step.
-    fn list_row_at(content: Rect, x: i32, y: i32) -> Option<usize> {
-        let rows = (content.height() / ui::widgets::focus_row_stride()) as usize;
-        (0..rows).find(|&r| ui::widgets::focus_row_rect(content, r).contains_point((x, y)))
+    /// Which of `rows` rows in a `content` viewport `(x, y)` is on at `scroll_px`, if any.
+    /// One hit test for both list families: the plain modals pass a zero offset, the
+    /// scrolling ones the animated one their rows are drawn at — a fixed-offset test on a
+    /// scrolled list picks the wrong row.
+    fn row_at(content: Rect, rows: usize, scroll_px: i32, x: i32, y: i32) -> Option<usize> {
+        if !content.contains_point((x, y)) {
+            return None;
+        }
+        (0..rows).find(|&r| {
+            let rect = ui::widgets::focus_row_rect_at_px(content, r, scroll_px);
+            // Clipped edge rows aren't hoverable: a focused row composites on its own
+            // unclipped tile, so hovering one would pop it outside the card.
+            rect.y() >= content.y() && rect.bottom() <= content.bottom() && rect.contains_point((x, y))
+        })
     }
 
     fn hover_close_at(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> bool {

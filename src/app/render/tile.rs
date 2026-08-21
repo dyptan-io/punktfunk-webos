@@ -32,7 +32,7 @@ pub const NO_HOST: TileId = TileId(10);
 pub const SCROLL_INDICATOR: TileId = TileId(11);
 /// About's document, baked at full unscrolled height — one slot, versioned per screen, so
 /// scrolling inside the baked window invalidates nothing. Settings does not use it: its rows
-/// are a tile each (see [`settings_row`]), so one changed value repaints one row.
+/// are a tile each (see [`list_row`]), so one changed value repaints one row.
 pub const SCROLL_CONTENT: TileId = TileId(12);
 // 13 and 14 were the scroll-edge ramp tiles. The fade now ramps the content's own alpha
 // (`compose::push_faded`), so there is no band tile to bake; the ids stay retired rather than
@@ -77,13 +77,13 @@ pub const CARD_MENU_TITLE: TileId = TileId(27);
 /// for the bottom row, whose band ends on that edge; higher rows are a plain square fill.
 pub const CARD_MENU_BAND: TileId = TileId(28);
 
-/// First id of the settings-row band — one slot per on-screen row of the open settings
-/// list (see [`settings_row`]). Fixed rather than interned: the list is short, its rows are
-/// addressed by position, and every screen that uses it shows one list at a time.
-const SETTINGS_ROW_BASE: u32 = 32;
-/// Slots in that band. `menu::GLOBAL_ROWS` and its sub-pages are all far under this;
-/// [`settings_row`] refuses anything past it rather than colliding with the spinner band.
-pub const SETTINGS_ROW_SLOTS: usize = 32;
+/// First id of the row band — one slot per on-screen row of whichever scrolling list is open
+/// (see [`list_row`]). Fixed rather than interned: the lists are short, their rows are
+/// addressed by position, and only one is up at a time.
+const LIST_ROW_BASE: u32 = 32;
+/// Slots in that band. Settings' pages and a host's 21 collections are all far under this;
+/// [`list_row`] refuses anything past it rather than colliding with the section band.
+pub const LIST_ROW_SLOTS: usize = 32;
 
 /// First id of the grid's section-heading band — one slot per drawn section, addressed by
 /// position in grid order (see [`section`]). Not `ensure_static` like the old fixed
@@ -99,11 +99,10 @@ const SPINNER_BASE: u32 = 96;
 /// First id of the grid-card band, interned by pin id (see [`CardIds`]).
 const CARD_BASE: u32 = 256;
 
-/// The tile for on-screen settings row `index`, or `None` past the band — a list longer
-/// than [`SETTINGS_ROW_SLOTS`] draws its tail unbaked rather than reaching into the
-/// spinner's ids.
-pub fn settings_row(index: usize) -> Option<TileId> {
-    (index < SETTINGS_ROW_SLOTS).then(|| TileId(SETTINGS_ROW_BASE + index as u32))
+/// The tile for on-screen list row `index`, or `None` past the band — a list longer than
+/// [`LIST_ROW_SLOTS`] draws its tail unbaked rather than reaching into the next band's ids.
+pub fn list_row(index: usize) -> Option<TileId> {
+    (index < LIST_ROW_SLOTS).then(|| TileId(LIST_ROW_BASE + index as u32))
 }
 
 /// The tile for grid section `index`, or `None` past the band — a grid with more sections

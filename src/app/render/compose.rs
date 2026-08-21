@@ -195,7 +195,7 @@ impl App {
             let stride = self.scroll_stride_for(screen, fonts);
             let scroll_px = self.clamped_scroll_px(total, stride, content.height());
             let alpha = (255.0 * m) as u8;
-            // Settings' body is one tile per row (see `tile::settings_row`), so it is
+            // Settings' body is one tile per row (see `tile::list_row`), so it is
             // placed row by row; every other scrolling modal crops its single baked tile.
             // The viewport's edge fades, resolved before the content is pushed: they ramp the
             // content's own alpha rather than being painted over it (see `push_faded`).
@@ -222,7 +222,7 @@ impl App {
                     )
                 }),
             ];
-            // Settings' body is one tile per row (see `tile::settings_row`), so it is
+            // Settings' body is one tile per row (see `tile::list_row`), so it is
             // placed row by row; every other scrolling modal crops its single baked tile.
             if matches!(screen, Screen::Settings(_)) {
                 Self::push_settings_rows(cmds, total, content, scroll_px, dy, alpha, fades);
@@ -235,7 +235,7 @@ impl App {
         // not one block.
         let dropdown = self.dropdown_draw_state().and_then(|(row, focused, dd_alpha)| {
             let (content, scroll_px) = self.dropdown_geom(screen_w, screen_h, fonts)?;
-            let overlay_rect = view::settings::dropdown_overlay_rect_at_px(content, row, scroll_px);
+            let overlay_rect = view::scrolllist::dropdown_overlay_rect_at_px(content, row, scroll_px);
             Some((row, focused, overlay_rect, (255.0 * m * dd_alpha) as u8))
         });
         // Dropdown overlay (Settings or Diagnostics).
@@ -355,7 +355,7 @@ impl App {
     ) {
         let viewport = content.offset(0, dy);
         for i in 0..total {
-            let Some(id) = tile::settings_row(i) else { break };
+            let Some(id) = tile::list_row(i) else { break };
             let dst = ui::widgets::focus_row_rect_at_px(content, i, scroll_px).offset(0, dy);
             // Rows scrolled fully out of the viewport cost nothing but this test; the ones
             // straddling an edge are cropped rather than allowed to paint over the chrome.

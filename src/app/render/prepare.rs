@@ -159,7 +159,7 @@ impl App {
         // rasterization, and it keeps the fade-out a snapshot rather than a live list the
         // leaving screen would have to keep its tiles alive for.
         let body = match left {
-            Screen::Settings(_) => self.stitch_settings_body(left, tiles, screen_w, screen_h, fonts),
+            Screen::Settings(_) => self.stitch_list_body(left, tiles, screen_w, screen_h, fonts),
             _ => tiles.get(tile::SCROLL_CONTENT).cloned(),
         };
         let content = self
@@ -183,7 +183,7 @@ impl App {
     /// `screen` is the one being *left*, not `self.nav.screen` — that has already moved on, and
     /// asking it for this geometry answers `None` (or the wrong scope's row count), which
     /// drops the row list out of the fade instead of freezing it.
-    fn stitch_settings_body(
+    fn stitch_list_body(
         &self,
         screen: Screen,
         tiles: &ui::cache::TileStore,
@@ -195,7 +195,7 @@ impl App {
         let stride = ui::widgets::focus_row_stride();
         let mut body = Painter::new(content.width().max(1), (total as u32 * stride).max(1));
         for i in 0..total {
-            let Some(row) = tile::settings_row(i).and_then(|id| tiles.get(id)) else {
+            let Some(row) = tile::list_row(i).and_then(|id| tiles.get(id)) else {
                 continue;
             };
             body.draw_painter(0, i as i32 * stride as i32, row);
@@ -611,9 +611,9 @@ impl App {
 
     /// Releases settings-row tiles from `first` on: the tail of a list that just got
     /// shorter, or the whole band once the settings screens are left.
-    fn evict_settings_rows_from(&mut self, first: usize, tiles: &mut ui::cache::TileStore) {
-        for i in first..tile::SETTINGS_ROW_SLOTS {
-            let Some(id) = tile::settings_row(i) else { break };
+    fn evict_list_rows_from(&mut self, first: usize, tiles: &mut ui::cache::TileStore) {
+        for i in first..tile::LIST_ROW_SLOTS {
+            let Some(id) = tile::list_row(i) else { break };
             if tiles.remove(id) {
                 self.render.evicted_tiles.push(id);
             }
@@ -635,7 +635,7 @@ impl App {
         // The settings-row band belongs to the settings screens alone; leaving them releases
         // it rather than holding a list's worth of textures behind whatever is on screen now.
         if !matches!(self.nav.screen, Screen::Settings(_)) {
-            self.evict_settings_rows_from(0, tiles);
+            self.evict_list_rows_from(0, tiles);
         }
         // Whichever modal's content overflows its viewport (Settings' rows, About's
         // document) gets its scroll indicator and content tile refreshed here — see
@@ -691,7 +691,7 @@ impl App {
                         content.width(),
                     ));
                     let cached = self.render.modal.settings_rows_version == Some(rows_version)
-                        && (0..row_count).all(|i| tile::settings_row(i).is_some_and(|id| tiles.contains(id)));
+                        && (0..row_count).all(|i| tile::list_row(i).is_some_and(|id| tiles.contains(id)));
                     if !cached {
                         let rows = settings_rows.get_or_insert_with(|| self.settings_rows());
                         // One tile per row, each keyed on that row's own content. Rebuilding the
@@ -699,7 +699,7 @@ impl App {
                         // moved; this pays for the row that actually changed and reads the rest
                         // straight out of the cache.
                         for (i, row) in rows.iter().enumerate() {
-                            let Some(id) = tile::settings_row(i) else { break };
+                            let Some(id) = tile::list_row(i) else { break };
                             let key = cache::version(&(self.nav.screen, i, row.key(), dropdown_row == Some(i)));
                             if tiles.is_fresh(id, key) {
                                 continue;
@@ -718,7 +718,7 @@ impl App {
                         }
                         // Slots past the end of a list that just got shorter (a sub-page is a
                         // shorter list on the same screen) would otherwise keep drawing.
-                        self.evict_settings_rows_from(rows.len(), tiles);
+                        self.evict_list_rows_from(rows.len(), tiles);
                         self.render.modal.settings_rows_version = Some(rows_version);
                     }
                     // Every row is baked, so the window is the whole list — the crop
