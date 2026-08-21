@@ -19,21 +19,26 @@ pub(crate) struct ModalSnapshot {
     pub content: Option<SnapshotBody>,
 }
 
+impl ModalSnapshot {
+    /// Whether this fade still needs the settings row band — the snapshot says what it wants
+    /// kept, rather than the eviction rule reading its variant.
+    pub fn holds_settings_rows(&self) -> bool {
+        matches!(self.content, Some(SnapshotBody::Rows(..)))
+    }
+}
+
 /// How a left modal's body is redrawn while it fades.
 ///
-/// Two shapes because the live compose path has two: one baked tile to crop (About), or the
-/// settings band's tile-per-row. The fading copy goes through the *same* two paths rather
-/// than through a form of its own — see `compose_modal` and `Self::push_settings_rows`.
+/// Two shapes because the live compose path has two, and the fading copy goes through those
+/// same two rather than a form of its own — see `compose_modal`.
 #[derive(Clone, Copy)]
 pub(crate) enum SnapshotBody {
     /// `(src crop, dst rect)` of [`tile::MODAL_PREV_CONTENT`], a clone of the leaving
     /// screen's single body tile.
     Cropped(Rect, Rect),
-    /// Settings' rows, left in the per-row tiles they were already drawn from: the row count,
-    /// the viewport they sit in, and the scroll offset frozen at the frame the screen was
-    /// left. Nothing is copied — the band outlives the screen (see
-    /// `prepare_scroll`'s eviction), so the fade-out costs the same handful of blits the
-    /// live screen cost, instead of stitching a full-height painter on the way out.
+    /// Settings' row count, viewport, and the scroll offset frozen at the frame it was left.
+    /// Nothing is copied: the band outlives the screen (see `prepare_scroll`'s eviction), so
+    /// the fade-out is the same handful of blits the live screen was.
     Rows(usize, Rect, i32),
 }
 

@@ -64,16 +64,6 @@ pub(crate) struct ModalState {
     /// spuriously slide (see `App::toggle_frac`). Shared by Settings' HDR/Stats-overlay toggles
     /// and Wake's auto-send one.
     pub switch_anim: Option<(Instant, bool, usize)>,
-    /// Whether the fade in flight is modal-to-modal rather than modal-to-Home.
-    ///
-    /// A cross-fade is the one case where the two clocks have to be each other's inverse: the
-    /// leaving card's alpha is `1 - open` (see `compose_modal`), so the pair always sums to
-    /// one and the backdrop never shows through the seam. Its own curves — ease-out closing
-    /// against ease-in opening — dip to a quarter at the halfway point, which is exactly the
-    /// flash of blurred background a step into a sub-page used to show. Closing to Home keeps
-    /// the slower [`MODAL_FADE_OUT`](crate::app::MODAL_FADE_OUT) ease, where there is nothing
-    /// coming in behind it and the longer dissolve is the point.
-    pub cross: bool,
 }
 
 impl Default for ModalState {
@@ -91,7 +81,6 @@ impl Default for ModalState {
             fade: ui::fade::ModalFade::new(),
             focus_anim: None,
             switch_anim: None,
-            cross: false,
         }
     }
 }

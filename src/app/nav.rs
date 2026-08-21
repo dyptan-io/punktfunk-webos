@@ -55,6 +55,18 @@ impl ScreenKey {
     }
 }
 
+/// Whether `screen` is the settings list or one of the sub-pages that open over it and
+/// return to it.
+///
+/// Here rather than on [`Screen`] itself: which screens make a family is this layer's
+/// business (see [`ScreenKey::of`] and `app::screens`), not the domain's.
+pub(crate) const fn over_settings(screen: Screen) -> bool {
+    matches!(
+        screen,
+        Screen::Settings(_) | Screen::Experimental | Screen::Diagnostics | Screen::CursorSettings(_) | Screen::SendLogs
+    )
+}
+
 /// The current screen, the one before it, and one focus cursor per screen.
 ///
 /// A cursor survives leaving its screen on purpose: a nested menu (host menu → wake settings →

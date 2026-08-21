@@ -388,7 +388,7 @@ impl App {
         } else {
             self.settings_ui
                 .dropdown_fade
-                .closing_frame(DROPDOWN_FADE)
+                .closing_frame(DROPDOWN_FADE, None)
                 .map(|(alpha, (row, focused))| (row, focused, alpha))
         }
     }
@@ -637,7 +637,8 @@ impl App {
             }
             animating = true;
         }
-        if self.render.modal.fade.tick_split(MODAL_FADE, self.modal_fade_out()) {
+        let close_dur = self.render.modal.fade.close_dur(MODAL_FADE, MODAL_FADE_OUT);
+        if self.render.modal.fade.tick_split(MODAL_FADE, close_dur) {
             animating = true;
         }
         if self.settings_ui.dropdown_fade.tick(DROPDOWN_FADE) {
@@ -751,18 +752,6 @@ impl App {
         }
     }
 
-    /// How long the modal fade-out runs: a cross-fade matches the open exactly (see
-    /// [`ModalState::cross`](crate::app::modal::ModalState::cross)), a close to Home takes the
-    /// longer dissolve. One accessor, so the tick, the snapshot and the compose path can
-    /// never disagree about when the fading card is gone.
-    pub(crate) fn modal_fade_out(&self) -> Duration {
-        if self.render.modal.cross {
-            MODAL_FADE
-        } else {
-            MODAL_FADE_OUT
-        }
-    }
-
     /// Per-tick app-state advance that must run exactly once, *before* `prepare_tiles`
     /// composes the frame — kept out of `prepare_tiles` so that method only touches tiles.
     /// Derives `card_size` from the current width and advances the modal open/close fades on
@@ -785,11 +774,14 @@ impl App {
         if screen_changed {
             let left = self.nav.last_screen;
             self.nav.last_screen = self.nav.screen;
-            // Modal-to-modal: the two cards cross-fade as each other's inverse, on one clock
-            // (see `ModalState::cross`). Anything involving Home is a plain open or close.
-            self.render.modal.cross = !matches!(left, Screen::Home) && !matches!(self.nav.screen, Screen::Home);
+            // Modal-to-modal cross-fades: `ui::fade` makes the leaving card the entering
+            // one's inverse. Anything involving Home is a plain open or close.
             if !matches!(left, Screen::Home) {
-                self.render.modal.fade.close(left);
+                if matches!(self.nav.screen, Screen::Home) {
+                    self.render.modal.fade.close(left);
+                } else {
+                    self.render.modal.fade.close_cross(left);
+                }
             }
             if !matches!(self.nav.screen, Screen::Home) {
                 self.render.modal.fade.open();

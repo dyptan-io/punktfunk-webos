@@ -128,8 +128,8 @@ pub const CARD_MENU_ROWS_PAD: i32 = 10;
 /// How far the submenu's rows — and the selection band under them — are held off the card's
 /// left and right edges.
 ///
-/// Two jobs: it is the inset that makes the band read as a pill inside the panel rather than
-/// a full-bleed stripe, and it is the margin the focus pop grows into. The band zooms by
+/// Two jobs: it makes the band read as a pill inside the panel rather than a full-bleed
+/// stripe, and it is the margin the focus pop grows into. The band zooms by
 /// [`FOCUS_GROWTH`](crate::ui::animation::FOCUS_GROWTH) about its own centre, so it gains
 /// `growth / 2` of its width on each side; anything less than that here and a focused row
 /// would spill past the cover art it is drawn on.
@@ -178,8 +178,14 @@ pub fn card_menu_rows_h(rows: usize) -> u32 {
     rows as u32 * CARD_MENU_ROW_H + 2 * CARD_MENU_ROWS_PAD as u32
 }
 
-/// Width of the submenu's selection band on a `card_w`-wide card: the card less
-/// [`CARD_MENU_BAND_INSET`] on each side.
+/// Left edge and width of anything that lines up with the submenu's selection band — the
+/// rows, the band itself and the hairline above them — inset from `rect` by
+/// [`CARD_MENU_BAND_INSET`]. One definition, so the three cannot drift apart.
+pub fn card_menu_band_x(rect: Rect) -> i32 {
+    rect.x() + CARD_MENU_BAND_INSET
+}
+
+/// Width of that band on a `card_w`-wide card. See [`card_menu_band_x`].
 pub fn card_menu_band_w(card_w: u32) -> u32 {
     card_w.saturating_sub(2 * CARD_MENU_BAND_INSET as u32).max(1)
 }
@@ -188,9 +194,9 @@ pub fn card_menu_band_w(card_w: u32) -> u32 {
 /// compose path zooms, and the row the labels are drawn into, are the same rectangle.
 pub fn card_menu_row_rect(band: Rect, i: usize) -> Rect {
     Rect::new(
-        band.x() + CARD_MENU_BAND_INSET,
+        card_menu_band_x(band),
         band.y() + CARD_MENU_ROWS_PAD + i as i32 * CARD_MENU_ROW_H as i32,
-        band.width().saturating_sub(2 * CARD_MENU_BAND_INSET as u32),
+        card_menu_band_w(band.width()),
         CARD_MENU_ROW_H,
     )
 }
@@ -345,12 +351,13 @@ impl Canvas<'_, '_> {
     /// [`Self::poster_frost_panel`] has already laid down (which is why this takes the rows'
     /// band rather than drawing its own background).
     ///
-    /// `focused` gets [`Theme::text`](crate::ui::theme::Theme::text) and the rest
-    /// [`Theme::muted`](crate::ui::theme::Theme::muted) — the same two weights every other row
-    /// list in the app uses. The selection *band* under them stays the compose path's
-    /// ([`super::super::tiles::CardMenuBandTile`]), so a row move slides that band and
-    /// rebuilds only this tile:
-    /// two short labels, not the panel, which no longer carries any art or blur of its own.
+    /// The *unfocused* rows only, in [`Theme::muted`](crate::ui::theme::Theme::muted). The
+    /// focused one — its surface, its icon and its label together — belongs to
+    /// [`CardMenuBandTile`](super::super::tiles::CardMenuBandTile), exactly as a modal's
+    /// focused row belongs to [`FocusRowTile`](super::FocusRowTile) rather than to the list
+    /// under it. That is what lets the compose path zoom the row's *text* with its surface
+    /// instead of popping a bare band under a label that stays put; drawing it here as well
+    /// would leave that fixed copy showing from under the zoom.
     ///
     /// `marked` is the row that wears the override dot, in the same column the collapsed
     /// title's sits in ([`mark_dot_x`]), so raising the panel moves the mark straight down onto
@@ -363,15 +370,24 @@ impl Canvas<'_, '_> {
         focused: usize,
     ) -> Result<()> {
         for (i, (glyph, label)) in rows.iter().enumerate() {
-            let row = card_menu_row_rect(band, i);
-            let fg = if i == focused { palette().text } else { palette().muted };
-            self.poster_menu_row(row, glyph, label, marked == Some(i), fg)?;
+            if i == focused {
+                continue;
+            }
+            self.poster_menu_row(
+                card_menu_row_rect(band, i),
+                glyph,
+                label,
+                marked == Some(i),
+                palette().muted,
+            )?;
         }
         Ok(())
     }
 
-    /// One submenu row's icon, label and (optional) override mark, drawn into `row`.
-    fn poster_menu_row(&mut self, row: Rect, glyph: &str, label: &str, marked: bool, fg: Color) -> Result<()> {
+    /// One submenu row's icon, label and (optional) override mark, drawn into `row`. Shared
+    /// by the muted list and by the focused row's own tile, so the two only ever differ by
+    /// the colour passed in and the surface drawn under them.
+    pub fn poster_menu_row(&mut self, row: Rect, glyph: &str, label: &str, marked: bool, fg: Color) -> Result<()> {
         let font = self.fonts.value;
         let icon = 22u32;
         // Inside the selection pill, not against the panel's edge — the title above keeps

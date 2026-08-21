@@ -7,7 +7,7 @@ use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
 use crate::app::{
     hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP, CARD_POP_SHRINK, LAUNCH_GROWTH,
-    MODAL_FADE, MODAL_TILE_PAD, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD,
+    MODAL_FADE, MODAL_FADE_OUT, MODAL_TILE_PAD, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD,
     SCROLL_INDICATOR_TILE_W, STATUS_BG_PAD,
 };
 use crate::ui;
@@ -68,21 +68,14 @@ impl App {
         } else {
             self.render.modal.fade.open_alpha(MODAL_FADE)
         };
-        // Modal-to-modal, the leaving card is the entering one's inverse rather than its own
-        // ease: the two alphas sum to 1 at every instant, so what is behind them never shows
-        // through the handover. On the way out to Home there is nothing entering, and the
-        // fade's own longer ease-out stands (see `ModalState::cross`).
+        // `m` is what a cross-fade's leaving card is drawn as the inverse of (see `ModalFade`).
+        let fade = &self.render.modal.fade;
         let closing = self
             .render
             .modal
-            .fade
-            .closing_frame(self.modal_fade_out())
-            .and_then(|(alpha, _)| {
-                Some((
-                    if self.render.modal.cross { 1.0 - m } else { alpha },
-                    self.render.modal.prev?,
-                ))
-            });
+            .prev
+            .zip(fade.closing_frame(fade.close_dur(MODAL_FADE, MODAL_FADE_OUT), Some(m)))
+            .map(|(prev, (alpha, _))| (alpha, prev));
         // The backdrop belongs to "a modal is up", not to either card: re-fading it
         // mid-step would brighten the whole screen and read as a blink. It only fades when
         // the modal layer itself appears or disappears.

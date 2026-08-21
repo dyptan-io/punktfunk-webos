@@ -57,7 +57,18 @@ pub struct CardMenuTitleTile<'a> {
 
 impl Widget for CardMenuTitleTile<'_> {
     fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
-        c.poster_strip_label(area, self.title, false, card_title_fg())
+        c.poster_strip_label(area, self.title, false, card_title_fg())?;
+        // The same `Theme::rule` hairline a settings card draws under its own title, run to
+        // the width of the rows below it rather than the panel's — so it lines up with the
+        // selection pill's edges instead of the glass's. On this tile and not the collapsed
+        // strip's: it separates the name from a list, and there is no list until the panel
+        // is up.
+        c.painter.rule(
+            area.x() + CARD_MENU_BAND_INSET,
+            area.bottom() - 1,
+            card_menu_band_w(area.width()),
+        );
+        Ok(())
     }
 }
 
@@ -104,29 +115,35 @@ impl TileWidget for CardMenuRowsTile<'_> {
     }
 }
 
-/// The selection band: one row, drawn through [`Painter::selectable_fixed`] — the same
-/// shadowed, [`CARD_RADIUS`]-rounded [`Theme::surface`](crate::ui::theme::Theme::surface) card
-/// a focused settings row is. Padded by [`ROW_TILE_PAD`] like [`FocusRowTile`](super::FocusRowTile),
-/// because a shadow needs somewhere to fall.
+/// The focused row — surface, icon and label in one tile the compose path zooms as a unit.
+/// [`FocusRowTile`](crate::ui::widgets::FocusRowTile) at submenu size, down to the
+/// [`ROW_TILE_PAD`] its shadow falls in, and drawn from the same
+/// [`Painter::selectable_fixed`] and [`Canvas::poster_menu_row`] as the rows around it.
 ///
-/// Held off the card's side edges by [`CARD_MENU_BAND_INSET`] — that inset is what the focus
-/// pop grows into, so a focused row never reaches past the cover art underneath it.
+/// It carries the content rather than being a bare band so the label zooms *with* the
+/// surface: [`CardMenuRowsTile`] skips whichever row this one owns, or an unzoomed copy of
+/// the text would show from underneath. That costs one icon and one short label per focus
+/// move, which is what the modals pay for the same effect.
 ///
-/// It used to be a square-cornered band with no shadow, in two halves — one square, one
-/// bottom-rounded for the row that ends on the card's own edge. Same fill as a settings row and
-/// yet visibly flatter, because the lift comes from the shadow and the corners, not the colour.
-pub struct CardMenuBandTile {
+/// Held off the card's side edges by [`CARD_MENU_BAND_INSET`] — the room the pop grows into.
+pub struct CardMenuBandTile<'a> {
     pub card_w: u32,
+    /// `(icon glyph, label)` of the focused row.
+    pub row: (&'a str, &'a str),
+    /// Whether this row is the one wearing the "has overrides" dot.
+    pub marked: bool,
 }
 
-impl Widget for CardMenuBandTile {
+impl Widget for CardMenuBandTile<'_> {
     fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
-        c.painter.selectable_fixed(area.inflate(-ROW_TILE_PAD), true);
-        Ok(())
+        let inner = area.inflate(-ROW_TILE_PAD);
+        c.painter.selectable_fixed(inner, true);
+        let (glyph, label) = self.row;
+        c.poster_menu_row(inner, glyph, label, self.marked, card_title_fg())
     }
 }
 
-impl TileWidget for CardMenuBandTile {
+impl TileWidget for CardMenuBandTile<'_> {
     fn size(&self, _fonts: &Fonts) -> (u32, u32) {
         padded_size(card_menu_band_w(self.card_w), CARD_MENU_ROW_H, ROW_TILE_PAD)
     }

@@ -66,14 +66,15 @@ impl App {
         if !band.contains_point((x, y)) {
             return None;
         }
-        // Proportional, not by `CARD_MENU_ROW_H`: the band carries the focused card's scale
-        // (see `card_menu_rows_rect`), so its rows are that much taller on screen too. The
-        // block's own top/bottom padding is scaled the same way and taken off first, so a
-        // click in it lands on the row nearest it rather than skewing every boundary.
-        let pad = ui::widgets::CARD_MENU_ROWS_PAD as f32 * band.height() as f32
-            / ui::widgets::card_menu_rows_h(ROW_COUNT) as f32;
-        let rows_h = (band.height() as f32 - 2.0 * pad).max(1.0);
-        let row = (((y - band.y()) as f32 - pad).max(0.0) / rows_h * ROW_COUNT as f32) as usize;
+        // Into the panel's own coordinates first, then split by the same constants the rows
+        // are drawn at: the band carries the focused card's scale (see `card_menu_rows_rect`),
+        // so on screen every row and both pads are that much taller.
+        let local =
+            (y - band.y()) as f32 * ui::widgets::card_menu_rows_h(ROW_COUNT) as f32 / band.height().max(1) as f32;
+        let row =
+            ((local - ui::widgets::CARD_MENU_ROWS_PAD as f32).max(0.0) / ui::widgets::CARD_MENU_ROW_H as f32) as usize;
+        // Clamped, not rejected: the block's top and bottom padding belong to the row nearest
+        // them, so a click just off a row still picks it rather than dismissing the menu.
         Some(row.min(ROW_COUNT - 1))
     }
 

@@ -179,7 +179,7 @@ impl ConfirmDialog {
 
     /// Returns `(focus, alpha, is_closing)` to draw, or `None` if nothing to show.
     pub(super) fn frame(&self, dur: Duration) -> Option<(usize, f32, bool)> {
-        if let Some((alpha, focus)) = self.fade.closing_frame(dur) {
+        if let Some((alpha, focus)) = self.fade.closing_frame(dur, None) {
             return Some((focus, alpha, true));
         }
         self.focus.map(|focus| (focus, self.fade.open_alpha(dur), false))

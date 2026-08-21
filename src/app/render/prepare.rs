@@ -16,7 +16,7 @@ use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
 use crate::app::{
     menu, view, App, HomeFocus, PairingFocus, Screen, ABOUT_WINDOW_BUDGET, ABOUT_WINDOW_MARGIN, DROPDOWN_FADE,
-    SCROLL_INDICATOR_TILE_W,
+    MODAL_FADE, MODAL_FADE_OUT, SCROLL_INDICATOR_TILE_W,
 };
 use crate::ui;
 use crate::ui::cache;
@@ -134,7 +134,13 @@ impl App {
         } = ctx;
         let screen_changed = *screen_changed;
         let (screen_w, screen_h) = (size.w, size.h);
-        let closing = self.render.modal.fade.closing_frame(self.modal_fade_out());
+        // Presence only — this decides whether a snapshot is still wanted, not what it
+        // is drawn at, so it needs neither the entering alpha nor the exact duration.
+        let closing = self
+            .render
+            .modal
+            .fade
+            .closing_frame(self.render.modal.fade.close_dur(MODAL_FADE, MODAL_FADE_OUT), None);
         if closing.is_none() {
             // Fade over (or cancelled by reopening the same screen) — drop the copies
             // rather than keep two card-sized textures alive for nothing.
@@ -155,12 +161,8 @@ impl App {
         // Still the left card's — `modal_painter` moves it on later in this same call.
         let region = self.render.modal.tile_region;
         // What `compose_modal` was drawing for this screen last frame, frozen. Settings keeps
-        // its rows where they are — the band is not evicted while a settings sub-screen (or
-        // this fade) is up, so the leaving list is redrawn from the very tiles it was already
-        // drawn from. It used to be stitched into one full-height painter here: an allocation
-        // the size of the whole list plus a blit per row, on the frame that was already paying
-        // for the entering screen's shell. That stitch is what made leaving Settings visibly
-        // slower than leaving any other modal.
+        // its rows where they are and redraws from them; stitching them into one full-height
+        // painter here is what made leaving Settings slower than leaving any other modal.
         let content = match left {
             Screen::Settings(_) => {
                 self.scroll_geometry_for(left, screen_w, screen_h, fonts)
@@ -584,7 +586,12 @@ impl App {
             })? {
                 updated.push(tile::DROPDOWN_FOCUS);
             }
-        } else if self.settings_ui.dropdown_fade.closing_frame(DROPDOWN_FADE).is_none() {
+        } else if self
+            .settings_ui
+            .dropdown_fade
+            .closing_frame(DROPDOWN_FADE, None)
+            .is_none()
+        {
             // Keep the tiles cached while a close-fade is in flight — `draw_list`
             // still composites them at falling alpha.
             tiles.remove(tile::DROPDOWN_OVERLAY);
@@ -618,17 +625,10 @@ impl App {
         let (screen_w, screen_h) = (size.w, size.h);
         // The settings-row band belongs to the settings screens alone; leaving them releases
         // it rather than holding a list's worth of textures behind whatever is on screen now.
-        //
-        // "Leaving them" excludes stepping *into* a sub-page of Settings, and excludes the
-        // fade that step plays: the band is what the leaving screen fades out from
-        // (`SnapshotBody::Rows`), and it is what makes coming back a shell rebuild instead of
-        // a whole list of rows re-rasterized on the frame the user is waiting on. Those rows
-        // are keyed by content, so anything that changed under the sub-page still rebuilds.
-        let keeps_rows = self.nav.screen.over_settings()
-            || matches!(
-                self.render.modal.prev.map(|p| p.content),
-                Some(Some(SnapshotBody::Rows(..)))
-            );
+        // Stepping into a sub-page is not leaving them: the fade draws from that band, and
+        // keeping it makes the return a shell rebuild rather than a whole list of rows.
+        let keeps_rows = crate::app::nav::over_settings(self.nav.screen)
+            || self.render.modal.prev.is_some_and(|p| p.holds_settings_rows());
         if !keeps_rows {
             self.evict_settings_rows_from(0, tiles);
         }
