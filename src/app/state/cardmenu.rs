@@ -56,6 +56,10 @@ pub struct CardMenu {
     pub since: Instant,
     /// The rise has had its final frame drawn (see [`CardMenu::tick`]).
     risen: bool,
+    /// The card has been moved inside its collection and the new order is not written yet
+    /// (see [`App::swap_card_in_collection`]). Drives the rest of the collection's dim, and
+    /// the commit on the way out.
+    pub moved: bool,
 }
 
 impl CardMenu {
@@ -115,11 +119,81 @@ impl App {
             leaving: None,
             since: Instant::now(),
             risen: false,
+            moved: false,
         });
     }
 
+    /// Drops the submenu, fixing any in-collection reorder it was holding on the way out —
+    /// every way of leaving commits, none discards. The one place `card_menu` is cleared.
     pub(crate) fn close_card_menu(&mut self) {
+        self.commit_card_reorder();
         self.card_menu = None;
+    }
+
+    /// Moves the held card one slot inside its own collection: a swap, so every other card
+    /// keeps its slot and the grid needs no new geometry (see `docs/COLLECTIONS-PLAN.md`).
+    /// `false` when there is nowhere to go — either end of the block, the Desktop card, or
+    /// Library, whose order is recency.
+    fn swap_card_in_collection(&mut self, forward: bool, screen_w: u32, screen_h: u32) -> bool {
+        let Some(pin_id) = self.card_menu.as_ref().map(|m| m.pin_id.clone()) else {
+            return false;
+        };
+        // Read before the swap: it names the card the grid has to bring along with the
+        // collection, which is what keeps the two orders in step without a regroup.
+        let Some(other) = self
+            .selected_known_host()
+            .and_then(|h| h.collection_neighbour(&pin_id, forward))
+            .map(str::to_string)
+        else {
+            return false;
+        };
+        let Some(host) = self.selected_known_host_mut() else {
+            return false;
+        };
+        if !host.swap_within_collection(&pin_id, forward) {
+            return false;
+        }
+        self.library.swap_games(&pin_id, &other);
+        // Nothing is written per press; the order is fixed when the menu closes.
+        let columns = view::home::grid_columns(screen_w.saturating_sub(ui::widgets::SIDEBAR_W));
+        if let Some(idx) = self.grid_idx_for_pin_id(&pin_id, columns) {
+            // The panel, its band and its hit test all hang off `idx`, so the menu has to
+            // travel with the card it belongs to.
+            if let Some(menu) = self.card_menu.as_mut() {
+                menu.idx = idx;
+            }
+            self.home_focus = HomeFocus::Grid(idx);
+            self.render.grid.focus_last = idx;
+            // A swap onto another row would otherwise leave the card half off screen.
+            self.ensure_grid_visible(idx, columns, screen_w, screen_h);
+        }
+        if let Some(menu) = self.card_menu.as_mut() {
+            menu.moved = true;
+        }
+        true
+    }
+
+    /// Fixes the order a swap left unwritten: one save, and the same "everything pops back
+    /// in" gesture a move between collections plays, scoped to the collection that changed.
+    /// Costs nothing when nothing moved.
+    fn commit_card_reorder(&mut self) {
+        let Some(pin_id) = self.card_menu.as_ref().filter(|m| m.moved).map(|m| m.pin_id.clone()) else {
+            return;
+        };
+        self.persist();
+        // The collection's members rather than a grid range: no layout, no column count, and
+        // a card outside the scroll window simply has no tile to re-arm.
+        let members: Vec<String> = self
+            .selected_known_host()
+            .and_then(|h| {
+                let at = h.collection_of(&pin_id)?;
+                Some(h.collections().get(at)?.games.clone())
+            })
+            .unwrap_or_default();
+        let now = Instant::now();
+        for id in members {
+            self.render.grid.arm_card_pop(&id, now);
+        }
     }
 
     /// Handles one menu event while the submenu is up. Returns `false` when it isn't, so
@@ -153,8 +227,16 @@ impl App {
                 self.close_card_menu();
                 self.move_focused_card(None, screen_w, screen_h);
             }
-            // Left/Right have nothing to move to, and Secondary would otherwise forget a
-            // host from under an open menu.
+            // Left/Right move the card itself inside its collection while the menu is up.
+            // Where it cannot (Library, or either end of the block) the press dip stands in
+            // for a nudge, so "it stopped" and "it ignored me" stay tellable apart — and the
+            // menu stays up either way, since the gesture is the reorder, not a dismissal.
+            (MenuEvent::Left | MenuEvent::Right, _) => {
+                if !self.swap_card_in_collection(ev == MenuEvent::Right, screen_w, screen_h) {
+                    self.render.press.arm();
+                }
+            }
+            // Secondary would otherwise forget a host from under an open menu.
             _ => self.close_card_menu(),
         }
         true

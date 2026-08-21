@@ -322,31 +322,46 @@ impl KnownHost {
 /// so the invariants have one home — a game in at most one collection, Library unremovable,
 /// names trimmed and unique — and so no caller can reach past them into the vector itself.
 ///
-/// `dead_code` while the screens that call these are still landing (see
-/// `docs/COLLECTIONS-PLAN.md`, phases 4-7); every method here is covered by the tests below.
-#[allow(dead_code)]
 impl KnownHost {
-    /// Swaps `id` with its neighbour inside its own collection — the in-collection card
-    /// reorder. `false` at either end, and in Library, whose order is recency.
+    /// The member `id` trades places with inside its own collection: its neighbour in
+    /// *grid* order. [`DESKTOP_PIN_ID`] is skipped over and never returned — the Desktop
+    /// card always heads the group it is in, so it has no slot to trade. `None` at either
+    /// end of the block, and in Library, whose order is recency rather than the user's.
+    pub fn collection_neighbour(&self, id: &str, forward: bool) -> Option<&str> {
+        if id == DESKTOP_PIN_ID {
+            return None;
+        }
+        let at = self.collection_of(id)?;
+        let games = &self.collections().get(at)?.games;
+        let pos = games.iter().position(|g| g == id)?;
+        let orderable = |g: &&String| g.as_str() != DESKTOP_PIN_ID;
+        if forward {
+            games[pos + 1..].iter().find(orderable)
+        } else {
+            games[..pos].iter().rev().find(orderable)
+        }
+        .map(String::as_str)
+    }
+
+    /// Swaps `id` with [`Self::collection_neighbour`] — the in-collection card reorder.
+    /// `false` when there is nowhere to go, which the caller shows as a reject nudge.
     pub fn swap_within_collection(&mut self, id: &str, forward: bool) -> bool {
+        let Some(other) = self.collection_neighbour(id, forward).map(str::to_string) else {
+            return false;
+        };
         let Some(at) = self.collection_of(id) else {
             return false;
         };
         let Some(entry) = self.collections_mut().get_mut(at) else {
             return false;
         };
-        let Some(pos) = entry.games.iter().position(|g| g == id) else {
+        let (Some(a), Some(b)) = (
+            entry.games.iter().position(|g| g == id),
+            entry.games.iter().position(|g| *g == other),
+        ) else {
             return false;
         };
-        let Some(other) = (if forward {
-            pos.checked_add(1)
-        } else {
-            pos.checked_sub(1)
-        })
-        .filter(|&o| o < entry.games.len()) else {
-            return false;
-        };
-        entry.games.swap(pos, other);
+        entry.games.swap(a, b);
         true
     }
 
@@ -1031,11 +1046,23 @@ mod tests {
         let mut h = host();
         h.move_to("g0", Some(0));
         h.move_to("g1", Some(0));
-        assert!(h.swap_within_collection("g0", false));
-        assert_eq!(h.collections()[0].games, ["g0", DESKTOP_PIN_ID, "g1"]);
-        assert!(!h.swap_within_collection("g0", false), "already first");
-        assert!(!h.swap_within_collection("g1", true), "already last");
+        assert!(h.swap_within_collection("g1", false));
+        assert_eq!(h.collections()[0].games, [DESKTOP_PIN_ID, "g1", "g0"]);
+        assert!(!h.swap_within_collection("g1", false), "already first");
+        assert!(!h.swap_within_collection("g0", true), "already last");
         assert!(!h.swap_within_collection("stranger", true), "in Library, not orderable");
+    }
+
+    #[test]
+    fn the_desktop_card_is_never_swapped_it_heads_its_group() {
+        let mut h = host();
+        h.move_to("g0", Some(0));
+        assert_eq!(h.collections()[0].games, [DESKTOP_PIN_ID, "g0"]);
+        assert!(!h.swap_within_collection("g0", false), "Desktop is not a slot to trade");
+        assert!(!h.swap_within_collection(DESKTOP_PIN_ID, true));
+        assert_eq!(h.collection_neighbour("g0", false), None);
+        h.move_to("g1", Some(0));
+        assert_eq!(h.collection_neighbour("g1", false), Some("g0"), "skipping over Desktop");
     }
 
     #[test]

@@ -116,6 +116,21 @@ impl Library {
         self.groups = groups;
     }
 
+    /// Exchanges two games in place, keeping the grid's order in step with the collection's
+    /// without a regroup. Both are members of one collection, so they sit in one group's run
+    /// and no group's bounds move — the cards trade slots and everything else keeps its own.
+    /// Tiles are keyed by pin id, so each card carries its pixels across with it.
+    pub(crate) fn swap_games(&mut self, a: &str, b: &str) {
+        let (Some(i), Some(j)) = (self.position(a), self.position(b)) else {
+            return;
+        };
+        self.games.swap(i, j);
+    }
+
+    fn position(&self, id: &str) -> Option<usize> {
+        self.games.iter().position(|g| g.id == id)
+    }
+
     /// Forgets the grouping the grid is drawn from — for the paths that drop the library
     /// itself, where there is no host left to recompute it from.
     pub(crate) fn clear_groups(&mut self) {

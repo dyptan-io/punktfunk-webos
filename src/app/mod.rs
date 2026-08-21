@@ -586,7 +586,8 @@ impl App {
         if matches!(self.nav.screen, Screen::Home) {
             // A held card's submenu is up: Back dismisses it rather than stepping focus
             // out from under it.
-            if self.card_menu.take().is_some() {
+            if self.card_menu.is_some() {
+                self.close_card_menu();
                 return None;
             }
             match self.home_focus {

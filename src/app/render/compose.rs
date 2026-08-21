@@ -3,6 +3,9 @@
 //! The GPU half — pure bookkeeping over already-rasterized tiles. Position, scroll, every
 //! focus pop and every fade is a texture-copy parameter here, never a re-raster (see
 //! `platform::webos::compositor`). Split out of `app/mod.rs` alongside `prepare`.
+use std::ops::Range;
+
+use crate::app::grid::GridLayout;
 use crate::app::render::tile;
 use crate::app::{
     hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP, CARD_POP_SHRINK, LAUNCH_GROWTH,
@@ -455,6 +458,12 @@ impl App {
         // The on-screen window, computed rather than found by testing every card in the
         // library once per frame (`view::home::visible_cards`).
         let visible = view::home::visible_cards(available_w, layout, self.render.grid.scroll, screen_h as i32, pad);
+        // While a held card's new place in its collection is unwritten, the rest of that
+        // collection is dimmed to the modal scrim's level: the block whose order is in flux,
+        // and nothing else. A scale on the card's own alpha rather than a `Fill` over it — a
+        // fill is a square rect and would square off the card's rounded corners.
+        let unfixed = self.reordering_slots(layout);
+        let dimmed = 1.0 - f32::from(ui::theme::palette().scrim.a) / 255.0;
         for idx in visible {
             if Some(idx) == focused {
                 continue; // drawn last, on top of its neighbors
@@ -471,7 +480,12 @@ impl App {
             let card = slot.id;
             // A card that just landed is still zooming up to full size.
             let pop = ui::animation::anim_frac(slot.pop, CARD_POP);
-            let alpha = (255.0 * pop) as u8;
+            let dim = if unfixed.as_ref().is_some_and(|s| s.contains(&idx)) {
+                dimmed
+            } else {
+                1.0
+            };
+            let alpha = (255.0 * pop * dim) as u8;
             cmds.push(DrawCmd::Tex {
                 tile: tile::CARD_SHADOW,
                 dst: ui::animation::pop_in_rect(r.inflate(pad), pop, CARD_POP_SHRINK),
@@ -509,9 +523,25 @@ impl App {
         }
         if let Some(idx) = focused {
             if let Some(pin_id) = layout.pin_id_at(&self.library.games, idx) {
-                self.compose_focused_card(tiles, cmds, pin_id, card_rect(idx), pad);
+                // The dip on the card's own rect, so the panel, its frost and the ring all
+                // ride it: on Home nothing else arms one (a card is not `pressable`), and
+                // an in-collection swap with nowhere to go is what does (see
+                // `App::swap_card_in_collection`).
+                let r = self.press_dip(Screen::Home).rect(card_rect(idx));
+                self.compose_focused_card(tiles, cmds, pin_id, r, pad);
             }
         }
+    }
+
+    /// The grid slots of the collection whose order a held card has changed and not yet
+    /// fixed, if any — what `compose_grid` dims. `None` is the usual case, and costs one
+    /// `Option` test.
+    fn reordering_slots(&self, layout: GridLayout<'_>) -> Option<Range<usize>> {
+        let menu = self.card_menu.as_ref().filter(|m| m.moved)?;
+        layout
+            .placed()
+            .find(|p| p.slots().contains(&menu.idx))
+            .map(|p| p.slots())
     }
 
     /// The focused card, drawn last and on top of its neighbours: its glow, contact shadow,

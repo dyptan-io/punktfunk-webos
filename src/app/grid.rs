@@ -84,7 +84,7 @@ pub(crate) struct Placed<'a> {
 impl Placed<'_> {
     /// The slots this group actually fills — [`Self::first_idx`] plus its cards, so the
     /// padding at the end of a partial last row is outside it.
-    fn slots(&self) -> Range<usize> {
+    pub(crate) fn slots(&self) -> Range<usize> {
         self.first_idx..self.first_idx + self.group.len
     }
 
