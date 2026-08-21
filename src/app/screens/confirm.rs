@@ -5,13 +5,30 @@
 //! the subtitle, the focus, the focus setter, the button rect, and two inside `prepare_modal`
 //! — each of which had to list the same four screens. Here the screen answers once, with a
 //! value, and everything else reads that value.
+use crate::app::nav::ScreenKey;
 use crate::app::view;
 use crate::app::App;
+use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
 use crate::ui::render::Color;
 use crate::ui::theme::palette;
 use crate::ui::widgets::ConfirmButton;
 use std::borrow::Cow;
+
+impl App {
+    /// The nav half of a confirm dialog's event handling, the counterpart to
+    /// `list_nav_event`: Left/Right trade the two buttons and arm the focus pop, reporting
+    /// whether the event was spent doing so. Every one of these handlers starts here.
+    pub(crate) fn confirm_nav_event(&mut self, ev: MenuEvent) -> bool {
+        if !matches!(ev, MenuEvent::Left | MenuEvent::Right) {
+            return false;
+        }
+        let key = ScreenKey::of(self.nav.screen);
+        self.nav.set_cursor(key, 1 - self.nav.cursor(key));
+        self.render.modal.focus_anim = Some(std::time::Instant::now());
+        true
+    }
+}
 
 /// One button of a [`Confirm`]. `Cow` because a speed test's primary button names the bitrate
 /// it would apply, which is derived — every other label is static, and this dialog is rebuilt

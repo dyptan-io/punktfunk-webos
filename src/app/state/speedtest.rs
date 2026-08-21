@@ -13,7 +13,6 @@ use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::model;
 use crate::core::screen::Screen;
-use std::time::Instant;
 
 use crate::app::nav::ScreenKey;
 use punktfunk_core::client::ProbeOutcome;
@@ -148,9 +147,7 @@ impl App {
             MenuEvent::Back => self.close_speed_test(),
             _ if !done => {}
             MenuEvent::Left | MenuEvent::Right => {
-                self.nav
-                    .set_cursor(ScreenKey::SpeedTest, 1 - self.nav.cursor(ScreenKey::SpeedTest));
-                self.render.modal.focus_anim = Some(Instant::now());
+                self.confirm_nav_event(ev);
             }
             MenuEvent::Confirm => {
                 if self.nav.cursor(ScreenKey::SpeedTest) != 0 {

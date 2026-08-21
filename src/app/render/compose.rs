@@ -232,7 +232,7 @@ impl App {
             ];
             // A row list's body is one tile per row (see `tile::list_row`), so it is placed
             // row by row; every other scrolling modal crops its single baked tile.
-            if crate::app::render::geometry::is_scroll_list(screen) {
+            if crate::app::screens::is_scroll_list(screen) {
                 Self::push_list_rows(cmds, total, content, scroll_px, dy, alpha, fades);
             } else if let Some((src, dst)) = self.scroll_src_rect(screen, screen_w, screen_h, fonts) {
                 Self::push_faded(cmds, tile::SCROLL_CONTENT, src, dst.offset(0, dy), alpha, fades);

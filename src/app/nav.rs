@@ -5,7 +5,7 @@
 //! Every table had to name the same field as the other three; one of them already didn't (see
 //! `WakeSettings` in `docs/APP-REWORK-PLAN.md` §1, P3). Here the mapping is the array index,
 //! so there is nothing left to keep in step.
-use crate::app::render::geometry::is_scroll_list;
+use crate::app::screens::is_scroll_list;
 use crate::core::screen::Screen;
 
 /// A [`Screen`] without its payload — what a cursor is filed under, so the two settings

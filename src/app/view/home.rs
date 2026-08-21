@@ -115,6 +115,13 @@ pub fn grid_columns(available_w: u32) -> usize {
     cols.clamp(2, 5) as usize
 }
 
+/// [`grid_columns`] from the screen width rather than the grid's: the sidebar is the one
+/// thing between the two, and every handler that only has a screen width was subtracting it
+/// by hand.
+pub fn grid_columns_for_screen(screen_w: u32) -> usize {
+    grid_columns(screen_w.saturating_sub(crate::ui::widgets::SIDEBAR_W))
+}
+
 /// Card size in 3:4 portrait aspect (moonlight-tv's box-art style).
 pub fn grid_card_size(available_w: u32, columns: usize) -> (u32, u32) {
     let usable = available_w.saturating_sub(2 * GRID_PAD as u32);
@@ -225,7 +232,6 @@ mod tests {
                 name: name.into(),
                 len,
                 games_start,
-                desktop: None,
             })
             .collect()
     }

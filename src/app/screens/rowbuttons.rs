@@ -8,7 +8,10 @@
 //! `ui::widgets::{leading,trailing}_button_rect`, which the painter draws from and the
 //! pointer hit-tests against.
 use crate::app::nav::ScreenKey;
+use crate::app::state::hostmenu::host_menu_trailing;
+use crate::app::view;
 use crate::app::App;
+use crate::core::screen::Screen;
 use crate::ui::render::Rect;
 use crate::ui::widgets::{leading_button_rect, trailing_button_rect};
 use std::time::Instant;
@@ -35,21 +38,26 @@ impl RowButton {
 }
 
 impl App {
-    /// The trailing icons of row `row` on whichever row list is open — empty off one, and on
-    /// a row that carries none.
-    pub(crate) fn row_trailing(&self, row: usize) -> Vec<&'static str> {
-        self.list_modal_rows()
-            .or_else(|| self.scroll_list_rows())
-            .and_then(|rows| rows.get(row).map(|r| r.trailing.clone()))
-            .unwrap_or_default()
-    }
-
-    /// Whether row `row` carries a leading button — the one Left steps onto.
-    pub(crate) fn row_has_leading(&self, row: usize) -> bool {
-        self.list_modal_rows()
-            .or_else(|| self.scroll_list_rows())
-            .and_then(|rows| rows.get(row).map(|r| r.leading_button))
-            .unwrap_or(false)
+    /// The buttons row `row` carries on whichever row list is open, as
+    /// `(has a leading one, its trailing icons)` — off one of those screens, none.
+    ///
+    /// Derived from the same tables the rows are built from rather than from the rows
+    /// themselves: this answers a pointer motion and a Left/Right press, and building the
+    /// list to read one row's ends would format every label on the screen per event
+    /// (`docs/COLLECTIONS-PLAN.md` §Risks).
+    pub(crate) fn row_buttons(&self, row: usize) -> (bool, &'static [&'static str]) {
+        match self.nav.screen {
+            Screen::HostMenu => (
+                false,
+                self.host_menu_actions().get(row).copied().map_or(&[][..], host_menu_trailing),
+            ),
+            Screen::Collections => self
+                .selected_known_host()
+                .and_then(|host| host.collections().get(row))
+                // Past the last collection is the add row: an action, with no ends.
+                .map_or((false, &[][..]), |c| (true, view::collections::trailing(c.dynamic))),
+            _ => (false, &[]),
+        }
     }
 
     /// Steps focus along the focused row's buttons, `false` when there is nowhere left to
@@ -58,7 +66,8 @@ impl App {
     /// button lands on the row itself rather than jumping straight to the leading one.
     pub(crate) fn step_row_button(&mut self, forward: bool) -> bool {
         let row = self.nav.cursor(ScreenKey::of(self.nav.screen));
-        let (leading, trailing) = (self.row_has_leading(row), self.row_trailing(row).len());
+        let (leading, trailing) = self.row_buttons(row);
+        let trailing = trailing.len();
         let next = match (self.screens.row_button, forward) {
             (None, true) if trailing > 0 => Some(RowButton::Trailing(0)),
             (None, false) if leading => Some(RowButton::Leading),
@@ -77,10 +86,10 @@ impl App {
     /// rect. `None` between them, or on a row with none — which reads as the row body,
     /// exactly as a click that misses the ⋯ always has.
     pub(crate) fn row_button_at(&self, row: usize, row_rect: Rect, x: i32, y: i32) -> Option<RowButton> {
-        if self.row_has_leading(row) && leading_button_rect(row_rect).contains_point((x, y)) {
+        let (leading, trailing) = self.row_buttons(row);
+        if leading && leading_button_rect(row_rect).contains_point((x, y)) {
             return Some(RowButton::Leading);
         }
-        let trailing = self.row_trailing(row);
         (0..trailing.len())
             .find(|&i| trailing_button_rect(row_rect, trailing.len(), i).contains_point((x, y)))
             .map(RowButton::Trailing)

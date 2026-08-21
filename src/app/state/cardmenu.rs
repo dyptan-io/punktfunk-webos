@@ -108,7 +108,7 @@ impl App {
     /// Raises the submenu over the focused card. The long-hold's whole effect — see
     /// `runtime::ui_flow`.
     pub(crate) fn open_card_menu(&mut self, screen_w: u32) {
-        let columns = view::home::grid_columns(screen_w.saturating_sub(ui::widgets::SIDEBAR_W));
+        let columns = view::home::grid_columns_for_screen(screen_w);
         let HomeFocus::Grid(idx) = self.home_focus else {
             return;
         };
@@ -162,7 +162,7 @@ impl App {
         }
         self.library.swap_games(&pin_id, &other);
         // Nothing is written per press; the order is fixed when the menu closes.
-        let columns = view::home::grid_columns(screen_w.saturating_sub(ui::widgets::SIDEBAR_W));
+        let columns = view::home::grid_columns_for_screen(screen_w);
         if let Some(idx) = self.grid_idx_for_pin_id(&pin_id, columns) {
             // The panel, its band and its hit test all hang off `idx`, so the menu has to
             // travel with the card it belongs to.

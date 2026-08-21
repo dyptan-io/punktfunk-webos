@@ -23,7 +23,7 @@ impl App {
     /// are the only screens that take text input at all.
     pub fn address_field_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<Rect> {
         let form = self.text_form()?;
-        Some(view::addhost::field_rect(
+        Some(view::textform::field_rect(
             screen_w,
             screen_h,
             fonts,

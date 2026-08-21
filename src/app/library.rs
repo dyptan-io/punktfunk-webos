@@ -9,9 +9,8 @@ use std::collections::HashMap;
 
 use tiny_skia::Pixmap;
 
-use crate::app::grid::{GridCard, GridLayout, Group};
-use crate::core::model::{Collection, KnownHost, DESKTOP_PIN_ID};
-use crate::services::library::GameEntry;
+use crate::app::grid::{GridLayout, Group};
+use crate::core::model::{GameEntry, KnownHost, DESKTOP_PIN_ID};
 use crate::services::recents::HostRecents;
 
 #[derive(Default)]
@@ -28,13 +27,36 @@ pub(crate) struct Library {
     /// Every path that changes a collection, the selected host or the library goes through
     /// [`Self::regroup`] (or drops the grid via [`Self::clear_groups`]).
     pub(crate) groups: Vec<Group>,
-    /// Host answered library fetch (gates the Desktop card).
-    pub(crate) games_loaded: bool,
     /// Cover art pixmaps by game id.
     pub(crate) art: HashMap<String, Pixmap>,
 }
 
+/// The Desktop card, as an ordinary library entry. It is a card the *client* offers rather
+/// than one the host lists, so nothing else about it is special: it is named, collected,
+/// ordered and moved exactly like a game (see [`Library::load_games`]).
+fn desktop_entry() -> GameEntry {
+    GameEntry {
+        id: DESKTOP_PIN_ID.to_string(),
+        title: "Desktop".to_string(),
+        art: crate::core::model::Artwork::default(),
+    }
+}
+
 impl Library {
+    /// Takes the host's listing as this library's games, Desktop among them, alphabetically.
+    ///
+    /// The host returns its own scan order, which is neither stable nor meaningful to a
+    /// reader. On a TV the grid is navigated a card at a time with a d-pad, so alphabetical is
+    /// the difference between "find the game" and "sweep the whole library". Case-insensitive
+    /// so casing doesn't scatter otherwise-adjacent titles. A collection then imposes its own
+    /// order over its members, and the dynamic Library entry re-sorts by recency in
+    /// [`Self::regroup`] — this is what both of those start from.
+    pub(crate) fn load_games(&mut self, mut games: Vec<GameEntry>) {
+        games.push(desktop_entry());
+        games.sort_by_key(|g| g.title.to_lowercase());
+        self.games = games;
+    }
+
     /// The grid's shape at `columns` columns. `Copy` and borrowing only `groups`, so a caller
     /// can hold one and go on mutating the rest of `App` — the disjointness this module exists
     /// for.
@@ -46,7 +68,7 @@ impl Library {
         self.layout(columns).len()
     }
 
-    pub(crate) fn card_at(&self, idx: usize, columns: usize) -> Option<GridCard<'_>> {
+    pub(crate) fn card_at(&self, idx: usize, columns: usize) -> Option<&GameEntry> {
         self.layout(columns).card_at(&self.games, idx)
     }
 
@@ -101,9 +123,6 @@ impl Library {
             claimed[*at] = true;
         }
 
-        // Desktop is a member like any other, so its slot is where its collection lists it —
-        // counting only the members that actually placed, since the group is drawn from those.
-        let desktop = self.games_loaded.then(|| desktop_slot(host, collections, &by_id));
         let mut games = Vec::with_capacity(remaining.len());
         let mut groups = Vec::with_capacity(collections.len());
         for (i, collection) in collections.iter().enumerate() {
@@ -123,8 +142,7 @@ impl Library {
             } else {
                 games.extend(placement[i].iter().filter_map(|&at| remaining[at].take()));
             }
-            let has_desktop = desktop.filter(|&(at, _)| at == i).map(|(_, slot)| slot);
-            let len = games.len() - games_start + usize::from(has_desktop.is_some());
+            let len = games.len() - games_start;
             if len == 0 {
                 continue;
             }
@@ -132,7 +150,6 @@ impl Library {
                 name: collection.name.clone(),
                 len,
                 games_start,
-                desktop: has_desktop,
             });
         }
         self.games = games;
@@ -144,33 +161,10 @@ impl Library {
     /// and no group's bounds move — the cards trade slots and everything else keeps its own.
     /// Tiles are keyed by pin id, so each card carries its pixels across with it.
     pub(crate) fn swap_games(&mut self, a: &str, b: &str) {
-        if a == DESKTOP_PIN_ID || b == DESKTOP_PIN_ID {
-            let other = if a == DESKTOP_PIN_ID { b } else { a };
-            self.swap_desktop_with(other);
-            return;
-        }
         let (Some(i), Some(j)) = (self.position(a), self.position(b)) else {
             return;
         };
         self.games.swap(i, j);
-    }
-
-    /// The Desktop half of [`Self::swap_games`]. Desktop is not in `games`, so the two only
-    /// trade slot offsets: the games keep their order among themselves, and the card that
-    /// moves is the one the group's `desktop` offset names.
-    fn swap_desktop_with(&mut self, other: &str) {
-        let Some(pos) = self.position(other) else {
-            return;
-        };
-        let Some(group) = self.groups.iter_mut().find(|g| g.desktop.is_some()) else {
-            return;
-        };
-        let Some(off) = pos.checked_sub(group.games_start).filter(|off| *off < group.games()) else {
-            return;
-        };
-        // `other` sits one past `desktop` when it is behind it, so its slot offset is the
-        // one Desktop takes over.
-        group.desktop = Some(off + usize::from(group.desktop.is_some_and(|d| d <= off)));
     }
 
     fn position(&self, id: &str) -> Option<usize> {
@@ -182,23 +176,15 @@ impl Library {
     pub(crate) fn clear_groups(&mut self) {
         self.groups.clear();
     }
-}
 
-/// Which collection holds the Desktop card, and the slot it takes inside that group. It is a
-/// member like any other, so it follows whatever collection names it and sits where that
-/// collection lists it; an unnamed Desktop falls back to the head of the dynamic entry, whose
-/// order is recency and not the user's to arrange.
-fn desktop_slot(host: &KnownHost, collections: &[Collection], placed: &HashMap<&str, usize>) -> (usize, usize) {
-    let Some(at) = host.collection_of(DESKTOP_PIN_ID) else {
-        return (collections.iter().position(|c| c.dynamic).unwrap_or(0), 0);
-    };
-    let members = collections.get(at).map(|c| c.games.as_slice()).unwrap_or_default();
-    let slot = members
-        .iter()
-        .take_while(|id| id.as_str() != DESKTOP_PIN_ID)
-        .filter(|id| placed.contains_key(id.as_str()))
-        .count();
-    (at, slot)
+    /// Drops everything drawn from the current host's library. The grid, the grouping and the
+    /// art go together: a group indexes into `games`, so leaving one behind draws the previous
+    /// host's cards.
+    pub(crate) fn clear(&mut self) {
+        self.games = Vec::new();
+        self.clear_groups();
+        self.art.clear();
+    }
 }
 
 #[cfg(test)]
@@ -207,18 +193,19 @@ mod tests {
     use crate::core::model::{new_host_collections, Artwork, GameEntry};
     use crate::services::recents::HostRecents;
 
+    /// `n` games as the host would list them, loaded — so Desktop is among them.
     fn library(n: usize) -> Library {
-        Library {
-            games: (0..n)
+        let mut lib = Library::default();
+        lib.load_games(
+            (0..n)
                 .map(|i| GameEntry {
                     id: format!("steam:{i}"),
                     title: format!("Game {i}"),
                     art: Artwork::default(),
                 })
                 .collect(),
-            games_loaded: true,
-            ..Library::default()
-        }
+        );
+        lib
     }
 
     fn host() -> KnownHost {
@@ -258,27 +245,41 @@ mod tests {
     }
 
     #[test]
-    fn desktop_sits_where_its_collection_lists_it() {
+    fn desktop_is_an_ordinary_card_in_whatever_holds_it() {
         let mut host = host();
-        host.move_to("steam:0", Some(0));
-        host.move_to("steam:1", Some(0));
-        assert!(host.swap_within_collection(DESKTOP_PIN_ID, true));
+        // A fresh host pins Desktop; moving it out returns it to Library, where it sorts by
+        // title with everything else rather than heading the section.
+        assert_eq!(host.collection_of(DESKTOP_PIN_ID), Some(0));
+        host.move_to(DESKTOP_PIN_ID, None);
         let mut lib = library(2);
         lib.regroup(&host, &HostRecents::default());
-        assert_eq!(lib.groups[0].desktop, Some(1));
-        assert_eq!(shape(&lib)[0].1, vec!["steam:0", DESKTOP_PIN_ID, "steam:1"]);
+        assert_eq!(
+            shape(&lib),
+            vec![("Library".to_string(), vec![DESKTOP_PIN_ID, "steam:0", "steam:1"])]
+        );
     }
 
     #[test]
-    fn swapping_desktop_moves_only_its_slot() {
+    fn a_played_game_outranks_desktop_in_library() {
+        let mut host = host();
+        host.move_to(DESKTOP_PIN_ID, None);
+        let mut lib = library(2);
+        let mut recents = HostRecents::default();
+        recents.insert("steam:1".to_string(), 10);
+        lib.regroup(&host, &recents);
+        assert_eq!(shape(&lib)[0].1, vec!["steam:1", DESKTOP_PIN_ID, "steam:0"]);
+    }
+
+    #[test]
+    fn swapping_two_cards_trades_their_slots() {
         let mut host = host();
         host.move_to("steam:0", Some(0));
         host.move_to("steam:1", Some(0));
         let mut lib = library(2);
         lib.regroup(&host, &HostRecents::default());
+        assert_eq!(shape(&lib)[0].1, vec![DESKTOP_PIN_ID, "steam:0", "steam:1"]);
         lib.swap_games(DESKTOP_PIN_ID, "steam:0");
         assert_eq!(shape(&lib)[0].1, vec!["steam:0", DESKTOP_PIN_ID, "steam:1"]);
-        lib.swap_games("steam:1", DESKTOP_PIN_ID);
-        assert_eq!(shape(&lib)[0].1, vec!["steam:0", "steam:1", DESKTOP_PIN_ID]);
     }
+
 }

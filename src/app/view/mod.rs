@@ -24,5 +24,6 @@ pub(crate) mod sendlogs;
 pub(crate) mod settings;
 pub(crate) mod sidebar;
 pub(crate) mod speedtest;
+pub(crate) mod textform;
 pub(crate) mod wake;
 pub(crate) mod wakesettings;

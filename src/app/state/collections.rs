@@ -22,8 +22,11 @@ pub(crate) struct CollectionsState {
     /// That card's title, for the modal heading.
     pub(crate) title: String,
     /// The collection [`Screen::RenameCollection`] is naming — `None` while it is naming one
-    /// that does not exist yet.
-    pub(crate) index: Option<usize>,
+    /// that does not exist yet. Its own slot rather than one shared with [`Self::removing`]:
+    /// `None` already means something here, so a shared field could not also mean "no dialog".
+    pub(crate) renaming: Option<usize>,
+    /// The collection [`Screen::RemoveCollection`] is asking about.
+    pub(crate) removing: Option<usize>,
     /// The name being typed there.
     pub(crate) name: TextField,
     /// The row being dragged, while drag mode is on. Only the d-pad's vertical axis is the
@@ -38,7 +41,8 @@ impl Default for CollectionsState {
         Self {
             target: None,
             title: String::new(),
-            index: None,
+            renaming: None,
+            removing: None,
             name: TextField::name(MAX_COLLECTION_NAME, ""),
             dragging: None,
         }
@@ -122,12 +126,13 @@ impl App {
     /// the Library row — then closes both this modal and the menu it came from.
     pub(crate) fn confirm_collections_row(&mut self, screen_w: u32, screen_h: u32) {
         let row = self.nav.cursor(ScreenKey::Collections);
-        // A button acts on the row it is on rather than on the card being moved. The
-        // trailing ones are read by icon, not by index: Library carries one button fewer.
+        // A button acts on the row it is on rather than on the card being moved. The trailing
+        // ones are read by icon, not by index: Library carries one button fewer, and both the
+        // icons and this match read `view::collections::trailing`.
         if let Some(button) = self.screens.row_button {
             match button {
                 RowButton::Leading => self.start_collection_drag(row),
-                RowButton::Trailing(i) => match self.row_trailing(row).get(i) {
+                RowButton::Trailing(i) => match self.row_buttons(row).1.get(i) {
                     Some(&view::icons::ICON_EDIT) => self.open_name_collection(Some(row)),
                     Some(&view::icons::ICON_DELETE) => self.open_remove_collection(row),
                     _ => {}
@@ -149,7 +154,7 @@ impl App {
         };
         // Library is "in no collection", so it commits as `None` rather than as its index.
         let (to, name) = ((!collection.dynamic).then_some(row), collection.name.clone());
-        let columns = view::home::grid_columns(screen_w.saturating_sub(crate::ui::widgets::SIDEBAR_W));
+        let columns = view::home::grid_columns_for_screen(screen_w);
         let moved = moved_toast(&self.screens.collections.title, &name);
         self.close_collections();
         self.move_card(&target, to, columns, screen_w, screen_h);
@@ -162,7 +167,7 @@ impl App {
         let existing = at
             .and_then(|i| self.selected_known_host()?.collections().get(i))
             .map_or(String::new(), |c| c.name.clone());
-        self.screens.collections.index = at;
+        self.screens.collections.renaming = at;
         self.screens.collections.name = TextField::name(MAX_COLLECTION_NAME, &existing);
         self.nav.screen = Screen::RenameCollection;
     }
@@ -189,7 +194,7 @@ impl App {
         let host = self.selected_known_host()?;
         view::collections::name_hint(
             host,
-            self.screens.collections.index,
+            self.screens.collections.renaming,
             self.screens.collections.name.text(),
         )
     }
@@ -199,7 +204,7 @@ impl App {
     /// rather than dropping the user back on the list to pick what they just named.
     pub(crate) fn confirm_collection_name(&mut self, screen_w: u32, screen_h: u32) {
         let typed = self.screens.collections.name.text().trim().to_string();
-        let at = self.screens.collections.index;
+        let at = self.screens.collections.renaming;
         let Some(host) = self.selected_known_host_mut() else {
             return;
         };
@@ -222,7 +227,7 @@ impl App {
                     self.nav.enter(Screen::Collections, added);
                     return;
                 };
-                let columns = view::home::grid_columns(screen_w.saturating_sub(crate::ui::widgets::SIDEBAR_W));
+                let columns = view::home::grid_columns_for_screen(screen_w);
                 let moved = moved_toast(&self.screens.collections.title, &typed);
                 self.close_collections();
                 self.move_card(&target, Some(added), columns, screen_w, screen_h);
@@ -279,28 +284,24 @@ impl App {
     /// Raises the remove confirmation over the list, focused on Cancel — the destructive
     /// button is never the one a stray Confirm lands on.
     pub(crate) fn open_remove_collection(&mut self, at: usize) {
-        self.screens.collections.index = Some(at);
+        self.screens.collections.removing = Some(at);
         self.nav.enter(Screen::RemoveCollection, 1);
     }
 
     /// The collection the remove dialog is asking about — its name and how many games come
     /// back to Library with it.
     pub(crate) fn removed_collection(&self) -> Option<(&str, usize)> {
-        let at = self.screens.collections.index?;
+        let at = self.screens.collections.removing?;
         let collection = self.selected_known_host()?.collections().get(at)?;
         Some((collection.name.as_str(), collection.games.len()))
     }
 
     /// Handles one menu event on [`Screen::RemoveCollection`].
     pub(crate) fn handle_remove_collection_event(&mut self, ev: MenuEvent) {
+        if self.confirm_nav_event(ev) {
+            return;
+        }
         match ev {
-            MenuEvent::Left | MenuEvent::Right => {
-                self.nav.set_cursor(
-                    ScreenKey::RemoveCollection,
-                    1 - self.nav.cursor(ScreenKey::RemoveCollection),
-                );
-                self.render.modal.focus_anim = Some(std::time::Instant::now());
-            }
             MenuEvent::Confirm => {
                 if self.nav.cursor(ScreenKey::RemoveCollection) == 0 {
                     self.remove_collection();
@@ -308,14 +309,14 @@ impl App {
                 self.back_to_collections();
             }
             MenuEvent::Back | MenuEvent::Secondary => self.back_to_collections(),
-            MenuEvent::Up | MenuEvent::Down => {}
+            MenuEvent::Up | MenuEvent::Down | MenuEvent::Left | MenuEvent::Right => {}
         }
     }
 
     /// Removes the collection the dialog was opened on; its games fall back to Library, which
     /// is a change to the grid's sections, so the layout is rebuilt with it.
     fn remove_collection(&mut self) {
-        let Some(at) = self.screens.collections.index else {
+        let Some(at) = self.screens.collections.removing else {
             return;
         };
         let Some(host) = self.selected_known_host_mut() else {
@@ -331,7 +332,6 @@ impl App {
     /// Back to the list the dialog was raised over, with its cursor held inside it — the row
     /// that was focused may have just been the one removed.
     fn back_to_collections(&mut self) {
-        self.screens.collections.index = None;
         self.screens.row_button = None;
         let last = self.collections_row_count().saturating_sub(1);
         let key = ScreenKey::Collections;

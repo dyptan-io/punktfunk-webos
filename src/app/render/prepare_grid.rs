@@ -25,7 +25,7 @@ use crate::ui::cache;
 /// A free function rather than a closure so both the build pass and the reveal check can use it
 /// while `&mut self` is live elsewhere in the same frame.
 fn art_ready(library: &Library, layout: GridLayout, idx: usize) -> bool {
-    layout.game_at(&library.games, idx).is_none_or(|game| {
+    layout.card_at(&library.games, idx).is_none_or(|game| {
         library.art.contains_key(&game.id) || (game.art.portrait.is_none() && game.art.header.is_none())
     })
 }
@@ -225,7 +225,7 @@ impl App {
             };
             // Ask for this card's cover as it enters the window, not for the whole
             // library at once (see `art::ArtLoader`).
-            if let (Some(loader), Some(game)) = (&mut self.jobs.art, layout.game_at(&self.library.games, idx)) {
+            if let (Some(loader), Some(game)) = (&mut self.jobs.art, layout.card_at(&self.library.games, idx)) {
                 loader.request(game);
             }
             if self.render.grid.card_ids.get(id).is_some_and(|t| tiles.contains(t)) {
@@ -310,7 +310,7 @@ impl App {
         // actually looking at behind a full-screen fetch and decode.
         if self.render.grid.reveal.is_revealed() && !pending {
             if let HomeFocus::Grid(focus_idx) = self.home_focus {
-                if let Some(game) = self.library.layout(columns).game_at(&self.library.games, focus_idx) {
+                if let Some(game) = self.library.layout(columns).card_at(&self.library.games, focus_idx) {
                     if let Some(loader) = &mut self.jobs.art {
                         loader.request_hero(game);
                     }

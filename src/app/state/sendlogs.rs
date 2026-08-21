@@ -13,7 +13,6 @@ use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
 use std::path::Path;
-use std::time::Instant;
 
 /// Upload endpoint (see the Go service: POST multipart `file` field to `/upload`).
 const UPLOAD_URL: &str = "https://www.upload.dyptan.dev/upload";
@@ -35,12 +34,10 @@ impl App {
     /// buttons (and Back) close the modal and return to Home — Send additionally
     /// starts the upload.
     pub(crate) fn handle_send_logs_event(&mut self, ev: MenuEvent) {
+        if self.confirm_nav_event(ev) {
+            return;
+        }
         match ev {
-            MenuEvent::Left | MenuEvent::Right => {
-                self.nav
-                    .set_cursor(ScreenKey::SendLogs, 1 - self.nav.cursor(ScreenKey::SendLogs));
-                self.render.modal.focus_anim = Some(Instant::now());
-            }
             MenuEvent::Confirm => {
                 if self.nav.cursor(ScreenKey::SendLogs) == 0 {
                     self.start_log_upload();
@@ -48,7 +45,7 @@ impl App {
                 self.close_send_logs();
             }
             MenuEvent::Back => self.close_send_logs(),
-            MenuEvent::Up | MenuEvent::Down | MenuEvent::Secondary => {}
+            MenuEvent::Up | MenuEvent::Down | MenuEvent::Secondary | MenuEvent::Left | MenuEvent::Right => {}
         }
     }
 

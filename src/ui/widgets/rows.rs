@@ -47,7 +47,7 @@ pub struct FocusRow {
     /// further thing Confirm can mean on this row, reached with Right, so the row's own
     /// action stays a single press. Per-row, so one row in a list can offer fewer than its
     /// neighbours (Library has no Remove). Empty (the default) draws nothing.
-    pub trailing: Vec<&'static str>,
+    pub trailing: &'static [&'static str],
     /// The row's own [`icon`](Self::icon) is a button too, in the slot it already draws in —
     /// reached with Left, where [`trailing`](Self::trailing) is reached with Right. For the
     /// action a row wants *before* its label rather than after it (a collection's drag
@@ -57,14 +57,10 @@ pub struct FocusRow {
     /// [`trailing_focused`](Self::trailing_focused) — the two sides are one cursor.
     pub leading_focused: bool,
     /// The leading button is held *open* — the drag handle of a row being moved. Drawn lit
-    /// whether or not it also has focus, exactly as [`trailing_active`](Self::trailing_active).
+    /// whether or not it also has focus, rather than only while focus is on it.
     pub leading_active: bool,
     /// Which trailing button has focus, if any — `None` means focus is on the row body.
     pub trailing_focused: Option<usize>,
-    /// A trailing button held *open*: the drag handle while its row is being moved. Drawn
-    /// lit whether or not it also has focus, so drag mode reads as a mode rather than as a
-    /// focused button.
-    pub trailing_active: Option<usize>,
     /// A small dot in the row's right gutter, in this colour — what marks a row as differing
     /// from whatever it inherits (a per-game settings override, say). Purely an indicator:
     /// not focusable, not clickable, carrying no action; what it means, and how it goes away,
@@ -130,9 +126,8 @@ impl FocusRow {
             fraction: 0.0,
             danger: false,
             locked: false,
-            trailing: Vec::new(),
+            trailing: &[],
             trailing_focused: None,
-            trailing_active: None,
             leading_button: false,
             leading_focused: false,
             leading_active: false,
@@ -209,8 +204,8 @@ impl FocusRow {
     /// Gives this row [`trailing`](Self::trailing) buttons. Always built unfocused: which
     /// one is lit belongs to the focused-row tile alone (see `App::list_focus_rows`), so a
     /// shell underneath cannot bake in a highlight that outlives the focus that put it there.
-    pub fn with_trailing(mut self, icons: &[&'static str]) -> Self {
-        self.trailing = icons.to_vec();
+    pub fn with_trailing(mut self, icons: &'static [&'static str]) -> Self {
+        self.trailing = icons;
         self
     }
 
@@ -405,9 +400,7 @@ pub struct FocusRowTile<'a> {
     /// row list, because the shell underneath draws the same rows and a highlight baked
     /// there would outlive the focus that put it on.
     pub trailing_focused: Option<usize>,
-    /// A trailing button held open.
-    pub trailing_active: Option<usize>,
-    /// Same two, for the row's leading button — the drag handle of a row being moved.
+    /// Same, plus held-open, for the row's leading button — the drag handle of a row being moved.
     pub leading_focused: bool,
     pub leading_active: bool,
 }
@@ -421,7 +414,6 @@ impl Widget for FocusRowTile<'_> {
             Some(row) => {
                 let row = FocusRow {
                     trailing_focused: self.trailing_focused,
-                    trailing_active: self.trailing_active,
                     leading_focused: self.leading_focused,
                     leading_active: self.leading_active,
                     ..row.clone()
@@ -499,7 +491,6 @@ pub struct FocusRowKey<'a> {
     locked: bool,
     trailing: &'a [&'static str],
     trailing_focused: Option<usize>,
-    trailing_active: Option<usize>,
     leading_button: bool,
     leading_focused: bool,
     leading_active: bool,
@@ -522,9 +513,8 @@ impl FocusRow {
             fraction_bits: self.fraction.to_bits(),
             danger: self.danger,
             locked: self.locked,
-            trailing: &self.trailing,
+            trailing: self.trailing,
             trailing_focused: self.trailing_focused,
-            trailing_active: self.trailing_active,
             leading_button: self.leading_button,
             leading_focused: self.leading_focused,
             leading_active: self.leading_active,
@@ -655,7 +645,7 @@ impl Canvas<'_, '_> {
                 icon,
                 focused,
                 row.trailing_focused == Some(i),
-                row.trailing_active == Some(i),
+                false,
             )?;
         }
         Ok(())

@@ -64,17 +64,22 @@ impl App {
         }
     }
 
+    /// How many rows the open row list has, whichever of the two families it is in. The one
+    /// count every nav path asks for: the two tables each return 0 off their own family, so a
+    /// screen counted against the wrong one navigates a list it cannot draw (and freezes).
+    pub(crate) fn row_count(&self) -> usize {
+        if crate::app::screens::is_scroll_list(self.nav.screen) {
+            self.scroll_list_row_count()
+        } else {
+            self.list_modal_row_count()
+        }
+    }
+
     /// The nav half of a list screen's event handling: moves the cursor and arms the focus
     /// pop, reporting whether the event was spent doing so. Every list handler starts here,
     /// and none of them counts its own rows any more.
     pub(crate) fn list_nav_event(&mut self, ev: MenuEvent) -> bool {
-        // Whichever family the screen is in: a scrolling list counts its rows elsewhere, and
-        // navigating it against the plain-list table (0 rows) freezes its cursor.
-        let len = if crate::app::render::geometry::is_scroll_list(self.nav.screen) {
-            self.scroll_list_row_count()
-        } else {
-            self.list_modal_row_count()
-        };
+        let len = self.row_count();
         let key = ScreenKey::of(self.nav.screen);
         if crate::ui::widgets::list_nav(self.nav.cursor_mut(key), len, crate::app::menu::nav_dir(ev)) {
             // A trailing button belongs to the row it is on, so leaving that row leaves it.

@@ -74,11 +74,19 @@ fn host_menu_row(action: HostAction, paired: bool) -> FocusRow {
         // The one row with a trailing button: Confirm wakes now, the ⋯ holds the per-host
         // wake settings (`Screen::WakeSettings`). Same affordance and the same
         // Right-to-reach-it gesture as a sidebar host row's.
-        HostAction::Wake => {
-            FocusRow::action(icons::ICON_POWER, "Wake host").with_trailing(&[crate::ui::theme::icons().overflow])
-        }
+        HostAction::Wake => FocusRow::action(icons::ICON_POWER, "Wake host").with_trailing(host_menu_trailing(action)),
         HostAction::Edit => FocusRow::action(icons::ICON_EDIT, "Edit address…"),
         HostAction::Forget => FocusRow::action(icons::ICON_DELETE, "Forget host").danger(),
+    }
+}
+
+/// An action's trailing buttons, without its label — what the pointer and the Right key ask
+/// for, per event. Read by [`host_menu_row`] too, so the buttons drawn on a row and the ones
+/// steppable on it cannot disagree.
+pub(crate) fn host_menu_trailing(action: HostAction) -> &'static [&'static str] {
+    match action {
+        HostAction::Wake => std::slice::from_ref(&crate::ui::theme::icons().overflow),
+        _ => &[],
     }
 }
 

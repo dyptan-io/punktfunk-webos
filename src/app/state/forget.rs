@@ -3,7 +3,6 @@ use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
-use std::time::Instant;
 
 impl App {
     /// Open `ForgetHost` confirmation for sidebar row at long-press.
@@ -28,12 +27,10 @@ impl App {
 
     /// Handle menu event. Left/Right toggle focus; Confirm/Back act on focused button.
     pub fn handle_forget_host_event(&mut self, ev: MenuEvent) {
+        if self.confirm_nav_event(ev) {
+            return;
+        }
         match ev {
-            MenuEvent::Left | MenuEvent::Right => {
-                self.nav
-                    .set_cursor(ScreenKey::ForgetHost, 1 - self.nav.cursor(ScreenKey::ForgetHost));
-                self.render.modal.focus_anim = Some(Instant::now());
-            }
             MenuEvent::Confirm => {
                 if self.nav.cursor(ScreenKey::ForgetHost) == 0 {
                     if let Some(idx) = self.screens.host_menu_index {
@@ -48,7 +45,7 @@ impl App {
             }
             // Back returns to menu (not Home) to avoid closing the menu behind
             MenuEvent::Back => self.back_to_host_menu(),
-            MenuEvent::Up | MenuEvent::Down | MenuEvent::Secondary => {}
+            MenuEvent::Up | MenuEvent::Down | MenuEvent::Secondary | MenuEvent::Left | MenuEvent::Right => {}
         }
     }
 }

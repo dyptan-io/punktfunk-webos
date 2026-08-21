@@ -99,15 +99,13 @@ runs are precomputed once per change, so nothing on a per-frame path derives the
 /// One grid section, in grid order. Built by `regroup_games`, read by everything else.
 pub(crate) struct Group {
     pub name: String,
-    /// Cards in it — `library.games` members plus the Desktop card if it lives here.
+    /// Cards in it — all of them `library.games` members, Desktop included.
     pub len: usize,
     /// First grid index (whole rows: a partial last row pads, as the pinned block does today).
     pub first_idx: usize,
     pub rows: usize,
     /// Heading + gap pixels stacked above this group's first row.
     pub y_offset: i32,
-    /// This group holds `DESKTOP_PIN_ID`, and it heads the group.
-    pub desktop: bool,
 }
 pub(crate) groups: Vec<Group>,
 ```
@@ -118,11 +116,13 @@ whatever is left over, wherever in the order it sits — and fills `groups`. `cl
 (was `clear_grid_pins`) empties it. Empty collections are **not** rendered in the grid (they stay
 in the management modal) — a zero-row section has no place to hang a heading.
 
-**Desktop gating.** `DESKTOP_PIN_ID` counts toward a group's `len` only while
-`library.games_loaded`; otherwise the grid draws a heading over nothing (today's
-`desktop_pinned = games_loaded && desktop_pin`). `regroup_games` therefore runs after a library
-load and reads `games_loaded`, and the host-switch path clears the groups instead of leaving a
-stale one. Worth a test: an unloaded library has no cards *and* no headings.
+**Desktop.** *(revised)* Not gated, not tracked, not a slot: `Library::load_games` pushes
+`DESKTOP_PIN_ID` into `games` as an ordinary `GameEntry`, so it is grouped, ordered, focused,
+moved and drawn exactly like a game. A new host still pins it (`new_host_collections`); take it
+out of Pinned and it lands in Library, sorted alphabetically and by last played with everything
+else. The only thing left that knows it apart is `confirm_grid_card`, which launches it with no
+game id. The host-switch path still clears the groups rather than leaving a stale one, so an
+unloaded library has no cards *and* no headings.
 
 `GridLayout` keeps working the way it does today — a `Copy` value carrying counts, with the data
 passed in per call (`card_at(&self, games, idx)`); the group runs join `games` as a borrowed
@@ -166,8 +166,7 @@ Focus/pop after a move: the existing pattern generalizes — latch the moved id,
 the first touched group onward (`replay_reorder_pop`, same shape, group-bounded).
 
 `app/grid.rs`'s property tests carry the weight here: `arrangements()` becomes group splits
-(counts either side of a row boundary, Desktop in the first / a middle / the last group, empty
-groups interleaved, unloaded library), and `pin_id_round_trips_through_idx`,
+(counts either side of a row boundary, empty groups interleaved, unloaded library), and `pin_id_round_trips_through_idx`,
 `every_card_appears_exactly_once` and `holes_are_only_the_padding` stay as the acceptance
 criteria for the whole rewrite. Same for `view::home`'s `the_window_always_contains_the_current_focus`.
 
@@ -446,9 +445,7 @@ needs it, and the grid rewrite lands before anything can create a second collect
    *(done, `0de4b3b`; the rename/remove entry points came with 6's trailing buttons, since
    wiring them earlier would have been dead code.)*
 6. **Drag-mode reordering** of collections. *(done, `6e35aa2`, `e6c0524`.)*
-7. **In-collection card reordering** (swap, scrim, commit-on-exit). *(done, `e8388f3`. The
-   Desktop card heads its group, so it is never a slot to trade — `swap_within_collection`
-   skips it.)*
+7. **In-collection card reordering** (swap, scrim, commit-on-exit). *(done, `e8388f3`.)*
 8. **`services::recents`** and Library's recency order. *(done, `a29db6b`. No focus re-latch
    needed: `run_ui_flow` builds a fresh `App` per menu entry.)*
 9. **Cleanup:** delete the pin APIs, `PinLimit`, the pin badge, collapse `GamePrefs`. *(done,

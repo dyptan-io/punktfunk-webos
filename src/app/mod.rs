@@ -28,7 +28,6 @@ use crate::ui::render::Rect;
 use anyhow::Result;
 use tiny_skia::Pixmap;
 
-use crate::app::grid::GridCard;
 use crate::app::hosts::HostEntry;
 use crate::app::nav::ScreenKey;
 use crate::core::event::MenuEvent;
@@ -751,8 +750,7 @@ impl App {
     /// building already filters padding gaps out).
     pub(crate) fn grid_card_content(&self, idx: usize, columns: usize) -> (&str, Option<&Pixmap>) {
         match self.grid_card_at(idx, columns) {
-            Some(GridCard::Desktop) => ("Desktop", None),
-            Some(GridCard::Game(game)) => (game.title.as_str(), self.library.art.get(&game.id)),
+            Some(game) => (game.title.as_str(), self.library.art.get(&game.id)),
             None => unreachable!("idx filtered to a real card before building"),
         }
     }

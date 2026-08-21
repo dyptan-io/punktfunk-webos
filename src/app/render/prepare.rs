@@ -11,7 +11,7 @@ use anyhow::Result;
 use crate::app::hosts::HostEntry;
 use crate::app::nav::ScreenKey;
 use crate::app::render::ctx::RenderCtx;
-use crate::app::render::geometry::is_scroll_list;
+use crate::app::screens::is_scroll_list;
 use crate::app::render::key::{ModalFocusKey, ModalShellKey, ScrollContentKey};
 use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
@@ -460,7 +460,6 @@ impl App {
                                         dropdown_open,
                                         switch_frac: self.toggle_frac(target_on, index),
                                         trailing_focused: self.screens.row_button.and_then(RowButton::trailing),
-                                        trailing_active: None,
                                         leading_focused: self.screens.row_button == Some(RowButton::Leading),
                                         // The handle of a held row, lit for as long as it
                                         // is held: a mode must look different from a focus.
@@ -545,7 +544,6 @@ impl App {
                                         dropdown_open,
                                         switch_frac: self.toggle_frac(target_on, focused),
                                         trailing_focused: self.screens.row_button.and_then(RowButton::trailing),
-                                        trailing_active: None,
                                         leading_focused: self.screens.row_button == Some(RowButton::Leading),
                                         leading_active: false,
                                     },
@@ -810,7 +808,6 @@ impl App {
                 dropdown_open: false,
                 switch_frac: 0.0,
                 trailing_focused: None,
-                trailing_active: None,
                 leading_focused: false,
                 leading_active: false,
             },

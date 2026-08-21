@@ -1,6 +1,5 @@
 //! Home screen logic: sidebar/grid navigation, host selection, game library fetch,
 //! launching. Grid pixel geometry (rect helpers) lives in `app::view::home`.
-use crate::app::grid::GridCard;
 use crate::app::hosts::HostEntry;
 use crate::app::nav::ScreenKey;
 use crate::app::state::textfield::TextField;
@@ -41,7 +40,7 @@ impl App {
 
     /// The card at grid index `idx`, or `None` for the padding after a partial
     /// section row, or out of range.
-    pub(crate) fn grid_card_at(&self, idx: usize, columns: usize) -> Option<GridCard<'_>> {
+    pub(crate) fn grid_card_at(&self, idx: usize, columns: usize) -> Option<&crate::core::model::GameEntry> {
         self.library.card_at(idx, columns)
     }
 
@@ -151,7 +150,7 @@ impl App {
     /// `home_focus_map`). Layout holes, the pinned-row split and the row/⋯ split all
     /// fall out of the rects themselves.
     fn navigate_home(&mut self, dir: ui::focus::Dir, screen_w: u32, screen_h: u32) {
-        let columns = view::home::grid_columns(screen_w.saturating_sub(ui::widgets::SIDEBAR_W));
+        let columns = view::home::grid_columns_for_screen(screen_w);
         let Some(next) = self
             .home_focus_map(columns, screen_w, screen_h)
             .navigate(self.home_focus, dir)
@@ -228,7 +227,7 @@ impl App {
     /// regroups the grid and carries focus with it. The one path every move takes — the card
     /// menu's Remove, and the Collections screen's confirm.
     pub(crate) fn move_focused_card(&mut self, to: Option<usize>, screen_w: u32, screen_h: u32) {
-        let columns = view::home::grid_columns(screen_w.saturating_sub(ui::widgets::SIDEBAR_W));
+        let columns = view::home::grid_columns_for_screen(screen_w);
         let HomeFocus::Grid(idx) = self.home_focus else {
             return;
         };
@@ -388,10 +387,7 @@ impl App {
     /// its grid stays on screen with no row to go back to.
     pub(crate) fn clear_selected_host(&mut self) {
         self.library.selected_host = None;
-        self.library.games = Vec::new();
-        self.library.games_loaded = false;
-        self.library.clear_groups();
-        self.library.art.clear();
+        self.library.clear();
         self.jobs.cancel_library();
         self.home_status = None;
         self.home_status_sticky = false;
@@ -415,10 +411,7 @@ impl App {
         // launch left on screen. The reload `App::new` starts is not this — it runs before
         // `home_status_sticky` is ever set.
         self.home_status_sticky = false;
-        self.library.games = Vec::new();
-        self.library.clear_groups();
-        self.library.games_loaded = false;
-        self.library.art.clear();
+        self.library.clear();
         // Dropping the loader stops its worker (its request channel closes), so a host
         // switch abandons in-flight fetches for the previous library.
         self.jobs.art = None;
@@ -463,13 +456,7 @@ impl App {
             result,
         } = loaded;
         match result {
-            Ok(mut games) => {
-                // The host returns its own scan order, which is neither stable nor
-                // meaningful to a reader. On a TV the grid is navigated a card at a time
-                // with a d-pad, so alphabetical is the difference between "find the game"
-                // and "sweep the whole library". Case-insensitive so casing doesn't
-                // scatter otherwise-adjacent titles.
-                games.sort_by_key(|g| g.title.to_lowercase());
+            Ok(games) => {
                 tracing::info!("library: {} games from {host}:{mgmt_port}", games.len());
                 let identity = (self.identity.0.clone(), self.identity.1.clone());
                 let known = self.hosts.known.iter().find(|h| h.host == host && h.port == port);
@@ -484,8 +471,7 @@ impl App {
                     fingerprint,
                     self.render.grid.card_size,
                 ));
-                self.library.games = games;
-                self.library.games_loaded = true;
+                self.library.load_games(games);
                 // Hand the grid the focus `select_host` held back — only if the user hasn't
                 // navigated off that row, so a late fetch can't yank them.
                 if matches!(self.home_focus, HomeFocus::Sidebar(i) if Some(i) == self.sidebar_index_of_selected_host())
@@ -533,7 +519,7 @@ impl App {
         } else {
             // The host answered — just not with a usable library — so Desktop is a
             // legitimate fallback here, unlike the `Unreachable` branch above.
-            self.library.games_loaded = true;
+            self.library.load_games(Vec::new());
             self.home_status = Some(reason);
         }
     }
@@ -556,9 +542,11 @@ impl App {
         let Some(fingerprint) = known.fingerprint else {
             return;
         };
+        // Desktop is the host's own session rather than a game it lists, so it launches with
+        // no id — the one thing left that tells it apart from any other card.
         let launch = match self.grid_card_at(idx, columns) {
-            Some(GridCard::Desktop) => None,
-            Some(GridCard::Game(game)) => Some(game.id.clone()),
+            Some(game) if game.id == crate::core::model::DESKTOP_PIN_ID => None,
+            Some(game) => Some(game.id.clone()),
             None => return,
         };
         // The loading screen's backdrop. Desktop has no art, so it keeps the plain fade to

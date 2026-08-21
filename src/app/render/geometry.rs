@@ -6,89 +6,13 @@
 //! agreeing.
 use crate::app::nav::ScreenKey;
 use crate::app::screens::scrolllist::scroll_list_width_frac;
+use crate::app::screens::{is_confirm, is_list_modal, is_scroll_list};
 use crate::app::{view, App, PairingFocus, Screen, MODAL_TILE_PAD};
 use crate::ui;
 use crate::ui::render::Rect;
 use crate::ui::Painter;
 
-/// Whether `screen` is one of the two-button confirm dialogs — the family that shares a card
-/// (one subtitle sizes it), a button row and a focus cursor, differing only in its labels.
-///
-/// Exhaustive on purpose: a new screen has to say which family it joins rather than being
-/// absorbed by a `_ =>` arm into the wrong geometry.
-pub(crate) const fn is_confirm(screen: Screen) -> bool {
-    match screen {
-        Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest | Screen::RemoveCollection => true,
-        Screen::Home
-        | Screen::Pairing
-        | Screen::Settings(_)
-        | Screen::AddHost
-        | Screen::HostMenu
-        | Screen::EditHost
-        | Screen::About
-        | Screen::WakeSettings
-        | Screen::Diagnostics
-        | Screen::Experimental
-        | Screen::CursorSettings(_)
-        | Screen::Collections
-        | Screen::RenameCollection => false,
-    }
-}
 
-/// Whether `screen` is a *scrolling* row list: a shell tile plus one tile per row, cropped to
-/// a viewport that scrolls under edge fades (see `view::scrolllist`). Same contract as
-/// [`is_confirm`].
-pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
-    match screen {
-        Screen::Settings(_) | Screen::Collections => true,
-        Screen::Home
-        | Screen::Pairing
-        | Screen::AddHost
-        | Screen::Wake
-        | Screen::ForgetHost
-        | Screen::HostMenu
-        | Screen::EditHost
-        // About scrolls, but wrapped text rather than rows.
-        | Screen::About
-        | Screen::SpeedTest
-        | Screen::WakeSettings
-        | Screen::Diagnostics
-        | Screen::Experimental
-        | Screen::CursorSettings(_)
-        | Screen::SendLogs
-        | Screen::RenameCollection
-        | Screen::RemoveCollection => false,
-    }
-}
-
-/// Whether `screen` is a plain list modal: a card holding one `FocusRow` per line, baked into
-/// one tile and hit-tested by row index. Same contract as [`is_confirm`] — and the reason it
-/// stays exhaustive is that a screen silently missing from a table like this inherits the
-/// wrong geometry in silence.
-pub(crate) const fn is_list_modal(screen: Screen) -> bool {
-    match screen {
-        Screen::HostMenu
-        | Screen::WakeSettings
-        | Screen::Diagnostics
-        | Screen::Experimental
-        | Screen::CursorSettings(_) => true,
-        Screen::Home
-        | Screen::Pairing
-        // Settings is a list too, but a scrolling one — see `is_scroll_list`.
-        | Screen::Settings(_)
-        | Screen::AddHost
-        | Screen::Wake
-        | Screen::ForgetHost
-        | Screen::EditHost
-        | Screen::About
-        | Screen::SpeedTest
-        | Screen::SendLogs
-        // Collections is a scrolling list too, and its name dialog is a text form.
-        | Screen::Collections
-        | Screen::RenameCollection
-        | Screen::RemoveCollection => false,
-    }
-}
 
 impl App {
     /// `(total units, visible units, card rect, content/viewport rect)` for whichever
@@ -275,7 +199,7 @@ impl App {
     /// Same as `scroll_stride`, but for an explicit screen — see `scroll_geometry_for`.
     pub(crate) fn scroll_stride_for(&self, screen: Screen, fonts: &ui::text::Fonts) -> i32 {
         match screen {
-            Screen::Settings(_) | Screen::Collections => view::scrolllist::stride(),
+            Screen::Settings(_) | Screen::Collections => ui::widgets::focus_row_stride() as i32,
             Screen::About => view::about::line_stride(fonts.raster, fonts.value),
             // Nothing else has a scrolling body. `1` rather than `0` because the stride is a
             // divisor in the scroll arithmetic, and this is only reached where
@@ -304,7 +228,7 @@ impl App {
     ///
     /// One value rather than a copy table plus a construction site: the geometry, the
     /// painter and `SDL_SetTextInputRect` all measure the same form.
-    pub(crate) fn text_form(&self) -> Option<view::addhost::Modal<'_>> {
+    pub(crate) fn text_form(&self) -> Option<view::textform::Modal<'_>> {
         let (title, subtitle, typed, hint) = match self.nav.screen {
             Screen::EditHost => {
                 let name = self
@@ -329,7 +253,7 @@ impl App {
                 let renaming = self
                     .screens
                     .collections
-                    .index
+                    .renaming
                     .and_then(|i| self.selected_known_host()?.collections().get(i))
                     .map(|c| c.name.clone());
                 (
@@ -345,7 +269,7 @@ impl App {
             }
             _ => return None,
         };
-        Some(view::addhost::Modal {
+        Some(view::textform::Modal {
             title,
             subtitle,
             typed,

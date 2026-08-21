@@ -6,10 +6,10 @@
 //! a `match self.screen` in each of the five places that build, key, measure, hit-test and
 //! scroll them.
 use crate::app::nav::ScreenKey;
-use crate::app::render::geometry::is_scroll_list;
+use crate::app::screens::is_scroll_list;
 use crate::app::view;
 use crate::app::{menu, App};
-use crate::core::model::KnownHost;
+use crate::core::model::Collection;
 use crate::core::screen::Screen;
 use crate::ui::cache;
 use crate::ui::render::Rect;
@@ -77,10 +77,12 @@ impl App {
                 self.settings_ui.dropdown.as_ref().map(|dd| dd.row),
                 content_w,
             )),
-            // Names, counts and which row holds the card — everything the rows draw.
+            // Names, counts and which row holds the card — everything the rows draw. The
+            // counts rather than the member ids: hashing every id of every collection is the
+            // whole library, per frame, and no row draws one.
             Screen::Collections => cache::version(&(
                 screen,
-                self.selected_known_host().map(KnownHost::collections),
+                self.selected_known_host().map(|host| CollectionShapes(host.collections())),
                 self.screens.collections.target.as_deref(),
                 content_w,
             )),
@@ -96,6 +98,19 @@ impl App {
         self.render
             .scroll
             .scroll_into_view(self.nav.cursor(ScreenKey::of(self.nav.screen)), total, visible);
+    }
+}
+
+/// The part of a host's collections the rows actually draw: each one's name, how many games
+/// it holds and whether it is the dynamic entry. Hashed instead of the collections themselves,
+/// whose member ids are the whole library and change nothing on screen but the counts.
+struct CollectionShapes<'a>(&'a [Collection]);
+
+impl std::hash::Hash for CollectionShapes<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for c in self.0 {
+            (c.name.as_str(), c.games.len(), c.dynamic).hash(state);
+        }
     }
 }
 

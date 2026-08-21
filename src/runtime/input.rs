@@ -452,7 +452,7 @@ pub(super) enum EventAction {
 /// and the OK press arm through here so the two gestures can never disagree about what a
 /// hold is; `screen_w` is the full screen width, the sidebar taken off inside.
 fn arm_card_hold(input: &mut UiInput, app: &App, screen_w: u32) -> bool {
-    let columns = crate::app::view::home::grid_columns(screen_w.saturating_sub(crate::ui::widgets::SIDEBAR_W));
+    let columns = crate::app::view::home::grid_columns_for_screen(screen_w);
     if app.focused_pin_id(columns).is_none() {
         return false;
     }

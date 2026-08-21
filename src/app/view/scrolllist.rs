@@ -56,11 +56,6 @@ pub(crate) const SIDE_PAD: u32 = 40;
 const SEP_DOT_R: i32 = 3;
 const SEP_DOT_GAP: i32 = 12;
 
-/// Pixel stride between two consecutive rows — the divisor all the scroll arithmetic runs on.
-pub(crate) fn stride() -> i32 {
-    ui::widgets::FOCUS_ROW_H as i32 + ui::widgets::FOCUS_ROW_GAP
-}
-
 /// How many of `total` rows are *fully* visible. Capped at the live row count, so a hidden row
 /// leaves no empty slot.
 ///

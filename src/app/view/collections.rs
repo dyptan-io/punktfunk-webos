@@ -191,7 +191,7 @@ mod tests {
     fn library_offers_no_remove_button() {
         let host = host();
         let rows = rows(&host, None);
-        assert_eq!(rows[0].trailing, vec![icons::ICON_EDIT, icons::ICON_DELETE]);
+        assert_eq!(rows[0].trailing, [icons::ICON_EDIT, icons::ICON_DELETE]);
         assert!(rows[0].leading_button, "the grip is the row's own icon");
         assert_eq!(rows[1].label, LIBRARY_COLLECTION);
         assert_eq!(
