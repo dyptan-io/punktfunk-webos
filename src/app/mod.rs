@@ -137,6 +137,10 @@ pub struct App {
     /// on the status line as soon as a library has actually landed to hold the cards it talks
     /// about.
     pub(crate) intro_hint_owed: bool,
+    /// When each host last launched each game — what orders the Library section (see
+    /// [`services::recents`](crate::services::recents)). Loaded once at startup; a cache, so
+    /// nothing here fails.
+    pub(crate) recents: crate::services::recents::Recents,
     /// Persists settings off UI thread to avoid blocking.
     pub(crate) state_writer: store::StateWriter,
     /// The attached pad's type per `gamepad::detect_type`, refreshed on hotplug in
@@ -242,6 +246,7 @@ impl App {
             launch_anim_idx: None,
             card_menu: None,
             intro_hint_owed: new_build,
+            recents: crate::services::recents::Recents::load(),
             state_writer,
             detected_gamepad_type: None,
             keyboard_shown: false,

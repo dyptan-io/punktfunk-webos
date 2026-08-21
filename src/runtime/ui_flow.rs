@@ -126,6 +126,9 @@ pub(super) fn run_ui_flow(
         store::Settings,
         bool,
     )> = None;
+    // What the launch in flight is, for `services::recents` — captured where the target is
+    // still in hand, spent only if the connect actually takes.
+    let mut launched: Option<(String, u16, String)> = None;
     // Yellow button log overlay works here too (see streaming loop).
     let mut yellow_held = false;
     let mut home_held = false;
@@ -221,6 +224,14 @@ pub(super) fn run_ui_flow(
                 // Per-game overrides merge over the global document here — the single
                 // point where the game being launched is known and the settings copy that
                 // rides the whole session is made. Clamped to caps like any global value.
+                launched = Some((
+                    target.host.clone(),
+                    target.port,
+                    target
+                        .launch
+                        .clone()
+                        .unwrap_or_else(|| store::DESKTOP_PIN_ID.to_string()),
+                ));
                 let mut settings = launch_settings(&app, &target);
                 let gamepad_auto = settings.gamepad_type == store::GamepadType::Auto;
                 settings = resolve_gamepad_type(settings, game_controller);
@@ -242,6 +253,14 @@ pub(super) fn run_ui_flow(
             };
             let presenting = crate::platform::webos::ndl::presenting();
             if app.render.hero.handover_ready(t.elapsed(), connect, presenting) {
+                // Where the launch actually takes — not `confirm_grid_card`, which also fires
+                // for one that bounces into the Wake dialog or fails to pair. A failed launch
+                // must not reorder Library.
+                if !matches!(connect, Connect::Failed) {
+                    if let Some((host, port, id)) = launched.take() {
+                        app.recents.record(&host, port, &id);
+                    }
+                }
                 break 'ui;
             }
         }

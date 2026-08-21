@@ -4,6 +4,7 @@
 //! `&mut self` paths that mutate it. Everything here is per-host state and is replaced wholesale
 //! on a host switch (`App::clear_selected_host`).
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 
 use tiny_skia::Pixmap;
@@ -11,6 +12,7 @@ use tiny_skia::Pixmap;
 use crate::app::grid::{GridCard, GridLayout, Group};
 use crate::core::model::{Collection, KnownHost, DESKTOP_PIN_ID};
 use crate::services::library::GameEntry;
+use crate::services::recents::HostRecents;
 
 #[derive(Default)]
 pub(crate) struct Library {
@@ -57,14 +59,15 @@ impl Library {
     }
 
     /// Re-lays the library out over `host`'s collections: each collection's members in its own
-    /// order, the dynamic Library entry taking whatever is left, wherever in the order it sits.
+    /// order, the dynamic Library entry taking whatever is left — sorted by `recents`, wherever
+    /// in the order it sits.
     /// One pass over the games, so it costs the same whether one card moved or the whole
     /// library arrived.
     ///
     /// A member the host no longer lists just doesn't place — it is *not* dropped here, since
     /// this also runs while `games` is empty (an offline host). Dropping is
     /// `KnownHost::prune_games`' job.
-    pub(crate) fn regroup(&mut self, host: &KnownHost) {
+    pub(crate) fn regroup(&mut self, host: &KnownHost, recents: &HostRecents) {
         let collections = host.collections();
         if collections.is_empty() {
             self.clear_groups();
@@ -97,6 +100,10 @@ impl Library {
             let games_start = games.len();
             if collection.dynamic {
                 games.extend(remaining.iter_mut().filter_map(Option::take));
+                // Library is ordered by play, not by the host's listing: most recent first,
+                // the never-played after them. `sort_by_key` is stable, so those keep the
+                // order the host gave — and a zero key sorts them last under `Reverse`.
+                games[games_start..].sort_by_key(|g| Reverse(recents.get(&g.id).copied().unwrap_or(0)));
             } else {
                 games.extend(placement[i].iter().filter_map(|&at| remaining[at].take()));
             }

@@ -5,5 +5,6 @@ pub mod discovery;
 pub mod library;
 pub mod paths;
 pub mod pinned_tls;
+pub mod recents;
 pub mod store;
 pub mod wol;

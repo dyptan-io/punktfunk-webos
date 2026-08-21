@@ -328,7 +328,8 @@ impl App {
                 // Split the borrow: `regroup` needs the host record while it rewrites the
                 // library, and both live on `self`.
                 let host = std::mem::take(&mut self.hosts.known[idx]);
-                self.library.regroup(&host);
+                self.library
+                    .regroup(&host, self.recents.for_host(&host.host, host.port));
                 self.hosts.known[idx] = host;
             }
             None => self.library.clear_groups(),
@@ -347,8 +348,16 @@ impl App {
             return;
         };
         let live: std::collections::HashSet<&str> = self.library.games.iter().map(|g| g.id.as_str()).collect();
+        let (host, port) = (
+            self.hosts.known[known_idx].host.clone(),
+            self.hosts.known[known_idx].port,
+        );
         if self.hosts.known[known_idx].prune_games(|id| live.contains(id)) {
             self.persist();
+        }
+        // The play times go the same way, or `recents.json` keeps ids nothing can reach.
+        if self.recents.prune(&host, port, |id| live.contains(id)) {
+            self.recents.save();
         }
     }
 
@@ -658,6 +667,9 @@ impl App {
         };
         let (host, port) = (h.host.clone(), h.port);
         self.hosts.known.retain(|k| !(k.host == host && k.port == port));
+        if self.recents.forget_host(&host, port) {
+            self.recents.save();
+        }
         crate::services::art::reconcile_host_caches(&self.hosts.known);
         self.rebuild_entries();
         if self.library.selected_host.as_ref() == Some(&(host, port)) {
