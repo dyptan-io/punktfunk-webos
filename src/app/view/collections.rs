@@ -17,6 +17,9 @@ use anyhow::Result;
 pub(crate) const TITLE: &str = "Move to";
 pub(crate) const ADD_ROW: &str = "Add collection";
 pub(crate) const REMOVE_TITLE: &str = "Remove collection?";
+/// Replaces the card's name in the heading while a row is being dragged: the list is doing
+/// something else for the moment, and the only slot that says so is already drawn per frame.
+pub(crate) const DRAG_HINT: &str = "Up/Down to move, OK to drop";
 pub(crate) const ADD_TITLE: &str = "New collection";
 pub(crate) const RENAME_TITLE: &str = "Rename collection";
 
@@ -35,9 +38,9 @@ pub(crate) fn name_subtitle(renaming: Option<&str>, card: &str) -> String {
 /// rather than the rule.
 pub(crate) fn trailing(dynamic: bool) -> &'static [&'static str] {
     if dynamic {
-        &[icons::ICON_EDIT]
+        &[icons::ICON_REORDER, icons::ICON_EDIT]
     } else {
-        &[icons::ICON_EDIT, icons::ICON_DELETE]
+        &[icons::ICON_REORDER, icons::ICON_EDIT, icons::ICON_DELETE]
     }
 }
 
@@ -176,9 +179,16 @@ mod tests {
     fn library_offers_no_remove_button() {
         let host = host();
         let rows = rows(&host, None);
-        assert_eq!(rows[0].trailing, vec![icons::ICON_EDIT, icons::ICON_DELETE]);
+        assert_eq!(
+            rows[0].trailing,
+            vec![icons::ICON_REORDER, icons::ICON_EDIT, icons::ICON_DELETE]
+        );
         assert_eq!(rows[1].label, LIBRARY_COLLECTION);
-        assert_eq!(rows[1].trailing, vec![icons::ICON_EDIT], "Library cannot be removed");
+        assert_eq!(
+            rows[1].trailing,
+            vec![icons::ICON_REORDER, icons::ICON_EDIT],
+            "Library reorders and renames, but cannot be removed"
+        );
         assert!(rows[2].trailing.is_empty(), "nor can the add row be acted on");
     }
 

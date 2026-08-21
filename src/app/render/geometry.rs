@@ -521,7 +521,7 @@ impl App {
             }),
             Screen::Collections => f(&view::collections::Modal {
                 rows: self.collections_row_count(),
-                card: Some(self.screens.collections.title.as_str()),
+                card: Some(self.collections_heading()),
             }),
             Screen::Pairing => f(&view::pairing::Modal {
                 pin_digits: &self.screens.pin_digits,

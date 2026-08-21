@@ -326,6 +326,7 @@ impl App {
                     name,
                     holding,
                     self.screens.row_button,
+                    self.screens.collections.dragging.is_some(),
                 ))
             }
             Screen::Wake => self
@@ -483,7 +484,9 @@ impl App {
                                         dropdown_open,
                                         switch_frac: self.toggle_frac(target_on, index),
                                         trailing_focused: self.screens.row_button,
-                                        trailing_active: None,
+                                        // The handle of a held row, lit for as long as it
+                                        // is held: a mode must look different from a focus.
+                                        trailing_active: self.dragged_handle(screen),
                                     },
                                     text_cache,
                                     fonts,

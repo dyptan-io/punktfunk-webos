@@ -25,6 +25,10 @@ pub(crate) struct CollectionsState {
     pub(crate) index: Option<usize>,
     /// The name being typed there.
     pub(crate) name: TextField,
+    /// The row being dragged, while drag mode is on. Only the d-pad's vertical axis is the
+    /// drag's; every other input commits it, so a reorder the user watched happen can never
+    /// silently un-happen.
+    pub(crate) dragging: Option<usize>,
 }
 
 /// Hand-written: the shared [`TextField`] defaults to an address, and this one holds a name.
@@ -35,6 +39,7 @@ impl Default for CollectionsState {
             title: String::new(),
             index: None,
             name: TextField::name(MAX_COLLECTION_NAME, ""),
+            dragging: None,
         }
     }
 }
@@ -64,6 +69,26 @@ impl App {
         host.collection_of(pin_id).or_else(|| host.library_index()).unwrap_or(0)
     }
 
+    /// What the heading says after the title: the card being moved, or — while a row is held
+    /// — what the d-pad is doing instead, since that is the only line the card has to say it
+    /// in and it is already drawn per frame.
+    pub(crate) fn collections_heading(&self) -> &str {
+        if self.screens.collections.dragging.is_some() {
+            view::collections::DRAG_HINT
+        } else {
+            &self.screens.collections.title
+        }
+    }
+
+    /// Which trailing button of the focused row is held open on `screen` — the drag handle,
+    /// which is a collection row's first, and nothing on any other scrolling list.
+    pub(crate) fn dragged_handle(&self, screen: Screen) -> Option<usize> {
+        matches!(screen, Screen::Collections)
+            .then_some(self.screens.collections.dragging)
+            .flatten()
+            .map(|_| 0)
+    }
+
     /// The modal's rows, `None` off the screen or with no host selected.
     pub(crate) fn collections_rows(&self) -> Option<Vec<FocusRow>> {
         let host = self.selected_known_host()?;
@@ -77,6 +102,10 @@ impl App {
 
     /// Handles one menu event on [`Screen::Collections`].
     pub(crate) fn handle_collections_event(&mut self, ev: MenuEvent, screen_w: u32, screen_h: u32) {
+        if self.screens.collections.dragging.is_some() {
+            self.drag_collection_event(ev, screen_h);
+            return;
+        }
         if self.list_nav_event(ev) {
             self.scroll_list_row_into_view(screen_h);
             return;
@@ -98,6 +127,7 @@ impl App {
         // Read by icon, not by index: Library carries one button fewer.
         if let Some(button) = self.screens.row_button {
             match self.row_trailing(row).get(button) {
+                Some(&view::icons::ICON_REORDER) => self.start_collection_drag(row),
                 Some(&view::icons::ICON_EDIT) => self.open_name_collection(Some(row)),
                 Some(&view::icons::ICON_DELETE) => self.open_remove_collection(row),
                 _ => {}
@@ -198,6 +228,51 @@ impl App {
         }
     }
 
+    /// Takes hold of row `at`: from here the d-pad moves the row itself rather than the
+    /// cursor, which rides it.
+    fn start_collection_drag(&mut self, at: usize) {
+        self.screens.collections.dragging = Some(at);
+        self.render.modal.focus_anim = Some(std::time::Instant::now());
+    }
+
+    /// One event while a row is held. Up/Down move the entry; everything else drops it and is
+    /// spent doing so — including Back, which commits rather than discards.
+    fn drag_collection_event(&mut self, ev: MenuEvent, screen_h: u32) {
+        let Some(at) = self.screens.collections.dragging else {
+            return;
+        };
+        let step: isize = match ev {
+            MenuEvent::Up => -1,
+            MenuEvent::Down => 1,
+            _ => return self.commit_collection_drag(),
+        };
+        let count = self.selected_known_host().map_or(0, |h| h.collections().len());
+        let Some(to) = at.checked_add_signed(step).filter(|&to| to < count) else {
+            // Nowhere further to go: the press dip stands in for a nudge, so "it stopped" and
+            // "it ignored me" stay tellable apart.
+            self.render.press.arm();
+            return;
+        };
+        if let Some(host) = self.selected_known_host_mut() {
+            host.reorder_collection(at, to);
+        }
+        self.screens.collections.dragging = Some(to);
+        self.nav.set_cursor(ScreenKey::Collections, to);
+        self.render.modal.focus_anim = Some(std::time::Instant::now());
+        self.scroll_list_row_into_view(screen_h);
+    }
+
+    /// Drops the held row: one save and one regroup for the whole drag, however many steps it
+    /// took. Nothing is written while it is in flight.
+    pub(crate) fn commit_collection_drag(&mut self) {
+        if self.screens.collections.dragging.take().is_none() {
+            return;
+        }
+        self.persist();
+        self.regroup_games();
+        self.render.modal.focus_anim = Some(std::time::Instant::now());
+    }
+
     /// Raises the remove confirmation over the list, focused on Cancel — the destructive
     /// button is never the one a stray Confirm lands on.
     pub(crate) fn open_remove_collection(&mut self, at: usize) {
@@ -264,6 +339,8 @@ impl App {
     /// Leaves the modal and the submenu behind it together: the move it confirms reorders the
     /// grid, and a menu latched to the card's old index would then point at a stranger.
     pub(crate) fn close_collections(&mut self) {
+        // Leaving the screen drops what it was holding rather than discarding it.
+        self.commit_collection_drag();
         self.screens.collections = CollectionsState::default();
         self.screens.row_button = None;
         self.close_card_menu();

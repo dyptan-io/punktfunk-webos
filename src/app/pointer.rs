@@ -152,6 +152,11 @@ impl App {
             // Dropdown case already handled above.
             // The two scrolling lists share one hit test and one cursor lookup.
             screen @ (Screen::Settings(_) | Screen::Collections) => {
+                // A held row follows the d-pad, not the pointer: hovering elsewhere must not
+                // drag the cursor out from under it.
+                if self.screens.collections.dragging.is_some() {
+                    return false;
+                }
                 let Some(row) = self.scroll_list_row_at(x, y, screen_w, screen_h) else {
                     return false;
                 };
@@ -479,6 +484,11 @@ impl App {
             // `?` bails if the click hit the gap between rows or outside the viewport —
             // nothing to focus or confirm.
             Screen::Collections => {
+                // A click is one of the inputs that drops a held row — and only that.
+                if self.screens.collections.dragging.is_some() {
+                    self.commit_collection_drag();
+                    return None;
+                }
                 self.nav.set_cursor(
                     ScreenKey::Collections,
                     self.scroll_list_row_at(x, y, screen_w, screen_h)?,

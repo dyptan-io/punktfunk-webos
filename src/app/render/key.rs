@@ -44,9 +44,9 @@ pub enum ModalFocusKey<'a> {
     /// Which `Screen::RemoveCollection` button is focused (0 = Remove, 1 = Cancel).
     RemoveCollectionButton(usize),
     /// (focused row, the row's name, whether it is the one already holding the card, which
-    /// trailing button is focused) — what the focused row draws, and nothing else: the list
-    /// behind it is its own tiles.
-    CollectionRow(usize, &'a str, bool, Option<usize>),
+    /// trailing button is focused, whether the row is being dragged) — what the focused row
+    /// draws, and nothing else: the list behind it is its own tiles.
+    CollectionRow(usize, &'a str, bool, Option<usize>, bool),
 }
 
 /// Scrollable modal content keys. Paired with Screen for staleness checks.
