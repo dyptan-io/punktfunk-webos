@@ -1,6 +1,7 @@
-//! What a scrolling row list draws around its rows: the scrollbar, and the fades that
-//! dissolve a partially-scrolled row into the viewport's edges. Both are their own tiles so
-//! showing and hiding them is an alpha composite rather than a re-raster.
+//! What a scrolling row list draws around its rows: the scrollbar, and the height of the
+//! fades that dissolve a partially-scrolled row into the viewport's edges. The scrollbar is
+//! its own tile so showing and hiding it is an alpha composite rather than a re-raster; the
+//! fade is not a tile at all — it ramps the content's own alpha (`compose::push_faded`).
 use crate::ui::prelude::*;
 use anyhow::Result;
 
@@ -59,47 +60,3 @@ impl TileWidget for ListScrollbarTile {
 /// render, not enough to read as a fade. Being taller also means the dense end lands on the
 /// partial row while the row above it takes only the ramp's first, near-clear pixels.
 pub const SCROLL_FADE_H: u32 = FOCUS_ROW_H;
-
-/// Tile width for the scroll fade. The ramp is uniform horizontally, so the GPU stretches
-/// this to whatever the list's width is — a fixed narrow tile means one static texture for
-/// every modal instead of one per content width. Not 1px: under linear filtering a
-/// single-column texture has no interior samples to stretch from.
-const SCROLL_FADE_TILE_W: u32 = 8;
-
-/// Which edge of the viewport a fade tile dissolves into.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum FadeEdge {
-    /// Dense at the top, clear at the bottom — shown while content is scrolled off above.
-    Top,
-    /// Clear at the top, dense at the bottom — shown while content remains below.
-    Bottom,
-}
-
-/// An edge fade that signals "the list continues this way".
-///
-/// Exists because the scrollbar alone doesn't answer the question on arrival: it's
-/// hold-then-fade (see `SCROLL_INDICATOR_HOLD`), so a list that opens already overflowing
-/// shows nothing at all once the hold lapses, and the last row looks like the final row.
-///
-/// Fades to the modal card's own background (`theme().panel`), not to black: the band has to
-/// look like the card surface swallowing the row, and any other colour reads as a shadow
-/// sitting on top of the list.
-pub struct ScrollFadeTile {
-    pub edge: FadeEdge,
-}
-
-impl Widget for ScrollFadeTile {
-    fn render(self, _area: Rect, c: &mut Canvas) -> Result<()> {
-        match self.edge {
-            FadeEdge::Top => c.painter.fill_vertical_fade(theme().panel, 0xff, 0x00),
-            FadeEdge::Bottom => c.painter.fill_vertical_fade(theme().panel, 0x00, 0xff),
-        }
-        Ok(())
-    }
-}
-
-impl TileWidget for ScrollFadeTile {
-    fn size(&self, _fonts: &Fonts) -> (u32, u32) {
-        (SCROLL_FADE_TILE_W, SCROLL_FADE_H)
-    }
-}

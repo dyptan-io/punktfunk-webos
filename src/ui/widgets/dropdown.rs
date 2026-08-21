@@ -7,6 +7,13 @@ use anyhow::Result;
 /// Row height of one dropdown option — also `render_dropdown_option_tile`'s tile size.
 pub const DROPDOWN_OPTION_H: u32 = 56;
 
+/// Left/right inset of an option's label inside the popup.
+const DROPDOWN_OPTION_INSET: i32 = 20;
+
+/// The popup's own fill, darker than the shared glass: it hangs over the lit settings row it
+/// opened from, and at the glass alpha the row's text reads straight through the options.
+const DROPDOWN_FILL: Color = Color::RGBA(0x17, 0x11, 0x28, 0xf6);
+
 /// The expanded dropdown: its options as an overlay list anchored below the opener row.
 /// One panel background+shadow instead of per-row cards, to avoid shadow smearing.
 /// Renders every option unfocused, like the row lists: the focused one composites over it
@@ -29,7 +36,7 @@ impl Widget for DropdownOverlay<'_> {
             area.width(),
             self.options.len() as u32 * DROPDOWN_OPTION_H,
         );
-        c.painter.popup_panel(bg_rect, Color::RGBA(0xff, 0xff, 0xff, 0x20));
+        c.painter.panel_in(bg_rect, CARD_RADIUS, DROPDOWN_FILL);
         for (i, opt) in self.options.iter().enumerate() {
             c.dropdown_option(opt, false, dropdown_option_rect(area, i))?;
         }
@@ -84,22 +91,17 @@ impl Canvas<'_, '_> {
         }
         let font = self.fonts.value;
         let y = row_rect.y() + (row_rect.height() as i32 - self.fonts.raster.height(font)) / 2;
-        self.text(
+        let x = row_rect.x() + DROPDOWN_OPTION_INSET;
+        // Faded, on the app's one edge ramp: an option is whatever the host named it, and a
+        // long one used to run out over the popup's rounded edge and its shadow.
+        self.text_faded(
             font,
             option,
-            row_rect.x() + 20,
+            x,
             y,
+            (row_rect.right() - x - DROPDOWN_OPTION_INSET).max(0) as u32,
             if focused { theme().text } else { theme().muted },
         )?;
         Ok(())
-    }
-}
-
-impl Painter {
-    /// Common popup panel chrome: shadowed dark background with colored border.
-    pub fn popup_panel(&mut self, rect: Rect, border_color: Color) {
-        self.card_shadow(rect, CARD_RADIUS);
-        self.fill_rounded_rect(rect, CARD_RADIUS, Color::RGBA(0x17, 0x11, 0x28, 0xf6));
-        self.stroke_rounded_rect(rect, CARD_RADIUS, border_color, 1.5);
     }
 }

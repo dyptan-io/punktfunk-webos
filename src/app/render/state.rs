@@ -33,6 +33,7 @@ pub(crate) struct RenderState {
     pub(crate) hover_close: bool,
     pub(crate) sidebar_gen: u64,
     pub(crate) sidebar_dirty: bool,
+    /// Set when the frosted theme is switched: every tile that baked a glass fill is stale,
     pub(crate) evicted_tiles: Vec<TileId>,
     pub(crate) modal: modal::ModalState,
     pub(crate) grid: grid::GridState,

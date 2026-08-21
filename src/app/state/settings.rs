@@ -129,7 +129,12 @@ impl App {
             MenuEvent::Back => {
                 match set {
                     menu::SettingsScope::Global => self.persist(),
-                    menu::SettingsScope::Game => self.persist_game_settings(),
+                    menu::SettingsScope::Game => {
+                        self.persist_game_settings();
+                        // The card submenu that raised this screen is still up behind it (see
+                        // `handle_card_menu_event`); this is where it goes away.
+                        self.close_card_menu();
+                    }
                 }
                 self.nav.screen = Screen::Home;
             }

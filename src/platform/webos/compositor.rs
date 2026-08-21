@@ -11,10 +11,10 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use sdl2::pixels::PixelFormatEnum;
-use sdl2::render::{BlendMode, Canvas, Texture, TextureCreator};
+use sdl2::render::{BlendMode, Canvas, ScaleMode, Texture, TextureCreator};
 use sdl2::video::{Window, WindowContext};
 
-use crate::ui::render::{Color, DrawCmd, Rect, TileId};
+use crate::ui::render::{Color, Corners, DrawCmd, FrostMask, FrostPane, Rect, TileId};
 use crate::ui::Painter;
 
 fn to_sdl_rect(r: Rect) -> sdl2::rect::Rect {
@@ -63,6 +63,237 @@ pub struct Compositor {
     /// The composed premultiplied blend mode, probed once — `None` until probed, `Some(None)`
     /// if the renderer refused it.
     premultiplied: Option<Option<sdl2::sys::SDL_BlendMode>>,
+    /// Everything [`DrawCmd::Frost`] needs, built the first frame one appears. `None` until
+    /// then — but a focused grid card frosts its own title strip, so in the menu that is the
+    /// first frame with focus, and a screen's worth of render target is allocated for the rest
+    /// of the session. Only a stream that never returns to the menu avoids it.
+    frost: Option<Frost>,
+}
+
+/// Frosted glass, entirely in the sampler: the layers under the first frosted card are drawn
+/// into [`Chain::backdrop`] instead of the default framebuffer, minified twice (each bilinear
+/// copy is a box filter over the texels it merges), then magnified back under the card and
+/// masked to its rounded shape.
+///
+/// Nothing is read back. `glReadPixels` off the default framebuffer is the obvious way to get
+/// the pixels under a dialog and it stalls the pipeline for milliseconds on this chip; a CPU
+/// box blur over a card-sized region is worse again (~4M read-modify-writes on a soft-float
+/// core). Both were rejected for this.
+struct Frost {
+    /// The blur chain, or `None` on a renderer with no render targets or no [`mask_blend`] —
+    /// the frost then degrades to a flat rounded fill of the caller's fallback colour.
+    chain: Option<Chain>,
+    /// Alpha masks, each with the shape it was rasterized for. Keyed off the pane's *unscaled*
+    /// shape, so a card's focus zoom never touches one.
+    ///
+    /// A handful rather than one: a single frame draws the modal card's pane and the two
+    /// scroll-edge fades', at three different shapes, so one slot would rebuild and re-upload
+    /// all three every frame.
+    masks: Vec<(Texture, MaskKey)>,
+}
+
+/// What makes one frost mask reusable for another pane.
+type MaskKey = (u32, u32, FrostMask);
+
+/// How many masks and scratches are kept, keyed by shape. Three shapes is the busiest frame
+/// there is — a modal card over a focused card's title strip, or over the taller submenu panel
+/// grown out of it — and the spare absorbs a modal cross-fade on top of that. Note the
+/// eviction in [`slot_for`] is FIFO, not LRU, so a fourth live shape would thrash.
+const FROST_SLOTS: usize = 4;
+
+/// Index of `key` in `slots`, building it with `build` and evicting the oldest entry when the
+/// cache is full. Shared by the mask and scratch caches, which differ only in what they hold.
+fn slot_for<K: PartialEq>(
+    slots: &mut Vec<(Texture, K)>,
+    key: K,
+    build: impl FnOnce() -> Result<Texture>,
+) -> Result<usize> {
+    if let Some(i) = slots.iter().position(|(_, k)| *k == key) {
+        return Ok(i);
+    }
+    let tex = build()?;
+    if slots.len() == FROST_SLOTS {
+        let (old, _) = slots.remove(0);
+        // SAFETY: `unsafe_textures`; the evicted texture has just left the only vec holding it.
+        unsafe { old.destroy() };
+    }
+    slots.push((tex, key));
+    Ok(slots.len() - 1)
+}
+
+struct Chain {
+    /// This frame composed up to the first frosted card — the blur's source, and what gets
+    /// blitted to the screen in place of those commands.
+    backdrop: Texture,
+    /// `backdrop` minified once per [`FROST_STEPS`] entry, each off the one before. The last
+    /// is what every frosted card samples.
+    levels: Vec<Texture>,
+    /// The output size these were built for.
+    screen: (u32, u32),
+    /// The scratches a pane's blur is magnified into and masked in, each at one shape's size.
+    /// Cached in the same number as the masks, and for the same reason.
+    scratches: Vec<(Texture, (u32, u32))>,
+    /// [`mask_blend`], composed once and accepted by this renderer.
+    mask_mode: sdl2::sys::SDL_BlendMode,
+}
+
+/// The blur chain's minification steps, each applied to the level before it — cumulative
+/// divisors 4, 8, 16 and 32, which are the blur widths a [`FrostPane`] can ask for. Steps of 2
+/// past the first rather than one big jump: a bilinear sample only ever averages the 2x2 texels
+/// around it, so a single large minification point-samples and aliases instead of blurring.
+/// Each extra link costs one copy of a texture that is already tiny.
+const FROST_STEPS: [u32; 4] = [4, 2, 2, 2];
+
+/// `dst.rgb` untouched, `dst.a *= src.a` — the rounded-rect mask, applied over an already
+/// drawn blur.
+///
+/// Alpha only, rather than multiplying the whole texel: that leaves the scratch in *straight*
+/// alpha, so the masked result composites back with the ordinary [`BlendMode::Blend`] instead
+/// of depending on the premultiplied mode this renderer may have refused ([`premultiplied_blend`]).
+fn mask_blend() -> sdl2::sys::SDL_BlendMode {
+    use sdl2::sys::{SDL_BlendFactor, SDL_BlendOperation};
+    // SAFETY: as `premultiplied_blend` — a pure value computation, no renderer state.
+    unsafe {
+        sdl2::sys::SDL_ComposeCustomBlendMode(
+            SDL_BlendFactor::SDL_BLENDFACTOR_ZERO,
+            SDL_BlendFactor::SDL_BLENDFACTOR_ONE,
+            SDL_BlendOperation::SDL_BLENDOPERATION_ADD,
+            SDL_BlendFactor::SDL_BLENDFACTOR_ZERO,
+            SDL_BlendFactor::SDL_BLENDFACTOR_SRC_ALPHA,
+            SDL_BlendOperation::SDL_BLENDOPERATION_ADD,
+        )
+    }
+}
+
+/// A render target that samples smoothly and overwrites rather than blends — every link in
+/// the blur chain.
+fn blur_target(creator: &TextureCreator<WindowContext>, w: u32, h: u32) -> Result<Texture> {
+    let mut tex = creator
+        .create_texture_target(PixelFormatEnum::RGBA32, w.max(1), h.max(1))
+        .map_err(|e| anyhow::anyhow!("frost target {w}x{h}: {e}"))?;
+    tex.set_scale_mode(ScaleMode::Linear);
+    tex.set_blend_mode(BlendMode::None);
+    Ok(tex)
+}
+
+impl Chain {
+    fn new(
+        creator: &TextureCreator<WindowContext>,
+        (w, h): (u32, u32),
+        mask_mode: sdl2::sys::SDL_BlendMode,
+    ) -> Result<Self> {
+        let mut size = (w, h);
+        let mut levels = Vec::with_capacity(FROST_STEPS.len());
+        for step in FROST_STEPS {
+            size = (size.0.div_ceil(step), size.1.div_ceil(step));
+            levels.push(blur_target(creator, size.0, size.1)?);
+        }
+        Ok(Self {
+            backdrop: blur_target(creator, w, h)?,
+            levels,
+            screen: (w, h),
+            scratches: Vec::new(),
+            mask_mode,
+        })
+    }
+
+    /// The scratch at exactly `(w, h)`, built on first use at that size.
+    fn scratch_for(&mut self, creator: &TextureCreator<WindowContext>, w: u32, h: u32) -> Result<usize> {
+        slot_for(&mut self.scratches, (w, h), || blur_target(creator, w, h))
+    }
+
+    /// Which chain level a pane should read: the most minified one no wider than the `blur` it
+    /// asked for. Returns the level's index, its cumulative divisor and its size.
+    ///
+    /// The pane's request decides this and nothing else — deliberately not its size. Sizing the
+    /// blur to the pane made a card's one-line title strip and the tall submenu it grows into
+    /// land on different levels, so the frost visibly changed the instant the panel opened,
+    /// which is the one thing a surface growing out of another must not do. A pane too short to
+    /// hold the spread it asked for magnifies a texel or two into a near-flat wash, and that is
+    /// the correct answer: a 32px blur across a 50px band *is* flat.
+    fn level_for(&self, blur: u32) -> (Option<usize>, u32, (u32, u32)) {
+        // Seeded on the backdrop, not on level 0: a request finer than the first step samples
+        // the unminified frame — no blur, the honest degradation, where naming level 0 anyway
+        // would pair its texture with the *screen's* dimensions and read a src rect from far
+        // outside it.
+        let mut chosen = (None, 1, self.screen);
+        let mut div = 1;
+        let mut size = self.screen;
+        for (i, step) in FROST_STEPS.iter().enumerate() {
+            div *= step;
+            size = (size.0.div_ceil(*step), size.1.div_ceil(*step));
+            if div > blur {
+                break;
+            }
+            chosen = (Some(i), div, size);
+        }
+        chosen
+    }
+
+    /// `rect`, in screen pixels, expressed in the texels of the level `div`/`(w, h)` describe
+    /// and clipped to it.
+    fn blurred_src(&self, rect: Rect, div: u32, size: (u32, u32)) -> Rect {
+        let div = div as i32;
+        texel_rect(
+            rect.x() / div,
+            rect.y() / div,
+            (rect.right() + div - 1) / div,
+            (rect.bottom() + div - 1) / div,
+            size,
+        )
+    }
+
+    fn textures(self) -> impl Iterator<Item = Texture> {
+        std::iter::once(self.backdrop)
+            .chain(self.levels)
+            .chain(self.scratches.into_iter().map(|(t, _)| t))
+    }
+}
+
+impl Frost {
+    /// Probes what this renderer can actually do, once. A refusal is not an error: the frost
+    /// has a flat fallback, and a modal is still a modal without a blur behind it.
+    fn probe(canvas: &Canvas<Window>, creator: &TextureCreator<WindowContext>) -> Self {
+        let mode = mask_blend();
+        let ok = canvas.render_target_supported()
+            && probe_blend_mode(creator.create_texture_target(PixelFormatEnum::RGBA32, 1, 1).ok(), mode);
+        let chain = ok
+            .then(|| canvas.output_size().ok())
+            .flatten()
+            .and_then(|size| Chain::new(creator, size, mode).ok());
+        tracing::info!("frosted modals: {}", chain.is_some());
+        Self {
+            chain,
+            masks: Vec::new(),
+        }
+    }
+
+    /// The chain, rebuilt if the output size moved under it. `None` where this renderer has no
+    /// blur at all.
+    fn chain_for(&mut self, creator: &TextureCreator<WindowContext>, size: (u32, u32)) -> Option<&mut Chain> {
+        let chain = self.chain.as_mut()?;
+        if chain.screen != size {
+            let mode = chain.mask_mode;
+            let fresh = Chain::new(creator, size, mode).ok()?;
+            for tex in std::mem::replace(chain, fresh).textures() {
+                // SAFETY: `unsafe_textures`; the replaced chain has left the field.
+                unsafe { tex.destroy() };
+            }
+        }
+        Some(chain)
+    }
+
+    fn destroy(self) {
+        // SAFETY: `unsafe_textures`; `self` is consumed, so nothing can reach these again.
+        for tex in self
+            .chain
+            .into_iter()
+            .flat_map(Chain::textures)
+            .chain(self.masks.into_iter().map(|(t, _)| t))
+        {
+            unsafe { tex.destroy() };
+        }
+    }
 }
 
 /// The `(alpha, colour)` mod a draw list's per-tile fade `alpha` becomes.
@@ -112,6 +343,19 @@ fn premultiplied_blend() -> sdl2::sys::SDL_BlendMode {
 /// The safe wrapper's `BlendMode` enum has no variant for a composed mode, so this is the one
 /// place that goes through `sdl2::sys`. The GLES2 backend answers via its `SupportsBlendMode`
 /// hook, so a refusal is a real "this renderer can't" rather than an error to propagate.
+/// Whether this renderer accepts `mode`, asked of a throwaway 1x1 `probe` so the answer is
+/// known before any real pixels are uploaded on the strength of it. The caller picks the
+/// texture kind, because a static texture and a render target can be answered differently.
+fn probe_blend_mode(probe: Option<Texture>, mode: sdl2::sys::SDL_BlendMode) -> bool {
+    probe.is_some_and(|probe| {
+        let ok = set_raw_blend_mode(&probe, mode);
+        // SAFETY: `unsafe_textures` makes destruction the owner's job; this probe was never
+        // stored anywhere, so this is its only destroy.
+        unsafe { probe.destroy() };
+        ok
+    })
+}
+
 fn set_raw_blend_mode(tex: &Texture, mode: sdl2::sys::SDL_BlendMode) -> bool {
     // SAFETY: `tex.raw()` is a live texture owned by `self.tiles`, and `SDL_SetTextureBlendMode`
     // only reads the mode value.
@@ -143,6 +387,7 @@ impl Compositor {
             pool: Vec::new(),
             staging: Vec::new(),
             premultiplied: None,
+            frost: None,
         }
     }
 
@@ -194,16 +439,8 @@ impl Compositor {
             return cached;
         }
         let mode = premultiplied_blend();
-        let supported = creator
-            .create_texture_static(PixelFormatEnum::RGBA32, 1, 1)
-            .ok()
-            .is_some_and(|probe| {
-                let ok = set_raw_blend_mode(&probe, mode);
-                // SAFETY: `unsafe_textures` makes destruction the owner's job; this probe was
-                // never stored anywhere, so this is its only destroy.
-                unsafe { probe.destroy() };
-                ok
-            });
+        let supported =
+            probe_blend_mode(creator.create_texture_static(PixelFormatEnum::RGBA32, 1, 1).ok(), mode);
         tracing::info!("premultiplied texture blending: {supported}");
         let resolved = supported.then_some(mode);
         self.premultiplied = Some(resolved);
@@ -296,7 +533,7 @@ impl Compositor {
                     self.staging.extend_from_slice(px);
                 } else {
                     // premultiplied -> straight: c * 255 / a, rounded (not floored) so the
-                    // round-trip doesn't bias colours down — see `fill_vertical_fade`. Through
+                    // round-trip doesn't bias colours down — see `painter::fade_step`. Through
                     // the reciprocal table rather than a divide: this core has no vector
                     // integer divide and a scalar `udiv` costs multiple cycles, three per
                     // pixel over as much as a full screen.
@@ -328,6 +565,9 @@ impl Compositor {
         for tex in tiles.chain(self.pool.drain(..).map(|(_, t)| t)) {
             unsafe { tex.destroy() };
         }
+        if let Some(frost) = self.frost.take() {
+            frost.destroy();
+        }
     }
 
     /// Releases tile's GPU texture. Needed for windowed card tiles when they scroll out of
@@ -354,11 +594,93 @@ impl Compositor {
 
     /// Executes one frame's draw list. The caller has already cleared the canvas
     /// to the background color.
+    ///
+    /// A list containing a [`DrawCmd::Frost`] is split in two: everything under the first
+    /// frosted card is drawn into an offscreen copy the blur can sample, that copy is blitted
+    /// to the screen in place of those commands, and the rest of the list runs normally. A
+    /// list without one — every in-stream frame — takes the same path it always did.
     pub fn present(&mut self, canvas: &mut Canvas<Window>, cmds: &[DrawCmd]) -> Result<()> {
         // A `Fill` needs alpha blending on the canvas itself; every caller sets the mode it
         // wants before calling, so leaving one behind would silently blend the *next* frame's
         // clear. Restored below rather than set per command — the canvas keeps the state.
         let entry_blend = canvas.blend_mode();
+        let Some(first_frost) = cmds.iter().position(|c| matches!(c, DrawCmd::Frost(_))) else {
+            self.run(canvas, cmds, None, None)?;
+            canvas.set_blend_mode(entry_blend);
+            return Ok(());
+        };
+        // The clear the caller just did, so the offscreen copy starts from the same ground.
+        let clear = canvas.draw_color();
+        let creator = canvas.texture_creator();
+        let size = canvas.output_size().map_err(|e| anyhow::anyhow!("output size: {e}"))?;
+        // Out of `self` for the duration: the blur's textures and the tile textures are drawn
+        // in the same calls, and `with_texture_canvas` wants its target exclusively.
+        let mut frost = match self.frost.take() {
+            Some(frost) => frost,
+            None => Frost::probe(canvas, &creator),
+        };
+        // Every exit from here puts `frost` back before propagating: dropping it on an error
+        // path would leak a screen's worth of textures per failing frame, since the next
+        // frame would probe and build a fresh one.
+        let result = self.frosted_frame(canvas, cmds, first_frost, clear, &creator, size, &mut frost);
+        self.frost = Some(frost);
+        result?;
+        canvas.set_blend_mode(entry_blend);
+        Ok(())
+    }
+
+    /// [`present`](Self::present)'s frosted path: capture the under-layers offscreen, minify
+    /// them twice, blit the capture back in their place, then run the rest of the list — the
+    /// frost commands in it now have something to sample.
+    #[allow(clippy::too_many_arguments)]
+    fn frosted_frame(
+        &mut self,
+        canvas: &mut Canvas<Window>,
+        cmds: &[DrawCmd],
+        first_frost: usize,
+        clear: sdl2::pixels::Color,
+        creator: &TextureCreator<WindowContext>,
+        size: (u32, u32),
+        frost: &mut Frost,
+    ) -> Result<()> {
+        let rest = if let Some(chain) = frost.chain_for(creator, size) {
+            let Chain { backdrop, levels, .. } = chain;
+            let mut err = None;
+            canvas
+                .with_texture_canvas(backdrop, |c| {
+                    c.set_draw_color(clear);
+                    c.clear();
+                    err = self.run(c, &cmds[..first_frost], None, None).err();
+                })
+                .map_err(|e| anyhow::anyhow!("frost backdrop: {e}"))?;
+            if let Some(e) = err {
+                return Err(e);
+            }
+            // Down the chain, then the copy that replaces the commands just captured.
+            let mut src: &Texture = backdrop;
+            for level in levels.iter_mut() {
+                copy_into(canvas, level, src, None)?;
+                src = level;
+            }
+            canvas
+                .copy(backdrop, None, None)
+                .map_err(|e| anyhow::anyhow!("frost backdrop blit: {e}"))?;
+            &cmds[first_frost..]
+        } else {
+            cmds
+        };
+        self.run(canvas, rest, Some(creator), Some(frost))
+    }
+
+    /// One frame's commands against whatever target is bound. `creator`/`frost` are `Some`
+    /// only on the on-screen pass — the offscreen backdrop pass never contains a frost.
+    fn run(
+        &mut self,
+        canvas: &mut Canvas<Window>,
+        cmds: &[DrawCmd],
+        creator: Option<&TextureCreator<WindowContext>>,
+        mut frost: Option<&mut Frost>,
+    ) -> Result<()> {
         for cmd in cmds {
             match cmd {
                 DrawCmd::Tex { tile, dst, alpha } => {
@@ -394,9 +716,144 @@ impl Compositor {
                         .fill_rect(Some(to_sdl_rect(*rect)))
                         .map_err(|e| anyhow::anyhow!("fill: {e}"))?;
                 }
+                DrawCmd::Frost(pane) => {
+                    if let (Some(creator), Some(frost)) = (creator, frost.as_deref_mut()) {
+                        draw_frost(canvas, creator, frost, pane)?;
+                    }
+                }
             }
         }
-        canvas.set_blend_mode(entry_blend);
         Ok(())
     }
+}
+
+/// `src` scaled into the whole of the render-target texture `dst`, or into `src_rect` of it.
+fn copy_into(canvas: &mut Canvas<Window>, dst: &mut Texture, src: &Texture, src_rect: Option<Rect>) -> Result<()> {
+    let mut err = None;
+    canvas
+        .with_texture_canvas(dst, |c| {
+            err = c.copy(src, src_rect.map(to_sdl_rect), None).err();
+        })
+        .map_err(|e| anyhow::anyhow!("frost target: {e}"))?;
+    err.map_or(Ok(()), |e| Err(anyhow::anyhow!("frost copy: {e}")))
+}
+
+/// One frosted pane: the blurred backdrop magnified back over `pane.at`, cut to the pane's
+/// rounded shape, and the visible part of that blitted to `pane.dst`. Falls back to a flat
+/// fill of the same shape where the renderer has no blur chain.
+fn draw_frost(
+    canvas: &mut Canvas<Window>,
+    creator: &TextureCreator<WindowContext>,
+    frost: &mut Frost,
+    pane: &FrostPane,
+) -> Result<()> {
+    let (w, h) = (pane.shape.w, pane.shape.h);
+    if w == 0 || h == 0 || pane.alpha == 0 || pane.dst.width() == 0 || pane.dst.height() == 0 {
+        return Ok(());
+    }
+    let Frost { chain, masks } = frost;
+    let mask_i = slot_for(masks, (w, h, pane.mask), || frost_mask(creator, w, h, pane.mask))?;
+    let Some(chain) = chain else {
+        // No blur here, so a pane that only exists to re-lay one has nothing to say.
+        let Some(fallback) = pane.fallback else {
+            return Ok(());
+        };
+        let (mask, _) = &mut masks[mask_i];
+        mask.set_blend_mode(BlendMode::Blend);
+        mask.set_alpha_mod(pane.alpha);
+        mask.set_color_mod(fallback.r, fallback.g, fallback.b);
+        return canvas
+            .copy(
+                &*mask,
+                Some(to_sdl_rect(visible_src(pane))),
+                Some(to_sdl_rect(pane.dst)),
+            )
+            .map_err(|e| anyhow::anyhow!("frost fallback: {e}"));
+    };
+    let scratch_i = chain.scratch_for(creator, w, h)?;
+    let (level, div, size) = chain.level_for(pane.blur);
+    let src = chain.blurred_src(pane.at, div, size);
+    let mask_mode = chain.mask_mode;
+    let Chain {
+        backdrop,
+        levels,
+        scratches,
+        ..
+    } = chain;
+    let blurred: &Texture = level.map_or(backdrop, |i| &levels[i]);
+    let (scratch, _) = &mut scratches[scratch_i];
+    // The whole shape, not just the visible window: the scratch is shape-sized and cached, so
+    // blurring all of it costs one fixed copy instead of a per-frame resize during a wipe.
+    copy_into(canvas, scratch, blurred, Some(src))?;
+    let (mask, _) = &masks[mask_i];
+    set_raw_blend_mode(mask, mask_mode);
+    let mut err = None;
+    canvas
+        .with_texture_canvas(scratch, |c| {
+            err = c.copy(mask, None, None).err();
+        })
+        .map_err(|e| anyhow::anyhow!("frost mask target: {e}"))?;
+    if let Some(e) = err {
+        return Err(anyhow::anyhow!("frost mask copy: {e}"));
+    }
+    scratch.set_blend_mode(BlendMode::Blend);
+    scratch.set_alpha_mod(pane.alpha);
+    canvas
+        .copy(
+            &*scratch,
+            Some(to_sdl_rect(visible_src(pane))),
+            Some(to_sdl_rect(pane.dst)),
+        )
+        .map_err(|e| anyhow::anyhow!("frost blit: {e}"))
+}
+
+/// One pane's alpha mask, at its unscaled shape size. White throughout — only the alpha is read
+/// on the masking path, and the fallback's colour mod wants an unmodified base.
+fn frost_mask(creator: &TextureCreator<WindowContext>, w: u32, h: u32, mask: FrostMask) -> Result<Texture> {
+    const WHITE: Color = Color::RGBA(0xff, 0xff, 0xff, 0xff);
+    let mut p = Painter::new(w, h);
+    let shape = match mask.corners {
+        Corners::All => Rect::new(0, 0, w, h),
+        // Grown past the top edge so only the bottom pair of corners lands on the mask — the
+        // same trick `ui::widgets::bottom_rounded` plays on the tiles.
+        Corners::Bottom => Rect::new(0, -mask.radius, w, h + mask.radius as u32),
+    };
+    p.fill_rounded_rect(shape, mask.radius, WHITE);
+    let mut tex = creator
+        .create_texture_static(PixelFormatEnum::RGBA32, w, h)
+        .map_err(|e| anyhow::anyhow!("frost mask {w}x{h}: {e}"))?;
+    tex.update(None, p.data(), w as usize * 4)
+        .map_err(|e| anyhow::anyhow!("frost mask upload: {e}"))?;
+    Ok(tex)
+}
+
+/// `pane.dst` as a rect in the pane's own shape-sized texels — where the visible window falls
+/// within the whole shape, undoing whatever zoom `at` carries.
+fn visible_src(pane: &FrostPane) -> Rect {
+    let (aw, ah) = (i64::from(pane.at.width().max(1)), i64::from(pane.at.height().max(1)));
+    let map = |v: i32, span: i64, extent: u32| ((i64::from(v) * i64::from(extent)) / span) as i32;
+    texel_rect(
+        map(pane.dst.x() - pane.at.x(), aw, pane.shape.w),
+        map(pane.dst.y() - pane.at.y(), ah, pane.shape.h),
+        map(pane.dst.right() - pane.at.x(), aw, pane.shape.w),
+        map(pane.dst.bottom() - pane.at.y(), ah, pane.shape.h),
+        (pane.shape.w, pane.shape.h),
+    )
+}
+
+/// The edges `x`/`y`/`right`/`bottom` as a rect inside a `(w, h)` texture, never empty.
+///
+/// The origin clamps to `w - 1`, not `w`: a card scrolled clear of the viewport maps past the
+/// last texel, and `clamp(x + 1, w)` panics the moment its min exceeds its max. Leaving one
+/// texel of room turns that into a degenerate sample instead of a crash.
+fn texel_rect(x: i32, y: i32, right: i32, bottom: i32, (w, h): (u32, u32)) -> Rect {
+    let (w, h) = (w.max(1) as i32, h.max(1) as i32);
+    let x = x.clamp(0, w - 1);
+    let y = y.clamp(0, h - 1);
+    Rect::new(
+        x,
+        y,
+        (right.clamp(x + 1, w) - x) as u32,
+        (bottom.clamp(y + 1, h) - y) as u32,
+    )
 }

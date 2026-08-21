@@ -36,10 +36,9 @@ pub const SCROLL_INDICATOR: TileId = TileId(11);
 /// scrolling inside the baked window invalidates nothing. Settings does not use it: its rows
 /// are a tile each (see [`settings_row`]), so one changed value repaints one row.
 pub const SCROLL_CONTENT: TileId = TileId(12);
-/// The bottom scroll-edge alpha ramp, stretched to each list's width.
-pub const SCROLL_FADE: TileId = TileId(13);
-/// Its mirror, for the top edge.
-pub const SCROLL_FADE_TOP: TileId = TileId(14);
+// 13 and 14 were the scroll-edge ramp tiles. The fade now ramps the content's own alpha
+// (`compose::push_faded`), so there is no band tile to bake; the ids stay retired rather than
+// reused, since the rest of the table is written out by number.
 /// The connecting screen's wide backdrop. One slot: only one launch is ever in flight, and
 /// a new hero replaces the old texture rather than joining it.
 pub const HERO: TileId = TileId(15);
@@ -65,9 +64,9 @@ pub const MODAL_PREV: TileId = TileId(23);
 /// — About's [`SCROLL_CONTENT`] frozen, or the settings rows stitched into one buffer.
 pub const MODAL_PREV_CONTENT: TileId = TileId(24);
 /// The focused card's submenu panel — [`CARD_TITLE`] grown to carry the Pin/Settings rows.
-/// Its own slot rather than a second shape for `CARD_TITLE`, so it can be baked *ahead* of
-/// the hold that shows it: it costs a full-card art rescale plus a blur, and paying that at
-/// the moment the panel starts rising is what made the rise stutter.
+/// Its own slot rather than a second shape for `CARD_TITLE`, so it can be baked ahead of the
+/// hold that shows it, along with the rows and title tiles keyed with it. The blur under it
+/// is the compositor's (`DrawCmd::Frost`); this tile is the glass tint alone.
 pub const CARD_MENU: TileId = TileId(25);
 /// That panel's row icons and labels, on their own transparent tile. Composited *after* the
 /// selection band, which is a translucent darkening: baked into [`CARD_MENU`] the text would

@@ -49,6 +49,9 @@ impl Notification {
 /// Padding inside the notification panel.
 const NOTIFICATION_PAD: i32 = 18;
 
+/// Corner radius of the notification panel.
+const NOTIFICATION_RADIUS: i32 = 14;
+
 /// Single-line notification panel, styled like the stats overlay's glass background.
 pub struct NotificationTile<'a> {
     pub font: FontId,
@@ -57,13 +60,12 @@ pub struct NotificationTile<'a> {
 
 impl Widget for NotificationTile<'_> {
     fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
+        // The same glass every menu surface is cut from. It used to mix its own near-black
+        // fill — the menu's own background hue — which made it a same-colour box on that
+        // screen and needed a much brighter stroke to stay legible. The shared fill sits
+        // clearly above the background on its own, so the shared hairline is enough.
         c.painter
-            .fill_rounded_rect(area, 14, Color::RGBA(0x14, 0x10, 0x1f, 0x90));
-        // The fill is the same near-black hue as the menu's own background (`ui::BG`), so over
-        // that screen it's a same-color-on-same-color box — a light stroke keeps the panel
-        // legible there, not just over the stream's video content.
-        c.painter
-            .stroke_rounded_rect(area, 14, Color::RGBA(0xff, 0xff, 0xff, 0x40), 1.5);
+            .glass_face(area, NOTIFICATION_RADIUS, crate::ui::style::glass_fill());
         c.text(self.font, self.text, NOTIFICATION_PAD, NOTIFICATION_PAD, theme().text)?;
         Ok(())
     }

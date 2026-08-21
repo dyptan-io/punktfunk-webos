@@ -265,7 +265,9 @@ impl Canvas<'_, '_> {
     ) -> Result<i32> {
         let (label, value) = (self.fonts.label, self.fonts.value);
         let (text_x, subtitle_y, max_w) = modal_header_geometry(self.fonts.raster, label, card);
-        self.text(label, title, text_x, card.y() + 28, title_color)?;
+        // Faded to the same width the subtitle wraps at: a title carrying a game's name is
+        // as long as the host says it is, and it has nowhere to wrap to.
+        self.text_faded(label, title, text_x, card.y() + 28, max_w, title_color)?;
         self.text_wrapped(
             value,
             subtitle,

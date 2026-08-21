@@ -117,6 +117,9 @@ pub(super) struct ConfirmDialog {
     /// The focused button's press dip, playing out over the close fade it starts.
     press: crate::ui::animation::Press,
     tc: crate::ui::text::TextCache,
+    /// Whether the shell tile currently baked is the glass one. Compared against what
+    /// [`Self::draw`] is passed, so toggling the Frosted theme with the dialog up rebuilds it.
+    glass: bool,
 }
 
 impl ConfirmDialog {
@@ -136,6 +139,7 @@ impl ConfirmDialog {
             focus_anim: None,
             press: crate::ui::animation::Press::default(),
             tc: crate::ui::text::TextCache::new(),
+            glass: false,
         }
     }
 
@@ -259,19 +263,24 @@ impl ConfirmDialog {
 
     /// Uploads any dirty tiles and appends this dialog's overlay (scrim + shell +
     /// popped focus button) for the current fade frame. No-op when nothing shows.
+    ///
+    /// `glass` frosts the card, for the menu loop, whose backdrop is in the framebuffer and so
+    /// can be blurred; the streaming loop passes `false` (see `ConfirmDialogShellTile::glass`).
     pub(super) fn draw(
         &mut self,
         compositor: &mut Compositor,
         texture_creator: &sdl2::render::TextureCreator<sdl2::video::WindowContext>,
         fonts: &crate::ui::text::Fonts<'_>,
-        w: u32,
-        h: u32,
+        screen: crate::ui::render::Size,
+        glass: bool,
         cmds: &mut Vec<DrawCmd>,
     ) -> Result<()> {
         let Some((focus, m, _closing)) = self.frame(MODAL_FADE) else {
             return Ok(());
         };
+        let (w, h) = (screen.w, screen.h);
         let full = crate::ui::render::Rect::new(0, 0, w, h);
+        self.shell_dirty |= std::mem::replace(&mut self.glass, glass) != glass;
         if self.shell_dirty {
             self.shell_dirty = false;
             let shell = crate::ui::rasterize(
@@ -281,13 +290,14 @@ impl ConfirmDialog {
                     title: self.title,
                     subtitle: self.subtitle,
                     buttons: &self.buttons,
+                    glass,
                 },
                 &mut self.tc,
                 fonts,
             )?;
             compositor.upload(texture_creator, tile::DISCONNECT_DIALOG, &shell, false)?;
         }
-        let (_, content) = crate::ui::tiles::confirm_dialog_layout(w, h, fonts, self.subtitle);
+        let (card, content) = crate::ui::tiles::confirm_dialog_layout(w, h, fonts, self.subtitle);
         let btn_rect = crate::ui::widgets::confirm_button_rect(content, focus);
         if self.focus_dirty {
             self.focus_dirty = false;
@@ -317,6 +327,20 @@ impl ConfirmDialog {
             rect: full,
             color: crate::ui::render::Color::RGBA(0, 0, 0, (f32::from(crate::ui::style::theme().scrim.a) * m) as u8),
         });
+        if glass {
+            // Under the shell tile, which supplies the tint and the border — the same pairing
+            // `App::push_frost` makes for the `Screen` modals.
+            cmds.push(DrawCmd::Frost(Box::new(crate::ui::render::FrostPane::whole(
+                card.offset(0, dy),
+                crate::ui::render::FrostMask {
+                    radius: crate::ui::widgets::MODAL_RADIUS,
+                    corners: crate::ui::render::Corners::All,
+                },
+                crate::ui::render::FROST_BLUR,
+                (255.0 * m) as u8,
+                Some(crate::ui::style::theme().panel),
+            ))));
+        }
         cmds.push(DrawCmd::Tex {
             tile: tile::DISCONNECT_DIALOG,
             dst: shell_dst,

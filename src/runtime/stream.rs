@@ -617,8 +617,8 @@ pub(super) fn run_inner() -> Result<()> {
                     &mut compositor,
                     &texture_creator,
                     &fonts,
-                    display_mode.w as u32,
-                    display_mode.h as u32,
+                    crate::ui::render::Size::new(display_mode.w as u32, display_mode.h as u32),
+                    false,
                     &mut cmds,
                 )?;
                 canvas.set_blend_mode(sdl2::render::BlendMode::None);

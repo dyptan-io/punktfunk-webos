@@ -6,7 +6,7 @@
 use crate::app::render::tile;
 use crate::app::{
     hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP, CARD_POP_SHRINK, LAUNCH_GROWTH,
-    MODAL_FADE, MODAL_FADE_OUT, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD,
+    MODAL_FADE, MODAL_FADE_OUT, MODAL_TILE_PAD, PIN_BADGE_MARGIN, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD,
     SCROLL_INDICATOR_TILE_W, STATUS_BG_PAD,
 };
 use crate::ui;
@@ -15,6 +15,17 @@ use crate::ui::render::{DrawCmd, Rect};
 
 /// How far a modal card slides down as it fades out (and up as it fades in), in px.
 const MODAL_RISE: f32 = 26.0;
+
+/// How tall each step of an edge fade's alpha ramp is. Every step is one `TexCropped` with its
+/// own alpha, and SDL cannot batch across an alpha-mod change, so this divides `SCROLL_FADE_H`
+/// (92px) into the command count each band costs *per frame it is on screen*: 8 gives ~12 steps
+/// a band, ~32 alpha apart. Fine enough to read as a gradient at TV distance, half the commands
+/// of the 4 it started at. Drop it back if banding shows on the panel.
+const FADE_STEP: u32 = 8;
+
+/// A scrolling viewport's two edge fade bands, top then bottom, each present only while there
+/// is content past that edge — the fade *is* the "there is more" signal.
+type Fades = [Option<Rect>; 2];
 
 impl App {
     /// Assembles the read-only view of state the render path consumes (see
@@ -78,6 +89,7 @@ impl App {
         if let Some((alpha, prev)) = closing {
             let dy = ((1.0 - alpha) * MODAL_RISE) as i32;
             let a = (255.0 * alpha) as u8;
+            self.push_frost(cmds, prev.region.offset(0, dy), a);
             cmds.push(DrawCmd::Tex {
                 tile: tile::MODAL_PREV,
                 dst: prev.region.offset(0, dy),
@@ -92,6 +104,32 @@ impl App {
                 });
             }
         }
+    }
+
+    /// The frosted-glass pane under a modal card: the compositor blurs what this frame has
+    /// already drawn and masks it to the card's own rounded shape, so the translucent
+    /// `panel_glass` fill in the tile above lands on blurred backdrop rather than on a sharp
+    /// one. `tile_region` is the card grown by [`MODAL_TILE_PAD`] for its shadow, so the
+    /// shape comes back out of it by the same pad — frosting the padding would put a blurred
+    /// square behind the shadow.
+    ///
+    /// Menu only. The in-stream dialogs never reach here (`main.rs` composes those), which is
+    /// what keeps the frost off a frame whose video lives on a hardware plane the blur cannot
+    /// see anyway.
+    fn push_frost(&self, cmds: &mut Vec<DrawCmd>, tile_region: Rect, alpha: u8) {
+        if alpha == 0 || !self.settings_ui.settings.frosted {
+            return;
+        }
+        cmds.push(DrawCmd::Frost(Box::new(ui::render::FrostPane::whole(
+            tile_region.inflate(-MODAL_TILE_PAD),
+            ui::render::FrostMask {
+                radius: ui::widgets::MODAL_RADIUS,
+                corners: ui::render::Corners::All,
+            },
+            ui::render::FROST_BLUR,
+            alpha,
+            Some(ui::style::theme().panel),
+        ))));
     }
 
     /// The open modal itself: its card, its scrollable content, an open dropdown and the
@@ -114,6 +152,7 @@ impl App {
         // `compose_modal`'s closing snapshot uses below, in reverse — fade + rise, no
         // scale.
         let modal_base = self.render.modal.tile_region.offset(0, dy);
+        self.push_frost(cmds, modal_base, (255.0 * m) as u8);
         cmds.push(DrawCmd::Tex {
             tile: tile::MODAL,
             dst: modal_base,
@@ -128,45 +167,37 @@ impl App {
             let alpha = (255.0 * m) as u8;
             // Settings' body is one tile per row (see `tile::settings_row`), so it is
             // placed row by row; every other scrolling modal crops its single baked tile.
-            if matches!(screen, Screen::Settings(_)) {
-                Self::push_settings_rows(cmds, total, content, scroll_px, dy, alpha);
-            } else if let Some((src, dst)) = self.scroll_src_rect(screen, screen_w, screen_h, fonts) {
-                cmds.push(DrawCmd::TexCropped {
-                    tile: tile::SCROLL_CONTENT,
-                    src,
-                    dst: dst.offset(0, dy),
-                    alpha,
-                });
-            }
-            // Bottom fade, only while rows remain below the viewport — it is the
-            // "there is more" signal, so it has to vanish exactly when scrolling has
-            // reached the end, or it reads as content that can never be got to.
+            // The viewport's edge fades, resolved before the content is pushed: they ramp the
+            // content's own alpha rather than being painted over it (see `push_faded`).
             //
-            // Pushed here, between the content and the focused-row tile below, on
-            // purpose: focus must never look dimmed just because it sits on the last
-            // visible row, and an open dropdown (pushed next) must cover the band
-            // rather than show through it.
-            // Keyed off pixels, not rows: at either end of the list the offset is clamped
-            // mid-row, so a row-based test would keep claiming there is more beyond.
-            let fade_h = ui::widgets::SCROLL_FADE_H.min(content.height());
-            if scroll_px > 0 {
-                cmds.push(DrawCmd::Tex {
-                    tile: tile::SCROLL_FADE_TOP,
-                    dst: Rect::new(content.x(), content.y() + dy, content.width(), fade_h),
-                    alpha: (255.0 * m) as u8,
-                });
-            }
-            if scroll_px < Self::max_scroll_px(total, stride, content.height()) {
-                cmds.push(DrawCmd::Tex {
-                    tile: tile::SCROLL_FADE,
-                    dst: Rect::new(
+            // Shown only while there is something past that edge — the fade is the "there is
+            // more" signal, so it has to vanish exactly when scrolling reaches the end, or it
+            // reads as content that can never be got to. Keyed off pixels, not rows: at either
+            // end the offset is clamped mid-row, so a row-based test would keep claiming there
+            // is more beyond.
+            // Halved, not just clamped: at full height the two bands overlap in a viewport
+            // shorter than twice a band, and `push_faded` takes the first match — so the
+            // bottom edge would ramp content *in* and hard-clip where it should dissolve.
+            let fade_h = ui::widgets::SCROLL_FADE_H.min(content.height() / 2);
+            // Top band then bottom, each present only while there is content past that edge.
+            // A stack array, not a `Vec`: this runs every frame a modal is open.
+            let fades = &[
+                (scroll_px > 0).then(|| Rect::new(content.x(), content.y() + dy, content.width(), fade_h)),
+                (scroll_px < Self::max_scroll_px(total, stride, content.height())).then(|| {
+                    Rect::new(
                         content.x(),
                         content.y() + dy + (content.height() - fade_h) as i32,
                         content.width(),
                         fade_h,
-                    ),
-                    alpha: (255.0 * m) as u8,
-                });
+                    )
+                }),
+            ];
+            // Settings' body is one tile per row (see `tile::settings_row`), so it is
+            // placed row by row; every other scrolling modal crops its single baked tile.
+            if matches!(screen, Screen::Settings(_)) {
+                Self::push_settings_rows(cmds, total, content, scroll_px, dy, alpha, fades);
+            } else if let Some((src, dst)) = self.scroll_src_rect(screen, screen_w, screen_h, fonts) {
+                Self::push_faded(cmds, tile::SCROLL_CONTENT, src, dst.offset(0, dy), alpha, fades);
             }
         }
         // An open dropdown's panel and its focused option, resolved once — the two are
@@ -283,7 +314,15 @@ impl App {
         }
     }
 
-    fn push_settings_rows(cmds: &mut Vec<DrawCmd>, total: usize, content: Rect, scroll_px: i32, dy: i32, alpha: u8) {
+    fn push_settings_rows(
+        cmds: &mut Vec<DrawCmd>,
+        total: usize,
+        content: Rect,
+        scroll_px: i32,
+        dy: i32,
+        alpha: u8,
+        fades: &Fades,
+    ) {
         let viewport = content.offset(0, dy);
         for i in 0..total {
             let Some(id) = tile::settings_row(i) else { break };
@@ -293,12 +332,63 @@ impl App {
             let Some((src, visible)) = Self::clip_tile(dst, viewport, content.width(), ui::widgets::FOCUS_ROW_H) else {
                 continue;
             };
-            cmds.push(DrawCmd::TexCropped {
-                tile: id,
-                src,
-                dst: visible,
-                alpha,
-            });
+            Self::push_faded(cmds, id, src, visible, alpha, fades);
+        }
+    }
+
+    /// One crop of scrolled content, sliced and alpha-ramped where it crosses a viewport edge
+    /// fade. See [`Fades`]: the top band fades content *in* down its height, the bottom out.
+    ///
+    /// The fade used to be a band of card glass painted over the outgoing row. On the frosted
+    /// theme that band is a second frosted surface — its own blur, its own tint, sampled and
+    /// masked separately — and its seams showed against the card it was supposed to be part
+    /// of. Dissolving the *content* instead adds no surface at all: the row thins out into
+    /// whatever the card already is, on either theme, and there is nothing left to seam.
+    fn push_faded(
+        cmds: &mut Vec<DrawCmd>,
+        tile: ui::render::TileId,
+        src: Rect,
+        dst: Rect,
+        alpha: u8,
+        fades: &Fades,
+    ) {
+        let strip = |y: i32, h: u32, alpha: u8| DrawCmd::TexCropped {
+            tile,
+            src: Rect::new(src.x(), src.y() + (y - dst.y()), src.width(), h),
+            dst: Rect::new(dst.x(), y, dst.width(), h),
+            alpha,
+        };
+        let mut y = dst.y();
+        while y < dst.bottom() {
+            let band = fades
+                .iter()
+                .enumerate()
+                .filter_map(|(i, b)| b.map(|b| (i == 0, b)))
+                .find(|(_, b)| y >= b.y() && y < b.bottom());
+            let Some((dense_top, band)) = band else {
+                // Clear of every band: one command up to the next one, not a run of strips.
+                let next = fades
+                    .iter()
+                    .flatten()
+                    .map(Rect::y)
+                    .filter(|&top| top > y)
+                    .chain(std::iter::once(dst.bottom()))
+                    .min()
+                    .unwrap_or(dst.bottom());
+                cmds.push(strip(y, (next - y) as u32, alpha));
+                y = next;
+                continue;
+            };
+            let h = FADE_STEP.min((dst.bottom() - y) as u32).min((band.bottom() - y) as u32);
+            // The app's one edge ramp, so this reads as the label fade turned ninety degrees.
+            let mid = (y + h as i32 / 2 - band.y()).max(0) as usize;
+            let eased = ui::painter::fade_step(mid, band.height() as usize);
+            let eased = if dense_top { eased } else { 255 - eased };
+            let a = ((u16::from(alpha) * u16::from(eased)) / 255) as u8;
+            if a > 0 {
+                cmds.push(strip(y, h, a));
+            }
+            y += h as i32;
         }
     }
 
@@ -506,6 +596,44 @@ impl App {
         }
     }
 
+    /// The blur under a focused card's glass, whether that is the one-line title strip or the
+    /// submenu panel grown out of it: the card as this frame has already composed it —
+    /// zoomed, scrolled, whatever art finished loading — blurred and cut to the card's own
+    /// rounded bottom edge.
+    ///
+    /// Gated on the Frosted theme setting like [`push_frost`](Self::push_frost). The strip
+    /// stays readable with it off because `ui::widgets::card_glass` goes opaque at the same
+    /// time — a blur is what lets a *translucent* strip carry a title over cover art, so the
+    /// two have to move together or the title lands on bare art.
+    ///
+    /// This is also where the switch earns its cost: a focused card pushes a pane on every
+    /// menu frame, and that is what makes the compositor capture and minify the whole screen.
+    ///
+    /// `panel_h` is the glass's full height and `shown` how much of it the wipe has revealed,
+    /// both unscaled. The mask and the blur scratch are built at the unscaled size and the
+    /// zoom is applied in the blit, so a focus pop rebuilds neither (see `FrostPane::shape`).
+    fn push_card_frost(&self, cmds: &mut Vec<DrawCmd>, r: Rect, card_scale: f32, panel_h: u32, shown: u32, alpha: u8) {
+        if !self.settings_ui.settings.frosted {
+            return;
+        }
+        let panel = Rect::new(r.x(), r.bottom() - panel_h as i32, r.width(), panel_h);
+        let window = Rect::new(r.x(), r.bottom() - shown as i32, r.width(), shown);
+        cmds.push(DrawCmd::Frost(Box::new(ui::render::FrostPane {
+            shape: ui::render::Size::new(r.width(), panel_h),
+            at: ui::animation::scale_about(panel, r, card_scale),
+            dst: ui::animation::scale_about(window, r, card_scale),
+            mask: ui::render::FrostMask {
+                radius: ui::widgets::CARD_RADIUS,
+                corners: ui::render::Corners::Bottom,
+            },
+            blur: ui::render::FROST_BLUR,
+            alpha,
+            // The flat fallback where this renderer has no blur: the glass tint above still
+            // covers the art, just without softening it.
+            fallback: Some(ui::style::theme().panel),
+        })));
+    }
+
     /// The focused card's title strip, or the taller submenu panel a hold grew out of it.
     /// `pop` and `card_scale` are the card's own transform: everything here rides the card
     /// rather than animating on its own, or the frost drifts off the cover baked into it.
@@ -552,9 +680,7 @@ impl App {
                 // `r.bottom() - (panel_h - y)`, and the revealed window is
                 // `[panel_h - shown, panel_h]`.
                 let window_top = (panel_h - shown) as i32;
-                // The frost can only wipe — it carries a fragment of the card's cover
-                // baked in for the blur, and translating that reads as the card
-                // sliding under the glass.
+                self.push_card_frost(cmds, r, card_scale, panel_h, shown, (255.0 * pop) as u8);
                 cmds.push(DrawCmd::TexCropped {
                     tile: tile::CARD_MENU,
                     src: Rect::new(0, window_top, r.width(), shown),
@@ -578,29 +704,27 @@ impl App {
                     alpha: (255.0 * pop) as u8,
                 });
                 let rows_top = window_top + title_h as i32;
-                // The selection sits under the row text, not over it: the band is a
-                // darkening, so a label drawn beneath it would dim with the frost.
+                // The selection sits under the row text, not over it: the band is an opaque
+                // surface fill, so a label drawn beneath it would be covered outright.
                 // It rides `rows_top` too, staying on its row for the whole rise.
                 if let Some((band, tile)) = self
                     .card_menu_band(r, panel_h, shown, rows_top)
                     .zip(tiles.get(tile::CARD_MENU_BAND))
                 {
-                    // The bottom row's band ends on the card's own rounded edge, so it
-                    // comes from the band tile's rounded half; any higher row is square
-                    // all round and comes from its square half (see
-                    // `render_card_menu_band_tile`). Cropped from the bottom of
-                    // whichever half, since the rise clips the band's *top*.
-                    let half = tile.height() / 2;
-                    let src_bottom = if band.bottom() >= r.bottom() { 2 * half } else { half };
+                    // The rise clips the band's *top*, so this crops from the bottom of the
+                    // tile: the band's own height plus `ROW_TILE_PAD` on every side, which is
+                    // the margin its shadow lives in (see `CardMenuBandTile`).
+                    let pad = ui::tiles::ROW_TILE_PAD;
+                    let row_h = ui::widgets::CARD_MENU_ROW_H;
                     cmds.push(DrawCmd::TexCropped {
                         tile: tile::CARD_MENU_BAND,
                         src: Rect::new(
                             0,
-                            src_bottom.saturating_sub(band.height()) as i32,
+                            row_h.saturating_sub(band.height()) as i32,
                             tile.width(),
-                            band.height(),
+                            band.height() + 2 * pad as u32,
                         ),
-                        dst: ui::animation::scale_about(band, r, card_scale),
+                        dst: ui::animation::scale_about(band.inflate(pad), r, card_scale),
                         alpha: (255.0 * pop) as u8,
                     });
                 }
@@ -625,6 +749,7 @@ impl App {
                 let wipe = ui::animation::anim_frac(self.render.focus_anim, ui::animation::CARD_FOCUS_POP);
                 let shown = (strip_h as f32 * wipe) as u32;
                 if shown > 0 {
+                    self.push_card_frost(cmds, r, card_scale, strip_h, shown, (255.0 * pop) as u8);
                     cmds.push(DrawCmd::TexCropped {
                         tile: tile::CARD_TITLE,
                         src: Rect::new(0, (strip_h - shown) as i32, r.width(), shown),

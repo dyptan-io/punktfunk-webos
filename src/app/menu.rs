@@ -148,9 +148,12 @@ pub enum ExpRow {
     /// Locked whenever [`exp_row_lock`] returns a reason. Always listed, locked rather than
     /// hidden when it can't be used.
     GameMode,
+    /// Frosted glass menus (`Settings::frosted`). Never locked — the compositor falls back to
+    /// flat fills on its own where it can't blur, so the row is safe to offer everywhere.
+    Frosted,
 }
 
-pub const EXP_ROWS: [ExpRow; 2] = [ExpRow::HwAudio, ExpRow::GameMode];
+pub const EXP_ROWS: [ExpRow; 3] = [ExpRow::HwAudio, ExpRow::GameMode, ExpRow::Frosted];
 
 /// Diagnostics modal row indices (see `app::view::diagnostics::rows`). Log level keeps
 /// index 0 so its dropdown's `(Screen, row)` tile key stays stable.
@@ -219,7 +222,7 @@ pub(crate) fn exp_row_lock(row: ExpRow, rooted: Option<bool>) -> Option<ExpRowLo
     match (row, rooted) {
         (ExpRow::GameMode, None) => Some(ExpRowLock::RootUnknown),
         (ExpRow::GameMode, Some(false)) => Some(ExpRowLock::NotRooted),
-        (ExpRow::GameMode, Some(true)) | (ExpRow::HwAudio, _) => None,
+        (ExpRow::GameMode, Some(true)) | (ExpRow::HwAudio | ExpRow::Frosted, _) => None,
     }
 }
 

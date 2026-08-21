@@ -497,6 +497,18 @@ pub struct Settings {
     /// no working Red button then has no other way to left-click. Off also means no added
     /// wait on the release.
     pub cursor_gestures: bool,
+    /// Draw the modals as frosted glass: translucent cards over a blurred copy of what they
+    /// cover (`ui::render::DrawCmd::Frost`), instead of flat opaque panels. On by default.
+    ///
+    /// Modals only. A grid card's title strip and its submenu stay frosted either way — the
+    /// blur is what lets the game's own cover show through a strip that still has to carry a
+    /// legible title.
+    ///
+    /// Experimental because the blur wants render targets and a composed blend mode, and which
+    /// webOS generations give it both is not something a spec answers — the compositor probes
+    /// and logs `frosted modals: <bool>`, and this is the switch for anyone whose set says
+    /// true and still doesn't like what it costs. Applies live; nothing here rides a stream.
+    pub frosted: bool,
 }
 
 impl Default for Settings {
@@ -522,6 +534,7 @@ impl Default for Settings {
             game_mode: false,
             ndl_audio_offload: false,
             cursor_gestures: false,
+            frosted: true,
         }
     }
 }

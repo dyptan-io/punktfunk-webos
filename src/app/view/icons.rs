@@ -33,6 +33,8 @@ pub const ICON_MOVIE: &str = "\u{E02C}";
 pub const ICON_VISIBILITY: &str = "\u{E8F4}";
 pub const ICON_SEND: &str = "\u{E163}";
 pub const ICON_GAMEPAD: &str = "\u{E338}";
+/// Material `palette` — the frosted-theme toggle.
+pub const ICON_PALETTE: &str = "\u{E40A}";
 pub const ICON_MOUSE: &str = "\u{E323}";
 pub const ICON_TOUCH: &str = "\u{E913}";
 
@@ -43,6 +45,7 @@ pub fn install_style() {
         crate::ui::style::Theme {
             bg: Color::RGB(0x14, 0x10, 0x1f),
             panel: Color::RGB(0x1c, 0x15, 0x30),
+            panel_glass: Color::RGBA(0x22, 0x19, 0x3c, 0xd8),
             surface: Color::RGB(0x2b, 0x21, 0x48),
             accent: Color::RGB(0x6c, 0x5b, 0xf3),
             accent_bright: Color::RGB(0xa7, 0x9f, 0xf8),
@@ -57,6 +60,7 @@ pub fn install_style() {
             ok: Color::RGB(0x5c, 0xd6, 0xa0),
             scrim: Color::RGBA(0x00, 0x00, 0x00, 0x80),
             rule: Color::RGBA(0xff, 0xff, 0xff, 0x1e),
+            glass_edge: Color::RGBA(0xff, 0xff, 0xff, 0x18),
         },
         crate::ui::style::Icons {
             close: ICON_CLOSE,

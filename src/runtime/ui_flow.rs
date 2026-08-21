@@ -489,8 +489,8 @@ pub(super) fn run_ui_flow(
                 compositor,
                 texture_creator,
                 fonts,
-                display_mode.w as u32,
-                display_mode.h as u32,
+                crate::ui::render::Size::new(display_mode.w as u32, display_mode.h as u32),
+                app.settings_ui.settings.frosted,
                 &mut cmds,
             )?;
             Ok(cmds)

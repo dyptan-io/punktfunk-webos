@@ -18,10 +18,12 @@ use anyhow::Result;
 use crate::ui::render::TileId;
 use crate::ui::Painter;
 
-/// The version of a tile that depends on nothing — built once, valid forever (a fade ramp,
-/// a focus ring at a fixed size). Distinct from any [`version`] output only by convention;
-/// nothing breaks if a real key happens to hash to it.
-pub const STATIC: u64 = 0;
+/// The version of a tile that depends on nothing but the palette — built once and valid until
+/// the style changes under it (a fade ramp, a focus ring at a fixed size). Distinct from any
+/// [`version`] output by the nudge there, which is what reserves this band.
+pub fn static_version() -> u64 {
+    crate::ui::style::style_epoch()
+}
 
 /// Hashes a tile's dependencies into the value [`TileStore`] compares against.
 ///
@@ -31,11 +33,14 @@ pub const STATIC: u64 = 0;
 /// compositing the tile differently instead.
 pub fn version(key: &impl Hash) -> u64 {
     let mut h = FxHasher::default();
+    // Every tile depends on the style whether it names it or not, so the epoch is mixed in
+    // here rather than left to each key to remember (see `ui::style::STYLE_EPOCH`).
+    crate::ui::style::style_epoch().hash(&mut h);
     key.hash(&mut h);
-    // `STATIC` is reserved for "depends on nothing"; nudge the one key that would collide
-    // with it so a real dependency can never be mistaken for a build-once tile.
+    // `static_version` is reserved for "depends on nothing but the palette"; nudge the one key
+    // that would collide with it so a real dependency is never mistaken for a build-once tile.
     match h.finish() {
-        STATIC => 1,
+        v if v == static_version() => v.wrapping_add(1),
         v => v,
     }
 }
@@ -177,12 +182,10 @@ impl TileStore {
         Ok(true)
     }
 
-    /// [`ensure`](Self::ensure) for a tile that is built once and never invalidated.
+    /// [`ensure`](Self::ensure) for a tile with no dependencies of its own — rebuilt only when
+    /// the style epoch moves (see [`static_version`]).
     pub fn ensure_static(&mut self, id: TileId, build: impl FnOnce() -> Result<Painter>) -> Result<bool> {
-        if self.contains(id) {
-            return Ok(false);
-        }
-        self.ensure(id, STATIC, build)
+        self.ensure(id, static_version(), build)
     }
 
     /// Reuses `id`'s existing pixmap as the scratch surface for its own rebuild — for a
@@ -272,13 +275,16 @@ mod tests {
 
     #[test]
     fn no_real_key_is_mistaken_for_a_build_once_tile() {
-        // `version` remaps the one input that would hash to `STATIC`; nothing else may return it.
+        // `version` remaps the one input that would hash to `static_version`; nothing else may
+        // return it. Hashes exactly as `version` does, style epoch included.
+        let target = static_version();
         let colliding = (0..5000u32).find(|i| {
             let mut h = FxHasher::default();
+            crate::ui::style::style_epoch().hash(&mut h);
             i.hash(&mut h);
-            h.finish() == STATIC
+            h.finish() == target
         });
-        assert!(colliding.is_none_or(|i| version(&i) != STATIC));
-        assert!((0..5000u32).all(|i| version(&i) != STATIC));
+        assert!(colliding.is_none_or(|i| version(&i) != target));
+        assert!((0..5000u32).all(|i| version(&i) != target));
     }
 }

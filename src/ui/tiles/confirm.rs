@@ -1,8 +1,8 @@
 //! The shared confirm-dialog shape: its geometry, its hit test, and its shell tile.
 //!
-//! Four modals wear it — forget host, send logs, wake, the in-stream disconnect/quit prompt —
-//! and the last of those runs in `runtime`, which has no `App`. So the geometry lives here,
-//! where both sides can reach it, and all four match by construction.
+//! Four modals wear it — forget host, send logs, wake, and the disconnect/quit prompts — and
+//! the last of those run in `runtime`, which has no `App`. So the geometry lives here, where
+//! both sides can reach it, and all four match by construction.
 use crate::ui::prelude::*;
 use anyhow::Result;
 
@@ -59,12 +59,21 @@ pub struct ConfirmDialogShellTile<'a> {
     pub title: &'a str,
     pub subtitle: &'a str,
     pub buttons: &'a [ConfirmButton<'a>; 2],
+    /// Draw the card as glass, for a caller that pushes a matching `DrawCmd::Frost` under it
+    /// (the menu's quit dialog). The in-stream prompts pass `false`: NDL video lives on a
+    /// hardware plane *below* the SDL surface, so it is not in the framebuffer and there is
+    /// nothing there to blur.
+    pub glass: bool,
 }
 
 impl Widget for ConfirmDialogShellTile<'_> {
     fn render(self, _area: Rect, c: &mut Canvas) -> Result<()> {
         let (card, content) = confirm_dialog_layout(self.screen_w, self.screen_h, c.fonts, self.subtitle);
-        c.painter.modal_card(card);
+        if self.glass {
+            c.painter.modal_card_glass(card);
+        } else {
+            c.painter.modal_card(card);
+        }
         // These dialogs are remote/controller-driven (no local pointer over the overlay), so the
         // X is a visual affordance only — always in the unhovered color.
         c.icon(modal_close_rect(card), icons().close, theme().muted)?;

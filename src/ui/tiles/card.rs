@@ -106,18 +106,13 @@ impl TileWidget for CardTile<'_> {
     }
 }
 
-/// The focused card's title strip, exactly card-wide.
-///
-/// Frost needs something to blur, so the card's own art is re-drawn here translated up by
-/// everything above the strip: the strip's slice of the cover lands at y 0 and the rest falls
-/// off the canvas, where tiny-skia clips it. One small blur per focus move — a fraction of the
-/// card build happening at that same rate — and nothing per frame, since the wipe is a crop of
-/// this tile (see `app::render::compose`).
+/// The focused card's title strip, exactly card-wide: the glass tint and the title, nothing
+/// else. The blur under it is a `DrawCmd::Frost` the compose path pushes at the same rect, so
+/// this tile carries no copy of the cover and rebuilds only when the title does.
 pub struct CardTitleTile<'a> {
     pub card_w: u32,
     pub card_h: u32,
     pub title: &'a str,
-    pub art: Option<&'a Pixmap>,
     pub overridden: bool,
 }
 
@@ -129,13 +124,8 @@ impl CardTitleTile<'_> {
 
 impl Widget for CardTitleTile<'_> {
     fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
-        let strip_h = area.height();
-        c.poster_art(
-            Rect::new(0, -((self.card_h - strip_h) as i32), self.card_w, self.card_h),
-            self.title,
-            self.art,
-        );
-        c.poster_title_strip(area, self.title, self.overridden)
+        c.poster_frost_panel(area, card_glass());
+        c.poster_strip_label(area, self.title, self.overridden, card_title_fg())
     }
 }
 

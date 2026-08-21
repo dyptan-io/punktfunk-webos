@@ -3,8 +3,8 @@ use crate::ui::render::{Color, Rect};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use tiny_skia::{
-    Color as SkColor, FillRule, FilterQuality, IntSize, Mask, Paint, PathBuilder, Pattern, Pixmap, PixmapPaint,
-    SpreadMode, Stroke, Transform,
+    Color as SkColor, FillRule, FilterQuality, IntSize, Paint, PathBuilder, Pattern, Pixmap, PixmapPaint, SpreadMode,
+    Stroke, Transform,
 };
 
 pub fn sk_color(c: Color) -> SkColor {
@@ -129,14 +129,6 @@ thread_local! {
     static GLOW_CACHE: RefCell<HashMap<GlowKey, Pixmap>> = RefCell::new(HashMap::new());
 }
 
-thread_local! {
-    /// `blur_rect`'s working buffers: the copied-out region and the one-channel scratch the
-    /// box blur passes over. Shared for the same reason the caches above are — a `Painter`
-    /// per tile means a field on `Painter` would be allocated fresh every time anyway, and a
-    /// full-screen frosted panel's region alone is ~8 MB to allocate and free per call.
-    static BLUR_SCRATCH: RefCell<(Vec<u8>, Vec<u8>)> = const { RefCell::new((Vec::new(), Vec::new())) };
-}
-
 impl Painter {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
@@ -198,43 +190,6 @@ impl Painter {
 
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         self.fill_rounded_rect(rect, 0, color);
-    }
-
-    /// Fills the whole pixmap with `color` under a vertical alpha ramp running from
-    /// `top_alpha` to `bottom_alpha` — the scroll-fade tiles (see
-    /// [`super::render_scroll_fade_tile`]). Reversing the two arguments gives the mirrored
-    /// ramp the top edge needs.
-    ///
-    /// Written straight into the buffer rather than through `fill_rect` per row: a
-    /// scanline-at-a-time gradient is exactly the "many small fills" shape that measured
-    /// ~300ms full-screen on this hardware (docs/NOTES.md), and going through the rasterizer buys
-    /// nothing for axis-aligned solid rows.
-    ///
-    /// Eased with smoothstep rather than a straight line or a square. Linear puts visible
-    /// tint across the whole band; squaring (the first attempt) held so much of the band near
-    /// clear that the fade barely read at all. Smoothstep is symmetric — half-strength at the
-    /// midpoint — with both ends easing out, so neither edge shows a seam.
-    pub fn fill_vertical_fade(&mut self, color: Color, top_alpha: u8, bottom_alpha: u8) {
-        let (w, h) = (self.pixmap.width(), self.pixmap.height());
-        let last_row = f32::from(u16::try_from(h.saturating_sub(1)).unwrap_or(u16::MAX)).max(1.0);
-        let row_bytes = w as usize * 4;
-        let (from, to) = (f32::from(top_alpha), f32::from(bottom_alpha));
-        for (y, row) in self.pixmap.data_mut().chunks_exact_mut(row_bytes).enumerate() {
-            let t = (y as f32 / last_row).clamp(0.0, 1.0);
-            let eased = crate::ui::animation::smoothstep(t);
-            let alpha = (from + (to - from) * eased).round().clamp(0.0, 255.0) as u8;
-            // Premultiplied, because that is what a tile's buffer holds and what the GPU is
-            // told to expect (docs/NOTES.md). Writing straight alpha here would show up as a
-            // fade that washes toward white at its dense end.
-            // Rounded, not truncated: flooring biases every channel down by a
-            // fraction of a level, and over the card the fade must reconstruct
-            // the panel colour exactly or it bands as a dark rectangle on OLED near-black.
-            let premul = |c: u8| (((u16::from(c) * u16::from(alpha)) + 127) / 255) as u8;
-            let px = [premul(color.r), premul(color.g), premul(color.b), alpha];
-            for pixel in row.chunks_exact_mut(4) {
-                pixel.copy_from_slice(&px);
-            }
-        }
     }
 
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: i32, color: Color) {
@@ -374,56 +329,13 @@ impl Painter {
         });
     }
 
-    /// Blurs the pixmap content already drawn within `rect`, in place (clamped to bounds).
-    pub fn blur_rect(&mut self, rect: Rect, radius: usize) {
-        if radius == 0 {
-            return;
-        }
-        let rect = self.off(rect);
-        let (pw, ph) = (self.pixmap.width() as i32, self.pixmap.height() as i32);
-        let x0 = rect.x().max(0);
-        let y0 = rect.y().max(0);
-        let x1 = (rect.x() + rect.width() as i32).min(pw);
-        let y1 = (rect.y() + rect.height() as i32).min(ph);
-        if x1 <= x0 || y1 <= y0 {
-            return;
-        }
-        let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
-        let row_bytes = w * 4;
-        let src_stride = pw as usize * 4;
-        let data = self.pixmap.data_mut();
-
-        BLUR_SCRATCH.with_borrow_mut(|(region, scratch)| {
-            // `resize` alone, no `clear()` first: every byte of both buffers is written before
-            // it is read (the copy loop below fills `region`; the horizontal pass fills
-            // `scratch`), so zeroing what is already there would be a full-size memset for
-            // nothing — the cost this scratch exists to avoid.
-            region.resize(row_bytes * h, 0);
-            scratch.resize(w * h, 0);
-
-            for y in 0..h {
-                let src = (y0 as usize + y) * src_stride + x0 as usize * 4;
-                region[y * row_bytes..(y + 1) * row_bytes].copy_from_slice(&data[src..src + row_bytes]);
-            }
-
-            for channel in 0..4 {
-                box_blur_channel(region, scratch, w, h, channel, radius);
-            }
-
-            for y in 0..h {
-                let dst = (y0 as usize + y) * src_stride + x0 as usize * 4;
-                data[dst..dst + row_bytes].copy_from_slice(&region[y * row_bytes..(y + 1) * row_bytes]);
-            }
-        });
-    }
-
     /// [`draw_pixmap`](Self::draw_pixmap) cut to `max_w`, its last [`FADE_EDGE_W`] px ramped
     /// out — how an overlong label says "this continues" without spending width on an
     /// ellipsis. A `src` that already fits is drawn untouched.
     ///
-    /// Smoothstep, premultiplied and rounded for the reasons on
-    /// [`fill_vertical_fade`](Self::fill_vertical_fade), which it can't share: this modulates
-    /// the buffer rather than filling it.
+    /// The ramp is [`fade_step`]'s, the same one the vertical scroll-edge fade runs on — this
+    /// one modulates the buffer where that one fills it, and runs along x rather than y, but
+    /// the curve and its easing are shared so the two read as one effect.
     pub fn draw_pixmap_faded(&mut self, x: i32, y: i32, src: &Pixmap, max_w: u32) {
         if src.width() <= max_w {
             self.draw_pixmap(x, y, src);
@@ -437,12 +349,8 @@ impl Painter {
         let w = max_w as usize;
         let fade = (FADE_EDGE_W as usize).min(w);
         // Per column, not per pixel: the ramp doesn't vary down the line.
-        let ramp: Vec<u16> = (0..fade)
-            .map(|i| {
-                let eased = crate::ui::animation::smoothstep((fade - i) as f32 / fade as f32);
-                (eased * 255.0).round().clamp(0.0, 255.0) as u16
-            })
-            .collect();
+        // Reversed: the ramp is dense where the label still reads and clear at the cut.
+        let ramp: Vec<u16> = (0..fade).map(|i| u16::from(fade_step(fade - 1 - i, fade))).collect();
         for row in cut.data_mut().chunks_exact_mut(w * 4) {
             for (pixel, &k) in row[(w - fade) * 4..].chunks_exact_mut(4).zip(&ramp) {
                 for b in pixel {
@@ -492,24 +400,6 @@ impl Painter {
         self.pixmap.draw_pixmap(0, 0, src.as_ref(), &paint, transform, None);
     }
 
-    /// Clears everything already drawn outside a rounded rect. `tiny_skia` has no clip
-    /// stack, so this is an alpha mask of the shape applied to the whole buffer after the
-    /// fact — not a path fill, which only ever touches pixels *inside* the path and so
-    /// leaves the corners it is supposed to be cutting away untouched.
-    ///
-    /// The title strip needs it: the frost blur smears opaque art back into the
-    /// transparent corners the art was rounded out of.
-    pub fn clip_to_rounded_rect(&mut self, rect: Rect, radius: i32) {
-        let Some(path) = rect_path(self.off(rect), radius) else {
-            return;
-        };
-        let Some(mut mask) = Mask::new(self.pixmap.width(), self.pixmap.height()) else {
-            return;
-        };
-        mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
-        self.pixmap.apply_mask(&mask);
-    }
-
     /// [`draw_pixmap_scaled`](Self::draw_pixmap_scaled) clipped to a rounded rect, so a
     /// cover fills its card with the card's own corners instead of square ones. Goes
     /// through a pattern-shaded path rather than a blit — more expensive, but paid once
@@ -538,6 +428,25 @@ impl Painter {
 /// Width of [`Painter::draw_pixmap_faded`]'s ramp: wide enough not to read as a hard cut,
 /// narrow enough to eat no more of the line than an ellipsis would.
 pub const FADE_EDGE_W: u32 = 28;
+
+/// Step `i` of `len` along the app's one edge-fade ramp, as an alpha in `0..=255` rising from
+/// clear to full.
+///
+/// Both fades run on it: [`Painter::draw_pixmap_faded`], which dissolves the tail of a label
+/// too wide for its row, and `app::render::compose`'s `push_faded`, which dissolves a
+/// partially scrolled row into the top or bottom of a modal's viewport. They differ only in
+/// axis and in what they modulate; sharing the curve is what makes them look like the same
+/// effect turned ninety degrees.
+///
+/// Smoothstep rather than a straight line or a square. Linear puts visible tint across the
+/// whole band; squaring (the first attempt) held so much of the band near clear that the fade
+/// barely read at all. Smoothstep is symmetric — half-strength at the midpoint — with both
+/// ends easing out, so neither edge shows a seam.
+pub fn fade_step(i: usize, len: usize) -> u8 {
+    let last = len.saturating_sub(1).max(1) as f32;
+    let eased = crate::ui::animation::smoothstep((i as f32 / last).clamp(0.0, 1.0));
+    (eased * 255.0).round().clamp(0.0, 255.0) as u8
+}
 
 /// How far a shadow's blur extends past the shape casting it, in px — a fixed
 /// constant (not derived from anything) picked to read as a soft TV-scale shadow.

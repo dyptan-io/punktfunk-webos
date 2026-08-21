@@ -6,6 +6,13 @@ use crate::core::event::MenuEvent;
 use crate::core::screen::{Screen, SettingsScope};
 
 impl App {
+    /// Applies `Settings::frosted` to `ui::style`, which bumps the style epoch and so stales
+    /// every tile that baked the old fill. Called on the toggle and once at startup, so the
+    /// two paths cannot disagree.
+    pub(crate) fn restyle(&self) {
+        crate::ui::style::set_frosted(self.settings_ui.settings.frosted);
+    }
+
     /// Probes root access for the Game mode row, once per launch — rooting can come and go
     /// between boots, so it is never persisted, and no screen but this one needs the answer.
     ///
@@ -102,6 +109,12 @@ impl App {
             {
                 let from = self.settings_ui.settings.game_mode;
                 self.settings_ui.settings.game_mode = !from;
+                self.arm_switch_anim(from);
+            }
+            (Some(menu::ExpRow::Frosted), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
+                let from = self.settings_ui.settings.frosted;
+                self.settings_ui.settings.frosted = !from;
+                self.restyle();
                 self.arm_switch_anim(from);
             }
             (_, MenuEvent::Back) => {

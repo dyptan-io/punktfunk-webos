@@ -3,49 +3,33 @@
 //! Baked as four pieces rather than one panel because each has to move differently while it
 //! opens:
 //!
-//! - the frost ([`CardMenuTile`]) can only *wipe*: it carries a fragment of the card's cover
-//!   baked in for the blur to work on, and translating that reads as the card sliding under the
-//!   glass;
+//! - the glass ([`CardMenuTile`]) can only *wipe*: it ends on the card's own rounded bottom
+//!   edge, so it has to stay flush to it while the window grows upward;
 //! - the title ([`CardMenuTitleTile`]) and the rows ([`CardMenuRowsTile`]) have to *travel*,
 //!   riding the top edge of the growing window — the title is already on screen at the card's
 //!   bottom before the menu opens, so it continues upward from there rather than restarting;
-//! - the band ([`CardMenuBandTile`]) is a translucent darkening, so text baked under it would
-//!   dim with the frost.
+//! - the band ([`CardMenuBandTile`]) is the focused row's raised surface, and it *slides*
+//!   between rows while the labels stay put.
 //!
 //! See `app::render::compose`, which is the one place those four motions are reconciled.
 use crate::ui::prelude::*;
+use crate::ui::tiles::{padded_size, ROW_TILE_PAD};
 use anyhow::Result;
-use tiny_skia::Pixmap;
 
-/// The frosted glass itself, and nothing else — no title, no row text. `title` and `rows` are
-/// here for the *sizing* they imply (the placeholder poster's text, the panel's height), not to
-/// be drawn.
+/// The glass tint itself, and nothing else — no title, no row text. `card_h`/`rows` are here
+/// for the *sizing* they imply (the panel's height), not to be drawn; the blur beneath is the
+/// compositor's `DrawCmd::Frost`.
 #[derive(Clone, Copy)]
 pub struct CardMenuTile<'a> {
     pub card_w: u32,
     pub card_h: u32,
-    pub title: &'a str,
-    pub art: Option<&'a Pixmap>,
     /// `(icon glyph, label)` per row.
     pub rows: &'a [(&'a str, &'a str)],
 }
 
 impl Widget for CardMenuTile<'_> {
     fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
-        let panel_h = area.height();
-        // Same trick as the title strip: the card's art re-drawn translated up by everything
-        // above the panel, so the frost blurs the cover it actually sits on.
-        c.poster_art(
-            Rect::new(
-                0,
-                -((self.card_h.saturating_sub(panel_h)) as i32),
-                self.card_w,
-                self.card_h,
-            ),
-            self.title,
-            self.art,
-        );
-        c.poster_frost_panel(area);
+        c.poster_frost_panel(area, card_glass());
         Ok(())
     }
 }
@@ -73,7 +57,7 @@ pub struct CardMenuTitleTile<'a> {
 
 impl Widget for CardMenuTitleTile<'_> {
     fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
-        c.poster_strip_label(area, self.title, false)
+        c.poster_strip_label(area, self.title, false, card_title_fg())
     }
 }
 
@@ -87,20 +71,23 @@ impl TileWidget for CardMenuTitleTile<'_> {
 }
 
 /// The submenu's icons and labels alone, on a transparent tile the width of the card — laid
-/// over the selection band so the band darkens the frost and nothing else. Every row draws
-/// identically (see [`Canvas::poster_menu_rows`]), so which row is focused is in no tile's cache
-/// key and moving between them rebuilds nothing.
+/// over the selection band so the band darkens the glass and nothing else. The focused row is
+/// drawn in the theme's focused text colour and the rest muted (see [`Canvas::poster_menu_rows`]),
+/// so unlike its three siblings this tile *is* keyed by focus — a row move rebuilds two short
+/// labels, which is what that costs now the panel carries no art.
 pub struct CardMenuRowsTile<'a> {
     pub card_w: u32,
     pub card_h: u32,
     pub rows: &'a [(&'a str, &'a str)],
     /// Which row wears the "has overrides" dot, if any.
     pub marked: Option<usize>,
+    /// The row drawn in the focused text colour.
+    pub focused: usize,
 }
 
 impl Widget for CardMenuRowsTile<'_> {
     fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
-        c.poster_menu_rows(area, self.rows, self.marked)
+        c.poster_menu_rows(area, self.rows, self.marked, self.focused)
     }
 }
 
@@ -117,33 +104,27 @@ impl TileWidget for CardMenuRowsTile<'_> {
     }
 }
 
-/// The selection band, the width of the card and *two* rows tall: a square-cornered row on top,
-/// a bottom-rounded one under it.
+/// The selection band: one row, drawn through [`Painter::selectable_fixed`] — the same
+/// shadowed, [`CARD_RADIUS`]-rounded [`Theme::surface`](crate::ui::style::Theme::surface) card
+/// a focused settings row is. Padded by [`ROW_TILE_PAD`] like [`FocusRowTile`](super::FocusRowTile),
+/// because a shadow needs somewhere to fall.
 ///
-/// A tile rather than a plain fill because the bottom row's band reaches the card's bottom edge,
-/// where square corners jut out past the card's rounded art ([`bottom_rounded`]). Both shapes on
-/// one tile so the compose path draws either from a single command — picking which half to crop,
-/// rather than branching between a texture and a fill that would have to keep their alpha in
-/// step (see `app::render::compose`).
+/// It used to be a square-cornered band with no shadow, in two halves — one square, one
+/// bottom-rounded for the row that ends on the card's own edge. Same fill as a settings row and
+/// yet visibly flatter, because the lift comes from the shadow and the corners, not the colour.
 pub struct CardMenuBandTile {
     pub card_w: u32,
 }
 
 impl Widget for CardMenuBandTile {
     fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
-        let row = Rect::new(0, 0, area.width(), CARD_MENU_ROW_H);
-        c.painter.fill_rect(row, CARD_MENU_ROW_FOCUS);
-        c.painter.fill_rounded_rect(
-            bottom_rounded(row.offset(0, CARD_MENU_ROW_H as i32)),
-            CARD_RADIUS,
-            CARD_MENU_ROW_FOCUS,
-        );
+        c.painter.selectable_fixed(area.inflate(-ROW_TILE_PAD), true);
         Ok(())
     }
 }
 
 impl TileWidget for CardMenuBandTile {
     fn size(&self, _fonts: &Fonts) -> (u32, u32) {
-        (self.card_w.max(1), 2 * CARD_MENU_ROW_H)
+        padded_size(self.card_w.max(1), CARD_MENU_ROW_H, ROW_TILE_PAD)
     }
 }

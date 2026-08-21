@@ -136,8 +136,12 @@ impl App {
                     self.toggle_focused_pin(screen_w, screen_h);
                 }
                 ROW_SETTINGS => {
+                    // Left open behind the screen it raises, unlike Pin: the per-game settings
+                    // modal is a step *into* this menu, and collapsing the panel underneath it
+                    // makes going back read as having landed somewhere else. `Screen::Settings`
+                    // owns every event while it is up (this handler runs on Home only), and
+                    // leaving it closes the menu — see `state::settings`' `MenuEvent::Back`.
                     let (pin_id, title) = (menu.pin_id.clone(), menu.title.clone());
-                    self.close_card_menu();
                     self.open_game_settings(&pin_id, &title);
                 }
                 _ => {}

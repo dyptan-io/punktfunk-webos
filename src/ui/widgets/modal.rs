@@ -65,11 +65,44 @@ impl Painter {
         self.fill_rect(Rect::new(x, y, width, 1), theme().rule);
     }
 
-    /// The modal card surface.
+    /// The modal card surface, opaque — for the in-stream dialogs, which have no frost
+    /// beneath them to show through (the video is on a hardware plane below the SDL
+    /// surface, so it is not in the framebuffer this composites into).
     pub fn modal_card(&mut self, rect: Rect) {
-        self.card_shadow(rect, MODAL_RADIUS);
-        self.fill_rounded_rect(rect, MODAL_RADIUS, theme().panel);
-        self.stroke_rounded_rect(rect, MODAL_RADIUS, Color::RGBA(0xff, 0xff, 0xff, 0x18), 1.5);
+        self.panel_in(rect, MODAL_RADIUS, theme().panel);
+    }
+
+    /// The same card in [`Theme::panel_glass`](crate::ui::style::Theme::panel_glass) — for a
+    /// menu modal, whose compositor draws a `DrawCmd::Frost` of the same rect and radius
+    /// underneath it.
+    pub fn modal_card_glass(&mut self, rect: Rect) {
+        self.glass_panel(rect, MODAL_RADIUS);
+    }
+
+    /// Every raised glass surface in the menus: a shadow, the shared
+    /// [`Theme::panel_glass`](crate::ui::style::Theme::panel_glass) fill and the shared
+    /// [`Theme::glass_edge`](crate::ui::style::Theme::glass_edge) hairline, at `radius`.
+    ///
+    /// The modal card, a dropdown's popup and a toast are the same material at different
+    /// sizes; each used to mix its own fill and its own white for the edge, which is only
+    /// invisible until two of them are on screen together.
+    pub fn glass_panel(&mut self, rect: Rect, radius: i32) {
+        self.panel_in(rect, radius, crate::ui::style::glass_fill());
+    }
+
+    /// [`Self::glass_panel`] in a fill of its own — for a surface that has to sit darker than
+    /// the shared glass, like the dropdown popup over a lit settings row.
+    pub fn panel_in(&mut self, rect: Rect, radius: i32, fill: Color) {
+        self.card_shadow(rect, radius);
+        self.glass_face(rect, radius, fill);
+    }
+
+    /// [`Self::glass_panel`] without the drop shadow — for a surface drawn into a tile sized to
+    /// the panel exactly, where every shadow pixel would fall outside the canvas or be
+    /// overpainted by the fill, and the blur that produced it is pure waste.
+    pub fn glass_face(&mut self, rect: Rect, radius: i32, fill: Color) {
+        self.fill_rounded_rect(rect, radius, fill);
+        self.stroke_rounded_rect(rect, radius, theme().glass_edge, 1.5);
     }
 }
 
@@ -78,9 +111,10 @@ impl Canvas<'_, '_> {
     /// screen's renderer draws before its own content inside `card`.
     ///
     /// No backdrop: the scrim behind the modal is a GPU fill in the composed frame (it fades
-    /// in with the modal), and this painter is the modal's own transparent tile.
+    /// in with the modal), and this painter is the modal's own transparent tile. The card is
+    /// glass — `compose_modal_card` pushes the matching `DrawCmd::Frost` under this tile.
     pub fn modal_shell(&mut self, card: Rect, hover_close: bool) -> Result<()> {
-        self.painter.modal_card(card);
+        self.painter.modal_card_glass(card);
         let color = if hover_close { theme().text } else { theme().muted };
         self.icon(modal_close_rect(card), icons().close, color)
     }

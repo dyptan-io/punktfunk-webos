@@ -264,7 +264,7 @@ impl App {
                 )?
             };
             let tile_id = self.render.grid.card_ids.id(&id);
-            tiles.put(tile_id, cache::STATIC, tile);
+            tiles.put(tile_id, cache::static_version(), tile);
             if self.render.grid.reveal.is_revealed() {
                 self.render.grid.arm_card_pop(&id, Instant::now());
             }
@@ -317,22 +317,23 @@ impl App {
         }
 
         // The focused card's title strip: its own tile, so the wipe in `draw_list` is
-        // a moving source/destination rect — one small blur per focus move instead of
-        // re-rasterizing the card every animation frame.
+        // a moving source/destination rect rather than a re-rasterize per animation
+        // frame. Tint and title only — the blur under it is the compositor's (see
+        // `Canvas::poster_frost_panel`), so the card's art is in neither the tile nor
+        // its key, and finished art no longer rebuilds the strip.
         if let HomeFocus::Grid(idx) = self.home_focus {
             if let Some(pin_id) = layout.pin_id_at(&self.library.games, idx) {
-                let (title, art) = self.grid_card_content(idx, columns);
+                let (title, _) = self.grid_card_content(idx, columns);
                 // Keyed by card identity like the card tiles themselves (`CardIds`),
                 // not by title — two games can share one.
                 let overridden = self.game_has_overrides(pin_id);
-                let version = cache::version(&(pin_id, card_w, card_h, art.is_some(), overridden));
+                let version = cache::version(&(pin_id, card_w, card_h, overridden));
                 if tiles.ensure(tile::CARD_TITLE, version, || {
                     ui::rasterize(
                         ui::tiles::CardTitleTile {
                             card_w,
                             card_h,
                             title,
-                            art,
                             overridden,
                         },
                         text_cache,
@@ -345,25 +346,29 @@ impl App {
                 // The submenu panel a hold raises: the same strip grown to carry the
                 // rows (see `ui::tiles::CardMenuTile`), on the same wipe.
                 //
-                // Built when the card takes focus, not when the menu opens — it costs a
-                // full-card art rescale plus a radius-6 blur, and paying that on the
-                // frame the rise starts is what made the panel appear to wait for the
-                // button to come back up. Held off until the grid has settled so a fast
-                // scroll doesn't pay it per card, unless a menu is already up (which
-                // can only happen on a settled grid anyway).
+                // Still built when the card takes focus rather than when the menu opens.
+                // It is only a tint now, but the rows and title tiles are keyed with it
+                // and they are not free, and having the whole set ready before the rise
+                // starts is what keeps the panel from appearing to wait for the button
+                // to come back up.
                 let menu_open = self.card_menu.as_ref().is_some_and(|m| m.pin_id == pin_id);
                 if menu_open || (self.render.grid.reveal.is_revealed() && !pending) {
                     let rows = self.card_menu_rows(pin_id);
-                    // No focused row in the key: the selection is a `DrawCmd::Fill` laid
-                    // over this tile, so moving between the menu's rows rebuilds nothing.
-                    let version = cache::version(&(pin_id, card_w, card_h, art.is_some(), &rows, overridden));
+                    // No focused row in this key: the selection band is composited over
+                    // these tiles, so moving between the menu's rows rebuilds none of them.
+                    // The labels are the exception — they carry the focused/muted split now,
+                    // and get their own key below.
+                    let version = cache::version(&(pin_id, card_w, card_h, &rows, overridden));
+                    let focused = self
+                        .card_menu
+                        .as_ref()
+                        .map_or(crate::app::state::cardmenu::ROW_PIN, |m| m.focused);
+                    let rows_version = cache::version(&(pin_id, card_w, card_h, &rows, overridden, focused));
                     if tiles.ensure(tile::CARD_MENU, version, || {
                         ui::rasterize(
                             ui::tiles::CardMenuTile {
                                 card_w,
                                 card_h,
-                                title,
-                                art,
                                 rows: &rows,
                             },
                             text_cache,
@@ -372,7 +377,7 @@ impl App {
                     })? {
                         updated.push(tile::CARD_MENU);
                     }
-                    if tiles.ensure(tile::CARD_MENU_ROWS, version, || {
+                    if tiles.ensure(tile::CARD_MENU_ROWS, rows_version, || {
                         ui::rasterize(
                             ui::tiles::CardMenuRowsTile {
                                 card_w,
@@ -381,6 +386,7 @@ impl App {
                                 // The dot follows what owns it: the title while the strip is
                                 // collapsed, the Settings row once the panel is up.
                                 marked: overridden.then_some(crate::app::state::cardmenu::ROW_SETTINGS),
+                                focused,
                             },
                             text_cache,
                             fonts,
