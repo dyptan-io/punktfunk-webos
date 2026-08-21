@@ -199,8 +199,12 @@ pub(super) fn run_inner() -> Result<()> {
         let audio = match connected.audio_channels() {
             None => None,
             Some(channels) => {
-                match crate::platform::webos::audio::AudioPlayer::new(&sdl_audio, channels, connected.sync_cells())
-                    .and_then(|(player, feed)| Ok((player, connected.spawn_audio_feed(feed)?)))
+                match crate::platform::webos::audio::AudioPlayer::new(
+                    &sdl_audio,
+                    channels,
+                    connected.audio_buffer_cell(),
+                )
+                .and_then(|(player, feed)| Ok((player, connected.spawn_audio_feed(feed)?)))
                 {
                     Ok(pair) => Some(pair),
                     Err(e) => {
@@ -801,8 +805,7 @@ pub(super) fn run_inner() -> Result<()> {
                     if connected.audio_route.on_ndl_plane() {
                         lines.push(format!("{} {layout} · NDL", connected.audio_route.overlay_tag()));
                     } else {
-                        let (buf_ms, av_ms) = connected.audio_stats();
-                        lines.push(format!("Opus SW {layout} · buf {buf_ms} ms · A/V {av_ms:+} ms"));
+                        lines.push(format!("Opus SW {layout} · buf {} ms", connected.audio_buffer_ms()));
                     }
                     if let Some(line) = cpu_mem_line {
                         lines.push(line);

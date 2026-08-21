@@ -124,8 +124,8 @@ pub struct FrameFlags {
     /// Host frame index, for logs only.
     pub index: u64,
     /// This feed is one PIECE of an access unit whose end has not arrived yet
-    /// (slice-progressive delivery — `punktfunk_core::session::FramePart`, opted into by
-    /// `Settings::ndl_frame_parts`). The decoder still takes the bytes; what a piece is NOT is a
+    /// (slice-progressive delivery — `punktfunk_core::session::FramePart`, on for every NDL v2
+    /// session). The decoder still takes the bytes; what a piece is NOT is a
     /// presentable frame, so the per-frame reference points hang off the piece that completes the
     /// AU instead. `false` for every feed on the whole-AU path.
     pub partial: bool,
@@ -282,10 +282,6 @@ pub struct SinkConfig {
     /// Where [`video_e2e_ns`] is published for the audio plane
     /// (`NativeClient::video_e2e_shared`). `0` = nothing on the glass yet.
     pub video_e2e: Arc<AtomicU64>,
-    /// Whether the host-PTS anchor may trim its standing lead — see
-    /// [`HostPtsAnchor::new`]. False on every session where the real audio stream rides NDL's
-    /// own audio plane, since audio stamps there cannot follow the video timeline downwards.
-    pub trim_pts_lead: bool,
 }
 
 /// Minimum spacing between [`SinkResult::NeedKeyframe`] results: the request travels on its own
@@ -329,7 +325,7 @@ impl NdlSink {
             player,
             stats,
             frame_interval_ns,
-            host_anchor: HostPtsAnchor::new(cfg.trim_pts_lead, frame_interval_ns),
+            host_anchor: HostPtsAnchor::new(frame_interval_ns),
             cfg,
             backlog_cached: None,
             backlog_recent: std::collections::VecDeque::with_capacity(CUSHION_MIN_POLLS),
@@ -488,7 +484,12 @@ impl NdlSink {
                 // no `ensure_loaded` guard of its own, so latching off a REJECTED frame turns the
                 // audio thread loose on a pipeline NDL hasn't loaded yet — which costs the session
                 // its audio outright.
-                self.player.latch_pts_offset(pts_ns, base_ns);
+                // Held back until the anchor's trim has settled: audio stamps ride this offset and
+                // can only move forward, so latching onto a mapping still being pulled earlier
+                // costs lip sync (see `HostPtsAnchor::ready_for_audio`).
+                if self.host_anchor.ready_for_audio() {
+                    self.player.latch_pts_offset(pts_ns, base_ns);
+                }
                 let decode_us = self
                     .cfg
                     .report_decode_latency

@@ -73,19 +73,16 @@ impl Connected {
     }
 
     /// The cells the A/V sync loop trades through — handed to the audio player at construction.
-    pub(crate) fn sync_cells(&self) -> crate::platform::webos::audio::SyncCells {
-        crate::platform::webos::audio::SyncCells {
-            clock_offset: self.client.clock_offset_shared(),
-            video_e2e: self.client.video_e2e_shared(),
-            av_offset_ms: self.client.audio_av_offset_shared(),
-            buffer_ms: self.client.audio_buffer_ms_shared(),
-        }
+    /// Where the fallback ring publishes its depth for the stats overlay. Owned by
+    /// `NativeClient` because the overlay reads it from there.
+    pub(crate) fn audio_buffer_cell(&self) -> std::sync::Arc<std::sync::atomic::AtomicU32> {
+        self.client.audio_buffer_ms_shared()
     }
 
-    /// Audio's two HUD figures: ring depth in ms, and the smoothed A/V offset in ms (positive =
-    /// audio playing behind the picture). Both are `0` until the sync loop has evidence.
-    pub(crate) fn audio_stats(&self) -> (u32, i64) {
-        (self.client.audio_buffer_ms(), self.client.audio_av_offset_ms())
+    /// The fallback ring's depth in ms, for the HUD. Always `0` on the NDL routes — NDL owns the
+    /// depth there and reports none.
+    pub(crate) fn audio_buffer_ms(&self) -> u32 {
+        self.client.audio_buffer_ms()
     }
 
     /// Starts the audio decode/feed thread. It exits on the session's stop flag, or when the

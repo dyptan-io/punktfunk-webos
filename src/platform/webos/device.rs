@@ -201,7 +201,14 @@ pub fn ndl_generation() -> NdlGeneration {
 /// `core::caps::install` so the wire, the UI and settings load can't disagree.
 pub fn video_caps() -> VideoCaps {
     match ndl_generation() {
-        NdlGeneration::V2 => VideoCaps::FULL,
+        // Audio rides NDL's own plane now, so the widest layout worth OFFERING is the widest that
+        // plane can deliver here — not the widest this client can decode. A TV whose Sound Out is
+        // stereo folds 5.1 down internally, and asking the host for it spends airlink and CPU on
+        // channels that never reach a speaker.
+        NdlGeneration::V2 => VideoCaps {
+            max_channels: super::ndl::audio_plane_max_channels(),
+            ..VideoCaps::FULL
+        },
         NdlGeneration::V1 => VideoCaps::H264_SDR,
     }
 }

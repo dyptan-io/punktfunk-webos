@@ -16,56 +16,23 @@ use anyhow::Result;
 pub const TITLE: &str = "Experimental";
 pub const SUBTITLE: &str = "Unstable, off by default.";
 
-/// The software-audio override and Game mode. `rooted` is the root-probe verdict, `None`
-/// while it is still running.
+/// Hardware Opus decode and Game mode. `rooted` is the root-probe verdict, `None` while it is
+/// still running.
 pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
-    // Opt-in, not the default: the audio-enabled load is rejected on at least some webOS 5+ sets
-    // and takes the video plane down with it (black picture, sound fine — see
-    // `Settings::ndl_audio_offload`). Software Opus is the path that always exists, so it stays
-    // the default and this offers the offload to anyone whose TV can take it.
+    // Opt-in: the default route already puts audio on NDL's plane as PCM, and this hands the Opus
+    // decode itself to the TV as well — which some sets accept and then play nothing on, with no
+    // runtime probe able to tell (see `Settings::ndl_audio_offload`). Stereo only, so selecting it
+    // locks the Audio row (`menu::RowLock::OffloadStereoOnly`).
     let mut rows = vec![FocusRow::toggle(
         crate::app::view::icons::ICON_MEMORY,
         "Audio offload",
         settings.ndl_audio_offload,
     )
     .with_subtext(ui::widgets::RowSubtext::hint(if settings.ndl_audio_offload {
-        "Turn off for decoding Opus in software"
+        "Stereo only — turn off for 5.1"
     } else {
-        "Offload Opus decode to NDL"
+        "Let the TV decode Opus itself (stereo only)"
     }))];
-    // The other end of the same trade: keep decoding Opus here, but hand the samples to NDL's own
-    // sink instead of SDL's. Shorter path (no jitter ring, no device buffer, one hardware clock
-    // with the picture) for a buffer depth NDL owns and this client cannot steer — see
-    // `Settings::ndl_audio_pcm`. Ignored while Audio offload is on, which needs no local decode.
-    rows.push(
-        FocusRow::toggle(
-            crate::app::view::icons::ICON_MEMORY,
-            "Audio via TV sink",
-            settings.ndl_audio_pcm,
-        )
-        .with_subtext(ui::widgets::RowSubtext::hint(if settings.ndl_audio_offload {
-            "Audio offload is on and takes precedence"
-        } else if settings.ndl_audio_pcm {
-            "Decoded audio goes to the TV, not SDL"
-        } else {
-            "Send decoded audio to the TV's own sink"
-        })),
-    );
-    // Feeds the decoder each frame's bytes as they arrive instead of waiting for its last packet.
-    // NDL has no partial-frame flag, so whether a set tolerates it at all is a device question —
-    // see `Settings::ndl_frame_parts`. Corruption is the failure mode, and it is immediate.
-    rows.push(
-        FocusRow::toggle(
-            crate::app::view::icons::ICON_MEMORY,
-            "Progressive feed",
-            settings.ndl_frame_parts,
-        )
-        .with_subtext(ui::widgets::RowSubtext::hint(if settings.ndl_frame_parts {
-            "Turn off if the picture breaks up"
-        } else {
-            "Feed frames while they are still arriving"
-        })),
-    );
     // Driving the TV's Game picture/sound modes needs the Homebrew Channel's root helper — the
     // public bus is denied `settingsservice` outright (see `platform::webos::game_mode`). The row
     // is always listed, but stays locked until the probe finds that helper actually reachable.

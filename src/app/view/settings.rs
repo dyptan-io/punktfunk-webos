@@ -40,7 +40,8 @@ fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
         menu::RowLock::HdrNeedsHevc => "HDR is not supported by H.264".to_string(),
         menu::RowLock::NoHdr => format!("HDR is not supported by {}", source()),
         menu::RowLock::OneCodec => format!("H.264 is the only codec supported by {}", source()),
-        menu::RowLock::StereoOnly => format!("Stereo is the only audio supported by {}", source()),
+        menu::RowLock::StereoOnly => "Your TV's audio output only carries stereo".to_string(),
+        menu::RowLock::OffloadStereoOnly => "Audio offload is stereo only — turn it off for 5.1".to_string(),
         menu::RowLock::NoGamepad => "Connect a controller to your TV".to_string(),
     }
 }

@@ -62,11 +62,11 @@ enum PartStep {
 
 /// Slice-progressive reassembly bookkeeping (`punktfunk_core::session::FramePart`).
 ///
-/// With `frame_parts` off — the default, and every session on a backend that isn't NDL v2 — every
-/// delivery carries `part: None` and this is a pass-through. With it on, AU prefixes arrive while
-/// the rest is still on the wire, and the decoder gets a frame's first bytes without waiting for
-/// its last datagram. That wait is a real slice of a frame period at high bitrate and it is pure
-/// latency: none of it is decode work.
+/// On every NDL v2 session, AU prefixes arrive while the rest is still on the wire and the decoder
+/// gets a frame's first bytes without waiting for its last datagram — a real slice of a frame
+/// period at high bitrate, and pure latency: none of that wait is decode work. On a backend that
+/// can't take them (`Negotiated::clamp`) every delivery carries `part: None` and this is a
+/// pass-through.
 ///
 /// The contract enforced here is core's: parts arrive in order with no gaps, BUT the pre-decode
 /// hand-off may drop entries (memory pressure, a jump-to-live clear), so an `offset` that isn't the
@@ -86,7 +86,7 @@ struct AuParts {
 impl AuParts {
     fn step(&mut self, frame: &punktfunk_core::session::Frame) -> PartStep {
         let Some(part) = frame.part else {
-            // Whole-AU delivery: `frame_parts` is off, or this is an aged-out chunk-aligned
+            // Whole-AU delivery: parts weren't negotiated, or this is an aged-out chunk-aligned
             // partial, which core hands over as one buffer either way.
             self.open = None;
             return PartStep::Feed {
@@ -150,8 +150,8 @@ struct VideoPump {
     last_dropped_seen: u64,
     heartbeat: Tick,
     video_log: Tick,
-    /// Slice-progressive reassembly state — a pass-through unless the session opted into
-    /// `frame_parts` (see [`AuParts`]).
+    /// Slice-progressive reassembly state — a pass-through on a backend that doesn't take parts
+    /// (see [`AuParts`]).
     parts: AuParts,
 }
 
@@ -431,7 +431,7 @@ pub fn join_audio_feed(handle: std::thread::JoinHandle<()>) -> bool {
 fn audio_feed_pump(client: &NativeClient, feed: &mut AudioFeed, stop: &AtomicBool) {
     let mut packets: u32 = 0;
     audio_drain(client, stop, "audio feed", |packet| {
-        match feed.play(packet.seq, packet.pts_ns, &packet.data) {
+        match feed.play(packet.seq, &packet.data) {
             Ok(peak) => {
                 packets = packets.wrapping_add(1);
                 // ~15s, matching the video heartbeat (packets are 5ms each).

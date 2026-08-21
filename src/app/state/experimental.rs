@@ -82,7 +82,7 @@ impl App {
     }
 
     /// Opens the Experimental screen (Settings → `menu::SettingsRow::Experimental`). Holds unstable,
-    /// off-by-default toggles (the software-audio override, Game mode on rooted sets).
+    /// off-by-default toggles (hardware Opus decode, Game mode on rooted sets).
     pub(crate) fn open_experimental(&mut self) {
         // Owed, not started — see `start_root_probe`.
         self.jobs.root_probe_owed = self.hosts.rooted.is_none() && self.jobs.rooted.is_none();
@@ -101,16 +101,6 @@ impl App {
             (Some(menu::ExpRow::HwAudio), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
                 let from = self.settings_ui.settings.ndl_audio_offload;
                 self.settings_ui.settings.ndl_audio_offload = !from;
-                self.arm_switch_anim(from);
-            }
-            (Some(menu::ExpRow::PcmAudio), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
-                let from = self.settings_ui.settings.ndl_audio_pcm;
-                self.settings_ui.settings.ndl_audio_pcm = !from;
-                self.arm_switch_anim(from);
-            }
-            (Some(menu::ExpRow::FrameParts), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
-                let from = self.settings_ui.settings.ndl_frame_parts;
-                self.settings_ui.settings.ndl_frame_parts = !from;
                 self.arm_switch_anim(from);
             }
             // A locked row (see `menu::exp_row_lock`) rejects the press — the greyed control

@@ -309,15 +309,49 @@ pub(super) fn v1() -> Result<&'static V1> {
     })
 }
 
-/// Whether this webOS has the multi-channel PCM audio sink.
+/// What `NDL_DirectAudioSupportMultiChannel` says about this TV's audio output.
 ///
-/// Probed exactly as ss4s probes it (`webos5/ndl_audio.c`): `NDL_DirectAudioRegisterCallback`
-/// arrived in webOS 7 alongside 6-channel PCM, so its presence is the version test. `RTLD_DEFAULT`
-/// rather than our own handle — the library is loaded `RTLD_GLOBAL`, and a device without NDL at
-/// all answers "no", which is the right answer here.
-pub(super) fn supports_multichannel_pcm() -> bool {
-    // SAFETY: NUL-terminated literal, and the result is only compared against null.
-    !unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"NDL_DirectAudioRegisterCallback".as_ptr()) }.is_null()
+/// Two conditions, not one, which is why it is a three-way answer: the output path has to be
+/// capable AND the TV's Sound Out has to be configured to use it. TV speakers are a 2.0/2.2 array
+/// and ARC/optical carry 2-channel PCM only, so those report [`Self::NotPassthrough`] at best —
+/// feeding 5.1 there is decoded locally, sent over the airlink, and then folded down inside the TV
+/// for nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MultiChannelPcm {
+    /// No output device that can take multi-channel PCM.
+    Unsupported,
+    /// The device can, but Digital Sound Out is not passthrough — i.e. stereo is what leaves.
+    NotPassthrough,
+    /// Current settings do support it: real 5.1 can reach the sink.
+    Supported,
+    /// The symbol does not exist (pre-webOS-7 library, or no NDL at all), so the TV cannot be
+    /// asked. Treated as stereo by every caller — the conservative read, since loading a plane
+    /// for a width the set can't take fails asynchronously and costs the picture its pacing.
+    Unknown,
+}
+
+/// Queries multi-channel PCM support. Resolved through `RTLD_DEFAULT` (the library is opened
+/// `RTLD_GLOBAL`) and optional, because it is a webOS 7 addition — ss4s uses the presence of its
+/// sibling `NDL_DirectAudioRegisterCallback` as a bare version test, but the query itself is the
+/// actual capability answer and is worth preferring.
+///
+/// ⚠ The return codes are **off by one** against the `NDLMultiChannelPCMCallback` codes the header
+/// documents (`0`/`1`/`2` there); this maps the function's own `0`-is-unsupported convention.
+pub(super) fn multichannel_pcm() -> MultiChannelPcm {
+    type Query = unsafe extern "C" fn() -> c_int;
+    // SAFETY: NUL-terminated literal; the result is checked for null before it is called.
+    let ptr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"NDL_DirectAudioSupportMultiChannel".as_ptr()) };
+    if ptr.is_null() {
+        return MultiChannelPcm::Unknown;
+    }
+    // SAFETY: `ptr` is a dlsym-verified address for a no-argument `int` function.
+    let query: Query = unsafe { std::mem::transmute_copy(&ptr) };
+    // SAFETY: no arguments, no pointers; a pure capability query.
+    match unsafe { query() } {
+        0 => MultiChannelPcm::Unsupported,
+        1 => MultiChannelPcm::NotPassthrough,
+        _ => MultiChannelPcm::Supported,
+    }
 }
 
 /// NDL's last error string (set on the most recent failing call). Messages only, so an

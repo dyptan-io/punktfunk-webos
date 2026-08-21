@@ -149,16 +149,12 @@ pub const CURSOR_ROWS: [SettingsRow; 2] = [SettingsRow::CursorCapture, SettingsR
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ExpRow {
     HwAudio,
-    /// Software Opus onto NDL's PCM plane instead of the SDL device (`Settings::ndl_audio_pcm`).
-    PcmAudio,
-    /// Slice-progressive video delivery (`Settings::ndl_frame_parts`).
-    FrameParts,
     /// Locked whenever [`exp_row_lock`] returns a reason. Always listed, locked rather than
     /// hidden when it can't be used.
     GameMode,
 }
 
-pub const EXP_ROWS: [ExpRow; 4] = [ExpRow::HwAudio, ExpRow::PcmAudio, ExpRow::FrameParts, ExpRow::GameMode];
+pub const EXP_ROWS: [ExpRow; 2] = [ExpRow::HwAudio, ExpRow::GameMode];
 
 /// Diagnostics modal row indices (see `app::view::diagnostics::rows`). Log level keeps
 /// index 0 so its dropdown's `(Screen, row)` tile key stays stable.
@@ -206,8 +202,13 @@ pub(crate) enum RowLock {
     NoHdr,
     /// One decodable codec, so `codec_prefs` collapses to a single entry.
     OneCodec,
-    /// The backend is capped at stereo, leaving one channel count.
+    /// The TV's audio output can only carry stereo, so there is one channel count to pick from —
+    /// see `ndl::audio_plane_max_channels`. Named for the *output*, not the backend: the decoder
+    /// here handles up to 7.1, and what caps this is where the sound physically goes.
     StereoOnly,
+    /// Hardware Opus decode is on, and NDL's Opus struct has no multistream mapping field — so
+    /// that route is stereo-only and the row is fixed while it is selected.
+    OffloadStereoOnly,
     /// Nothing is plugged into the TV, so there is no controller to describe to the host.
     NoGamepad,
 }
@@ -227,7 +228,7 @@ pub(crate) fn exp_row_lock(row: ExpRow, rooted: Option<bool>) -> Option<ExpRowLo
     match (row, rooted) {
         (ExpRow::GameMode, None) => Some(ExpRowLock::RootUnknown),
         (ExpRow::GameMode, Some(false)) => Some(ExpRowLock::NotRooted),
-        (ExpRow::GameMode, Some(true)) | (ExpRow::HwAudio | ExpRow::PcmAudio | ExpRow::FrameParts, _) => None,
+        (ExpRow::GameMode, Some(true)) | (ExpRow::HwAudio, _) => None,
     }
 }
 
@@ -240,6 +241,7 @@ pub(crate) fn row_lock(row: SettingsRow, settings: &Settings, detected: Option<G
         SettingsRow::Hdr if settings.codec == CodecPref::H264 => Some(RowLock::HdrNeedsHevc),
         SettingsRow::Codec if caps.codec_prefs().len() < 2 => Some(RowLock::OneCodec),
         SettingsRow::Audio if audio_channel_options().len() < 2 => Some(RowLock::StereoOnly),
+        SettingsRow::Audio if settings.ndl_audio_offload => Some(RowLock::OffloadStereoOnly),
         SettingsRow::Gamepad if detected.is_none() => Some(RowLock::NoGamepad),
         _ => None,
     }

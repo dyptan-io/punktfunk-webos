@@ -250,8 +250,6 @@ impl App {
             }),
             Screen::Experimental => Some(ModalShellKey::Experimental {
                 ndl_audio_offload: self.settings_ui.settings.ndl_audio_offload,
-                ndl_audio_pcm: self.settings_ui.settings.ndl_audio_pcm,
-                ndl_frame_parts: self.settings_ui.settings.ndl_frame_parts,
                 game_mode: self.settings_ui.settings.game_mode,
                 rooted: self.hosts.rooted,
             }),
@@ -347,8 +345,6 @@ impl App {
             Screen::Experimental => Some(ModalFocusKey::ExperimentalRow(
                 self.nav.cursor(ScreenKey::Experimental),
                 self.settings_ui.settings.ndl_audio_offload,
-                self.settings_ui.settings.ndl_audio_pcm,
-                self.settings_ui.settings.ndl_frame_parts,
                 self.settings_ui.settings.game_mode,
                 self.hosts.rooted,
             )),

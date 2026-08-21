@@ -337,10 +337,29 @@ fn ensure_init(app_id: &str, api2: bool) -> Result<()> {
 
 /// The app id NDL is initialised with. Overridable for dev builds installed under another id —
 /// NDL keys its session on the caller's app id, so a mismatch fails the load.
-/// Whether the TV has webOS 7's multi-channel PCM sink — the gate on loading NDL's audio plane
-/// for 5.1 PCM (`session::connect::AudioRoute`).
-pub fn supports_multichannel_pcm() -> bool {
-    ffi::supports_multichannel_pcm()
+/// Widest layout worth OFFERING for NDL's audio plane on this TV, in channels.
+///
+/// 6 where the output path takes multi-channel PCM *and* Sound Out is set for it, 2 otherwise.
+/// Never 8: the plane has no 8-channel mode (its widest is `"6-channel"`), so 7.1 is not offered.
+/// The 7.1 *decode* path is still built (`PcmFeed` folds 8 channels into 6), so a host or setting
+/// that resolves 7.1 anyway plays correctly — it is simply not something the menu can ask for.
+///
+/// This is the ceiling the Settings dropdown is built from (`core::caps`), so a session never asks
+/// the host for 5.1 that the TV would only fold back down to stereo — bitrate and decode spent on
+/// channels nobody hears. Logged once, because "why is 5.1 missing from the menu" is otherwise an
+/// unanswerable support question.
+pub fn audio_plane_max_channels() -> u8 {
+    static MAX: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *MAX.get_or_init(|| {
+        let support = ffi::multichannel_pcm();
+        let channels = if support == ffi::MultiChannelPcm::Supported {
+            8
+        } else {
+            2
+        };
+        tracing::info!("NDL audio output: {support:?} — offering up to {channels} channel(s)");
+        channels
+    })
 }
 
 pub fn app_id() -> String {
