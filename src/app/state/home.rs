@@ -457,8 +457,7 @@ impl App {
         self.clear_grid_pins();
         self.library.art.clear();
         self.jobs.cancel_library();
-        self.home_status = None;
-        self.home_status_sticky = false;
+        self.set_home_status(None, false);
         self.home_focus = HomeFocus::Sidebar(0);
         self.render.grid.focus_last = 0;
         self.render.grid.dirty = true;
@@ -474,11 +473,10 @@ impl App {
             .iter()
             .find(|h| h.host == host && h.port == port)
             .map_or_else(|| host.clone(), |h| h.name.clone());
-        self.home_status = Some(format!("Loading library from {name}…"));
         // Picking a host is the user's own action, so its progress replaces whatever the last
         // launch left on screen. The reload `App::new` starts is not this — it runs before
         // `home_status_sticky` is ever set.
-        self.home_status_sticky = false;
+        self.set_home_status(Some(format!("Loading library from {name}…")), false);
         self.library.games = Vec::new();
         self.clear_grid_pins();
         self.library.games_loaded = false;
@@ -557,12 +555,12 @@ impl App {
                     self.home_focus = HomeFocus::Grid(0);
                 }
                 if !self.home_status_sticky {
-                    self.home_status = None;
+                    self.set_home_status(None, false);
                 }
                 // Held until now rather than shown at startup: the hint points at the cards,
                 // so it waits for a library to exist. Spent on sight, whatever happens next.
                 if std::mem::take(&mut self.intro_hint_owed) {
-                    self.home_status = Some(crate::app::state::cardmenu::INTRO_HINT.to_string());
+                    self.set_home_status(Some(crate::app::state::cardmenu::INTRO_HINT.to_string()), false);
                 }
                 self.prune_stale_game_prefs();
                 self.reorder_games_by_pin();
@@ -598,7 +596,7 @@ impl App {
             // The host answered — just not with a usable library — so Desktop is a
             // legitimate fallback here, unlike the `Unreachable` branch above.
             self.library.games_loaded = true;
-            self.home_status = Some(reason);
+            self.set_home_status(Some(reason), false);
         }
     }
     /// Confirms grid card, arming the launch straight away so the connect thread starts on the
@@ -652,8 +650,7 @@ impl App {
         // The zoom and the fade to black say the launch started; a status line under them
         // only competes with that. Cleared so the last launch's failure doesn't sit under
         // this one either.
-        self.home_status = None;
-        self.home_status_sticky = false;
+        self.set_home_status(None, false);
         self.launch_anim_idx = Some(idx);
         self.launch_ready = Some(ConnectTarget {
             host,
