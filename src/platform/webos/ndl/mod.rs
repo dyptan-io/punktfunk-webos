@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 
-pub use v2::{NdlAudioConfig, NdlVideo, NotLoadedYet};
+pub use v2::{NdlAudioConfig, NdlVideo};
 
 /// `NDL_VIDEO_TYPE` values this client can request (matches the codec the host's
 /// `Welcome` resolved — see `punktfunk_core::quic::CODEC_*`).

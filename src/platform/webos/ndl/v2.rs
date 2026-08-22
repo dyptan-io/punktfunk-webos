@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 
+use crate::core::media::{AudioPlane, MediaClock, NotReady, VideoSink, VideoSinkCaps};
+
 use super::{arm_load, ensure_init, ensure_not_poisoned, ffi, settle_before_retry, wait_load_completed};
 use super::{lock_ffi, mark_frame_fed_logged, NdlCodec, LOAD_COMPLETED};
 
@@ -24,7 +26,7 @@ use super::{lock_ffi, mark_frame_fed_logged, NdlCodec, LOAD_COMPLETED};
 /// the wait alone already spends the grace, so the first feed goes straight through.
 ///
 /// **A backstop, not a live path.** `load()` already waits `LOAD_COMPLETE_TIMEOUT` (longer than
-/// this), so the first `ensure_loaded` always feeds and [`NotLoadedYet`] is never constructed.
+/// this), so the first `ensure_loaded` always feeds and [`NotReady`] is never constructed.
 /// Kept because it is what would make an early return from that wait safe.
 const FEED_ANYWAY_AFTER: Duration = Duration::from_millis(1_000);
 
@@ -98,21 +100,6 @@ const NO_OFFSET_WARN_PACKETS: u32 = 200;
 /// The test is "no packets at all", never amplitude: a silent game still streams, since the host
 /// encodes silence into the same continuous 5 ms datagrams. Only a dead host capture gaps this wide.
 const REAL_FEED_GRACE_MS: i64 = 300;
-
-/// [`NdlVideo::play`] refusing a frame because `LOADCOMPLETED` hasn't landed. A distinct type
-/// because the caller must NOT respond to it the way it responds to a decode error: the usual
-/// answer is `NDL_DirectVideoFlushRenderBuffer`, and issuing that against a pipeline NDL has not
-/// finished loading takes the session's audio out for good (see `session::sink`).
-#[derive(Debug)]
-pub struct NotLoadedYet;
-
-impl std::fmt::Display for NotLoadedYet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("NDL pipeline not loaded yet — holding")
-    }
-}
-
-impl std::error::Error for NotLoadedYet {}
 
 /// [`NdlVideo::pts_offset_ns`] before the video plane has published one. Not 0 — a genuine
 /// offset of 0 ns is possible, and "unset" must be distinguishable from it.
@@ -672,7 +659,7 @@ impl NdlVideo {
             // `LOAD_COMPLETE_TIMEOUT` by the time a frame gets here.
             tracing::warn!("NDL: still no LOADCOMPLETED {elapsed:?} after the load — feeding anyway");
         } else {
-            return Err(NotLoadedYet.into());
+            return Err(NotReady.into());
         }
         self.load_confirmed.store(true, Ordering::Relaxed);
         Ok(())
@@ -813,7 +800,7 @@ impl NdlVideo {
 
     pub fn flush(&self) -> Result<()> {
         // Never against a pipeline that hasn't reported LOADCOMPLETED: the flush silently kills
-        // the session's audio plane for the rest of the load (see [`NotLoadedYet`]), and nothing
+        // the session's audio plane for the rest of the load (see [`NotReady`]), and nothing
         // has been fed yet, so there is no render buffer to discard either. The sink's loss path
         // flushes before it ever calls `play`, so the guard has to live here.
         if !self.load_confirmed.load(Ordering::Relaxed) && !LOAD_COMPLETED.fired() {
@@ -838,5 +825,80 @@ impl Drop for NdlVideo {
         arm_load();
         // SAFETY: best-effort teardown; error ignored (Drop can't propagate a Result).
         let _ = unsafe { (self.fns.unload)() };
+    }
+}
+
+impl MediaClock for NdlVideo {
+    fn now_ns(&self) -> u64 {
+        self.elapsed_ns()
+    }
+}
+
+impl AudioPlane for NdlVideo {
+    fn latch_pts_offset(&self, offset_ns: i64, base_ns: u64) {
+        Self::latch_pts_offset(self, offset_ns, base_ns);
+    }
+
+    fn clear_pts_offset(&self) {
+        Self::clear_pts_offset(self);
+    }
+
+    fn lead_ms(&self) -> i64 {
+        self.audio_plane_lead_ms()
+    }
+
+    fn feed(&self, buf: &[u8], host_pts_ns: u64) -> Result<()> {
+        self.play_audio(buf, host_pts_ns)
+    }
+
+    fn run_keepalive(&self, stop: &std::sync::atomic::AtomicBool, yields_to_real: bool) {
+        self.run_clock_plane(stop, yields_to_real);
+    }
+}
+
+/// Implemented for the `Arc`, not for `NdlVideo`: the audio plane is the same handle as the video
+/// one (NDL has no per-plane context), and the plane's threads must keep the load alive — the
+/// process-global unload in `Drop` cannot run while one of them is still inside an FFI call.
+impl VideoSink for std::sync::Arc<NdlVideo> {
+    fn name(&self) -> &'static str {
+        "NDL v2"
+    }
+
+    fn caps(&self) -> VideoSinkCaps {
+        VideoSinkCaps {
+            pts: true,
+            partial_au: true,
+            flush: true,
+            render_queue: true,
+        }
+    }
+
+    fn feed(&self, au: &[u8], pts_ns: u64) -> Result<()> {
+        self.play(au, pts_ns)
+    }
+
+    fn flush(&self) -> Result<()> {
+        NdlVideo::flush(self)
+    }
+
+    fn queue_depth(&self) -> Option<u32> {
+        self.render_buffer_length().and_then(|d| u32::try_from(d).ok())
+    }
+
+    fn set_color(
+        &self,
+        meta: Option<&punktfunk_core::quic::HdrMeta>,
+        color: punktfunk_core::quic::ColorInfo,
+    ) -> Result<()> {
+        self.set_color_info(meta, color)
+    }
+
+    fn clock(&self) -> Option<&dyn MediaClock> {
+        Some(self.as_ref())
+    }
+
+    fn audio_plane(&self) -> Option<std::sync::Arc<dyn AudioPlane>> {
+        self.has_audio_plane()
+            .then(|| Self::clone(self) as std::sync::Arc<dyn AudioPlane>)
     }
 }

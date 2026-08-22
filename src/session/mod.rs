@@ -1,8 +1,9 @@
 //! Connects to a punktfunk host and drives the video/audio hardware pipelines.
 //!
 //! Video runs on a dedicated thread (`pump`'s video pump), which pulls access units off the
-//! transport and hands them to a `sink`'s `NdlSink` — everything from PTS anchoring down to
-//! the NDL `DirectMedia` backend (the sole video backend) lives behind that seam.
+//! transport and hands them to `stage`'s `VideoStage` — PTS anchoring, freeze-until-reanchor and
+//! backlog metering, all of it written against `core::media`'s `VideoSink` rather than against
+//! any one backend.
 //!
 //! Audio takes one of two paths, and each has a thread of its own: software-decoded audio is
 //! decoded by `pump`'s audio feed thread into the playback ring SDL's audio callback
@@ -11,7 +12,7 @@
 //! rasterizer.
 //!
 //! The module is split by phase: `connect` brings a session up, `pump` keeps it fed,
-//! and `probe` holds the two handshake-only connections (pairing, speed test). `sink`,
+//! and `probe` holds the two handshake-only connections (pairing, speed test). `stage`,
 //! `timeline`, `stats`, `priority` and `join` are the shared pieces underneath.
 //!
 //! Nothing here touches SDL: the pad-feedback drain, which does, lives with the loop that owns
@@ -21,7 +22,7 @@ mod join;
 mod priority;
 pub mod probe;
 mod pump;
-mod sink;
+mod stage;
 mod stats;
 mod timeline;
 

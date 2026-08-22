@@ -29,6 +29,8 @@ use std::time::Instant;
 
 use anyhow::{bail, Result};
 
+use crate::core::media::{VideoSink, VideoSinkCaps};
+
 use super::{arm_load, ensure_init, ensure_not_poisoned, ffi, lock_ffi, mark_frame_fed_logged, NdlCodec, PLAYING};
 use crate::platform::webos::device;
 
@@ -139,5 +141,21 @@ impl Drop for NdlV1Video {
         if ret != 0 {
             tracing::warn!("NDL_DirectVideoClose failed: ret={ret}");
         }
+    }
+}
+
+/// Feed-only: v1 has no timestamp input, no render-buffer query and no flush (see the module
+/// docs), so every stage behaviour that depends on one switches off through [`VideoSinkCaps`].
+impl VideoSink for NdlV1Video {
+    fn name(&self) -> &'static str {
+        "NDL v1"
+    }
+
+    fn caps(&self) -> VideoSinkCaps {
+        VideoSinkCaps::FEED_ONLY
+    }
+
+    fn feed(&self, au: &[u8], _pts_ns: u64) -> Result<()> {
+        self.play(au)
     }
 }

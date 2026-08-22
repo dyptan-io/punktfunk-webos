@@ -12,9 +12,7 @@ use std::time::{Duration, Instant};
 
 use punktfunk_core::quic;
 
-use crate::platform::webos::ndl::v1::NdlV1Video;
-use crate::platform::webos::ndl::{NdlVideo, NotLoadedYet};
-use crate::platform::webos::smp::SmpVideo;
+use crate::core::media::{AudioPlane, NotReady, VideoSink, VideoSinkCaps};
 use crate::session::timeline::{reconciled_frame_interval_ns, HostPtsAnchor};
 use crate::session::StreamStats;
 
@@ -23,10 +21,10 @@ const HOLD_GIVE_UP: Duration = Duration::from_secs(2);
 /// Feed calls slower than this suggest decoder backpressure rather than network loss.
 const FEED_BACKPRESSURE_WARN: Duration = Duration::from_millis(20);
 /// How often the sink refreshes NDL's render-buffer depth for the decode-latency signal —
-/// three samples per 750 ms ABR report window; see [`NdlSink::decode_us`].
+/// three samples per 750 ms ABR report window; see [`VideoStage::decode_us`].
 const BACKLOG_POLL: Duration = Duration::from_millis(250);
 /// Render-buffer frames NDL holds as a *standing* present cushion, excluded from the ABR decode
-/// figure (see [`NdlSink::decode_us`]). NDL presents off its own clock, so a healthy session
+/// figure (see [`VideoStage::decode_us`]). NDL presents off its own clock, so a healthy session
 /// sits at 1-2 frames of depth indefinitely — lead, not backlog. Folded in raw it manufactures a
 /// constant 8-17ms of apparent decode latency, crossing `abr`'s 15ms decode-rise threshold and
 /// backing off bitrate for no real reason (observed on the CX 2026-08-10: 1440p120 driven from
@@ -89,10 +87,10 @@ fn video_e2e_ns(
 }
 
 /// The decode-stage latency reported to `punktfunk_core::abr`: submission time plus the part of
-/// NDL's render queue that is genuinely backlog. See [`NdlSink::decode_us`] for why the queue
+/// NDL's render queue that is genuinely backlog. See [`VideoStage::decode_us`] for why the queue
 /// belongs in it at all, and [`STANDING_CUSHION_FRAMES`] for why `cushion` comes out first.
 ///
-/// Split out as a free function purely so it is testable — [`NdlSink`] owns a live NDL handle and
+/// Split out as a free function purely so it is testable — [`VideoStage`] owns a live NDL handle and
 /// cannot be built off-device.
 fn decode_report_us(feed_elapsed: Duration, backlog: u64, cushion: u64, frame_interval_ns: u64) -> u32 {
     let queued_ns = backlog.saturating_sub(cushion).saturating_mul(frame_interval_ns);
@@ -131,7 +129,7 @@ pub struct FrameFlags {
     pub partial: bool,
 }
 
-/// Outcome of one [`NdlSink::submit`].
+/// Outcome of one [`VideoStage::submit`].
 pub enum SinkResult {
     /// Fed to the decoder. `decode_us` is the latency figure for the host's ABR
     /// controller, present only when the sink was built with `report_decode_latency`.
@@ -140,138 +138,6 @@ pub enum SinkResult {
     Held,
     /// Skipped or failed, and the throttle allows asking the host for a keyframe now.
     NeedKeyframe,
-}
-
-/// The video-decode backend this session runs on: one of the two NDL `DirectMedia` generations
-/// (`device::ndl_generation` picks), or SMP where the user selected it
-/// (`Settings::video_backend`, offered on webOS 3.5-4.x only). Everything above this type is
-/// backend-blind.
-///
-/// V2 is Arc'd because the audio-offload path shares the handle with `ndl_audio_pump`; NDL
-/// unloads process-globally, so unload waits for both threads (`Arc::drop`).
-pub enum VideoPlayer {
-    /// webOS 5+: PTS-driven feed, render-buffer query, flush, HDR metadata.
-    V2(Arc<NdlVideo>),
-    /// webOS 3.5-4.x: H.264 SDR, feed-order presentation, none of the above (see
-    /// `platform::webos::ndl::v1`).
-    V1(NdlV1Video),
-    /// SMP: HEVC + HDR + `pauseAtDecodeTime` on a legacy TV (see
-    /// `platform::webos::smp`).
-    Smp(SmpVideo),
-}
-
-impl VideoPlayer {
-    /// Feed access unit; return (result, `feed_duration`) for ABR latency reporting.
-    /// `pts_ns` must already be in NDL's PTS clock domain (see [`Self::pts_base_ns`]).
-    fn play(&self, au: &[u8], pts_ns: u64) -> (anyhow::Result<()>, Duration) {
-        let t = Instant::now();
-        let result = match self {
-            Self::V2(ndl) => ndl.play(au, pts_ns),
-            // v1's feed takes no timestamp at all — frames present as fed.
-            Self::V1(ndl) => ndl.play(au),
-            Self::Smp(sf) => sf.play(au, pts_ns),
-        };
-        (result, t.elapsed())
-    }
-
-    /// PTS reference for `frame` in NDL's clock domain. NDL has no PTS clock of its own (see
-    /// `NdlVideo::elapsed_ns`), so the host PTS is mapped onto NDL's player clock
-    /// ([`HostPtsAnchor`]), keeping video in the same *host* timeline that offloaded audio is
-    /// stamped in (`NdlVideo::play_audio`) — two clocks that would otherwise agree only by luck,
-    /// and stop agreeing the moment a receive-backlog flush jumps the client to live.
-    ///
-    /// SMP is mapped the same way as V2 — its PTS domain is nanoseconds since *its own* load
-    /// (`now - openTime`), not the host's clock, so an unmapped host PTS would sit an
-    /// arbitrary epoch away and `pauseAtDecodeTime` would hold every frame. V1 has no PTS input
-    /// and no player clock, so the host PTS returns untouched there and is discarded at the feed.
-    fn pts_base_ns(&self, frame_pts_ns: u64, anchor: &mut HostPtsAnchor) -> u64 {
-        let player_clock_ns = match self {
-            Self::V2(ndl) => ndl.elapsed_ns(),
-            Self::Smp(sf) => sf.elapsed_ns(),
-            Self::V1(_) => return frame_pts_ns,
-        };
-        anchor.map(frame_pts_ns, player_clock_ns)
-    }
-
-    /// Hand the audio plane the host-PTS → player-clock offset this frame was stamped with, so
-    /// offloaded Opus lands in the same timeline as the picture (`NdlVideo::play_audio`). Only
-    /// the first frame after an anchor reset is taken (see `NdlVideo::latch_pts_offset`) — this
-    /// is called per frame so that re-latch happens promptly, not so the offset tracks.
-    /// V2 only, and only when the load has an audio plane; no other backend feeds audio through
-    /// NDL. Harmless on a clock-plane session — nothing reads the offset there, since
-    /// `run_clock_plane` stamps in the player clock directly.
-    fn latch_pts_offset(&self, frame_pts_ns: u64, base_ns: u64) {
-        if let Some(ndl) = self.audio_plane_ndl() {
-            ndl.latch_pts_offset(base_ns as i64 - frame_pts_ns as i64, base_ns);
-        }
-    }
-
-    /// Decouple the audio plane from a timeline that no longer holds — the anchor it was
-    /// derived from is being reset. Audio holds until the next fed frame republishes.
-    fn clear_pts_offset(&self) {
-        if let Some(ndl) = self.audio_plane_ndl() {
-            ndl.clear_pts_offset();
-        }
-    }
-
-    /// The NDL handle the audio plane shares, or `None` on every backend/load without one — the
-    /// gate both offset calls above answer to.
-    fn audio_plane_ndl(&self) -> Option<&NdlVideo> {
-        match self {
-            Self::V2(ndl) => ndl.has_audio_plane().then(|| ndl.as_ref()),
-            Self::V1(_) | Self::Smp(_) => None,
-        }
-    }
-
-    fn audio_plane_lead_ms(&self) -> Option<i64> {
-        self.audio_plane_ndl().map(NdlVideo::audio_plane_lead_ms)
-    }
-
-    /// Neither V1 nor SMP has a render-buffer to flush (SMP drains its own buffer and
-    /// resets on an IDR) — the sink's freeze still holds frames.
-    fn flush(&self) -> anyhow::Result<()> {
-        match self {
-            Self::V2(ndl) => ndl.flush(),
-            Self::V1(_) | Self::Smp(_) => Ok(()),
-        }
-    }
-
-    /// No-op on V1: SDR/BT.709 only, and no `SetHDRInfo` to call.
-    pub fn set_color_info(&self, meta: Option<&quic::HdrMeta>, color: quic::ColorInfo) -> anyhow::Result<()> {
-        match self {
-            Self::V2(ndl) => ndl.set_color_info(meta, color),
-            Self::Smp(sf) => sf.set_color_info(meta, color),
-            Self::V1(_) => Ok(()),
-        }
-    }
-
-    /// Shared NDL handle when the load has an audio plane; None on a video-only load (the
-    /// audio-enabled one was rejected) or any other backend.
-    /// V2 only: V1's `NDL_DirectAudio*` has no Opus source type, and SMP loads `needAudio: false`.
-    pub fn ndl_audio_handle(&self) -> Option<Arc<NdlVideo>> {
-        match self {
-            Self::V2(ndl) => ndl.has_audio_plane().then(|| ndl.clone()),
-            Self::V1(_) | Self::Smp(_) => None,
-        }
-    }
-
-    /// NDL render-buffer backlog. `None` if the query fails, or on a backend with no such query —
-    /// the sink treats both as "no queue to add".
-    fn render_buffer_length(&self) -> Option<i32> {
-        match self {
-            Self::V2(ndl) => ndl.render_buffer_length(),
-            Self::V1(_) | Self::Smp(_) => None,
-        }
-    }
-
-    /// For the stats overlay and the session log line.
-    pub fn backend_name(&self) -> &'static str {
-        match self {
-            Self::V2(_) => "NDL v2",
-            Self::V1(_) => "NDL v1",
-            Self::Smp(_) => "SMP",
-        }
-    }
 }
 
 /// Everything the sink needs to know up front.
@@ -292,14 +158,22 @@ pub struct SinkConfig {
 /// QUIC control stream, so a tight interval costs nothing but the request itself.
 const KEYFRAME_REQUEST_MIN_INTERVAL: Duration = Duration::from_millis(100);
 
-/// The NDL implementation: [`VideoPlayer`] + [`StreamStats`].
-pub struct NdlSink {
-    player: VideoPlayer,
+/// Everything between "an access unit arrived" and "the decoder has been fed", on any backend.
+///
+/// Backend-blind by construction: it holds a [`VideoSink`] and asks it what it can do
+/// ([`VideoSinkCaps`](crate::core::media::VideoSinkCaps)) rather than which one it is.
+pub struct VideoStage {
+    sink: Box<dyn VideoSink>,
+    /// What this backend can be asked to do — read instead of matching on which backend it is.
+    caps: VideoSinkCaps,
+    /// The audio plane this load produced, if any — the stage publishes the timeline both planes
+    /// share, so the handle lives here rather than inside the video sink's own type.
+    audio_plane: Option<std::sync::Arc<dyn AudioPlane>>,
     stats: Arc<StreamStats>,
     cfg: SinkConfig,
     /// The panel's actual drain cadence, reconciled against the stream rate. NDL drains at panel
     /// cadence, so this, not the stream rate, is what converts a render-queue depth into time — for BOTH consumers of
-    /// that conversion ([`video_e2e_ns`] and [`NdlSink::decode_us`]), so one depth cannot mean two
+    /// that conversion ([`video_e2e_ns`] and [`VideoStage::decode_us`]), so one depth cannot mean two
     /// different latencies.
     frame_interval_ns: u64,
     /// NDL host-PTS→player-clock mapping.
@@ -321,12 +195,16 @@ pub struct NdlSink {
     hold_started: Option<Instant>,
 }
 
-impl NdlSink {
-    pub fn new(player: VideoPlayer, stats: Arc<StreamStats>, cfg: SinkConfig) -> Self {
+impl VideoStage {
+    pub fn new(sink: Box<dyn VideoSink>, stats: Arc<StreamStats>, cfg: SinkConfig) -> Self {
         let stream_hz = cfg.stream_hz.max(1);
         let frame_interval_ns = reconciled_frame_interval_ns(stream_hz);
+        let audio_plane = sink.audio_plane();
+        let caps = sink.caps();
         Self {
-            player,
+            caps,
+            sink,
+            audio_plane,
             stats,
             frame_interval_ns,
             host_anchor: HostPtsAnchor::new(frame_interval_ns),
@@ -341,7 +219,7 @@ impl NdlSink {
     }
 
     pub fn set_color_info(&self, meta: Option<&quic::HdrMeta>, color: quic::ColorInfo) -> anyhow::Result<()> {
-        self.player.set_color_info(meta, color)
+        self.sink.set_color(meta, color)
     }
 
     /// True when the throttle allows a keyframe request now; stamps it as sent.
@@ -360,7 +238,25 @@ impl NdlSink {
     /// disagree.
     fn reset_timeline(&mut self) {
         self.host_anchor.reset();
-        self.player.clear_pts_offset();
+        if let Some(plane) = &self.audio_plane {
+            plane.clear_pts_offset();
+        }
+    }
+
+    /// This frame's stamp in the sink's own clock domain.
+    ///
+    /// A sink with a clock has no PTS clock of its own (NDL and SMP both count from their load),
+    /// so the host's capture PTS is mapped onto it ([`HostPtsAnchor`]) — which is also what keeps
+    /// video and any audio plane in ONE timeline. A sink without one presents in feed order and
+    /// the stamp is discarded at the feed, so the host PTS passes through untouched.
+    fn pts_base_ns(&mut self, frame_pts_ns: u64) -> u64 {
+        match self.sink.clock() {
+            Some(clock) => {
+                let now = clock.now_ns();
+                self.host_anchor.map(frame_pts_ns, now)
+            }
+            None => frame_pts_ns,
+        }
     }
 
     fn begin_hold(&mut self) {
@@ -390,9 +286,14 @@ impl NdlSink {
     /// only when the host asks for decode latency pins the depth at `0` against hosts that never
     /// do, silently zeroing the queue term in the video reference.
     fn poll_backlog(&mut self) -> Option<u64> {
+        // A backend with no queue to read has no depth, and asking costs an FFI call per poll for
+        // an answer that is always `None`.
+        if !self.caps.render_queue {
+            return None;
+        }
         if self.last_backlog_poll.is_none_or(|t| t.elapsed() >= BACKLOG_POLL) {
             self.last_backlog_poll = Some(Instant::now());
-            self.backlog_cached = self.player.render_buffer_length().and_then(|b| u64::try_from(b).ok());
+            self.backlog_cached = self.sink.queue_depth().map(u64::from);
             // A freeze flushes NDL, so a depth polled while held is an emptied buffer, not this
             // mode's settled lead. Learning from it would clamp the cushion back to the floor for
             // [`CUSHION_MIN_POLLS`] after every loss event — and at 60Hz one unaccounted frame is
@@ -437,7 +338,7 @@ impl NdlSink {
     /// `NdlVideo::audio_plane_lead_ms`. Here because it is a *video* symptom: the plane's depth is
     /// what NDL paces the picture on, so it belongs next to the backlog in the video heartbeat.
     pub fn audio_plane_lead_ms(&self) -> Option<i64> {
-        self.player.audio_plane_lead_ms()
+        self.audio_plane.as_deref().map(AudioPlane::lead_ms)
     }
 
     /// Whether a freeze-until-reanchor hold is currently active (stats/logging).
@@ -456,19 +357,28 @@ impl NdlSink {
 
     /// Present one access unit, or decide not to. `pts_ns` is the host's capture-clock
     /// PTS; the sink maps and paces it into the decoder's own clock domain.
+    /// Whether this session may feed access units in pieces — the pump asks before it splits
+    /// one, so a backend that can't take them never sees a partial feed even if the host sends
+    /// prefixes.
+    pub fn takes_partial_au(&self) -> bool {
+        self.caps.partial_au
+    }
+
     pub fn submit(&mut self, au: &[u8], pts_ns: u64, flags: FrameFlags) -> SinkResult {
         let request_keyframe = match self.gate(&flags) {
             HoldGate::Skip(result) => return result,
             HoldGate::Feed { request_keyframe } => request_keyframe,
         };
 
-        let base_ns = self.player.pts_base_ns(pts_ns, &mut self.host_anchor);
+        let base_ns = self.pts_base_ns(pts_ns);
         // The submit instant, on CLOCK_REALTIME — the same basis the host stamps `pts_ns` with and
         // the skew handshake compares, so the two are directly subtractable. Taken BEFORE the feed
         // call: `play` blocks for its submission time, and the frame enters NDL's pipeline behind
         // exactly the frames the backlog below counts.
         let submit_realtime_ns = punktfunk_core::client::now_realtime_ns();
-        let (play_result, feed_elapsed) = self.player.play(au, base_ns);
+        let feed_start = Instant::now();
+        let play_result = self.sink.feed(au, base_ns);
+        let feed_elapsed = feed_start.elapsed();
         self.stats.feed_us.store(
             u32::try_from(feed_elapsed.as_micros()).unwrap_or(u32::MAX),
             Ordering::Relaxed,
@@ -499,7 +409,9 @@ impl NdlSink {
                 // can only move forward, so latching onto a mapping still being pulled earlier
                 // costs lip sync (see `HostPtsAnchor::ready_for_audio`).
                 if self.host_anchor.ready_for_audio() {
-                    self.player.latch_pts_offset(pts_ns, base_ns);
+                    if let Some(plane) = &self.audio_plane {
+                        plane.latch_pts_offset(base_ns as i64 - pts_ns as i64, base_ns);
+                    }
                 }
                 let decode_us = self
                     .cfg
@@ -523,7 +435,9 @@ impl NdlSink {
         if flags.loss && !self.holding() {
             self.begin_hold();
             tracing::warn!("loss (frame {}) — freezing", flags.index);
-            let _ = self.player.flush();
+            if self.caps.flush {
+                let _ = self.sink.flush();
+            }
         }
         let Some(started) = self.hold_started else {
             return HoldGate::Feed {
@@ -556,7 +470,8 @@ impl NdlSink {
     /// Handles a refused feed; returns whether to ask the host for a keyframe.
     fn on_play_error(&mut self, e: &anyhow::Error, flags: &FrameFlags, base_ns: u64) -> bool {
         tracing::warn!(
-            "NDL error (frame {}, pts {:.2}ms): {e:#}",
+            "{} error (frame {}, pts {:.2}ms): {e:#}",
+            self.sink.name(),
             flags.index,
             base_ns as f64 / 1_000_000.0,
         );
@@ -576,15 +491,17 @@ impl NdlSink {
         // then needs the host's reanchor or `HOLD_GIVE_UP`, both evaluated only when a frame
         // arrives, and a static desktop sends none. Request a keyframe and let the next frame
         // retry.
-        if e.downcast_ref::<NotLoadedYet>().is_none() {
-            let _ = self.player.flush();
+        if e.downcast_ref::<NotReady>().is_none() {
+            if self.caps.flush {
+                let _ = self.sink.flush();
+            }
             self.begin_hold();
         }
         true
     }
 }
 
-/// What [`NdlSink::gate`] decided about this frame.
+/// What [`VideoStage::gate`] decided about this frame.
 enum HoldGate {
     /// Feed it. `request_keyframe` is set when a hold released on this frame and the throttle
     /// allowed asking for one — the frame is still fed, but the request is what gets reported.

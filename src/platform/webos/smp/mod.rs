@@ -22,6 +22,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
+
+use crate::core::media::{MediaClock, VideoSink, VideoSinkCaps};
 use punktfunk_core::quic;
 
 use self::sink::Sink;
@@ -361,5 +363,38 @@ impl Drop for SmpVideo {
             (self.fns.unload)(self.api());
             (self.fns.destroy)(self.api());
         }
+    }
+}
+
+impl MediaClock for SmpVideo {
+    fn now_ns(&self) -> u64 {
+        self.elapsed_ns()
+    }
+}
+
+/// SMP takes a timestamp and drains its own buffer: no flush, no depth query, and AU pieces are
+/// not offered — its load shape is fragile enough without them.
+impl VideoSink for SmpVideo {
+    fn name(&self) -> &'static str {
+        "SMP"
+    }
+
+    fn caps(&self) -> VideoSinkCaps {
+        VideoSinkCaps {
+            pts: true,
+            ..VideoSinkCaps::FEED_ONLY
+        }
+    }
+
+    fn feed(&self, au: &[u8], pts_ns: u64) -> Result<()> {
+        self.play(au, pts_ns)
+    }
+
+    fn set_color(&self, meta: Option<&quic::HdrMeta>, color: quic::ColorInfo) -> Result<()> {
+        self.set_color_info(meta, color)
+    }
+
+    fn clock(&self) -> Option<&dyn MediaClock> {
+        Some(self)
     }
 }

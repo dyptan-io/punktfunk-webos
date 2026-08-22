@@ -10,12 +10,12 @@ use punktfunk_core::client::{AudioPacket, NativeClient};
 use punktfunk_core::packet::{FLAG_SOF, USER_FLAG_RECOVERY_ANCHOR};
 use punktfunk_core::PunktfunkError;
 
+use crate::core::media::AudioPlane;
 use crate::platform::webos::audio::{AudioFeed, PcmFeed};
 use crate::platform::webos::device::boost_current_thread;
-use crate::platform::webos::ndl::NdlVideo;
 use crate::session::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
 use crate::session::priority::{boost_hot_threads, spawn_vendor_decode_thread_renicer};
-use crate::session::sink::{FrameFlags, NdlSink, SinkResult};
+use crate::session::stage::{FrameFlags, SinkResult, VideoStage};
 use crate::session::StreamStats;
 
 /// Longest a `next_frame` call parks before the loop re-checks `stop`.
@@ -84,10 +84,10 @@ struct AuParts {
 }
 
 impl AuParts {
-    fn step(&mut self, frame: &punktfunk_core::session::Frame) -> PartStep {
-        let Some(part) = frame.part else {
-            // Whole-AU delivery: parts weren't negotiated, or this is an aged-out chunk-aligned
-            // partial, which core hands over as one buffer either way.
+    fn step(&mut self, frame: &punktfunk_core::session::Frame, takes_parts: bool) -> PartStep {
+        let Some(part) = frame.part.filter(|_| takes_parts) else {
+            // Whole-AU delivery: parts weren't negotiated, this backend doesn't take them, or
+            // this is an aged-out chunk-aligned partial — core hands all three over as one buffer.
             self.open = None;
             return PartStep::Feed {
                 partial: false,
@@ -137,11 +137,11 @@ impl AuParts {
     }
 }
 
-/// Drives the video thread: transport → [`NdlSink`], plus the counters and the loss/HDR
+/// Drives the video thread: transport → [`VideoStage`], plus the counters and the loss/HDR
 /// side-channels that ride the same loop.
 struct VideoPump {
     client: Arc<NativeClient>,
-    sink: NdlSink,
+    stage: VideoStage,
     stats: Arc<StreamStats>,
     /// Whether the host's per-content HDR metadata is worth draining — false on every session
     /// where nothing would apply it (see `connect`'s `is_hdr`).
@@ -156,11 +156,11 @@ struct VideoPump {
 }
 
 impl VideoPump {
-    fn new(client: Arc<NativeClient>, sink: NdlSink, stats: Arc<StreamStats>, is_hdr: bool) -> Self {
+    fn new(client: Arc<NativeClient>, stage: VideoStage, stats: Arc<StreamStats>, is_hdr: bool) -> Self {
         let last_dropped_seen = client.frames_dropped();
         Self {
             client,
-            sink,
+            stage,
             stats,
             is_hdr,
             last_dropped_seen,
@@ -209,7 +209,7 @@ impl VideoPump {
         // A piece of an AU whose predecessor went missing has nowhere to go: the decoder holds a
         // truncated input and only a re-anchor clears it. `Discard` says so; `Feed` carries whether
         // the pieces so far leave this AU decodable.
-        let PartStep::Feed { partial, lost_parts } = self.parts.step(frame) else {
+        let PartStep::Feed { partial, lost_parts } = self.parts.step(frame, self.stage.takes_partial_au()) else {
             return;
         };
         // Only a completed AU is a frame — a session feeding pieces would otherwise count one
@@ -225,7 +225,7 @@ impl VideoPump {
             index: u64::from(frame.frame_index),
             partial,
         };
-        match self.sink.submit(&frame.data, frame.pts_ns, flags) {
+        match self.stage.submit(&frame.data, frame.pts_ns, flags) {
             SinkResult::Presented { decode_us } => {
                 if let Some(us) = decode_us {
                     self.client.report_decode_us(us);
@@ -250,11 +250,11 @@ impl VideoPump {
         if !self.heartbeat.due() {
             return;
         }
-        let backlog = self.sink.poll_backlog_depth();
+        let backlog = self.stage.poll_backlog_depth();
         self.stats
             .render_backlog
             .store(backlog.unwrap_or(-1), Ordering::Relaxed);
-        let plane_lead = self.sink.audio_plane_lead_ms();
+        let plane_lead = self.stage.audio_plane_lead_ms();
         if let Some(ms) = plane_lead {
             self.stats
                 .audio_plane_lead_ms
@@ -270,10 +270,10 @@ impl VideoPump {
             tracing::debug!(
                 "video: {} frames, holding={}, dropped={}, backlog={}, pts_trim={}ms, plane_lead={}",
                 self.frames(),
-                self.sink.holding(),
+                self.stage.holding(),
                 self.client.frames_dropped(),
                 backlog.map_or_else(|| "n/a".to_string(), |b| b.to_string()),
-                self.sink.pts_trimmed_ms(),
+                self.stage.pts_trimmed_ms(),
                 // The audio plane's depth is a video figure: NDL paces the picture on it, and a
                 // lead sagging towards zero is what a stutter report should be read against.
                 plane_lead.map_or_else(|| "n/a".to_string(), |ms| format!("{ms}ms")),
@@ -292,7 +292,7 @@ impl VideoPump {
         let dropped = dropped_now > self.last_dropped_seen;
         self.last_dropped_seen = dropped_now;
         let lost = gap_width > 0 || dropped;
-        if lost && !self.sink.holding() {
+        if lost && !self.stage.holding() {
             // Logged alongside the freeze the sink reports next: a sequence hole and a frame the
             // transport itself gave up on point at different faults.
             tracing::warn!("loss: gap={gap_width} dropped={dropped} (frame {})", frame.frame_index);
@@ -320,7 +320,7 @@ impl VideoPump {
             meta.max_cll,
             meta.max_fall,
         );
-        if let Err(e) = self.sink.set_color_info(Some(&meta), self.client.color) {
+        if let Err(e) = self.stage.set_color_info(Some(&meta), self.client.color) {
             tracing::warn!("NDL set_color_info: {e:#}");
         }
     }
@@ -332,7 +332,7 @@ impl VideoPump {
 #[allow(clippy::needless_pass_by_value)]
 pub(super) fn video_pump(
     client: Arc<NativeClient>,
-    sink: NdlSink,
+    stage: VideoStage,
     stop: Arc<AtomicBool>,
     stats: Arc<StreamStats>,
     is_hdr: bool,
@@ -340,7 +340,7 @@ pub(super) fn video_pump(
     client.register_hot_thread();
     boost_hot_threads(&client);
     spawn_vendor_decode_thread_renicer();
-    VideoPump::new(client, sink, stats, is_hdr).run(&stop);
+    VideoPump::new(client, stage, stats, is_hdr).run(&stop);
 }
 
 /// How long an audio drain parks on an empty plane before re-checking `stop`.
@@ -383,9 +383,9 @@ fn audio_drain(client: &NativeClient, stop: &AtomicBool, what: &str, mut play: i
 /// `Connected::shutdown` happens to join first.
 /// A gap starves NDL's pacing clock, but `run_clock_plane` watches the same plane and fills in —
 /// see its `yields_to_real`.
-pub(super) fn ndl_audio_pump(client: &NativeClient, ndl: &NdlVideo, stop: &AtomicBool) {
+pub(super) fn ndl_audio_pump(client: &NativeClient, ndl: &dyn AudioPlane, stop: &AtomicBool) {
     audio_drain(client, stop, "audio pump", |packet| {
-        if let Err(e) = ndl.play_audio(&packet.data, packet.pts_ns) {
+        if let Err(e) = ndl.feed(&packet.data, packet.pts_ns) {
             tracing::warn!("NDL audio error (seq {}): {e:#}", packet.seq);
         }
     });
@@ -398,7 +398,7 @@ pub(super) fn ndl_audio_pump(client: &NativeClient, ndl: &NdlVideo, stop: &Atomi
 /// the samples go to the same hardware clock as the picture instead of through the SDL ring and
 /// device buffer. Same teardown safety as [`ndl_audio_pump`] — the thread holds an `Arc<NdlVideo>`,
 /// so no unload can race the feed.
-pub(super) fn ndl_pcm_audio_pump(client: &NativeClient, ndl: &NdlVideo, stop: &AtomicBool, feed: &mut PcmFeed) {
+pub(super) fn ndl_pcm_audio_pump(client: &NativeClient, ndl: &dyn AudioPlane, stop: &AtomicBool, feed: &mut PcmFeed) {
     audio_drain(client, stop, "audio pcm", |packet| {
         let (pcm, lead_ms) = match feed.decode(packet.seq, &packet.data) {
             Ok(decoded) => decoded,
@@ -411,7 +411,7 @@ pub(super) fn ndl_pcm_audio_pump(client: &NativeClient, ndl: &NdlVideo, stop: &A
         // than the packet's own stamp. `play_audio`'s ceiling floors anything that lands under the
         // audio already fed, which is exactly the right answer for a hole being filled.
         let pts_ns = packet.pts_ns.saturating_sub(lead_ms as u64 * 1_000_000);
-        if let Err(e) = ndl.play_audio(pcm, pts_ns) {
+        if let Err(e) = ndl.feed(pcm, pts_ns) {
             tracing::warn!("NDL audio error (seq {}): {e:#}", packet.seq);
         }
     });

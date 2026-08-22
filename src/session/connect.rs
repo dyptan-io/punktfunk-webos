@@ -12,13 +12,14 @@ use punktfunk_core::config::{CompositorPref, Mode};
 use punktfunk_core::quic;
 
 use crate::core::caps::video_caps;
+use crate::core::media::{AudioPlane, VideoSink};
 use crate::platform::webos::device::{self, NdlGeneration};
 use crate::platform::webos::ndl::v1::NdlV1Video;
 use crate::platform::webos::ndl::{NdlAudioConfig, NdlCodec, NdlVideo};
 use crate::services::store::{CodecPref, GamepadType, VideoBackend};
 use crate::session::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
 use crate::session::pump::{ndl_audio_pump, ndl_pcm_audio_pump, video_pump};
-use crate::session::sink::{NdlSink, SinkConfig, VideoPlayer};
+use crate::session::stage::{SinkConfig, VideoStage};
 use crate::session::StreamStats;
 
 pub struct Connected {
@@ -349,7 +350,7 @@ fn log_handshake(client: &NativeClient, negotiated: &Negotiated) {
 ///
 /// Returns the player and whether HDR mastering metadata is being applied — the answer the
 /// video pump needs to know whether to forward per-content metadata at all.
-fn load_player(params: &ConnectParams, client: &NativeClient, route: AudioRoute) -> Result<(VideoPlayer, bool)> {
+fn load_player(params: &ConnectParams, client: &NativeClient, route: AudioRoute) -> Result<(Box<dyn VideoSink>, bool)> {
     let resolved_mode = client.mode();
     let fps = resolved_mode.refresh_hz.max(1);
     let codec =
@@ -372,18 +373,16 @@ fn load_player(params: &ConnectParams, client: &NativeClient, route: AudioRoute)
             tracing::warn!("SMP load failed ({e:#}) — falling back to NDL");
             None
         });
-    let player = match (smp, device::ndl_generation()) {
-        (Some(sf), _) => VideoPlayer::Smp(sf),
-        (None, NdlGeneration::V2) => VideoPlayer::V2(Arc::new(
+    let player: Box<dyn VideoSink> = match (smp, device::ndl_generation()) {
+        (Some(sf), _) => Box::new(sf),
+        (None, NdlGeneration::V2) => Box::new(Arc::new(
             NdlVideo::load(&app_id, width, height, codec, Some(ndl_audio)).context("NDL load")?,
         )),
-        (None, NdlGeneration::V1) => {
-            VideoPlayer::V1(NdlV1Video::load(&app_id, width, height, codec).context("NDL v1 load")?)
-        }
+        (None, NdlGeneration::V1) => Box::new(NdlV1Video::load(&app_id, width, height, codec).context("NDL v1 load")?),
     };
     tracing::info!(
         "{} loaded ({codec:?} {}x{}@{fps}fps)",
-        player.backend_name(),
+        player.name(),
         resolved_mode.width,
         resolved_mode.height,
     );
@@ -407,7 +406,7 @@ fn load_player(params: &ConnectParams, client: &NativeClient, route: AudioRoute)
     // which shows up as exactly the washed-out/desaturated picture reported
     // on-device. `client.color` arrives out-of-band in `Welcome` for precisely
     // this purpose; only the mastering metadata alongside it is HDR-gated.
-    if let Err(e) = player.set_color_info(is_hdr.then(cx_display_hdr).as_ref(), client.color) {
+    if let Err(e) = player.set_color(is_hdr.then(cx_display_hdr).as_ref(), client.color) {
         tracing::warn!("NDL colour metadata failed: {e:#}");
     }
     Ok((player, is_hdr))
@@ -415,21 +414,20 @@ fn load_player(params: &ConnectParams, client: &NativeClient, route: AudioRoute)
 
 /// Why this session's audio ended up on the path it did.
 ///
-/// Naming the REASON matters: "software Opus" is the correct outcome on four different routes
-/// plus the user's own override, and a silent session looks identical on all of them. Without
-/// this the first debugging question has no answer in the log.
-fn audio_path_label(player: &VideoPlayer, route: AudioRoute, has_plane: bool) -> &'static str {
-    match (route, has_plane, player) {
-        (AudioRoute::NdlOpus, ..) => "NDL hardware Opus decode (+ clock plane standing by)",
-        (AudioRoute::NdlPcm, ..) => "software Opus decode -> NDL PCM plane (+ clock plane standing by)",
+/// Naming the REASON matters: "software Opus" is the correct outcome on the software route, on a
+/// route that asked for a plane and didn't get one, and on a backend that has no plane at all —
+/// and a silent session looks identical on all of them. Without this the first debugging question
+/// has no answer in the log.
+fn audio_path_label(backend: &str, route: AudioRoute, has_plane: bool) -> String {
+    match (route, has_plane) {
+        (AudioRoute::NdlOpus, _) => "NDL hardware Opus decode (+ clock plane standing by)".to_string(),
+        (AudioRoute::NdlPcm, _) => "software Opus decode -> NDL PCM plane (+ clock plane standing by)".to_string(),
         // A plane the real stream is not using is the pacing metronome — see
         // `NdlVideo::run_clock_plane`.
-        (_, true, _) => "software Opus decode -> SDL2 + NDL clock plane",
-        (_, false, VideoPlayer::V1(_)) => "software Opus decode -> SDL2, no clock plane (NDL v1 has no audio type)",
-        (_, false, VideoPlayer::Smp(_)) => "software Opus decode -> SDL2, no clock plane (SMP loads video-only)",
-        // No plane on a V2 load means the audio-enabled attempt did not confirm and `load()` fell
-        // back to video-only, so this session has no pacing reference either.
-        (_, false, VideoPlayer::V2(_)) => "software Opus decode -> SDL2, no clock plane (NDL rejected the audio load)",
+        (AudioRoute::Software, true) => "software Opus decode -> SDL2 + NDL clock plane".to_string(),
+        // No plane means no pacing reference either: this backend has none (NDL v1, SMP), or the
+        // audio-enabled load did not confirm and `load()` fell back to video-only.
+        (AudioRoute::Software, false) => format!("software Opus decode -> SDL2, no clock plane ({backend})"),
     }
 }
 
@@ -450,11 +448,11 @@ pub fn connect(params: &ConnectParams) -> Result<Connected> {
     // plane the load actually produced — a rejected audio-enabled load leaves no plane to ride.
     let wanted = AudioRoute::pick(params, client.audio_channels);
     let (player, is_hdr) = load_player(params, &client, wanted)?;
-    let ndl_audio = player.ndl_audio_handle();
+    let ndl_audio = player.audio_plane();
     let route = wanted.on_plane(ndl_audio.is_some());
     tracing::info!(
         "audio path: {} (host resolved {} channel(s))",
-        audio_path_label(&player, route, ndl_audio.is_some()),
+        audio_path_label(player.name(), route, ndl_audio.is_some()),
         client.audio_channels,
     );
 
@@ -492,7 +490,7 @@ pub fn connect(params: &ConnectParams) -> Result<Connected> {
 
 fn spawn_video_thread(
     client: &Arc<NativeClient>,
-    player: VideoPlayer,
+    player: Box<dyn VideoSink>,
     stop: &Arc<AtomicBool>,
     stats: &Arc<StreamStats>,
     is_hdr: bool,
@@ -509,8 +507,8 @@ fn spawn_video_thread(
         .spawn(move || {
             // Built here, not on the caller's thread: the sink queries the panel refresh
             // rate through SDL on construction, and that stayed on the video thread before.
-            let sink = NdlSink::new(player, stats.clone(), cfg);
-            video_pump(client, sink, stop, stats, is_hdr);
+            let stage = VideoStage::new(player, stats.clone(), cfg);
+            video_pump(client, stage, stop, stats, is_hdr);
         })
         .context("spawn video thread")
 }
@@ -526,7 +524,7 @@ type PlaneThreads = (Option<std::thread::JoinHandle<()>>, Option<std::thread::Jo
 /// fills in once the host stops sending.
 fn spawn_plane_threads(
     client: &Arc<NativeClient>,
-    ndl_audio: Option<Arc<NdlVideo>>,
+    ndl_audio: Option<Arc<dyn AudioPlane>>,
     stop: &Arc<AtomicBool>,
     route: AudioRoute,
 ) -> Result<PlaneThreads> {
@@ -537,7 +535,7 @@ fn spawn_plane_threads(
         let (ndl, stop) = (ndl.clone(), stop.clone());
         std::thread::Builder::new()
             .name("punktfunk-webos-clock".into())
-            .spawn(move || ndl.run_clock_plane(&stop, route.on_ndl_plane()))
+            .spawn(move || ndl.run_keepalive(&stop, route.on_ndl_plane()))
             .context("spawn clock plane thread")?
     };
     let audio_thread = match route {
@@ -546,7 +544,7 @@ fn spawn_plane_threads(
             let (client, stop) = (client.clone(), stop.clone());
             std::thread::Builder::new()
                 .name("punktfunk-webos-audio".into())
-                .spawn(move || ndl_audio_pump(&client, &ndl, &stop))
+                .spawn(move || ndl_audio_pump(&client, ndl.as_ref(), &stop))
         }
         AudioRoute::NdlPcm => {
             let (client, stop) = (client.clone(), stop.clone());
@@ -567,7 +565,7 @@ fn spawn_plane_threads(
                     );
                     std::thread::Builder::new()
                         .name("punktfunk-webos-audio".into())
-                        .spawn(move || ndl_pcm_audio_pump(&client, &ndl, &stop, &mut feed))
+                        .spawn(move || ndl_pcm_audio_pump(&client, ndl.as_ref(), &stop, &mut feed))
                 }
                 Err(e) => Err(std::io::Error::other(format!("PCM plane decoder: {e:#}"))),
             }

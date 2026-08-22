@@ -1,5 +1,6 @@
 pub mod caps;
 pub mod event;
+pub mod media;
 pub mod model;
 pub mod screen;
 
