@@ -5,13 +5,13 @@
 //! backlog metering, all of it written against `core::media`'s `VideoSink` rather than against
 //! any one backend.
 //!
-//! Audio takes one of two paths, and each has a thread of its own: software-decoded audio is
-//! decoded by `pump`'s audio feed thread into the playback ring SDL's audio callback
-//! drains (`platform::webos::audio`), and the NDL-offloaded path hands raw Opus straight to NDL
-//! from `pump`'s NDL audio pump. Neither shares the main loop, which carries the UI's software
-//! rasterizer.
+//! Audio takes one of three routes (`core::model::AudioRoutePref`) and always on a thread of its
+//! own: `audio`'s stage decodes (or forwards) into whichever `AudioSink` the route selected — the
+//! SDL device, NDL's PCM plane, or NDL's Opus plane. None of them shares the main loop, which
+//! carries the UI's software rasterizer.
 //!
-//! The module is split by phase: `connect` brings a session up, `pump` keeps it fed,
+//! The module is split by phase: `connect` runs the handshake, `pipeline` builds the decode path
+//! it settled on, `pump` keeps it fed,
 //! and `probe` holds the two handshake-only connections (pairing, speed test). `stage`,
 //! `timeline`, `stats`, `priority` and `join` are the shared pieces underneath.
 //!
@@ -20,6 +20,7 @@
 pub mod audio;
 mod connect;
 mod join;
+mod pipeline;
 mod priority;
 pub mod probe;
 mod pump;

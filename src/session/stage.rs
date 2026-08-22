@@ -111,22 +111,121 @@ fn cushion_frames(samples: impl Iterator<Item = u64>) -> u64 {
         .clamp(STANDING_CUSHION_FRAMES, CUSHION_MAX_FRAMES)
 }
 
-/// What the pump knows about a frame that the sink can't work out for itself.
-#[derive(Clone, Copy)]
-pub struct FrameFlags {
+/// One delivery off the transport, as the pump sees it — the stage decides what it means.
+pub struct WireFrame<'a> {
+    pub data: &'a [u8],
+    /// Host capture-clock PTS.
+    pub pts_ns: u64,
+    pub index: u32,
+    /// Slice-progressive piece info, `None` for a whole-AU delivery
+    /// (`punktfunk_core::session::FramePart`).
+    pub part: Option<punktfunk_core::session::FramePart>,
     /// This frame can restart decoding on its own (IDR, or an LTR recovery anchor).
     pub reanchor: bool,
-    /// Loss was detected at or before this frame — a sequence gap, or a frame the
-    /// transport dropped.
+    /// Loss was detected at or before this frame — a sequence gap, or a frame the transport
+    /// dropped.
     pub loss: bool,
+}
+
+/// What the stage worked out about one delivery before feeding it.
+#[derive(Clone, Copy)]
+struct FrameFlags {
+    reanchor: bool,
+    loss: bool,
     /// Host frame index, for logs only.
-    pub index: u64,
+    index: u64,
     /// This feed is one PIECE of an access unit whose end has not arrived yet
     /// (slice-progressive delivery — `punktfunk_core::session::FramePart`, on for every NDL v2
     /// session). The decoder still takes the bytes; what a piece is NOT is a
     /// presentable frame, so the per-frame reference points hang off the piece that completes the
     /// AU instead. `false` for every feed on the whole-AU path.
-    pub partial: bool,
+    partial: bool,
+}
+
+/// What [`AuParts`] decided about one delivery.
+enum PartStep {
+    /// Hand the bytes to the sink. `partial` = this is not the AU's last piece; `lost_parts` = an
+    /// earlier AU died mid-flight, so decoding cannot continue from where it stopped.
+    Feed { partial: bool, lost_parts: bool },
+    /// Nothing usable — a piece of an AU already abandoned. The decoder must not see it.
+    Discard,
+}
+
+/// Slice-progressive reassembly bookkeeping (`punktfunk_core::session::FramePart`).
+///
+/// On every NDL v2 session, AU prefixes arrive while the rest is still on the wire and the decoder
+/// gets a frame's first bytes without waiting for its last datagram — a real slice of a frame
+/// period at high bitrate, and pure latency: none of that wait is decode work. On a backend that
+/// can't take them (`Negotiated::clamp`) every delivery carries `part: None` and this is a
+/// pass-through.
+///
+/// The contract enforced here is core's: parts arrive in order with no gaps, BUT the pre-decode
+/// hand-off may drop entries (memory pressure, a jump-to-live clear), so an `offset` that isn't the
+/// open AU's next expected byte means that AU is gone. There is no abort marker — a `first` part for
+/// a new index while one is still open is how a death is signalled. Both cases abandon the AU and
+/// report loss, which puts the sink into freeze-until-reanchor and asks the host for a keyframe:
+/// the decoder is holding a truncated input, and nothing short of a fresh anchor clears it.
+#[derive(Default)]
+struct AuParts {
+    /// `(frame_index, next expected byte offset)` of the AU currently being fed.
+    open: Option<(u32, u32)>,
+    /// An AU was abandoned and nothing has restarted decoding since — so whatever comes next is
+    /// resuming against a decoder that still holds a truncated frame.
+    abandoned: bool,
+}
+
+impl AuParts {
+    fn step(&mut self, frame: &WireFrame<'_>, takes_parts: bool) -> PartStep {
+        let Some(part) = frame.part.filter(|_| takes_parts) else {
+            // Whole-AU delivery: parts weren't negotiated, this backend doesn't take them, or
+            // this is an aged-out chunk-aligned partial — core hands all three over as one buffer.
+            self.open = None;
+            return PartStep::Feed {
+                partial: false,
+                lost_parts: std::mem::take(&mut self.abandoned),
+            };
+        };
+        let len = frame.data.len() as u32;
+        if part.first {
+            let lost_parts = self.open.take().is_some() | std::mem::take(&mut self.abandoned);
+            if lost_parts {
+                tracing::warn!("frame parts: AU {} starts over an unfinished one", frame.index);
+            }
+            self.open = (!part.last).then_some((frame.index, len));
+            return PartStep::Feed {
+                partial: !part.last,
+                lost_parts,
+            };
+        }
+        match self.open {
+            Some((index, next)) if index == frame.index && next == part.offset => {
+                self.open = (!part.last).then_some((index, next + len));
+                PartStep::Feed {
+                    partial: !part.last,
+                    lost_parts: false,
+                }
+            }
+            // Either nothing is open (the AU was abandoned, or this part arrived without its head)
+            // or the offset skipped — both mean the AU can never be completed.
+            open => {
+                if open.is_some() {
+                    tracing::warn!(
+                        "frame parts: AU {} broke at offset {} — abandoning",
+                        frame.index,
+                        part.offset,
+                    );
+                }
+                self.drop_open();
+                PartStep::Discard
+            }
+        }
+    }
+
+    /// Forget the AU in flight: its remaining parts are no longer feedable, and whatever restarts
+    /// decoding has to be told the decoder holds a truncated input.
+    fn drop_open(&mut self) {
+        self.abandoned |= self.open.take().is_some();
+    }
 }
 
 /// Outcome of one [`VideoStage::submit`].
@@ -169,6 +268,9 @@ pub struct VideoStage {
     /// The audio plane this load produced, if any — kept for its depth reading; everything the
     /// stage publishes to it goes through [`Self::clock`].
     audio_plane: Option<std::sync::Arc<dyn AudioPlane>>,
+    /// Slice-progressive reassembly state — a pass-through on a backend that doesn't take parts
+    /// (see [`AuParts`]).
+    parts: AuParts,
     /// The one host-PTS → sink-clock mapping this session's planes share. The stage owns it
     /// because the video plane is what derives it, frame by frame.
     clock: Arc<SessionClock>,
@@ -209,6 +311,7 @@ impl VideoStage {
             plane.attach_clock(clock.clone());
         }
         Self {
+            parts: AuParts::default(),
             clock,
             caps,
             sink,
@@ -363,14 +466,39 @@ impl VideoStage {
 
     /// Present one access unit, or decide not to. `pts_ns` is the host's capture-clock
     /// PTS; the sink maps and paces it into the decoder's own clock domain.
-    /// Whether this session may feed access units in pieces — the pump asks before it splits
-    /// one, so a backend that can't take them never sees a partial feed even if the host sends
-    /// prefixes.
-    pub fn takes_partial_au(&self) -> bool {
-        self.caps.partial_au
+    /// Present one delivery, or decide not to. The stage owns everything past the wire: how the
+    /// pieces of an access unit fit together, whether the timeline holds, and what the decoder's
+    /// clock domain calls this frame.
+    pub fn submit(&mut self, frame: &WireFrame<'_>) -> SinkResult {
+        // A piece of an AU whose predecessor went missing has nowhere to go: the decoder holds a
+        // truncated input and only a re-anchor clears it. `Discard` says so; `Feed` carries whether
+        // the pieces so far leave this AU decodable.
+        let PartStep::Feed { partial, lost_parts } = self.parts.step(frame, self.caps.partial_au) else {
+            return SinkResult::Held;
+        };
+        // Only a completed AU is a frame — a session feeding pieces would otherwise count one
+        // picture several times, and the overlay reads this figure as pictures per second.
+        if !partial {
+            self.stats.frames.fetch_add(1, Ordering::Relaxed);
+        }
+        let flags = FrameFlags {
+            reanchor: frame.reanchor,
+            loss: frame.loss || lost_parts,
+            index: u64::from(frame.index),
+            partial,
+        };
+        let result = self.feed(frame.data, frame.pts_ns, flags);
+        // Either the piece never reached the decoder (a hold swallows it, an error refused it) or
+        // it did and a keyframe has just been asked for regardless — on both paths the AU cannot
+        // be completed. Forgetting it costs the rest of one AU; keeping it would eventually feed a
+        // frame with a hole in it.
+        if !matches!(result, SinkResult::Presented { .. }) {
+            self.parts.drop_open();
+        }
+        result
     }
 
-    pub fn submit(&mut self, au: &[u8], pts_ns: u64, flags: FrameFlags) -> SinkResult {
+    fn feed(&mut self, au: &[u8], pts_ns: u64, flags: FrameFlags) -> SinkResult {
         let request_keyframe = match self.gate(&flags) {
             HoldGate::Skip(result) => return result,
             HoldGate::Feed { request_keyframe } => request_keyframe,
