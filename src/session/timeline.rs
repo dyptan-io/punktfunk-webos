@@ -201,7 +201,8 @@ impl HostPtsAnchor {
     }
 }
 
-fn ms(ns: u64) -> f64 {
+/// Nanoseconds as milliseconds, for log lines.
+pub(super) fn ms(ns: u64) -> f64 {
     ns as f64 / 1_000_000.0
 }
 

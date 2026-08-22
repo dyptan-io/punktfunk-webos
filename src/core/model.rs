@@ -581,6 +581,23 @@ pub enum AudioRoutePref {
 }
 
 impl AudioRoutePref {
+    /// Whether the real stream rides NDL's audio plane — i.e. no SDL device is opened, and the
+    /// clock plane is a standing filler rather than the only feed.
+    pub fn on_ndl_plane(self) -> bool {
+        self != Self::Software
+    }
+
+    /// How the stats overlay names this route. Which decoder ran leads the line: the paths fail
+    /// differently, and reading the numbers without knowing which produced them has already cost
+    /// real debugging time.
+    pub fn overlay_tag(self) -> &'static str {
+        match self {
+            Self::Software => "Opus SW",
+            Self::NdlOpus => "Opus HW",
+            Self::NdlPcm => "PCM HW",
+        }
+    }
+
     /// Widest layout this route can put on a speaker, and therefore the ceiling on what the
     /// handshake asks the host to encode. Per route, never global: NDL's plane and the SDL device
     /// have different ceilings, and clamping every session by the narrower one cost users 5.1 on
@@ -591,7 +608,7 @@ impl AudioRoutePref {
             Self::Software => caps.max_channels,
             // What the TV's own output path carries (`ndl::audio_plane_max_channels`).
             Self::NdlPcm => caps.max_channels.min(caps.plane_max_channels),
-            Self::NdlOpus => 2,
+            Self::NdlOpus => caps.max_channels.min(2),
         }
     }
 }
@@ -839,24 +856,23 @@ impl Settings {
             note!("settings: HDR needs HEVC — an explicit H.264 pick turns it off");
             self.hdr_enabled = false;
         }
-        if self.audio_channels > caps.max_channels {
-            note!(
-                "settings: {} audio channels is more than this TV's audio output carries ({}) — clamping",
-                self.audio_channels,
-                caps.max_channels,
-            );
-            self.audio_channels = caps.max_channels;
-        }
+        // One ceiling, not two: the route's own limit is already `caps.max_channels` or narrower
+        // (`AudioRoutePref::max_channels`). This is also why nothing is ever folded down — a layout
+        // the route can't put on a speaker is never requested. Clamped rather than silently
+        // ignored, so the row shows what will happen.
         let route_max = self.audio_route.max_channels(caps);
         if self.audio_channels > route_max {
-            // The route is the second ceiling on top of the decoder's, and the reason nothing is
-            // ever folded down: a layout this route can't put on a speaker is not requested at
-            // all. Clamped rather than silently ignored, so the row shows what will happen.
-            note!(
-                "settings: {:?} audio carries at most {} channel(s) — clamping",
-                self.audio_route,
-                route_max,
-            );
+            if route_max == caps.max_channels {
+                note!(
+                    "settings: {} audio channels is more than this TV's audio output carries ({route_max}) — clamping",
+                    self.audio_channels,
+                );
+            } else {
+                note!(
+                    "settings: {:?} audio carries at most {route_max} channel(s) — clamping",
+                    self.audio_route,
+                );
+            }
             self.audio_channels = route_max;
         }
     }

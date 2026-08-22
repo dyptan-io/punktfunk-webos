@@ -49,7 +49,7 @@ impl Connected {
     }
 
     /// Channels to open the SDL audio device with, or `None` when the session needs no local
-    /// device (the stream rides NDL's audio plane — see `session::connect::AudioRoute`).
+    /// device (the stream rides NDL's audio plane — see `core::model::AudioRoutePref`).
     pub(crate) fn audio_channels(&self) -> Option<u8> {
         if self.audio_route.on_ndl_plane() {
             None

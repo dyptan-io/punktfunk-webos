@@ -28,6 +28,8 @@ const MAX_CHANNELS: usize = 8;
 /// Decodes (or forwards) one session's audio into its sink.
 pub struct AudioStage {
     sink: Arc<dyn AudioSink>,
+    /// The sink's declared format, fixed at load time — read once here rather than per packet.
+    format: AudioFormat,
     /// `None` on the Opus route, where the TV decodes and this stage only forwards.
     decoder: Option<opus::MSDecoder>,
     /// Negotiated channel count — the decode width, and what libopus sizes a frame by.
@@ -64,13 +66,20 @@ impl AudioStage {
         };
         Ok(Self {
             sink,
+            format,
             decoder,
             channels: layout.channels as usize,
             gaps: AudioGapTracker::new(),
             // One packet plus the concealment burst that can precede it, so steady state never
-            // reallocates.
-            s16: Vec::with_capacity(SAMPLES_PER_FRAME * MAX_CHANNELS * 2),
-            f32: Vec::with_capacity(SAMPLES_PER_FRAME * MAX_CHANNELS * 2),
+            // reallocates. Only the sink's own sample type is worth reserving.
+            s16: Vec::with_capacity(match format {
+                AudioFormat::PcmS16 { .. } => SAMPLES_PER_FRAME * MAX_CHANNELS * 2,
+                _ => 0,
+            }),
+            f32: Vec::with_capacity(match format {
+                AudioFormat::PcmF32 { .. } => SAMPLES_PER_FRAME * MAX_CHANNELS * 2,
+                _ => 0,
+            }),
         })
     }
 
@@ -88,28 +97,30 @@ impl AudioStage {
             return self.sink.feed(Samples::Opus(payload), pts_ns);
         };
         let missing = self.gaps.missing_before(seq);
-        let format = self.sink.format();
         self.s16.clear();
         self.f32.clear();
-        // Concealment frames first (libopus PLC — decode with empty input interpolates a frame;
-        // the alternative is a hard gap, i.e. a click), then the packet itself.
-        for i in 0..=missing {
-            // A concealment frame gets one frame's worth of buffer, not the whole scratch: with no
-            // packet to describe it libopus takes `out.len() / channels` as the frame size and
-            // rejects an illegal one. 5.1 gives 1920/6 = 320.
-            let input: &[u8] = if i < missing { &[] } else { payload };
-            let cap = if i < missing {
+        // A concealment frame gets one frame's worth of buffer, not the whole scratch: with no
+        // packet to describe it libopus takes `out.len() / channels` as the frame size and
+        // rejects an illegal one. 5.1 gives 1920/6 = 320.
+        let cap = |i: u32| {
+            if i < missing {
                 SAMPLES_PER_FRAME * self.channels
             } else {
                 SAMPLES_PER_FRAME * MAX_CHANNELS
-            };
-            match format {
-                // Decoded straight to the sink's own sample type: libopus writes S16 as happily as
-                // f32, so a PCM plane costs no conversion pass and no second buffer.
-                AudioFormat::PcmS16 { interleave, .. } => {
-                    let mut pcm = [0i16; SAMPLES_PER_FRAME * MAX_CHANNELS];
+            }
+        };
+        // Concealment frames first (libopus PLC — decode with empty input interpolates a frame;
+        // the alternative is a hard gap, i.e. a click), then the packet itself. The scratch lives
+        // outside the loop: libopus overwrites what it uses, so re-zeroing it per frame is waste.
+        match self.format {
+            // Decoded straight to the sink's own sample type: libopus writes S16 as happily as
+            // f32, so a PCM plane costs no conversion pass and no second buffer.
+            AudioFormat::PcmS16 { interleave, .. } => {
+                let mut pcm = [0i16; SAMPLES_PER_FRAME * MAX_CHANNELS];
+                for i in 0..=missing {
+                    let input: &[u8] = if i < missing { &[] } else { payload };
                     let frames = decoder
-                        .decode(input, &mut pcm[..cap], false)
+                        .decode(input, &mut pcm[..cap(i)], false)
                         .map_err(|e| anyhow::anyhow!("opus decode: {e}"))?;
                     let decoded = &pcm[..frames * self.channels];
                     match interleave {
@@ -123,18 +134,21 @@ impl AudioStage {
                         None => self.s16.extend_from_slice(decoded),
                     }
                 }
-                AudioFormat::PcmF32 { .. } => {
-                    let mut pcm = [0f32; SAMPLES_PER_FRAME * MAX_CHANNELS];
+            }
+            AudioFormat::PcmF32 { .. } => {
+                let mut pcm = [0f32; SAMPLES_PER_FRAME * MAX_CHANNELS];
+                for i in 0..=missing {
+                    let input: &[u8] = if i < missing { &[] } else { payload };
                     let frames = decoder
-                        .decode_float(input, &mut pcm[..cap], false)
+                        .decode_float(input, &mut pcm[..cap(i)], false)
                         .map_err(|e| anyhow::anyhow!("opus decode: {e}"))?;
                     self.f32.extend_from_slice(&pcm[..frames * self.channels]);
                 }
-                AudioFormat::Opus { .. } => unreachable!("decoder is None on the Opus route"),
             }
+            AudioFormat::Opus { .. } => unreachable!("decoder is None on the Opus route"),
         }
         let pts_ns = pts_ns.saturating_sub((i64::from(missing) * FRAME_MS) as u64 * 1_000_000);
-        match format {
+        match self.format {
             AudioFormat::PcmF32 { .. } => self.sink.feed(Samples::F32(&self.f32), pts_ns),
             AudioFormat::PcmS16 { .. } => self.sink.feed(Samples::S16(as_le_bytes(&self.s16)), pts_ns),
             AudioFormat::Opus { .. } => unreachable!("decoder is None on the Opus route"),
@@ -150,7 +164,7 @@ impl AudioStage {
     /// Peak sample of the last decoded buffer — a diagnostic that separates "the host is sending
     /// silence" from "the speaker is not working". `None` on the Opus route, which decodes nothing.
     pub fn peak(&self) -> Option<f32> {
-        match self.sink.format() {
+        match self.format {
             AudioFormat::PcmF32 { .. } => Some(self.f32.iter().fold(0f32, |m, &s| m.max(s.abs()))),
             _ => None,
         }

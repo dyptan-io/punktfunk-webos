@@ -15,11 +15,11 @@ use crate::core::media::{AudioPlane, AudioSink, VideoSink};
 use crate::platform::webos::device::{self, NdlGeneration};
 use crate::platform::webos::ndl::v1::NdlV1Video;
 use crate::platform::webos::ndl::{NdlAudioConfig, NdlCodec, NdlVideo};
-use crate::services::store::VideoBackend;
+use crate::services::store::{AudioRoutePref, VideoBackend};
 use crate::session::audio::AudioStage;
 use crate::session::connect::ConnectParams;
 use crate::session::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
-use crate::session::pump::{audio_pump, video_pump};
+use crate::session::pump::{spawn_audio_feed, video_pump};
 use crate::session::stage::{SinkConfig, VideoStage};
 use crate::session::StreamStats;
 
@@ -48,17 +48,18 @@ impl MediaPipeline {
         client: &Arc<NativeClient>,
         stop: &Arc<AtomicBool>,
         stats: &Arc<StreamStats>,
-    ) -> Result<(Self, AudioRoute, bool)> {
+    ) -> Result<(Self, AudioRoutePref, bool)> {
         // Picked BEFORE the load, because it decides the plane's FORMAT, then re-checked against
         // the plane the load actually produced — a rejected audio-enabled load leaves no plane to
         // ride.
-        let wanted = AudioRoute::pick(params, client.audio_channels);
+        let wanted = resolve_route(params.audio_route, client.audio_channels, None);
         let (player, is_hdr) = load_player(params, client, wanted)?;
         let plane = player.audio_plane();
-        let route = wanted.on_plane(plane.is_some());
+        let route = resolve_route(wanted, client.audio_channels, Some(plane.is_some()));
         tracing::info!(
-            "audio path: {} (host resolved {} channel(s))",
-            audio_path_label(player.name(), route, plane.is_some()),
+            "audio path: {} on {} (host resolved {} channel(s))",
+            audio_path_label(route, plane.is_some()),
+            player.name(),
             client.audio_channels,
         );
         let video_thread = spawn_video_thread(client, player, stop, stats, is_hdr)?;
@@ -103,97 +104,49 @@ impl MediaPipeline {
     }
 }
 
-/// Which of the three audio paths a session settled on.
+/// Picks the route a session WANTS, then downgrades it to what the load actually produced.
 ///
-/// All three exist because they trade differently, and the trade is measured in latency: the SDL
-/// ring is the only one this client can steer (a de-jitter policy, concealment, any layout), and
-/// the two NDL routes give that up for a shorter path onto the panel's own clock.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum AudioRoute {
-    /// Software Opus → a bare SDL device, with NDL's clock plane on its metronome — **the
-    /// default**, and also what any load with no audio plane falls back to (an audio-enabled load
-    /// the set refused, NDL v1, SMP). The longest of the three paths, and the only one whose
-    /// pacing behaviour is proven on hardware.
-    Software,
-    /// The wire's Opus, decoded by the TV on its audio plane (`Settings::audio_route`).
-    /// No local decode at all, and no SDL device.
-    NdlOpus,
-    /// Software Opus, then straight onto NDL's PCM plane. No SDL device; decode, concealment and
-    /// layout stay local, and the samples land on the picture's own clock. Selectable, not the
-    /// default — see [`AudioRoute::pick`].
-    NdlPcm,
+/// **Software is the default** ([`AudioRoutePref`]'s own default). It is the only shape whose
+/// pacing is known good: NDL paces the picture against a FED audio plane, and a plane fed from the
+/// network inherits the stream's arrival jitter — which is the stutter the silent clock plane was
+/// introduced to cure. The two plane routes are shorter and are kept selectable for exactly that
+/// comparison; until one of them is measured better on real hardware, the metronome keeps the plane
+/// and the audio takes the longer path.
+///
+/// `has_plane` is `None` before the load: the route decides the plane's FORMAT, so it is picked
+/// first and re-checked afterwards. A rejected audio-enabled load (`NdlVideo::load` falls back to
+/// video-only), V1 or SMP leaves no plane to ride, and software is what is left.
+fn resolve_route(pref: AudioRoutePref, channels: u8, has_plane: Option<bool>) -> AudioRoutePref {
+    match pref {
+        _ if has_plane == Some(false) => AudioRoutePref::Software,
+        AudioRoutePref::NdlPcm => AudioRoutePref::NdlPcm,
+        // Stereo or nothing: `Settings::clamp` already holds the document to it, and a session the
+        // host resolved wider must not silently land on a plane that would read the interleave at
+        // the wrong stride — it falls back to software instead.
+        AudioRoutePref::NdlOpus if channels == 2 => AudioRoutePref::NdlOpus,
+        AudioRoutePref::Software | AudioRoutePref::NdlOpus => AudioRoutePref::Software,
+    }
 }
 
-impl AudioRoute {
-    /// Whether the real stream rides NDL's audio plane — i.e. no SDL device is opened, and the
-    /// clock plane is a standby filler rather than the only feed.
-    pub fn on_ndl_plane(self) -> bool {
-        self != Self::Software
-    }
-
-    /// Picks the route a session WANTS. The load happens next and decides whether the plane exists
-    /// at all — [`AudioRoute::on_plane`] applies that answer, and [`Self::Software`] is what is left
-    /// when it doesn't.
-    ///
-    /// **Software is the default.** It is the only shape whose pacing is known good: NDL paces the
-    /// picture against a FED audio plane, and a plane fed from the network inherits the stream's
-    /// arrival jitter — which is the stutter the silent clock plane was introduced to cure. The
-    /// two plane routes are shorter and are kept selectable for exactly that comparison; until one
-    /// of them is measured better on real hardware, the metronome keeps the plane and the audio
-    /// takes the longer path.
-    fn pick(params: &ConnectParams, channels: u8) -> Self {
-        use crate::services::store::AudioRoutePref;
-        match params.audio_route {
-            AudioRoutePref::NdlPcm => Self::NdlPcm,
-            // Stereo or nothing: `Settings::clamp` already holds the document to it, and a
-            // session the host resolved wider must not silently land on a plane that would read
-            // the interleave at the wrong stride — it falls back to software instead.
-            AudioRoutePref::NdlOpus if channels == 2 => Self::NdlOpus,
-            AudioRoutePref::Software | AudioRoutePref::NdlOpus => Self::Software,
-        }
-    }
-
-    /// How the stats overlay names this route. Which decoder ran leads the line: the paths fail
-    /// differently, and reading the numbers without knowing which produced them has already cost
-    /// real debugging time.
-    pub fn overlay_tag(self) -> &'static str {
-        match self {
-            Self::Software => "Opus SW",
-            Self::NdlOpus => "Opus HW",
-            Self::NdlPcm => "PCM HW",
-        }
-    }
-
-    /// Downgrades to software when the load came back with no audio plane — a rejected
-    /// audio-enabled load (`NdlVideo::load` falls back to video-only), V1, or SMP.
-    fn on_plane(self, has_plane: bool) -> Self {
-        if has_plane {
-            self
-        } else {
-            Self::Software
-        }
-    }
-
-    /// The plane format this route needs at load time. Every V2 load asks for a plane whatever the
-    /// route — NDL only paces the picture against a fed one — so the software route still loads
-    /// Opus, for `run_clock_plane`'s metronome to ride.
-    fn plane_config(self, channels: u8) -> NdlAudioConfig {
-        match self {
-            // Exactly what the session negotiated: the route's own ceiling already kept the
-            // handshake from asking for a width this plane has no mode for
-            // (`AudioRoutePref::max_channels`), so there is nothing to fold and nothing to clamp.
-            Self::NdlPcm => NdlAudioConfig::Pcm {
-                channels: i32::from(channels),
-            },
-            Self::Software | Self::NdlOpus => NdlAudioConfig::Opus {
-                // Stereo either way: the silent frame's TOC declares stereo, and a software-decode
-                // session's plane never sees the real stream.
-                channels: 2,
-                // kHz, not Hz — NDL's own unit, and what ss4s passes
-                // (`info->sampleRate / 1000.0`). punktfunk's audio plane is fixed at 48 kHz.
-                sample_rate_khz: 48.0,
-            },
-        }
+/// The plane format this route needs at load time. Every V2 load asks for a plane whatever the
+/// route — NDL only paces the picture against a fed one — so the software route still loads Opus,
+/// for `run_clock_plane`'s metronome to ride.
+fn plane_config(route: AudioRoutePref, channels: u8) -> NdlAudioConfig {
+    match route {
+        // Exactly what the session negotiated: the route's own ceiling already kept the handshake
+        // from asking for a width this plane has no mode for (`AudioRoutePref::max_channels`), so
+        // there is nothing to fold and nothing to clamp.
+        AudioRoutePref::NdlPcm => NdlAudioConfig::Pcm {
+            channels: i32::from(channels),
+        },
+        AudioRoutePref::Software | AudioRoutePref::NdlOpus => NdlAudioConfig::Opus {
+            // Stereo either way: the silent frame's TOC declares stereo, and a software-decode
+            // session's plane never sees the real stream.
+            channels: 2,
+            // kHz, not Hz — NDL's own unit, and what ss4s passes (`info->sampleRate / 1000.0`).
+            // punktfunk's audio plane is fixed at 48 kHz.
+            sample_rate_khz: 48.0,
+        },
     }
 }
 
@@ -215,7 +168,11 @@ pub(super) fn cx_display_hdr() -> quic::HdrMeta {
 ///
 /// Returns the player and whether HDR mastering metadata is being applied — the answer the
 /// video pump needs to know whether to forward per-content metadata at all.
-fn load_player(params: &ConnectParams, client: &NativeClient, route: AudioRoute) -> Result<(Box<dyn VideoSink>, bool)> {
+fn load_player(
+    params: &ConnectParams,
+    client: &NativeClient,
+    route: AudioRoutePref,
+) -> Result<(Box<dyn VideoSink>, bool)> {
     let resolved_mode = client.mode();
     let fps = resolved_mode.refresh_hz.max(1);
     let codec =
@@ -227,7 +184,7 @@ fn load_player(params: &ConnectParams, client: &NativeClient, route: AudioRoute)
     // PCM, or `run_clock_plane`'s metronome — is the route's business; the load only needs the
     // format. A set that refuses the load falls back to video-only in `NdlVideo::load`, and gives
     // up pacing with it.
-    let ndl_audio = route.plane_config(client.audio_channels);
+    let ndl_audio = plane_config(route, client.audio_channels);
     // SMP is only selectable where NDL is the narrow v1 generation (`core::caps::smp_selectable`),
     // so trying it can't displace the v2 path. A load that fails falls back to NDL, but only
     // H.264 survives that — v1 decodes nothing else.
@@ -283,16 +240,16 @@ fn load_player(params: &ConnectParams, client: &NativeClient, route: AudioRoute)
 /// route that asked for a plane and didn't get one, and on a backend that has no plane at all —
 /// and a silent session looks identical on all of them. Without this the first debugging question
 /// has no answer in the log.
-fn audio_path_label(backend: &str, route: AudioRoute, has_plane: bool) -> String {
+fn audio_path_label(route: AudioRoutePref, has_plane: bool) -> &'static str {
     match (route, has_plane) {
-        (AudioRoute::NdlOpus, _) => "NDL hardware Opus decode (+ clock plane standing by)".to_string(),
-        (AudioRoute::NdlPcm, _) => "software Opus decode -> NDL PCM plane (+ clock plane standing by)".to_string(),
+        (AudioRoutePref::NdlOpus, _) => "NDL hardware Opus decode (+ clock plane standing by)",
+        (AudioRoutePref::NdlPcm, _) => "software Opus decode -> NDL PCM plane (+ clock plane standing by)",
         // A plane the real stream is not using is the pacing metronome — see
         // `NdlVideo::run_clock_plane`.
-        (AudioRoute::Software, true) => "software Opus decode -> SDL2 + NDL clock plane".to_string(),
+        (AudioRoutePref::Software, true) => "software Opus decode -> SDL2 + NDL clock plane",
         // No plane means no pacing reference either: this backend has none (NDL v1, SMP), or the
         // audio-enabled load did not confirm and `load()` fell back to video-only.
-        (AudioRoute::Software, false) => format!("software Opus decode -> SDL2, no clock plane ({backend})"),
+        (AudioRoutePref::Software, false) => "software Opus decode -> SDL2, no clock plane",
     }
 }
 
@@ -334,7 +291,7 @@ fn spawn_plane_threads(
     client: &Arc<NativeClient>,
     ndl_audio: Option<Arc<dyn AudioPlane>>,
     stop: &Arc<AtomicBool>,
-    route: AudioRoute,
+    route: AudioRoutePref,
 ) -> Result<PlaneThreads> {
     let Some(ndl) = ndl_audio else {
         return Ok((None, None));
@@ -346,7 +303,7 @@ fn spawn_plane_threads(
             .spawn(move || ndl.run_keepalive(&stop, route.on_ndl_plane()))
             .context("spawn clock plane thread")?
     };
-    if route == AudioRoute::Software {
+    if route == AudioRoutePref::Software {
         return Ok((None, Some(clock_thread)));
     }
     // Built here rather than inside the thread, so a layout this route can't open is an error the
@@ -354,18 +311,15 @@ fn spawn_plane_threads(
     // Folded into the spawn's own error type to keep ONE failure path: an early `?` here would
     // return before the clock thread below is joined, detaching a thread still feeding NDL.
     let audio_thread = match AudioStage::new(ndl.clone() as Arc<dyn AudioSink>, client.audio_channels) {
-        Ok(mut stage) => {
+        Ok(stage) => {
             tracing::info!(
                 "audio stage: {} channel(s) into {}",
                 client.audio_channels,
                 stage.sink_name()
             );
-            let (client, stop) = (client.clone(), stop.clone());
-            std::thread::Builder::new()
-                .name("punktfunk-webos-audio".into())
-                .spawn(move || audio_pump(&client, &mut stage, &stop))
+            spawn_audio_feed(client.clone(), stage, stop.clone())
         }
-        Err(e) => Err(std::io::Error::other(format!("audio stage: {e:#}"))),
+        Err(e) => Err(anyhow::anyhow!("audio stage: {e:#}")),
     };
     match audio_thread {
         Ok(handle) => Ok((Some(handle), Some(clock_thread))),

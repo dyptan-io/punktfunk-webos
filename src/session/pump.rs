@@ -273,7 +273,7 @@ fn audio_drain(client: &NativeClient, stop: &AtomicBool, what: &str, mut play: i
 
 /// The one audio pump: every route, every format.
 ///
-/// Which sink it feeds is the route (`session::connect::AudioRoute`), and what the sink takes is
+/// Which sink it feeds is the route (`core::model::AudioRoutePref`), and what the sink takes is
 /// the sink's own business ([`AudioStage`]) — this loop is blind to both.
 ///
 /// Teardown safety on the plane routes: the stage holds an `Arc` of the plane, which is the same

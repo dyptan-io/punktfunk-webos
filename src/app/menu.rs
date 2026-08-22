@@ -242,7 +242,7 @@ pub(crate) fn row_lock(row: SettingsRow, settings: &Settings, detected: Option<G
         SettingsRow::Hdr if !caps.hdr => Some(RowLock::NoHdr),
         SettingsRow::Hdr if settings.codec == CodecPref::H264 => Some(RowLock::HdrNeedsHevc),
         SettingsRow::Codec if caps.codec_prefs().len() < 2 => Some(RowLock::OneCodec),
-        SettingsRow::Audio if audio_channel_options_max() < 2 => Some(RowLock::StereoOnly),
+        SettingsRow::Audio if caps.max_channels < 2 => Some(RowLock::StereoOnly),
         SettingsRow::Audio if audio_channel_options(settings).len() < 2 => Some(RowLock::RouteStereoOnly),
         SettingsRow::Gamepad if detected.is_none() => Some(RowLock::NoGamepad),
         _ => None,
@@ -458,13 +458,6 @@ pub fn audio_channel_options(settings: &Settings) -> &'static [(u8, &'static str
     let max = settings.audio_route.max_channels(video_caps());
     let offered = AUDIO_CHANNELS.iter().take_while(|(c, _)| *c <= max).count();
     &AUDIO_CHANNELS[..offered]
-}
-
-/// The widest layout ANY route could offer here — the predicate behind `RowLock::StereoOnly`,
-/// which is about the backend rather than the pick (NDL v1). Without this the two stereo locks
-/// would be indistinguishable, and the caption would name the wrong cause.
-fn audio_channel_options_max() -> u8 {
-    video_caps().max_channels
 }
 
 /// The audio routes offered, in display order — software first, it being the default.

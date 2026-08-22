@@ -203,7 +203,7 @@ pub fn video_caps() -> VideoCaps {
     match ndl_generation() {
         // Decoder-wide, NOT clamped to NDL's audio plane: the plane is one of three audio routes
         // and the SDL one carries widths the plane has no mode for. The plane's own ceiling is a
-        // per-ROUTE clamp applied at connect (`session::connect::AudioRoute::max_channels`) — a
+        // per-ROUTE clamp applied at connect (`core::model::AudioRoutePref::max_channels`) — a
         // global one here silently took 5.1 away from a route that can play it.
         NdlGeneration::V2 => VideoCaps {
             plane_max_channels: super::ndl::audio_plane_max_channels(),

@@ -15,7 +15,7 @@ use crate::core::caps::video_caps;
 use crate::platform::webos::device::{self, NdlGeneration};
 use crate::services::store::{CodecPref, GamepadType, VideoBackend};
 use crate::session::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
-use crate::session::pipeline::{cx_display_hdr, AudioRoute, MediaPipeline};
+use crate::session::pipeline::{cx_display_hdr, MediaPipeline};
 use crate::session::StreamStats;
 
 pub struct Connected {
@@ -26,8 +26,9 @@ pub struct Connected {
     /// The decode pipeline and the threads that drive it. Kept alive so `shutdown()` can join
     /// them, and so the QUIC close frame goes out before exit.
     pipeline: MediaPipeline,
-    /// Where this session's audio actually goes — see [`AudioRoute`].
-    pub audio_route: AudioRoute,
+    /// Where this session's audio actually ended up — the preference, resolved against what the
+    /// load produced.
+    pub audio_route: crate::services::store::AudioRoutePref,
     /// Whether HDR mastering metadata is being applied this session (negotiated codec is
     /// HEVC *and* the host signalled HDR). Drives which Game picture mode the runtime asks
     /// the TV for — `game` vs `hdrGame` (see `platform::webos::game_mode`).
@@ -118,7 +119,7 @@ impl Negotiated {
         let caps = video_caps();
         // The route is settled before the handshake because it decides the widest layout worth
         // ASKING the host to encode — channels this session's sink cannot output are airlink and
-        // host CPU spent on silence. Nothing is folded down later; see `AudioRoute::max_channels`.
+        // host CPU spent on silence. Nothing is folded down later; see `AudioRoutePref::max_channels`.
         let route_max = params.audio_route.max_channels(caps);
         let codecs = caps.codec_prefs();
         let codec_pref = if codecs.contains(&params.codec) {

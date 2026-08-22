@@ -815,7 +815,11 @@ pub(super) fn run_inner() -> Result<()> {
                             connected.stats().audio_plane_lead_ms.load(Ordering::Relaxed),
                         ));
                     } else {
-                        lines.push(format!("Opus SW {layout} · buf {} ms", connected.audio_buffer_ms()));
+                        lines.push(format!(
+                            "{} {layout} · buf {} ms",
+                            connected.audio_route.overlay_tag(),
+                            connected.audio_buffer_ms()
+                        ));
                     }
                     if let Some(line) = cpu_mem_line {
                         lines.push(line);

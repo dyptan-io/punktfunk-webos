@@ -457,8 +457,8 @@ impl NdlVideo {
     /// as the guard for what it cannot see — an out-of-order packet, or a burst landing between
     /// the latch and the run's first packet — and is also what publishes the ceiling itself.
     pub fn play_audio(&self, packet: &[u8], host_pts_ns: u64) -> Result<()> {
-        let clock = self.clock.get();
-        if clock.is_none_or(|c| c.map_host_ns(host_pts_ns).is_none()) {
+        // Fast path: no latched timeline means nothing to stamp against, and the packet is dropped.
+        let Some((clock, probe_ns)) = self.clock.get().and_then(|c| Some((c, c.map_host_ns(host_pts_ns)?))) else {
             let dropped = self.dropped_no_offset.fetch_add(1, Ordering::Relaxed) + 1;
             // Reported on the way through, not only on the packet that ends the gap: a gap that
             // never ends is exactly the failure worth seeing, and that path logs nothing at all.
@@ -470,24 +470,13 @@ impl NdlVideo {
                 );
             }
             return Ok(());
-        }
-        // Map, skew and floor under the guard, never before it: `lock_ffi` is the audio plane's
-        // only feed path, so this is what serialises against `burst_silence` — outside it a packet
-        // can read a ceiling the filler has already moved past and hand NDL a stale stamp, i.e. the
-        // rewind this whole path exists to avoid. The offset is re-read here for the same reason:
-        // the check above is only a fast path, and a clear/re-latch landing between the two would
-        // pair the OLD offset with the NEW skew — a stamp the size of the video plane's jump above
-        // the ceiling, onto which every later packet then floors.
-        let clock = clock.expect("checked above");
+        };
         // A mapping this thread hasn't stamped against yet needs its skew re-derived first — the
         // run has to land ABOVE the ceiling the previous one (or the metronome) left behind.
         // Outside `lock_ffi`, which `derive_audio_skew` takes for itself.
         let epoch = clock.epoch();
         if self.skew_epoch.swap(epoch, Ordering::Relaxed) != epoch {
-            let Some(base_ns) = clock.map_host_ns(host_pts_ns) else {
-                return Ok(());
-            };
-            self.derive_audio_skew((base_ns / 1_000_000) as i64);
+            self.derive_audio_skew((probe_ns / 1_000_000) as i64);
         }
         let ret = {
             let _ffi = lock_ffi();

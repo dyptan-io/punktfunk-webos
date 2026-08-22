@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use punktfunk_core::quic;
 
 use crate::core::media::{AudioPlane, NotReady, SessionClock, VideoSink, VideoSinkCaps};
-use crate::session::timeline::{reconciled_frame_interval_ns, HostPtsAnchor};
+use crate::session::timeline::{ms, reconciled_frame_interval_ns, HostPtsAnchor};
 use crate::session::StreamStats;
 
 /// Freeze duration after which we resume even without a clean re-anchor.
@@ -522,7 +522,7 @@ impl VideoStage {
                 "NDL slow: {:.1}ms (frame {}, pts {:.2}ms)",
                 feed_elapsed.as_secs_f32() * 1000.0,
                 flags.index,
-                base_ns as f64 / 1_000_000.0,
+                ms(base_ns),
             );
         }
 
@@ -605,7 +605,7 @@ impl VideoStage {
             "{} error (frame {}, pts {:.2}ms): {e:#}",
             self.sink.name(),
             flags.index,
-            base_ns as f64 / 1_000_000.0,
+            ms(base_ns),
         );
         if !self.take_keyframe_slot() {
             return false;

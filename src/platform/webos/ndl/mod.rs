@@ -340,7 +340,7 @@ fn ensure_init(app_id: &str, api2: bool) -> Result<()> {
 /// Widest layout NDL's audio PLANE can put on a speaker here, in channels.
 ///
 /// Multi-channel where the output path takes multi-channel PCM *and* Sound Out is set for it,
-/// stereo otherwise. A clamp on the PLANE ROUTES only (`session::connect::AudioRoute::max_channels`)
+/// stereo otherwise. A clamp on the PLANE ROUTES only (`core::model::AudioRoutePref::max_channels`)
 /// — the SDL route never touches the plane, and folding its caps by this number took 5.1 away from
 /// sessions that could play it. Logged once, because "why is 5.1 missing" is otherwise an
 /// unanswerable support question.
