@@ -104,7 +104,7 @@ fn spawn_connect(
                 video_backend: settings.video_backend,
                 gamepad_type: settings.gamepad_type,
                 cursor_capture: settings.cursor_capture,
-                ndl_audio_offload: settings.ndl_audio_offload,
+                audio_route: settings.audio_route,
             })
             // Flagged before the handle is joined, so the loading screen can stop waiting
             // for a stream that is not coming — the error itself still travels by `Result`.

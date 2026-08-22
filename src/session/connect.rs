@@ -52,15 +52,17 @@ const PLANE_MAX_CHANNELS: u8 = 6;
 /// the two NDL routes give that up for a shorter path onto the panel's own clock.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AudioRoute {
-    /// Software Opus → a bare SDL device. **Fallback only**: this is what a load with no audio
-    /// plane gets (an audio-enabled load the set refused, NDL v1, SMP). Longer path — see
-    /// `platform::webos::audio`'s module docs for what was removed from it and why.
+    /// Software Opus → a bare SDL device, with NDL's clock plane on its metronome — **the
+    /// default**, and also what any load with no audio plane falls back to (an audio-enabled load
+    /// the set refused, NDL v1, SMP). The longest of the three paths, and the only one whose
+    /// pacing behaviour is proven on hardware.
     Software,
-    /// The wire's Opus, decoded by the TV on its audio plane (`Settings::ndl_audio_offload`).
+    /// The wire's Opus, decoded by the TV on its audio plane (`Settings::audio_route`).
     /// No local decode at all, and no SDL device.
     NdlOpus,
-    /// Software Opus, then straight onto NDL's PCM plane — **the default**. No SDL device; decode,
-    /// concealment and layout stay local, and the samples land on the picture's own clock.
+    /// Software Opus, then straight onto NDL's PCM plane. No SDL device; decode, concealment and
+    /// layout stay local, and the samples land on the picture's own clock. Selectable, not the
+    /// default — see [`AudioRoute::pick`].
     NdlPcm,
 }
 
@@ -75,16 +77,21 @@ impl AudioRoute {
     /// at all — [`AudioRoute::on_plane`] applies that answer, and [`Self::Software`] is what is left
     /// when it doesn't.
     ///
-    /// PCM is the default: it is the shortest path this client can build for any layout, and the
-    /// widths offered are already clamped to what the TV's audio output can carry
-    /// (`ndl::audio_plane_max_channels` feeds `core::caps`, which the Settings dropdown is built
-    /// from). Opus offload wins where it is opted into and possible, since it skips local decode
-    /// entirely — but NDL's Opus struct has no multistream mapping field, so it is stereo-only.
+    /// **Software is the default.** It is the only shape whose pacing is known good: NDL paces the
+    /// picture against a FED audio plane, and a plane fed from the network inherits the stream's
+    /// arrival jitter — which is the stutter the silent clock plane was introduced to cure. The
+    /// two plane routes are shorter and are kept selectable for exactly that comparison; until one
+    /// of them is measured better on real hardware, the metronome keeps the plane and the audio
+    /// takes the longer path.
     fn pick(params: &ConnectParams, channels: u8) -> Self {
-        if params.ndl_audio_offload && channels == 2 {
-            Self::NdlOpus
-        } else {
-            Self::NdlPcm
+        use crate::services::store::AudioRoutePref;
+        match params.audio_route {
+            AudioRoutePref::NdlPcm => Self::NdlPcm,
+            // Stereo or nothing: `Settings::clamp` already holds the document to it, and a
+            // session the host resolved wider must not silently land on a plane that would read
+            // the interleave at the wrong stride — it falls back to software instead.
+            AudioRoutePref::NdlOpus if channels == 2 => Self::NdlOpus,
+            AudioRoutePref::Software | AudioRoutePref::NdlOpus => Self::Software,
         }
     }
 
@@ -201,7 +208,7 @@ pub struct ConnectParams {
     pub video_backend: VideoBackend,
     pub gamepad_type: GamepadType,
     pub cursor_capture: bool,
-    pub ndl_audio_offload: bool,
+    pub audio_route: crate::services::store::AudioRoutePref,
 }
 
 /// One `quic::CODEC_*` bit, or 0 where the preference names no single codec.
@@ -235,6 +242,10 @@ impl Negotiated {
     /// decoder is a frozen black stream with no second chance once `Welcome` has resolved.
     fn clamp(params: &ConnectParams) -> Self {
         let caps = video_caps();
+        // The route is settled before the handshake because it decides the widest layout worth
+        // ASKING the host to encode — channels this session's sink cannot output are airlink and
+        // host CPU spent on silence. Nothing is folded down later; see `AudioRoute::max_channels`.
+        let route_max = params.audio_route.max_channels(caps);
         let codecs = caps.codec_prefs();
         let codec_pref = if codecs.contains(&params.codec) {
             params.codec
@@ -247,7 +258,7 @@ impl Negotiated {
         // on the *negotiated* codec being HEVC in `load_player`.
         let hdr = params.hdr_enabled && caps.hdr && codec_pref != CodecPref::H264;
         Self {
-            audio_channels: params.audio_channels.min(caps.max_channels),
+            audio_channels: params.audio_channels.min(caps.max_channels).min(route_max),
             // VIDEO_CAP_CHACHA20: unconditional — armv7 has no hardware AES, so ChaCha20 is
             // faster. A ≥0.17.2 host picks it up; older hosts ignore the unknown bit.
             video_caps: quic::VIDEO_CAP_CHACHA20

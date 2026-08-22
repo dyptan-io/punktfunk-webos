@@ -36,7 +36,7 @@ pub enum ModalFocusKey<'a> {
     MenuRow(usize, HostAction, bool, Option<RowButton>),
     /// (focused row, log level, stats-overlay on, show-logs on) — any change invalidates the tile.
     DiagnosticsRow(usize, LogLevelOverride, bool, bool),
-    ExperimentalRow(usize, bool, bool, Option<bool>),
+    ExperimentalRow(usize, bool, Option<bool>),
     /// (focused row, cursor-capture on, cursor-gestures on, which rows are overridden) — any
     /// change invalidates the tile.
     CursorSettingsRow(usize, bool, bool, SettingsOverride),
@@ -111,7 +111,6 @@ pub enum ModalShellKey<'a> {
         show_logs: bool,
     },
     Experimental {
-        ndl_audio_offload: bool,
         game_mode: bool,
         /// The root-probe verdict — it locks the Game mode row and rewrites its caption.
         rooted: Option<bool>,

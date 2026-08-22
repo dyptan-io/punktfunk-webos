@@ -98,11 +98,6 @@ impl App {
             menu::EXP_ROWS.get(self.nav.cursor(ScreenKey::Experimental)).copied(),
             ev,
         ) {
-            (Some(menu::ExpRow::HwAudio), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
-                let from = self.settings_ui.settings.ndl_audio_offload;
-                self.settings_ui.settings.ndl_audio_offload = !from;
-                self.arm_switch_anim(from);
-            }
             // A locked row (see `menu::exp_row_lock`) rejects the press — the greyed control
             // already says the value is fixed.
             (Some(menu::ExpRow::GameMode), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm)

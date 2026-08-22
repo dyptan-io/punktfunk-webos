@@ -240,7 +240,14 @@ impl App {
     /// [`Self::move_focused_card`] for a card named by id — what the collections modal
     /// confirms with, since the card it targets need not be the focused one by then.
     /// `false` when the card already sits in `to` and nothing moved.
-    pub(crate) fn move_card(&mut self, id: &str, to: Option<usize>, columns: usize, screen_w: u32, screen_h: u32) -> bool {
+    pub(crate) fn move_card(
+        &mut self,
+        id: &str,
+        to: Option<usize>,
+        columns: usize,
+        screen_w: u32,
+        screen_h: u32,
+    ) -> bool {
         let Some(known) = self.selected_known_host() else {
             return false;
         };

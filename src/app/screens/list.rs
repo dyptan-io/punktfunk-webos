@@ -110,7 +110,7 @@ impl App {
             Screen::Diagnostics => crate::app::menu::log_level_dropdown_options(),
             Screen::Settings(set) => crate::app::menu::settings_logical_row(set, display_row)
                 .map_or_else(Vec::new, |row| {
-                    crate::app::menu::dropdown_options(row, self.detected_gamepad_type)
+                    crate::app::menu::dropdown_options(row, &self.settings_ui.settings, self.detected_gamepad_type)
                 }),
             // No dropdowns: nothing on these screens opens one, so nothing here should be
             // drawn or hit-tested as if it had.
@@ -139,8 +139,9 @@ impl App {
     pub(crate) fn dropdown_len(&self, display_row: usize) -> usize {
         match self.nav.screen {
             Screen::Diagnostics => crate::app::menu::LOG_LEVEL_OPTIONS.len(),
-            Screen::Settings(set) => crate::app::menu::settings_logical_row(set, display_row)
-                .map_or(0, crate::app::menu::dropdown_option_count),
+            Screen::Settings(set) => crate::app::menu::settings_logical_row(set, display_row).map_or(0, |row| {
+                crate::app::menu::dropdown_option_count(row, &self.settings_ui.settings)
+            }),
             _ => 0,
         }
     }

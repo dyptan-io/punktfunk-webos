@@ -466,8 +466,6 @@ mod tests {
         }
     }
 
-
-
     #[test]
     fn an_unloaded_library_has_no_cards_and_no_headings() {
         let layout = GridLayout::new(&[], 5);
@@ -505,5 +503,4 @@ mod tests {
             }
         }
     }
-
 }

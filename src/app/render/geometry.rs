@@ -12,8 +12,6 @@ use crate::ui;
 use crate::ui::render::Rect;
 use crate::ui::Painter;
 
-
-
 impl App {
     /// `(total units, visible units, card rect, content/viewport rect)` for whichever
     /// scrollable modal is open — `None` if `self.nav.screen` has no overflowing content.

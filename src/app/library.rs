@@ -281,5 +281,4 @@ mod tests {
         lib.swap_games(DESKTOP_PIN_ID, "steam:0");
         assert_eq!(shape(&lib)[0].1, vec!["steam:0", DESKTOP_PIN_ID, "steam:1"]);
     }
-
 }

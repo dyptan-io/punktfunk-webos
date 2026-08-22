@@ -40,9 +40,22 @@ fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
         menu::RowLock::HdrNeedsHevc => "HDR is not supported by H.264".to_string(),
         menu::RowLock::NoHdr => format!("HDR is not supported by {}", source()),
         menu::RowLock::OneCodec => format!("H.264 is the only codec supported by {}", source()),
-        menu::RowLock::StereoOnly => "Your TV's audio output only carries stereo".to_string(),
-        menu::RowLock::OffloadStereoOnly => "Audio offload is stereo only — turn it off for 5.1".to_string(),
+        menu::RowLock::StereoOnly => format!("Stereo is the only layout supported by {}", source()),
+        menu::RowLock::RouteStereoOnly => "This audio output carries stereo only".to_string(),
         menu::RowLock::NoGamepad => "Connect a controller to your TV".to_string(),
+    }
+}
+
+/// What each audio route trades, on the row itself — the pick is a hardware path, and the
+/// difference between the three is not inferable from their names.
+fn audio_route_hint(route: crate::services::store::AudioRoutePref) -> Option<ui::widgets::RowSubtext> {
+    use crate::services::store::AudioRoutePref;
+    match route {
+        AudioRoutePref::Software => None,
+        AudioRoutePref::NdlPcm => Some(ui::widgets::RowSubtext::hint("Lower latency, up to 5.1")),
+        AudioRoutePref::NdlOpus => Some(ui::widgets::RowSubtext::hint(
+            "Lowest latency, stereo only — some TVs play nothing",
+        )),
     }
 }
 
@@ -113,6 +126,12 @@ pub(crate) fn rows(
             "Audio",
             menu::audio_label(settings.audio_channels),
         ),
+        menu::SettingsRow::AudioRoute => FocusRow::dropdown(
+            crate::app::view::icons::ICON_MEMORY,
+            "Audio output",
+            menu::audio_route_label(settings.audio_route),
+        )
+        .with_subtext_opt(audio_route_hint(settings.audio_route)),
         menu::SettingsRow::Gamepad => FocusRow::dropdown(
             crate::app::view::icons::ICON_GAMEPAD,
             "Controller",

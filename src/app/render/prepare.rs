@@ -11,10 +11,10 @@ use anyhow::Result;
 use crate::app::hosts::HostEntry;
 use crate::app::nav::ScreenKey;
 use crate::app::render::ctx::RenderCtx;
-use crate::app::screens::is_scroll_list;
 use crate::app::render::key::{ModalFocusKey, ModalShellKey, ScrollContentKey};
 use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
+use crate::app::screens::is_scroll_list;
 use crate::app::screens::rowbuttons::RowButton;
 use crate::app::{
     menu, view, App, HomeFocus, PairingFocus, Screen, ABOUT_WINDOW_BUDGET, ABOUT_WINDOW_MARGIN, SCROLL_INDICATOR_TILE_W,
@@ -249,7 +249,6 @@ impl App {
                 show_logs: self.settings_ui.settings.show_logs,
             }),
             Screen::Experimental => Some(ModalShellKey::Experimental {
-                ndl_audio_offload: self.settings_ui.settings.ndl_audio_offload,
                 game_mode: self.settings_ui.settings.game_mode,
                 rooted: self.hosts.rooted,
             }),
@@ -344,7 +343,6 @@ impl App {
             )),
             Screen::Experimental => Some(ModalFocusKey::ExperimentalRow(
                 self.nav.cursor(ScreenKey::Experimental),
-                self.settings_ui.settings.ndl_audio_offload,
                 self.settings_ui.settings.game_mode,
                 self.hosts.rooted,
             )),

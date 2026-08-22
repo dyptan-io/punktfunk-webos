@@ -90,4 +90,3 @@ pub(crate) const fn is_list_modal(screen: Screen) -> bool {
         | Screen::RemoveCollection => false,
     }
 }
-

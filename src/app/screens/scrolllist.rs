@@ -82,7 +82,8 @@ impl App {
             // whole library, per frame, and no row draws one.
             Screen::Collections => cache::version(&(
                 screen,
-                self.selected_known_host().map(|host| CollectionShapes(host.collections())),
+                self.selected_known_host()
+                    .map(|host| CollectionShapes(host.collections())),
                 self.screens.collections.target.as_deref(),
                 content_w,
             )),

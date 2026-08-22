@@ -701,7 +701,10 @@ impl App {
         // Only the expiring frame reports `animating` — the idle branch's `wait_for_event`
         // still times out at `TICK_BUDGET`, so this runs on schedule without holding the
         // SoC at 60Hz for the whole 15s.
-        if self.home_status_shown_at.is_some_and(|t| t.elapsed() >= HOME_STATUS_LIFETIME) {
+        if self
+            .home_status_shown_at
+            .is_some_and(|t| t.elapsed() >= HOME_STATUS_LIFETIME)
+        {
             self.set_home_status(None, false);
             animating = true;
         }

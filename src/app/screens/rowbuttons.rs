@@ -49,7 +49,10 @@ impl App {
         match self.nav.screen {
             Screen::HostMenu => (
                 false,
-                self.host_menu_actions().get(row).copied().map_or(&[][..], host_menu_trailing),
+                self.host_menu_actions()
+                    .get(row)
+                    .copied()
+                    .map_or(&[][..], host_menu_trailing),
             ),
             Screen::Collections => self
                 .selected_known_host()

@@ -16,35 +16,19 @@ use anyhow::Result;
 pub const TITLE: &str = "Experimental";
 pub const SUBTITLE: &str = "Unstable, off by default.";
 
-/// Hardware Opus decode and Game mode. `rooted` is the root-probe verdict, `None` while it is
-/// still running.
+/// Game mode. `rooted` is the root-probe verdict, `None` while it is still running.
 pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
-    // Opt-in: the default route already puts audio on NDL's plane as PCM, and this hands the Opus
-    // decode itself to the TV as well — which some sets accept and then play nothing on, with no
-    // runtime probe able to tell (see `Settings::ndl_audio_offload`). Stereo only, so selecting it
-    // locks the Audio row (`menu::RowLock::OffloadStereoOnly`).
-    let mut rows = vec![FocusRow::toggle(
-        crate::app::view::icons::ICON_MEMORY,
-        "Audio offload",
-        settings.ndl_audio_offload,
-    )
-    .with_subtext(ui::widgets::RowSubtext::hint(if settings.ndl_audio_offload {
-        "Stereo only — turn off for 5.1"
-    } else {
-        "Let the TV decode Opus itself (stereo only)"
-    }))];
     // Driving the TV's Game picture/sound modes needs the Homebrew Channel's root helper — the
     // public bus is denied `settingsservice` outright (see `platform::webos::game_mode`). The row
     // is always listed, but stays locked until the probe finds that helper actually reachable.
     let game_mode = FocusRow::toggle(crate::app::view::icons::ICON_GAMEPAD, "Game mode", settings.game_mode)
         .with_subtext(ui::widgets::RowSubtext::hint("Your TV is rooted, you can use ALLM"));
-    rows.push(match menu::exp_row_lock(ExpRow::GameMode, rooted) {
+    vec![match menu::exp_row_lock(ExpRow::GameMode, rooted) {
         // The lock's caption replaces the row's own: a row the user can't change has nothing
         // more useful to say than why.
         Some(lock) => game_mode.locked(true).with_subtext(lock_caption(lock)),
         None => game_mode,
-    });
-    rows
+    }]
 }
 
 fn lock_caption(lock: ExpRowLock) -> ui::widgets::RowSubtext {
