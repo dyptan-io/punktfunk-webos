@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 
-use crate::core::media::{AudioPlane, MediaClock, NotReady, VideoSink, VideoSinkCaps};
+use crate::core::media::{AudioFormat, AudioPlane, AudioSink, MediaClock, NotReady, Samples, VideoSink, VideoSinkCaps};
 
 use super::{arm_load, ensure_init, ensure_not_poisoned, ffi, settle_before_retry, wait_load_completed};
 use super::{lock_ffi, mark_frame_fed_logged, NdlCodec, LOAD_COMPLETED};
@@ -41,6 +41,16 @@ const PCM_SILENCE: [u8; 240 * 6 * 2] = [0; 240 * 6 * 2];
 
 /// Interleaved 16-bit samples in one [`PRIME_PACKET_MS`] packet, per channel (48 kHz × 5 ms).
 const PCM_SILENCE_FRAMES: usize = 240;
+
+/// Interleave order NDL's `"6-channel"` PCM mode expects, as indices into punktfunk's own 5.1
+/// order (`FL FR FC LFE BL BR`) — i.e. emit `FL FR BL BR FC LFE`.
+///
+/// ⚠ **Inferred, not verified.** ss4s only accepts an Opus 5.1 stream whose multistream mapping is
+/// `{0,1,4,5,2,3}` for NDL passthrough (`IsOpusPassthroughSupported`), which says NDL wants the
+/// centre and LFE pair *last*. Since the samples are interleaved here, the same permutation is
+/// applied. If 5.1 comes out with dialogue in the surrounds, try this as an identity
+/// `[0,1,2,3,4,5]` — the failure is audible, not silent.
+const NDL_51_ORDER: [usize; 6] = [0, 1, 4, 5, 2, 3];
 
 /// NDL's PCM string enums, verbatim from `NDL_directmedia_types.h`. Static, because the pointers
 /// go into a struct NDL reads during the load.
@@ -811,6 +821,43 @@ impl MediaClock for NdlVideo {
     }
 }
 
+impl AudioSink for NdlVideo {
+    fn name(&self) -> &'static str {
+        match self.audio {
+            Some(NdlAudioConfig::Pcm { .. }) => "NDL PCM plane",
+            _ => "NDL Opus plane",
+        }
+    }
+
+    /// Whatever the LOAD asked for — the plane's format is fixed at load time, and every silence
+    /// burst here already matches it.
+    fn format(&self) -> AudioFormat {
+        match self.audio {
+            Some(NdlAudioConfig::Pcm { channels }) => AudioFormat::PcmS16 {
+                channels: channels as u8,
+                sample_rate: 48_000,
+                // Only the 6-channel mode reorders; stereo and mono are punktfunk's own order.
+                interleave: (channels == 6).then_some(&NDL_51_ORDER),
+            },
+            _ => AudioFormat::Opus { channels: 2 },
+        }
+    }
+
+    fn feed(&self, samples: Samples<'_>, host_pts_ns: u64) -> Result<()> {
+        let buf = match samples {
+            Samples::Opus(b) | Samples::S16(b) => b,
+            // The plane takes bytes in the format its load declared; f32 is the SDL device's
+            // shape and never reaches here.
+            Samples::F32(_) => bail!("NDL audio plane cannot take f32 samples"),
+        };
+        self.play_audio(buf, host_pts_ns)
+    }
+
+    fn depth_ms(&self) -> Option<i64> {
+        Some(self.audio_plane_lead_ms())
+    }
+}
+
 impl AudioPlane for NdlVideo {
     fn attach_clock(&self, clock: std::sync::Arc<crate::core::media::SessionClock>) {
         let _ = self.clock.set(clock);
@@ -818,10 +865,6 @@ impl AudioPlane for NdlVideo {
 
     fn lead_ms(&self) -> i64 {
         self.audio_plane_lead_ms()
-    }
-
-    fn feed(&self, buf: &[u8], host_pts_ns: u64) -> Result<()> {
-        self.play_audio(buf, host_pts_ns)
     }
 
     fn run_keepalive(&self, stop: &std::sync::atomic::AtomicBool, yields_to_real: bool) {

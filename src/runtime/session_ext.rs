@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use punktfunk_core::input::InputEvent;
 
-use crate::platform::webos::audio::AudioFeed;
+use crate::session::audio::AudioStage;
 use crate::session::{self, Connected, StreamStats};
 
 /// The input path, cloned for a thread that sends off the main loop (the HID-mouse reader).
@@ -87,8 +87,8 @@ impl Connected {
 
     /// Starts the audio decode/feed thread. It exits on the session's stop flag, or when the
     /// transport's audio plane closes.
-    pub(crate) fn spawn_audio_feed(&self, feed: AudioFeed) -> anyhow::Result<std::thread::JoinHandle<()>> {
-        session::spawn_audio_feed(self.client.clone(), feed, self.stop.clone())
+    pub(crate) fn spawn_audio_feed(&self, stage: AudioStage) -> anyhow::Result<std::thread::JoinHandle<()>> {
+        session::spawn_audio_feed(self.client.clone(), stage, self.stop.clone())
     }
 
     /// Signals the audio feed thread to stop and joins it, bounded. Sets the session's stop flag,

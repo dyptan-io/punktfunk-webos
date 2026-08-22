@@ -17,8 +17,9 @@ use crate::platform::webos::device::{self, NdlGeneration};
 use crate::platform::webos::ndl::v1::NdlV1Video;
 use crate::platform::webos::ndl::{NdlAudioConfig, NdlCodec, NdlVideo};
 use crate::services::store::{CodecPref, GamepadType, VideoBackend};
+use crate::session::audio::AudioStage;
 use crate::session::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
-use crate::session::pump::{ndl_audio_pump, ndl_pcm_audio_pump, video_pump};
+use crate::session::pump::{audio_pump, video_pump};
 use crate::session::stage::{SinkConfig, VideoStage};
 use crate::session::StreamStats;
 
@@ -41,10 +42,6 @@ pub struct Connected {
     /// the TV for — `game` vs `hdrGame` (see `platform::webos::game_mode`).
     pub hdr: bool,
 }
-
-/// Widest layout NDL's audio plane has a mode for — mirrors `platform::webos::audio`'s own
-/// constant, and the reason a 7.1 session loads a 6-channel plane.
-const PLANE_MAX_CHANNELS: u8 = 6;
 
 /// Which of the three audio paths a session settled on.
 ///
@@ -122,11 +119,11 @@ impl AudioRoute {
     /// Opus, for `run_clock_plane`'s metronome to ride.
     fn plane_config(self, channels: u8) -> NdlAudioConfig {
         match self {
-            // The plane's widest mode is 6 channels, so a 7.1 session loads 5.1 and `PcmFeed`
-            // folds the sides in. Both sides must agree on that width or NDL reads the interleave
-            // at the wrong stride.
+            // Exactly what the session negotiated: the route's own ceiling already kept the
+            // handshake from asking for a width this plane has no mode for
+            // (`AudioRoutePref::max_channels`), so there is nothing to fold and nothing to clamp.
             Self::NdlPcm => NdlAudioConfig::Pcm {
-                channels: i32::from(channels.min(PLANE_MAX_CHANNELS)),
+                channels: i32::from(channels),
             },
             Self::Software | Self::NdlOpus => NdlAudioConfig::Opus {
                 // Stereo either way: the silent frame's TOC declares stereo, and a software-decode
@@ -538,38 +535,29 @@ fn spawn_plane_threads(
             .spawn(move || ndl.run_keepalive(&stop, route.on_ndl_plane()))
             .context("spawn clock plane thread")?
     };
-    let audio_thread = match route {
-        AudioRoute::Software => return Ok((None, Some(clock_thread))),
-        AudioRoute::NdlOpus => {
+    if route == AudioRoute::Software {
+        return Ok((None, Some(clock_thread)));
+    }
+    // Built here rather than inside the thread, so a layout this route can't open is an error the
+    // caller reports instead of a thread that dies silently and leaves the plane on its metronome.
+    // Folded into the spawn's own error type to keep ONE failure path: an early `?` here would
+    // return before the clock thread below is joined, detaching a thread still feeding NDL.
+    let audio_thread = match AudioStage::new(
+        ndl.clone() as Arc<dyn crate::core::media::AudioSink>,
+        client.audio_channels,
+    ) {
+        Ok(mut stage) => {
+            tracing::info!(
+                "audio stage: {} channel(s) into {}",
+                client.audio_channels,
+                stage.sink_name()
+            );
             let (client, stop) = (client.clone(), stop.clone());
             std::thread::Builder::new()
                 .name("punktfunk-webos-audio".into())
-                .spawn(move || ndl_audio_pump(&client, ndl.as_ref(), &stop))
+                .spawn(move || audio_pump(&client, &mut stage, &stop))
         }
-        AudioRoute::NdlPcm => {
-            let (client, stop) = (client.clone(), stop.clone());
-            // Built here rather than inside the thread, so a decoder this layout can't open is an
-            // error the caller reports instead of a thread that dies silently and leaves the plane
-            // on its metronome. Folded into the spawn's own error type to keep ONE failure path:
-            // an early `?` here would return before the clock thread below is joined, detaching a
-            // thread that is still feeding NDL.
-            match crate::platform::webos::audio::PcmFeed::new(client.audio_channels) {
-                Ok(mut feed) => {
-                    // Logged because it is the one place the fold is visible: a 7.1 session says
-                    // 6 here, and "did my 5.1 actually reach the plane" is otherwise unanswerable
-                    // from a report.
-                    tracing::info!(
-                        "NDL PCM plane: {} channel(s) from a {}-channel stream",
-                        feed.plane_channels(),
-                        client.audio_channels,
-                    );
-                    std::thread::Builder::new()
-                        .name("punktfunk-webos-audio".into())
-                        .spawn(move || ndl_pcm_audio_pump(&client, ndl.as_ref(), &stop, &mut feed))
-                }
-                Err(e) => Err(std::io::Error::other(format!("PCM plane decoder: {e:#}"))),
-            }
-        }
+        Err(e) => Err(std::io::Error::other(format!("audio stage: {e:#}"))),
     };
     match audio_thread {
         Ok(handle) => Ok((Some(handle), Some(clock_thread))),

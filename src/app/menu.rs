@@ -474,6 +474,26 @@ pub const AUDIO_ROUTES: [AudioRoutePref; 3] = [
     AudioRoutePref::NdlOpus,
 ];
 
+/// Why the Audio row offers fewer layouts than punktfunk can carry, or `None` when nothing is
+/// missing from it.
+///
+/// The row lists only what the session could actually play (`audio_channel_options`), so an
+/// unsupported layout is not selectable at all — this is the other half of that: saying WHICH
+/// limit did it, since the same short list comes from the TV's output path on one route and from
+/// the route itself on another.
+pub(crate) fn audio_limit_reason(settings: &Settings) -> Option<&'static str> {
+    let caps = video_caps();
+    let offered = settings.audio_route.max_channels(caps);
+    if offered >= caps.max_channels {
+        return None;
+    }
+    Some(match (settings.audio_route, offered) {
+        (AudioRoutePref::NdlOpus, _) => "This audio output is stereo only",
+        (_, 2) => "Your TV's audio output carries stereo only",
+        _ => "Your TV's audio output carries up to 5.1",
+    })
+}
+
 /// Dropdown label for a route. Named for what the user hears through, not for the API behind it.
 pub(crate) fn audio_route_label(route: AudioRoutePref) -> &'static str {
     match route {

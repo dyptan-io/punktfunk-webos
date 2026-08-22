@@ -10,9 +10,8 @@ use punktfunk_core::client::{AudioPacket, NativeClient};
 use punktfunk_core::packet::{FLAG_SOF, USER_FLAG_RECOVERY_ANCHOR};
 use punktfunk_core::PunktfunkError;
 
-use crate::core::media::AudioPlane;
-use crate::platform::webos::audio::{AudioFeed, PcmFeed};
 use crate::platform::webos::device::boost_current_thread;
+use crate::session::audio::AudioStage;
 use crate::session::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
 use crate::session::priority::{boost_hot_threads, spawn_vendor_decode_thread_renicer};
 use crate::session::stage::{FrameFlags, SinkResult, VideoStage};
@@ -375,82 +374,53 @@ fn audio_drain(client: &NativeClient, stop: &AtomicBool, what: &str, mut play: i
     }
 }
 
-/// Drains raw Opus packets straight into NDL, for the offloaded path.
+/// The one audio pump: every route, every format.
 ///
-/// Teardown safety: this thread holds one of the two `Arc<NdlVideo>` owners, so the
-/// process-global NDL unload in `NdlVideo::drop` cannot run until this thread has
-/// exited — `NDL_DirectAudioPlay` can never race the unload, whichever thread
+/// Which sink it feeds is the route (`session::connect::AudioRoute`), and what the sink takes is
+/// the sink's own business ([`AudioStage`]) — this loop is blind to both.
+///
+/// Teardown safety on the plane routes: the stage holds an `Arc` of the plane, which is the same
+/// handle as the video load, so the process-global NDL unload in `NdlVideo::drop` cannot run until
+/// this thread has exited — a feed can never race the unload, whichever thread
 /// `Connected::shutdown` happens to join first.
-/// A gap starves NDL's pacing clock, but `run_clock_plane` watches the same plane and fills in —
-/// see its `yields_to_real`.
-pub(super) fn ndl_audio_pump(client: &NativeClient, ndl: &dyn AudioPlane, stop: &AtomicBool) {
-    audio_drain(client, stop, "audio pump", |packet| {
-        if let Err(e) = ndl.feed(&packet.data, packet.pts_ns) {
-            tracing::warn!("NDL audio error (seq {}): {e:#}", packet.seq);
+pub(super) fn audio_pump(client: &NativeClient, stage: &mut AudioStage, stop: &AtomicBool) {
+    let what = stage.sink_name();
+    let mut packets: u32 = 0;
+    audio_drain(client, stop, what, |packet| {
+        if let Err(e) = stage.play(packet.seq, packet.pts_ns, &packet.data) {
+            tracing::warn!("audio error (seq {}): {e:#}", packet.seq);
+            return;
+        }
+        packets = packets.wrapping_add(1);
+        // ~15s, matching the video heartbeat (packets are 5ms each).
+        if packets % 3_000 == 0 {
+            tracing::debug!(
+                "audio: {what}, depth={}, peak={:.4}",
+                stage
+                    .depth_ms()
+                    .map_or_else(|| "n/a".to_string(), |ms| format!("{ms}ms")),
+                stage.peak().unwrap_or(0.0),
+            );
         }
     });
 }
 
-/// Decodes Opus here and feeds the PCM to NDL's own sink, for the `NdlAudioConfig::Pcm` path.
-///
-/// The middle ground between the two older routes, and the shortest audio leg of the three: the
-/// software decoder still runs (so concealment, 5.1 layouts and every core fix stay in play) but
-/// the samples go to the same hardware clock as the picture instead of through the SDL ring and
-/// device buffer. Same teardown safety as [`ndl_audio_pump`] — the thread holds an `Arc<NdlVideo>`,
-/// so no unload can race the feed.
-pub(super) fn ndl_pcm_audio_pump(client: &NativeClient, ndl: &dyn AudioPlane, stop: &AtomicBool, feed: &mut PcmFeed) {
-    audio_drain(client, stop, "audio pcm", |packet| {
-        let (pcm, lead_ms) = match feed.decode(packet.seq, &packet.data) {
-            Ok(decoded) => decoded,
-            Err(e) => {
-                tracing::warn!("audio decode error (seq {}): {e:#}", packet.seq);
-                return;
-            }
-        };
-        // Concealment sits in the hole BEFORE this packet, so the buffer starts that much earlier
-        // than the packet's own stamp. `play_audio`'s ceiling floors anything that lands under the
-        // audio already fed, which is exactly the right answer for a hole being filled.
-        let pts_ns = packet.pts_ns.saturating_sub(lead_ms as u64 * 1_000_000);
-        if let Err(e) = ndl.feed(pcm, pts_ns) {
-            tracing::warn!("NDL audio error (seq {}): {e:#}", packet.seq);
-        }
-    });
-}
-
-/// Spawns the software decode/feed thread (`audio_feed_pump`) and returns its handle.
+/// Spawns the audio thread for a session whose sink lives outside `connect` (the SDL device, which
+/// belongs to whichever thread initialised SDL).
 pub fn spawn_audio_feed(
     client: Arc<NativeClient>,
-    mut feed: AudioFeed,
+    mut stage: AudioStage,
     stop: Arc<AtomicBool>,
 ) -> Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name("punktfunk-webos-audio".into())
-        .spawn(move || audio_feed_pump(&client, &mut feed, &stop))
-        .context("spawn audio feed thread")
+        .spawn(move || audio_pump(&client, &mut stage, &stop))
+        .context("spawn audio thread")
 }
 
-/// Joins the audio feed thread, bounded by the same timeout every other teardown join uses — a
-/// thread wedged in an Opus decode must not hold the whole app on the way back to the menu.
-/// Software Opus → SDL2, not NDL, so a wedge here needs no `ndl::poison()`.
+/// Joins the audio thread, bounded by the same timeout every other teardown join uses — a thread
+/// wedged in an Opus decode must not hold the whole app on the way back to the menu. This is the
+/// SDL route only, so a wedge here needs no `ndl::poison()`.
 pub fn join_audio_feed(handle: std::thread::JoinHandle<()>) -> bool {
     join_with_timeout(handle, SHUTDOWN_JOIN_TIMEOUT, "audio-feed", || ())
-}
-
-/// Pulls Opus packets off the transport, decodes them, and hands the PCM to the playback ring.
-fn audio_feed_pump(client: &NativeClient, feed: &mut AudioFeed, stop: &AtomicBool) {
-    let mut packets: u32 = 0;
-    audio_drain(client, stop, "audio feed", |packet| {
-        match feed.play(packet.seq, &packet.data) {
-            Ok(peak) => {
-                packets = packets.wrapping_add(1);
-                // ~15s, matching the video heartbeat (packets are 5ms each).
-                if packets % 3_000 == 0 {
-                    tracing::debug!("audio peak: {peak:.4}");
-                }
-            }
-            // Underruns and drift sheds are reported by the ring itself, which is the only
-            // side that knows the depth — see `platform::webos::audio`'s callback.
-            Err(e) => tracing::warn!("audio error (seq {}): {e:#}", packet.seq),
-        }
-    });
 }

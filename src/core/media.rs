@@ -173,7 +173,65 @@ pub trait VideoSink: Send {
     }
 
     /// The audio plane this load produced, where the backend has one and the load was accepted.
+    /// It is an [`AudioSink`] too, so a route that rides it needs nothing else.
     fn audio_plane(&self) -> Option<Arc<dyn AudioPlane>> {
+        None
+    }
+}
+
+/// What an audio sink takes. Declared by the sink; the stage above produces exactly this and
+/// nothing converts afterwards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioFormat {
+    /// The wire's own Opus, handed over undecoded — the sink decodes.
+    Opus { channels: u8 },
+    /// Interleaved S16LE. `interleave` permutes punktfunk's channel order into the sink's, or is
+    /// `None` where the two agree; it is applied while the samples are written, so an order that
+    /// differs costs nothing extra.
+    PcmS16 {
+        channels: u8,
+        sample_rate: u32,
+        interleave: Option<&'static [usize]>,
+    },
+    /// Interleaved f32 in punktfunk's own channel order — what libopus decodes to, so this is the
+    /// format that costs no conversion at all.
+    PcmF32 { channels: u8, sample_rate: u32 },
+}
+
+impl AudioFormat {
+    /// Channels this sink puts on a speaker. Nothing is ever folded into it: a session asks the
+    /// host for a layout the selected route carries (`model::AudioRoutePref::max_channels`), so a
+    /// mismatch here is a bug, not a case to mix down.
+    pub fn channels(self) -> u8 {
+        match self {
+            Self::Opus { channels } | Self::PcmS16 { channels, .. } | Self::PcmF32 { channels, .. } => channels,
+        }
+    }
+}
+
+/// One packet on its way to a sink, in whatever shape that sink declared.
+pub enum Samples<'a> {
+    Opus(&'a [u8]),
+    S16(&'a [u8]),
+    F32(&'a [f32]),
+}
+
+/// Somewhere a session's audio can go. Three exist here — the TV's SDL device, NDL's PCM plane
+/// and NDL's Opus plane — and `session::audio`'s stage is written against this rather than against
+/// any of them, so adding a fourth is one implementation and no pipeline change.
+pub trait AudioSink: Send + Sync {
+    /// For the log line and the stats overlay.
+    fn name(&self) -> &'static str;
+
+    /// What this sink takes. The stage produces it; nothing converts on the way in.
+    fn format(&self) -> AudioFormat;
+
+    /// Feed one packet, stamped in the host's capture clock. A sink that paces on a timeline maps
+    /// it through the session's [`SessionClock`]; one that just plays what it is given ignores it.
+    fn feed(&self, samples: Samples<'_>, host_pts_ns: u64) -> Result<()>;
+
+    /// Queue depth in ms where the sink knows one, for the stats overlay.
+    fn depth_ms(&self) -> Option<i64> {
         None
     }
 }
@@ -183,16 +241,13 @@ pub trait VideoSink: Send {
 /// It is part of the *video* sink's world because the picture depends on it: NDL paces the
 /// picture against a fed plane, so a plane starved of packets is a video stutter, not an audio
 /// fault (docs/NOTES.md § "NDL's audio plane").
-pub trait AudioPlane: Send + Sync {
+pub trait AudioPlane: AudioSink {
     /// Hand the plane the session's shared timeline, once, before anything is fed. Every stamp it
     /// hands the hardware is mapped through this — see [`SessionClock`].
     fn attach_clock(&self, clock: Arc<SessionClock>);
 
     /// How far the plane's stamps run ahead of its clock, in ms — the depth NDL paces on.
     fn lead_ms(&self) -> i64;
-
-    /// Feed one buffer in the plane's own format, stamped in the host's capture clock.
-    fn feed(&self, buf: &[u8], host_pts_ns: u64) -> Result<()>;
 
     /// Keep the plane fed until `stop`, so the picture stays paced. Blocks; the caller gives it a
     /// thread. `yields_to_real` leaves the plane to whatever pump is feeding it and fills in only

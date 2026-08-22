@@ -204,8 +204,10 @@ pub(super) fn run_inner() -> Result<()> {
                     channels,
                     connected.audio_buffer_cell(),
                 )
-                .and_then(|(player, feed)| Ok((player, connected.spawn_audio_feed(feed)?)))
-                {
+                .and_then(|(player, sink)| {
+                    let stage = crate::session::audio::AudioStage::new(std::sync::Arc::new(sink), channels)?;
+                    Ok((player, connected.spawn_audio_feed(stage)?))
+                }) {
                     Ok(pair) => Some(pair),
                     Err(e) => {
                         // Same no-crash policy as the connect above, plus the video teardown a
@@ -229,7 +231,7 @@ pub(super) fn run_inner() -> Result<()> {
             // Logged, not just commented: "audio sounds late" and "early" are the same user
             // report, and only knowing whether anything steered separates them.
             tracing::info!(
-                "SDL audio driver: {}, spec: {:?}, A/V sync: measuring only",
+                "SDL audio driver: {}, spec: {:?}",
                 sdl_audio.current_audio_driver(),
                 player.spec(),
             );

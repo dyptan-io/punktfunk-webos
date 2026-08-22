@@ -125,7 +125,8 @@ pub(crate) fn rows(
             crate::app::view::icons::ICON_SIGNAL,
             "Audio",
             menu::audio_label(settings.audio_channels),
-        ),
+        )
+        .with_subtext_opt(menu::audio_limit_reason(settings).map(ui::widgets::RowSubtext::hint)),
         menu::SettingsRow::AudioRoute => FocusRow::dropdown(
             crate::app::view::icons::ICON_MEMORY,
             "Audio output",
