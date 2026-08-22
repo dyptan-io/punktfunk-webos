@@ -116,45 +116,61 @@ CX/G5 are 32-bit userland on ARMv8-A. RustCrypto's `aes` crate has ARMv8 intrins
 - **Cover art**: `ArtLoader` request/response (UI asks for visible covers, forgets scrolled ones). Cached on disk as *encoded* bytes (`$HOME/art-cache/`, write-then-rename). Failed decodes deleted.
 - Effect at 365 titles: retained tiles drop from ~366 to ~40; decoded covers from 365 to viewport window (~5 columns).
 
-## Audio: PCM on NDL's plane (default), SDL as fallback
+## Audio: three routes, one pipeline (SDL is the default)
 
-`session::pump::ndl_pcm_audio_pump` decodes Opus here (libopus multistream, PLC concealment — none
-of that moved to the TV) and hands interleaved **S16LE to NDL's audio plane**, stamped on the video
-plane's timeline. `AudioRoute` in `session::connect` names the three paths: `NdlPcm` (default),
-`NdlOpus` (Experimental → "Audio offload", stereo only, no local decode), `Software` (fallback).
+`Settings` → **Audio output** picks the route (`core::model::AudioRoutePref`), and all three are
+built on the same pipeline: `session::audio::AudioStage` decodes (or forwards) into whatever
+`core::media::AudioSink` the route selected, and one pump drives it. Adding a fourth route is one
+`AudioSink` impl.
 
-**What the SDL path cost, and is gone with it:** a `JitterPolicy` ring (25 ms base, to 90 ms under
-underrun pressure), a 512-frame device quantum (10.67 ms), the crossfaded drift shed, the `AvSync`
-estimator, and PulseAudio behind all of it — ~35 ms of measurable floor plus an unmeasured Pulse
-term. NDL owns the depth now and reports none, so nothing here can steer it. That is the trade, and
-it is why the overlay names the route (`PCM HW` / `Opus HW` / `Opus SW`).
+| Route | Label | Path | Layouts |
+| --- | --- | --- | --- |
+| `Software` (default) | Standard | libopus here → SDL device, NDL's clock plane on its metronome | up to 7.1 |
+| `NdlPcm` | TV audio plane | libopus here → NDL's PCM plane, on the picture's own clock | what the TV's output carries (2 or 6) |
+| `NdlOpus` | TV decoder | the wire's Opus, decoded by the TV | 2 |
 
-- **The offered channel counts are the TV's, not this client's.** `ndl::audio_plane_max_channels`
-  reads `NDL_DirectAudioSupportMultiChannel` (webOS 7+; absent = treated as stereo) and feeds
-  `core::caps`, which the Settings dropdown is built from. Two conditions, not one: the output path
-  must be capable AND Sound Out configured for it — TV speakers are 2.0/2.2 and ARC/optical carry
-  2-channel PCM only, so those report `NotPassthrough` at best. Without this the app offered 5.1,
-  spent airlink and CPU on it, and let the TV fold it back down.
-- **7.1 loads a 6-channel plane.** NDL's widest PCM mode is `"6-channel"`, so `PcmFeed` folds the
-  sides into the rears at −3 dB. Kept rather than dropped from the dropdown pending a real 7.1
-  listening test; `NDL PCM plane: N channel(s) from an M-channel stream` in the log is the record.
+**Why software is the default again.** NDL paces the picture against a *fed* audio plane, so a
+plane fed from the network inherits the stream's arrival jitter — which is the stutter the silent
+clock plane was introduced to cure, and it came back as intermittent lag with PCM as the default.
+The two plane routes are shorter and stay selectable for exactly that comparison; the overlay names
+which one ran (`Opus SW` / `PCM HW` / `Opus HW`).
+
+**Nothing is ever mixed down.** Each route publishes its own ceiling
+(`AudioRoutePref::max_channels`) and the handshake asks the host for exactly that, so a layout the
+sink can't put on a speaker is never encoded, never sent and never folded. A width mismatch at
+`AudioStage::new` is an error, not a downmix.
+
+- **The plane's ceiling is the TV's, and it is per route.** `ndl::audio_plane_max_channels` reads
+  `NDL_DirectAudioSupportMultiChannel` (webOS 7+; absent = stereo). Two conditions, not one: the
+  output path must be capable AND Sound Out configured for it — TV speakers are 2.0/2.2 and
+  ARC/optical carry 2-channel PCM only. It reaches `core::caps` as `plane_max_channels`, *beside*
+  the decoder-wide `max_channels`, because clamping the global by it took 5.1 away from the SDL
+  route, which plays it fine.
 - ⚠ **The 5.1 interleave order is inferred, not verified.** `NDL_51_ORDER` emits
   `FL FR BL BR FC LFE`, from ss4s's `IsOpusPassthroughSupported` demanding an Opus mapping of
   `{0,1,4,5,2,3}`. If dialogue lands in the surrounds, an identity `[0,1,2,3,4,5]` is the other
   candidate. Audible, not silent.
-- **The fallback is deliberately dumb**: `AudioPlayer` primes 25 ms, serves, re-primes after a dry
-  read. No adaptive target, no shed, no A/V measurement. It runs only where there is no plane to
-  ride (audio-enabled load refused, NDL v1, SMP), so those sessions have sound at all.
+- **Samples are converted once, or not at all.** libopus decodes straight into the sink's declared
+  type — f32 for SDL, S16 for the plane, permuted into NDL's channel order in the same pass — and
+  `as_le_bytes` hands the plane the buffer without touching it.
+- **The SDL ring is deliberately dumb**: prime 25 ms, serve, re-prime after a dry read. No adaptive
+  target, no shed, no A/V measurement — the `JitterPolicy`/`AvSync` machinery that had those was
+  ~35 ms of floor and is gone.
 
 **Blind alleys, so they aren't re-tried:**
 - **`sdl2::audio::AudioQueue` cannot carry a de-jitter policy** — `queue_audio`/`size`/`clear` and
-  nothing else, no partial drop. Moot now that no policy lives here, but it is also why the pull
-  callback stayed for the fallback.
-- **Do not put the fallback drain back on the main loop.** It was there because `AudioQueue` is
+  nothing else, no partial drop. That is why the pull callback stayed.
+- **Do not put the audio drain back on the main loop.** It was there because `AudioQueue` is
   `!Send`, which put the audio cadence behind the UI's software rasterizer.
-- **Do not shrink `DEVICE_BUFFER_FRAMES` below 512** to chase latency on the fallback: a smaller
-  quantum on this SoC buys more wakeups and more missed callbacks. The fix for audio latency is the
-  plane, which is now the default.
+- **Do not shrink `DEVICE_BUFFER_FRAMES` below 512** to chase latency: a smaller quantum on this
+  SoC buys more wakeups and more missed callbacks.
+- **Do not split `lock_ffi` per plane** without device evidence. No NDL entry point is documented
+  as thread-safe; the contention between the video feed and the audio bursts is real but a second
+  guard is a guess about vendor internals, which is the class of change this file exists to warn
+  against.
+- **Do not fold the clock plane's keep-alive into the audio pump.** Its cadence is 20 ms and the
+  pump parks up to 100 ms on an empty transport; one thread would mean a starved plane, i.e. the
+  stutter the plane exists to prevent.
 
 ## A/V sync
 

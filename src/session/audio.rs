@@ -34,8 +34,9 @@ pub struct AudioStage {
     channels: usize,
     /// Detects packets lost on the wire so they can be concealed rather than skipped.
     gaps: AudioGapTracker,
-    /// Reused across packets: concealment frames first, then the packet itself.
-    s16: Vec<u8>,
+    /// Reused across packets: concealment frames first, then the packet itself. One of the two is
+    /// filled per session, whichever shape the sink declared.
+    s16: Vec<i16>,
     f32: Vec<f32>,
 }
 
@@ -68,7 +69,7 @@ impl AudioStage {
             gaps: AudioGapTracker::new(),
             // One packet plus the concealment burst that can precede it, so steady state never
             // reallocates.
-            s16: Vec::with_capacity(SAMPLES_PER_FRAME * MAX_CHANNELS * 2 * 2),
+            s16: Vec::with_capacity(SAMPLES_PER_FRAME * MAX_CHANNELS * 2),
             f32: Vec::with_capacity(SAMPLES_PER_FRAME * MAX_CHANNELS * 2),
         })
     }
@@ -90,32 +91,52 @@ impl AudioStage {
         let format = self.sink.format();
         self.s16.clear();
         self.f32.clear();
-        let mut pcm = [0f32; SAMPLES_PER_FRAME * MAX_CHANNELS];
         // Concealment frames first (libopus PLC — decode with empty input interpolates a frame;
         // the alternative is a hard gap, i.e. a click), then the packet itself.
         for i in 0..=missing {
-            let (input, len) = if i < missing {
-                // One frame's worth, not the whole scratch buffer — with no packet to describe it
-                // libopus takes `out.len() / channels` as the frame size and rejects an illegal
-                // one. 5.1 gives 1920/6 = 320.
-                (&[][..], SAMPLES_PER_FRAME * self.channels)
+            // A concealment frame gets one frame's worth of buffer, not the whole scratch: with no
+            // packet to describe it libopus takes `out.len() / channels` as the frame size and
+            // rejects an illegal one. 5.1 gives 1920/6 = 320.
+            let input: &[u8] = if i < missing { &[] } else { payload };
+            let cap = if i < missing {
+                SAMPLES_PER_FRAME * self.channels
             } else {
-                (payload, pcm.len())
+                SAMPLES_PER_FRAME * MAX_CHANNELS
             };
-            let frames = decoder
-                .decode_float(input, &mut pcm[..len], false)
-                .map_err(|e| anyhow::anyhow!("opus decode: {e}"))?;
-            let decoded = &pcm[..frames * self.channels];
             match format {
-                AudioFormat::PcmF32 { .. } => self.f32.extend_from_slice(decoded),
-                AudioFormat::PcmS16 { interleave, .. } => push_s16le(&mut self.s16, decoded, self.channels, interleave),
+                // Decoded straight to the sink's own sample type: libopus writes S16 as happily as
+                // f32, so a PCM plane costs no conversion pass and no second buffer.
+                AudioFormat::PcmS16 { interleave, .. } => {
+                    let mut pcm = [0i16; SAMPLES_PER_FRAME * MAX_CHANNELS];
+                    let frames = decoder
+                        .decode(input, &mut pcm[..cap], false)
+                        .map_err(|e| anyhow::anyhow!("opus decode: {e}"))?;
+                    let decoded = &pcm[..frames * self.channels];
+                    match interleave {
+                        // Written in the sink's channel order as it goes, so an order that differs
+                        // from punktfunk's costs nothing extra.
+                        Some(order) => {
+                            for frame in decoded.chunks_exact(self.channels) {
+                                self.s16.extend(order.iter().map(|&c| frame[c]));
+                            }
+                        }
+                        None => self.s16.extend_from_slice(decoded),
+                    }
+                }
+                AudioFormat::PcmF32 { .. } => {
+                    let mut pcm = [0f32; SAMPLES_PER_FRAME * MAX_CHANNELS];
+                    let frames = decoder
+                        .decode_float(input, &mut pcm[..cap], false)
+                        .map_err(|e| anyhow::anyhow!("opus decode: {e}"))?;
+                    self.f32.extend_from_slice(&pcm[..frames * self.channels]);
+                }
                 AudioFormat::Opus { .. } => unreachable!("decoder is None on the Opus route"),
             }
         }
         let pts_ns = pts_ns.saturating_sub((i64::from(missing) * FRAME_MS) as u64 * 1_000_000);
         match format {
             AudioFormat::PcmF32 { .. } => self.sink.feed(Samples::F32(&self.f32), pts_ns),
-            AudioFormat::PcmS16 { .. } => self.sink.feed(Samples::S16(&self.s16), pts_ns),
+            AudioFormat::PcmS16 { .. } => self.sink.feed(Samples::S16(as_le_bytes(&self.s16)), pts_ns),
             AudioFormat::Opus { .. } => unreachable!("decoder is None on the Opus route"),
         }
     }
@@ -136,27 +157,17 @@ impl AudioStage {
     }
 }
 
-/// Interleaved f32 → interleaved S16LE, permuted into the sink's channel order where it differs.
-///
-/// A sample outside [-1, 1] (libopus can produce one) would wrap rather than clip if cast
-/// directly, so it is clamped.
-fn push_s16le(out: &mut Vec<u8>, pcm: &[f32], channels: usize, interleave: Option<&'static [usize]>) {
-    for frame in pcm.chunks_exact(channels) {
-        match interleave {
-            Some(order) => {
-                for &i in order {
-                    out.extend_from_slice(&to_s16(frame[i]).to_le_bytes());
-                }
-            }
-            None => {
-                for &s in frame {
-                    out.extend_from_slice(&to_s16(s).to_le_bytes());
-                }
-            }
-        }
+/// The S16 buffer as the bytes a PCM sink takes. Free on every target this ships to — S16LE is
+/// exactly the in-memory representation of `i16` on a little-endian machine — and the compile-time
+/// assertion is what keeps it that way.
+fn as_le_bytes(samples: &[i16]) -> &[u8] {
+    const {
+        assert!(
+            cfg!(target_endian = "little"),
+            "S16LE output assumes a little-endian target"
+        );
     }
-}
-
-fn to_s16(sample: f32) -> i16 {
-    (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16
+    // SAFETY: `i16` has no padding and no invalid bit patterns, so any `[i16]` is a valid `[u8]`
+    // of twice the length; the borrow keeps the source alive for the result.
+    unsafe { std::slice::from_raw_parts(samples.as_ptr().cast::<u8>(), std::mem::size_of_val(samples)) }
 }
