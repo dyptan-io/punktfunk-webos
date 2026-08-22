@@ -9,7 +9,7 @@
 //! **The traits describe capability, not policy.** A sink says what it can take
 //! ([`VideoSinkCaps`]) and does it; anchoring, freeze-until-reanchor, backlog metering and
 //! concealment are the stages' business, above this seam and identical on every backend.
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -28,6 +28,84 @@ impl std::fmt::Display for NotReady {
 }
 
 impl std::error::Error for NotReady {}
+
+/// [`SessionClock::offset_ns`] before the video plane has published a mapping. Not 0 — a genuine
+/// offset of 0 ns is possible, and "unset" must be distinguishable from it.
+const NO_OFFSET: i64 = i64::MIN;
+
+/// The one mapping between the host's capture clock and the sink's own, shared by every plane in
+/// a session.
+///
+/// **Both planes must be stamped in one time base.** The decoder runs its own A/V synchronisation
+/// against the stamps it is fed, and regulating a video plane on host-capture cadence against an
+/// audio plane on arrival wall-clock is what froze the picture on webOS 10.3 (docs/NOTES.md §
+/// "NDL's audio plane"). Before this existed the mapping lived in the video sink's own atomics and
+/// was pushed into the audio plane frame by frame; one object both planes read is the same
+/// guarantee with one owner.
+///
+/// **Latched, not republished.** The mapping is stable only while the video stage's anchor is, so
+/// the first value after each [`Self::clear`] wins and later ones are ignored. Re-deriving it per
+/// frame lets any jump in the video timeline — a receive-backlog flush jumping to live drops
+/// frames, so host PTS leaps forward while the sink clock does not — drag the audio stamp
+/// *backwards* by the size of the jump, which NDL takes as a rewind and answers by muting the rest
+/// of the session.
+#[derive(Debug)]
+pub struct SessionClock {
+    offset_ns: AtomicI64,
+    /// Bumped on every latch, so a reader can tell "the same mapping" from "a fresh one" without
+    /// being called back on the video thread. A plane with per-latch work of its own (NDL derives
+    /// its stamp skew) does it on its own thread, the first time it sees a new epoch.
+    epoch: AtomicU64,
+}
+
+impl Default for SessionClock {
+    fn default() -> Self {
+        Self {
+            offset_ns: AtomicI64::new(NO_OFFSET),
+            epoch: AtomicU64::new(0),
+        }
+    }
+}
+
+impl SessionClock {
+    /// Publish `offset_ns` if nothing is latched. Called per fed frame; only the first after each
+    /// [`Self::clear`] takes.
+    pub fn latch(&self, offset_ns: i64) {
+        // The steady state is "already latched", and this runs per fed frame — keep the exclusive
+        // access off the video thread's hot path once the offset is set.
+        if self.offset_ns.load(Ordering::Relaxed) != NO_OFFSET {
+            return;
+        }
+        if self
+            .offset_ns
+            .compare_exchange(NO_OFFSET, offset_ns, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.epoch.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    /// Decouple: the two timelines no longer agree (the video stage reset its anchor after a
+    /// freeze-until-reanchor hold). Readers hold until the next latch.
+    pub fn clear(&self) {
+        self.offset_ns.store(NO_OFFSET, Ordering::Relaxed);
+    }
+
+    /// Which mapping is current — see [`Self::epoch`]. Pair it with [`Self::map_host_ns`]: a
+    /// reader that sees a new epoch is on a fresh timeline.
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
+    }
+
+    /// `host_pts_ns` in the sink's clock domain, or `None` while nothing is latched — audio ahead
+    /// of the first video frame has no timeline to join yet.
+    pub fn map_host_ns(&self, host_pts_ns: u64) -> Option<u64> {
+        match self.offset_ns.load(Ordering::Relaxed) {
+            NO_OFFSET => None,
+            offset => Some((host_pts_ns as i64).saturating_add(offset).max(0) as u64),
+        }
+    }
+}
 
 /// What a video backend can be asked to do. Every `false` here is a stage behaviour that must
 /// switch off, not a call that may fail — the alternative is per-backend `match`es scattered
@@ -106,12 +184,9 @@ pub trait VideoSink: Send {
 /// picture against a fed plane, so a plane starved of packets is a video stutter, not an audio
 /// fault (docs/NOTES.md § "NDL's audio plane").
 pub trait AudioPlane: Send + Sync {
-    /// Publish the host-PTS → sink-clock mapping the video plane is feeding on, so audio stamps
-    /// land in the same timeline as the picture. `base_ns` is the frame's mapped stamp.
-    fn latch_pts_offset(&self, offset_ns: i64, base_ns: u64);
-
-    /// Drop a mapping that no longer holds; audio holds until the next latch.
-    fn clear_pts_offset(&self);
+    /// Hand the plane the session's shared timeline, once, before anything is fed. Every stamp it
+    /// hands the hardware is mapped through this — see [`SessionClock`].
+    fn attach_clock(&self, clock: Arc<SessionClock>);
 
     /// How far the plane's stamps run ahead of its clock, in ms — the depth NDL paces on.
     fn lead_ms(&self) -> i64;

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use punktfunk_core::quic;
 
-use crate::core::media::{AudioPlane, NotReady, VideoSink, VideoSinkCaps};
+use crate::core::media::{AudioPlane, NotReady, SessionClock, VideoSink, VideoSinkCaps};
 use crate::session::timeline::{reconciled_frame_interval_ns, HostPtsAnchor};
 use crate::session::StreamStats;
 
@@ -166,9 +166,12 @@ pub struct VideoStage {
     sink: Box<dyn VideoSink>,
     /// What this backend can be asked to do — read instead of matching on which backend it is.
     caps: VideoSinkCaps,
-    /// The audio plane this load produced, if any — the stage publishes the timeline both planes
-    /// share, so the handle lives here rather than inside the video sink's own type.
+    /// The audio plane this load produced, if any — kept for its depth reading; everything the
+    /// stage publishes to it goes through [`Self::clock`].
     audio_plane: Option<std::sync::Arc<dyn AudioPlane>>,
+    /// The one host-PTS → sink-clock mapping this session's planes share. The stage owns it
+    /// because the video plane is what derives it, frame by frame.
+    clock: Arc<SessionClock>,
     stats: Arc<StreamStats>,
     cfg: SinkConfig,
     /// The panel's actual drain cadence, reconciled against the stream rate. NDL drains at panel
@@ -201,7 +204,12 @@ impl VideoStage {
         let frame_interval_ns = reconciled_frame_interval_ns(stream_hz);
         let audio_plane = sink.audio_plane();
         let caps = sink.caps();
+        let clock = Arc::new(SessionClock::default());
+        if let Some(plane) = &audio_plane {
+            plane.attach_clock(clock.clone());
+        }
         Self {
+            clock,
             caps,
             sink,
             audio_plane,
@@ -238,9 +246,7 @@ impl VideoStage {
     /// disagree.
     fn reset_timeline(&mut self) {
         self.host_anchor.reset();
-        if let Some(plane) = &self.audio_plane {
-            plane.clear_pts_offset();
-        }
+        self.clock.clear();
     }
 
     /// This frame's stamp in the sink's own clock domain.
@@ -409,9 +415,7 @@ impl VideoStage {
                 // can only move forward, so latching onto a mapping still being pulled earlier
                 // costs lip sync (see `HostPtsAnchor::ready_for_audio`).
                 if self.host_anchor.ready_for_audio() {
-                    if let Some(plane) = &self.audio_plane {
-                        plane.latch_pts_offset(base_ns as i64 - pts_ns as i64, base_ns);
-                    }
+                    self.clock.latch(base_ns as i64 - pts_ns as i64);
                 }
                 let decode_us = self
                     .cfg

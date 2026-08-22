@@ -5,7 +5,7 @@
 //! Never calls `NDL_DirectVideoSetArea` — stutters above 1080p, and v2 sizes its own
 //! punch-through plane (v1 can't; see [`super::v1`]).
 use std::ffi::{c_int, c_longlong, c_uint, c_void, CStr};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -101,10 +101,6 @@ const NO_OFFSET_WARN_PACKETS: u32 = 200;
 /// encodes silence into the same continuous 5 ms datagrams. Only a dead host capture gaps this wide.
 const REAL_FEED_GRACE_MS: i64 = 300;
 
-/// [`NdlVideo::pts_offset_ns`] before the video plane has published one. Not 0 — a genuine
-/// offset of 0 ns is possible, and "unset" must be distinguishable from it.
-const NO_PTS_OFFSET: i64 = i64::MIN;
-
 /// What rides NDL's audio plane, and therefore how the load configures it.
 ///
 /// **Every accepted V2 load asks for a plane either way** — NDL only paces the picture against a
@@ -193,10 +189,15 @@ pub struct NdlVideo {
     /// metronome — is the caller's choice; this is only its FORMAT, which every silence-feeding
     /// path here has to match.
     audio: Option<NdlAudioConfig>,
-    /// Host-PTS → NDL-player-clock offset in ns, republished by the video plane on every fed
-    /// frame (`session::sink`) and read by [`Self::play_audio`] so both planes land in ONE
-    /// timeline. [`NO_PTS_OFFSET`] until the first frame is fed.
-    pts_offset_ns: AtomicI64,
+    /// The session's shared host-PTS → player-clock mapping, attached by the video stage before
+    /// anything is fed (`core::media::SessionClock`). Both planes stamp through it, which is the
+    /// whole reason it is one object rather than two agreeing copies.
+    clock: std::sync::OnceLock<std::sync::Arc<crate::core::media::SessionClock>>,
+    /// Mapping epoch the audio thread has already derived its skew for — see
+    /// [`Self::derive_audio_skew`]. Re-derivation runs on the audio thread's own next packet
+    /// rather than on the video thread that latched, which keeps `lock_ffi` out of the picture's
+    /// way on every re-anchor.
+    skew_epoch: AtomicU64,
     /// Highest audio stamp fed so far (ms), so [`Self::play_audio`] can never hand NDL a
     /// timestamp going backwards. Never reset — the ceiling has to survive a re-latch, which is
     /// exactly the case that would otherwise rewind it.
@@ -306,7 +307,8 @@ impl NdlVideo {
             load_instant: Instant::now(),
             load_requested,
             audio,
-            pts_offset_ns: AtomicI64::new(NO_PTS_OFFSET),
+            clock: std::sync::OnceLock::new(),
+            skew_epoch: AtomicU64::new(0),
             last_audio_pts_ms: AtomicI64::new(primed_pts_ms),
             audio_skew_ms: AtomicI64::new(0),
             dropped_no_offset: AtomicU32::new(0),
@@ -384,36 +386,6 @@ impl NdlVideo {
         self.audio.is_some()
     }
 
-    /// Latch the video plane's host-PTS → player-clock offset so [`play_audio`](Self::play_audio)
-    /// can stamp audio in the same timeline. Called per fed frame from `session::sink`, but takes
-    /// **only the first** value after each [`clear_pts_offset`](Self::clear_pts_offset).
-    ///
-    /// Latched, not republished per frame: the offset is a mapping between two clocks, and it is
-    /// stable only while the video plane's own anchor is. Re-deriving it every frame lets any jump
-    /// in the video timeline — a receive-backlog flush jumping to live drops frames, so host PTS
-    /// leaps forward while the player clock does not — drag the audio stamp *backwards* by the
-    /// size of the jump. NDL takes that as a rewind and stops playing audio for the rest of the
-    /// session (observed on CX: audio worked in a session with no flush, gone in one with).
-    /// `clear_pts_offset` at the sink's anchor resets is what re-derives it.
-    ///
-    /// `base_ns` is the same frame's mapped stamp, i.e. where the resumed audio will land: this
-    /// edge is also where [`Self::derive_audio_skew`] runs, so the audio thread's steady state
-    /// stays a single relaxed load.
-    pub(crate) fn latch_pts_offset(&self, offset_ns: i64, base_ns: u64) {
-        // The steady state is "already latched", and this runs per fed frame — keep the exclusive
-        // access off the video thread's hot path once the offset is set.
-        if self.pts_offset_ns.load(Ordering::Relaxed) != NO_PTS_OFFSET {
-            return;
-        }
-        if self
-            .pts_offset_ns
-            .compare_exchange(NO_PTS_OFFSET, offset_ns, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
-            self.derive_audio_skew((base_ns / 1_000_000) as i64);
-        }
-    }
-
     /// Place the run that starts at `base_ms` one packet above the audio ceiling, so the resumed
     /// stream advances instead of flooring onto it — see [`Self::play_audio`].
     ///
@@ -421,9 +393,9 @@ impl NdlVideo {
     /// discounted here — charging skew for a gap the lead already closes would stack the two and
     /// push audio a second lead behind the picture on every re-latch.
     ///
-    /// Under `lock_ffi` because the clock plane raises that ceiling from its own thread; the CAS
-    /// above makes this the once-per-latch path, not the per-frame one, so the video thread pays
-    /// for the guard only on a re-anchor.
+    /// Under `lock_ffi` because the clock plane raises that ceiling from its own thread. Called
+    /// from the audio thread on the first packet of a new mapping epoch, so the video thread never
+    /// pays for this guard at all.
     fn derive_audio_skew(&self, base_ms: i64) {
         let skew = {
             let _ffi = lock_ffi();
@@ -442,14 +414,6 @@ impl NdlVideo {
         if skew > SKEW_WARN_MS {
             tracing::warn!("NDL audio re-latched {skew}ms behind the picture (video plane jumped)");
         }
-    }
-
-    /// Drop the latched offset — the two timelines just decoupled (the sink reset its anchor
-    /// after a freeze-until-reanchor hold).
-    /// [`play_audio`](Self::play_audio) holds packets until the video plane latches a fresh one,
-    /// which is also where the skew that carries them is re-derived.
-    pub(crate) fn clear_pts_offset(&self) {
-        self.pts_offset_ns.store(NO_PTS_OFFSET, Ordering::Relaxed);
     }
 
     /// Feed one packet to NDL's audio plane — Opus or S16LE PCM, whichever the load asked for
@@ -483,7 +447,8 @@ impl NdlVideo {
     /// as the guard for what it cannot see — an out-of-order packet, or a burst landing between
     /// the latch and the run's first packet — and is also what publishes the ceiling itself.
     pub fn play_audio(&self, packet: &[u8], host_pts_ns: u64) -> Result<()> {
-        if self.pts_offset_ns.load(Ordering::Relaxed) == NO_PTS_OFFSET {
+        let clock = self.clock.get();
+        if clock.is_none_or(|c| c.map_host_ns(host_pts_ns).is_none()) {
             let dropped = self.dropped_no_offset.fetch_add(1, Ordering::Relaxed) + 1;
             // Reported on the way through, not only on the packet that ends the gap: a gap that
             // never ends is exactly the failure worth seeing, and that path logs nothing at all.
@@ -503,13 +468,25 @@ impl NdlVideo {
         // the check above is only a fast path, and a clear/re-latch landing between the two would
         // pair the OLD offset with the NEW skew — a stamp the size of the video plane's jump above
         // the ceiling, onto which every later packet then floors.
+        let clock = clock.expect("checked above");
+        // A mapping this thread hasn't stamped against yet needs its skew re-derived first — the
+        // run has to land ABOVE the ceiling the previous one (or the metronome) left behind.
+        // Outside `lock_ffi`, which `derive_audio_skew` takes for itself.
+        let epoch = clock.epoch();
+        if self.skew_epoch.swap(epoch, Ordering::Relaxed) != epoch {
+            let Some(base_ns) = clock.map_host_ns(host_pts_ns) else {
+                return Ok(());
+            };
+            self.derive_audio_skew((base_ns / 1_000_000) as i64);
+        }
         let ret = {
             let _ffi = lock_ffi();
-            let offset_ns = self.pts_offset_ns.load(Ordering::Relaxed);
-            if offset_ns == NO_PTS_OFFSET {
+            // Re-read under the guard: the check above is only a fast path, and a clear/re-latch
+            // landing between the two would pair a stale mapping with the new skew.
+            let Some(base_ns) = clock.map_host_ns(host_pts_ns) else {
                 return Ok(());
-            }
-            let raw_ms = ((host_pts_ns as i64).saturating_add(offset_ns).max(0) / 1_000_000)
+            };
+            let raw_ms = ((base_ns / 1_000_000) as i64)
                 .saturating_add(self.audio_skew_ms.load(Ordering::Relaxed))
                 .saturating_add(PLANE_LEAD_MS);
             let pts_ms = self.last_audio_pts_ms.fetch_max(raw_ms, Ordering::Relaxed).max(raw_ms);
@@ -835,12 +812,8 @@ impl MediaClock for NdlVideo {
 }
 
 impl AudioPlane for NdlVideo {
-    fn latch_pts_offset(&self, offset_ns: i64, base_ns: u64) {
-        Self::latch_pts_offset(self, offset_ns, base_ns);
-    }
-
-    fn clear_pts_offset(&self) {
-        Self::clear_pts_offset(self);
+    fn attach_clock(&self, clock: std::sync::Arc<crate::core::media::SessionClock>) {
+        let _ = self.clock.set(clock);
     }
 
     fn lead_ms(&self) -> i64 {
