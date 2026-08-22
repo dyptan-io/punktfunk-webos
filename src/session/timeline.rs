@@ -62,7 +62,7 @@ const TRIM_RAMP_DIVISOR: u64 = 4;
 /// Maps the host's capture-clock PTS onto NDL's own player clock, anchored once at the
 /// first frame of a run: `base = player_anchor + (host_pts - host_anchor)`. Keeps the
 /// video and offloaded audio on one shared mapping (see
-/// [`crate::session::sink::VideoPlayer::pts_base_ns`]). Same anchoring as SS4S's
+/// [`crate::session::stage::VideoStage`]). Same anchoring as SS4S's
 /// `ndl_player.c::SS4S_NDL_webOS5_NextVideoPts`. Reset after a freeze-until-reanchor hold,
 /// where the timeline jumps.
 ///

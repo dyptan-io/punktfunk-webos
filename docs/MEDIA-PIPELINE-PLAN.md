@@ -1,5 +1,8 @@
 # Media pipeline rework
 
+**Status: implemented on `ndl-latency-levers` (phases 0-5, one commit each). What follows is the
+plan as written; the deviations from it are listed at the bottom.**
+
 Goal: one abstract pipeline — sources, processing stages, sinks — so an A/V change is a stage
 swap, not an edit across `connect`/`pump`/`sink`/`ndl::v2`. Secondary and equal: fewer copies,
 shorter path from wire to sink, lower latency. This also re-judges every change on
@@ -132,3 +135,33 @@ phase 0 changes the shape of the stream until it is measured.
 Unit-testable off device after the split: `SessionClock` (already has five tests), `AuParts`,
 `AudioStage` fold/permute/concealment, cushion arithmetic. Everything else stays an on-device
 checklist — see the handover's "Left" list, which phases 0 and 3 inherit.
+
+## What shipped, and where it deviates
+
+Phases 0-5 landed as six commits. Two changes to the plan:
+
+- **Per-option dropdown locks were not built.** The channel dropdown lists only what the selected
+  route can play (so an unsupported layout is not selectable — the requirement), and the Audio row
+  carries a caption naming which limit shortened the list (`menu::audio_limit_reason`). Greying an
+  entry *inside* an open dropdown would have meant new widget state, hit-testing and focus-skipping
+  for no additional user-visible fact.
+- **Two Part 3 levers were deliberately skipped**, both recorded in `docs/NOTES.md`: splitting
+  `lock_ffi` per plane (no NDL entry point is documented thread-safe — a second guard is a guess
+  about vendor internals) and merging the clock plane's 20 ms keep-alive into a pump that parks up
+  to 100 ms (a starved plane is the stutter the plane exists to prevent).
+
+Everything else is as described: `core::media` holds the traits, `session::{audio,stage,pipeline}`
+the stages and assembly, `AudioRoutePref` the user-facing route pick, and no path folds a layout
+down any more.
+
+## On-device checklist
+
+1. **Each route in turn** (Settings → Audio output): confirm the log's `audio path:` line, then
+   listen. Software is the baseline; PCM and TV-decoder are the ones under test.
+2. **Watch for the lag report that started this.** `video: … plane_lead=` in the debug heartbeat is
+   the plane's depth; sagging toward zero under a plane route is the stutter signature.
+3. **5.1**, where the TV offers it: check channel order before anything else (`NDL_51_ORDER`).
+4. **`frame parts:` warnings** and picture corruption — still the open question about NDL taking a
+   fragmented AU.
+5. **Loss → freeze → reanchor with audio still alive**, on every route. This path has a history of
+   permanent session mutes.

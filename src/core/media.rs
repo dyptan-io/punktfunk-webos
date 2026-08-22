@@ -17,7 +17,7 @@ use punktfunk_core::quic;
 
 /// A feed refused because the pipeline hasn't finished loading — distinct from a decode error
 /// because the response differs: a decode error is answered with a flush, and flushing a decoder
-/// that has not finished loading takes the session's audio out for good (see `session::sink`).
+/// that has not finished loading takes the session's audio out for good (see `session::stage`).
 #[derive(Debug)]
 pub struct NotReady;
 
