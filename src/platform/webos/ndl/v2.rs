@@ -552,6 +552,52 @@ impl NdlVideo {
         Ok(pts_ms)
     }
 
+    /// Feed `span_ms` of interleaved S16 stamped on this plane's own cadence: the burst starts at
+    /// the ceiling already fed and advances one [`PRIME_PACKET_MS`] per packet, exactly as
+    /// [`burst_silence`](Self::burst_silence) does — the two differ only in what they carry.
+    ///
+    /// Packetized here rather than by the caller because the packet duration is NDL's number, and
+    /// fed under ONE `lock_ffi` for the same reason the silence burst is: the video feed shares
+    /// that guard, and a per-packet acquire is what put 200 of them a second in the picture's way.
+    ///
+    /// A `span_ms` that doesn't divide the buffer evenly is a caller bug (the framing is fixed at
+    /// 5 ms end to end) and is rejected rather than fed at a stride NDL would read wrong.
+    fn burst_pcm(&self, pcm: &[u8], span_ms: i64) -> Result<i64> {
+        if span_ms <= 0 || pcm.is_empty() {
+            return Ok(self.last_audio_pts_ms.load(Ordering::Relaxed));
+        }
+        let packets = usize::try_from(span_ms / PRIME_PACKET_MS).unwrap_or(0);
+        if packets as i64 * PRIME_PACKET_MS != span_ms || packets == 0 || pcm.len() % packets != 0 {
+            bail!(
+                "paced PCM burst of {} bytes is not {span_ms}ms of whole packets",
+                pcm.len()
+            );
+        }
+        let per_packet = pcm.len() / packets;
+        let _ffi = lock_ffi();
+        let mut pts_ms = self.last_audio_pts_ms.load(Ordering::Relaxed);
+        for packet in pcm.chunks_exact(per_packet) {
+            pts_ms += PRIME_PACKET_MS;
+            // SAFETY: NDL reads `size` bytes synchronously and does not retain the pointer.
+            let ret = unsafe {
+                (self.fns.audio_play)(
+                    packet.as_ptr() as *mut c_void,
+                    packet.len() as c_uint,
+                    pts_ms as c_longlong,
+                )
+            };
+            if ret != 0 {
+                // Publish before unwinding, for the reason `burst_silence` does: a ceiling left
+                // stale below stamps NDL has already taken lets the next feed rewind, which mutes
+                // the session for good.
+                self.last_audio_pts_ms.fetch_max(pts_ms, Ordering::Relaxed);
+                bail!("NDL_DirectAudioPlay failed: ret={ret} error={}", ffi::last_error());
+            }
+        }
+        self.last_audio_pts_ms.fetch_max(pts_ms, Ordering::Relaxed);
+        Ok(pts_ms)
+    }
+
     /// Keep the audio plane fed until `stop`. Blocks, so the caller gives it a thread.
     ///
     /// **A fed audio plane is what makes NDL pace the picture at all** (docs/NOTES.md § "NDL's
@@ -854,6 +900,28 @@ impl AudioPlane for NdlVideo {
 
     fn lead_ms(&self) -> i64 {
         self.audio_plane_lead_ms()
+    }
+
+    fn target_lead_ms(&self) -> i64 {
+        PLANE_LEAD_MS
+    }
+
+    fn feed_paced(&self, samples: Samples<'_>, span_ms: i64) -> Result<()> {
+        let Samples::S16(pcm) = samples else {
+            bail!("a paced feed carries PCM only — Opus is stamped by the plane's own decoder");
+        };
+        self.burst_pcm(pcm, span_ms)?;
+        // Same bookkeeping a host-timed feed does, so `run_clock_plane`'s grace still sees a fed
+        // plane if this route ever runs beside it.
+        self.last_real_feed_ms
+            .store((self.elapsed_ns() / 1_000_000) as i64, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn fill_silence(&self) -> Result<()> {
+        let now_ms = (self.elapsed_ns() / 1_000_000) as i64;
+        let from = self.last_audio_pts_ms.load(Ordering::Relaxed);
+        self.burst_silence(from, now_ms + PLANE_LEAD_MS).map(|_| ())
     }
 
     fn run_keepalive(&self, stop: &std::sync::atomic::AtomicBool, yields_to_real: bool) {

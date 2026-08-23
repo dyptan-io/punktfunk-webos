@@ -155,12 +155,17 @@ Phases 0-5 landed as six commits. Two changes to the plan:
   picks are unverifiable hardware paths, which is what that screen is for. It also gained the gate
   the plan implied but never stated: `VideoCaps::audio_plane` is false on NDL v1 and under SMP, so
   those devices are offered the software route only.
-- **Per-option locks were dropped a second time, for a better reason.** The channel row is a
-  *preference* now, not a request: it lists everything the client can decode and never hides an
-  entry, because both narrowing facts (which route is picked, whether Sound Out passes 5.1) are
-  per-session and one of them changes under a running app. `Negotiated::clamp` is the single place
-  the preference becomes a width, so "never ask for what can't play" holds without any menu having
-  to be right about the TV's current state.
+- **The channel row is a preference, narrowed by the static limits only.** It lists what the client
+  can decode, capped by what the *selected* route can carry — the PCM plane has no 7.1 mode and the
+  Opus plane nothing above stereo, and neither moves at runtime. Whether Sound Out passes 5.1 does
+  move under a running app, so it stays out of the menu; `Negotiated::clamp` is the single place the
+  preference becomes a width, and "never ask for what can't play" holds without any menu having to
+  be right about the TV's current state.
+- **The PCM route gained a pacing ring** (`session::paced`), which the plan did not anticipate. The
+  stage feeds a ring and a feeder thread holds the plane at its standing lead on a fixed cadence,
+  because the plane's depth is what NDL paces the PICTURE on and feeding it on arrival made that
+  depth a function of network jitter. It also means the route no longer maps a host PTS — see
+  `docs/NOTES.md` § "Audio".
 
 Everything else is as described: `core::media` holds the traits, `session::{audio,stage,pipeline}`
 the stages and assembly, `AudioRoutePref` the user-facing route pick, and no path folds a layout
@@ -171,7 +176,9 @@ down any more.
 1. **Each route in turn** (Settings → Experimental → Audio processing): confirm the log's `audio path:` line, then
    listen. Software is the baseline; PCM and TV-decoder are the ones under test.
 2. **Watch for the lag report that started this.** `video: … plane_lead=` in the debug heartbeat is
-   the plane's depth; sagging toward zero under a plane route is the stutter signature.
+   the plane's depth; sagging toward zero under a plane route is the stutter signature. Under PCM it
+   should now sit flat at the standing lead — the `paced audio plane` debug line reports the ring
+   beside it, plus the padded/dropped ms that say whether the ring is sized right for this network.
 3. **5.1**, where the TV offers it: check channel order before anything else (`NDL_51_ORDER`).
 4. **`frame parts:` warnings** and picture corruption — still the open question about NDL taking a
    fragmented AU.

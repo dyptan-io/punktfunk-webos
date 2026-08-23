@@ -249,6 +249,28 @@ pub trait AudioPlane: AudioSink {
     /// How far the plane's stamps run ahead of its clock, in ms — the depth NDL paces on.
     fn lead_ms(&self) -> i64;
 
+    /// The standing depth this plane wants to be held at, in ms. A feeder tops it up to this and
+    /// stops; the plane owns the number because it is the backend's pacing policy, not the
+    /// pipeline's.
+    fn target_lead_ms(&self) -> i64;
+
+    /// Feed `span_ms` of decoded samples stamped on the plane's OWN cadence — continuing the
+    /// ceiling it has already fed, rather than mapping a host PTS onto it ([`AudioSink::feed`]).
+    ///
+    /// This is what lets a route absorb arrival jitter in a ring instead of in the plane: the
+    /// queue depth then depends on when the FEEDER ran, not on when the packet arrived, which is
+    /// the whole reason the silent metronome paces the picture so much better than a
+    /// network-timed feed (docs/NOTES.md § "NDL's audio plane"). Lip sync becomes a constant
+    /// offset instead of a mapping, and drift is the feeder's problem to absorb.
+    ///
+    /// Implementations feed the whole span under ONE backend lock — the video feed shares it.
+    fn feed_paced(&self, samples: Samples<'_>, span_ms: i64) -> Result<()>;
+
+    /// Top the plane up to [`Self::target_lead_ms`] with its own silence, in the format its load
+    /// declared. What a paced feeder does when its ring runs dry, and what keeps the picture
+    /// paced through it.
+    fn fill_silence(&self) -> Result<()>;
+
     /// Keep the plane fed until `stop`, so the picture stays paced. Blocks; the caller gives it a
     /// thread. `yields_to_real` leaves the plane to whatever pump is feeding it and fills in only
     /// once that stops.

@@ -19,6 +19,7 @@ use crate::services::store::{AudioRoutePref, VideoBackend};
 use crate::session::audio::AudioStage;
 use crate::session::connect::ConnectParams;
 use crate::session::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
+use crate::session::paced::PacedPlane;
 use crate::session::pump::{spawn_audio_feed, video_pump};
 use crate::session::stage::{SinkConfig, VideoStage};
 use crate::session::StreamStats;
@@ -243,7 +244,7 @@ fn load_player(
 fn audio_path_label(route: AudioRoutePref, has_plane: bool) -> &'static str {
     match (route, has_plane) {
         (AudioRoutePref::NdlOpus, _) => "NDL hardware Opus decode (+ clock plane standing by)",
-        (AudioRoutePref::NdlPcm, _) => "software Opus decode -> NDL PCM plane (+ clock plane standing by)",
+        (AudioRoutePref::NdlPcm, _) => "software Opus decode -> paced ring -> NDL PCM plane",
         // A plane the real stream is not using is the pacing metronome — see
         // `NdlVideo::run_clock_plane`.
         (AudioRoutePref::Software, true) => "software Opus decode -> SDL2 + NDL clock plane",
@@ -281,12 +282,19 @@ fn spawn_video_thread(
 /// `(audio pump, clock plane)`.
 type PlaneThreads = (Option<std::thread::JoinHandle<()>>, Option<std::thread::JoinHandle<()>>);
 
-/// The threads on NDL's audio plane, if this load got one: the clock plane always, plus the real
-/// Opus stream's pump when it is offloaded.
+/// The threads on NDL's audio plane, if this load got one: the loop that holds the plane at depth,
+/// plus the real stream's pump on the routes that ride it.
 ///
-/// The clock plane runs on EVERY session with a plane — NDL paces the picture against a fed plane
-/// regardless of which pump the audio path uses. Offloaded, it yields to the real stream and only
-/// fills in once the host stops sending.
+/// **Something feeds the plane on EVERY session that has one** — NDL paces the picture against a
+/// fed plane regardless of where the audio goes. Which loop does it is the route's one structural
+/// difference:
+///
+/// - `Software`: the metronome (`AudioPlane::run_keepalive`), silence only, and the audio goes to
+///   the SDL device the runtime owns.
+/// - `NdlOpus`: the metronome yielding to the real stream, which the TV's own decoder stamps.
+/// - `NdlPcm`: `session::paced`'s feeder, which IS the keep-alive — it tops the plane up from a
+///   ring on the same cadence and pads silence when that runs dry. Feeding decoded samples as they
+///   arrived instead made the plane's depth a function of network jitter, and the picture with it.
 fn spawn_plane_threads(
     client: &Arc<NativeClient>,
     ndl_audio: Option<Arc<dyn AudioPlane>>,
@@ -296,21 +304,33 @@ fn spawn_plane_threads(
     let Some(ndl) = ndl_audio else {
         return Ok((None, None));
     };
+    // Built before the thread starts, so a ring this route can't size is an error the caller
+    // reports rather than a thread that dies silently and leaves the plane on its metronome.
+    let paced = (route == AudioRoutePref::NdlPcm).then(|| PacedPlane::new(ndl.clone(), client.audio_channels));
+    // What the stage feeds: the ring on the paced route, the plane itself where the hardware
+    // stamps, and nothing at all on the software route (the SDL device belongs to the runtime).
+    let sink: Option<Arc<dyn AudioSink>> = match (&paced, route) {
+        (Some((ring, _)), _) => Some(ring.clone()),
+        (None, AudioRoutePref::Software) => None,
+        (None, _) => Some(ndl.clone()),
+    };
+    let plane_loop: Box<dyn FnOnce(&AtomicBool) + Send> = match paced {
+        Some((_, mut feeder)) => Box::new(move |stop| feeder.run(stop)),
+        None => Box::new(move |stop| ndl.run_keepalive(stop, route.on_ndl_plane())),
+    };
     let clock_thread = {
-        let (ndl, stop) = (ndl.clone(), stop.clone());
+        let stop = stop.clone();
         std::thread::Builder::new()
             .name("punktfunk-webos-clock".into())
-            .spawn(move || ndl.run_keepalive(&stop, route.on_ndl_plane()))
+            .spawn(move || plane_loop(&stop))
             .context("spawn clock plane thread")?
     };
-    if route == AudioRoutePref::Software {
+    let Some(sink) = sink else {
         return Ok((None, Some(clock_thread)));
-    }
-    // Built here rather than inside the thread, so a layout this route can't open is an error the
-    // caller reports instead of a thread that dies silently and leaves the plane on its metronome.
+    };
     // Folded into the spawn's own error type to keep ONE failure path: an early `?` here would
-    // return before the clock thread below is joined, detaching a thread still feeding NDL.
-    let audio_thread = match AudioStage::new(ndl.clone() as Arc<dyn AudioSink>, client.audio_channels) {
+    // return before the clock thread above is joined, detaching a thread still feeding NDL.
+    let audio_thread = match AudioStage::new(sink, client.audio_channels) {
         Ok(stage) => {
             tracing::info!(
                 "audio stage: {} channel(s) into {}",

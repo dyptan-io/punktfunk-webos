@@ -8,10 +8,12 @@
 //! Audio takes one of three routes (`core::model::AudioRoutePref`) and always on a thread of its
 //! own: `audio`'s stage decodes (or forwards) into whichever `AudioSink` the route selected — the
 //! SDL device, NDL's PCM plane, or NDL's Opus plane. None of them shares the main loop, which
-//! carries the UI's software rasterizer.
+//! carries the UI's software rasterizer. The PCM route puts `paced`'s ring between the two, so the
+//! plane's queue depth — which is what NDL paces the PICTURE on — is set by a fixed cadence rather
+//! than by packet arrival.
 //!
 //! The module is split by phase: `connect` runs the handshake, `pipeline` builds the decode path
-//! it settled on, `pump` keeps it fed,
+//! it settled on, `pump` keeps it fed, `paced` holds the PCM route's ring,
 //! and `probe` holds the two handshake-only connections (pairing, speed test). `stage`,
 //! `timeline`, `stats`, `priority` and `join` are the shared pieces underneath.
 //!
@@ -20,6 +22,7 @@
 pub mod audio;
 mod connect;
 mod join;
+mod paced;
 mod pipeline;
 mod priority;
 pub mod probe;

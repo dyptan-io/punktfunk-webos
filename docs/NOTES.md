@@ -127,14 +127,31 @@ built on the same pipeline: `session::audio::AudioStage` decodes (or forwards) i
 | Route | Label | Path | Layouts |
 | --- | --- | --- | --- |
 | `Software` (default) | Software (SDL) | libopus here → SDL device, NDL's clock plane on its metronome | up to 7.1 |
-| `NdlPcm` | PCM (NDL) | libopus here → NDL's PCM plane, on the picture's own clock | what the TV's output carries (2 or 6) |
+| `NdlPcm` | PCM (NDL) | libopus here → a paced ring → NDL's PCM plane, on the picture's own clock | what the TV's output carries (2 or 6) |
 | `NdlOpus` | Offload (NDL) | the wire's Opus, decoded by the TV | 2 |
 
-**Why software is the default again.** NDL paces the picture against a *fed* audio plane, so a
-plane fed from the network inherits the stream's arrival jitter — which is the stutter the silent
-clock plane was introduced to cure, and it came back as intermittent lag with PCM as the default.
-The two plane routes are shorter and stay selectable for exactly that comparison; the overlay names
-which one ran (`Opus SW` / `PCM HW` / `Opus HW`).
+**Why software is the default.** NDL paces the picture against a *fed* audio plane, so a plane fed
+from the network inherits the stream's arrival jitter — which is the stutter the silent clock plane
+was introduced to cure, and it came back as intermittent lag with PCM as the default. The two plane
+routes are shorter and stay selectable for exactly that comparison; the overlay names which one ran
+(`Opus SW` / `PCM HW` / `Opus HW`).
+
+**The PCM route is paced, not network-timed** (`session::paced`, added after that finding). The
+pump decodes into a ring and a feeder thread tops the plane up to its standing lead on the
+metronome's own 20 ms cadence, padding the plane's silence when the ring runs dry and dropping the
+oldest audio above a 120 ms ceiling. So the plane's depth — the thing NDL paces the picture on — is
+set by when the FEEDER ran, not by when a packet arrived, which is the property that makes the
+silent metronome smooth. Consequences worth knowing:
+- Stamps come off the plane's own clock (`AudioPlane::feed_paced` continues the ceiling), so this
+  route no longer maps a host PTS at all: lip sync is a constant offset (ring + plane lead ≈ 60 ms)
+  instead of a mapping, and it needs no latched video timeline — audio starts as soon as the ring
+  primes rather than after the PTS trim settles.
+- Host-vs-TV clock drift is absorbed by the ring exactly as the SDL device's ring absorbs it: pad
+  when dry, drop the oldest when it piles up. Both are counted and logged.
+- The whole tick reaches NDL under ONE `lock_ffi` (`NdlVideo::burst_pcm` packetizes it into 5 ms
+  stamps itself), which also takes the route from ~200 acquisitions/s to 50 in the video feed's way.
+- The feeder REPLACES the metronome on this route. Two loops topping up one plane would race for
+  the ceiling and the silence would win whenever the ring was momentarily behind.
 
 **The plane routes exist only under NDL v2.** v1 (webOS 4 and below) has no audio type at all and
 SMP is a different pipeline, so `caps::VideoCaps::audio_plane` is false on both and
