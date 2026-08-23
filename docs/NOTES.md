@@ -475,6 +475,24 @@ Wiring notes worth knowing before editing:
   and inflates the measured jitter by the AU's own transmission time. `VideoStage::au_base_ns` holds
   the stamp while the AU is open — which is also what makes every piece of one AU carry the same
   timestamp, as NDL (start-code boundaries, no AU flag) needs.
+- ⚠ **The cushion's ceiling is the STREAM mode's interval, not `frame_interval_ns`.** Those are two
+  different quantities that happen to agree on most panels: the reconciled one exists to convert a
+  render-queue depth into time, so it follows the panel's drain cadence, while the cushion bounds how
+  long a frame may be HELD, so it must follow the cadence the host produces. Core states this with a
+  test of its own (`the_cadence_interval_comes_from_the_stream_mode_not_the_panel`) — a 120 fps
+  stream on a 60 Hz panel would otherwise license twice the hold the source can justify. The anchor's
+  trim ramp takes the same quantity, for the same reason: it pays debt off per frame, and frames come
+  from the source.
+- **Folded at arrival, which is where core wants it** ("called at SUBMIT rather than at take, so the
+  estimate sees the arrival process the transport actually produced"). `snapping()` tuning
+  permanently: `SourcePacer::follow` re-tunes to `free_running()` only where VRR is MEASURED live,
+  which needs on-glass stamps this platform does not have. `note_off_cadence` is wired by no client,
+  including this one — nothing on the wire marks a frame off-cadence.
+- **Re-anchor triggers**: the freeze-until-reanchor hold, via `reset_timeline`. Upstream also
+  re-anchors on a display change and on a mid-stream mode switch; this client never calls
+  `request_mode`, and a host-driven switch arrives with the loss that opens a hold anyway — but the
+  interval above is snapshotted at pipeline build, so if mid-session mode changes ever become a real
+  path here, that snapshot is the thing to fix.
 - **The stamp sequence is clamped monotonic per run** (`last_base_ns`), because the cushion can
   shrink between frames and NDL reads a rewind as a permanent session mute. Cleared on reset, like
   the anchor's own — NDL has been flushed by then. `the_pacer_never_walks_a_stamp_backwards_within_a_run`

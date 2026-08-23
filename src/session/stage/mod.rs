@@ -178,7 +178,14 @@ impl VideoStage {
             audio_plane,
             stats,
             frame_interval_ns,
-            pacing: Pacing::new(frame_interval_ns, cfg.direct_playback),
+            // The SOURCE's nominal interval, NOT `frame_interval_ns`: that one is reconciled
+            // onto the panel because it converts a render-queue depth into time, and this one
+            // is the cushion's ceiling, so it has to describe the cadence the HOST produces.
+            // Core says so with a test of its own
+            // (`the_cadence_interval_comes_from_the_stream_mode_not_the_panel`): a 120 fps
+            // stream on a 60 Hz panel would otherwise license twice the hold the source's own
+            // cadence can justify.
+            pacing: Pacing::new(1_000_000_000 / u64::from(stream_hz), cfg.direct_playback),
             au_base_ns: None,
             cfg,
             backlog_cached: None,

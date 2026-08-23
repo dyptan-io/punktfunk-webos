@@ -65,8 +65,9 @@ const PACER_AUDIO_LATCH_FRAMES: u64 = 30;
 /// to the anchor.
 pub struct CadencePacer {
     clock: punktfunk_core::phase::CadenceClock,
-    /// Nominal source interval, and the cushion's ceiling (see `CadenceClock::cushion_ns`).
-    frame_interval_ns: i64,
+    /// The source's nominal interval, and the cushion's ceiling (see `CadenceClock::cushion_ns`)
+    /// — see [`Self::new`] for why it is not the panel's.
+    source_interval_ns: i64,
     /// Last stamp handed out this run. NDL reads a stamp going backwards as a rewind and answers
     /// by muting the session for good, and the cushion CAN shrink between frames, so the sequence
     /// is clamped monotonic — exactly as [`HostPtsAnchor::map`] does, and reset with the run for
@@ -78,13 +79,16 @@ pub struct CadencePacer {
 }
 
 impl CadencePacer {
-    pub fn new(frame_interval_ns: u64) -> Self {
+    /// `source_interval_ns` is the negotiated STREAM mode's frame interval — the cadence the host
+    /// produces — and never the panel's. It is the cushion's ceiling, so a panel period would let a
+    /// stream running faster than the panel be held for longer than its own cadence justifies.
+    pub fn new(source_interval_ns: u64) -> Self {
         Self {
             // `snapping`, not `free_running`: NDL presents on the panel's own grid, so the snap-up
             // to the next latch already carries roughly half a refresh of implicit slack and the
             // cushion does not have to cover the distribution alone.
             clock: punktfunk_core::phase::CadenceClock::new(punktfunk_core::phase::CadenceTuning::snapping()),
-            frame_interval_ns: i64::try_from(frame_interval_ns).unwrap_or(i64::MAX),
+            source_interval_ns: i64::try_from(source_interval_ns).unwrap_or(i64::MAX),
             last_base_ns: 0,
             frames_this_run: 0,
         }
@@ -97,7 +101,7 @@ impl CadencePacer {
     pub fn map(&mut self, host_pts_ns: u64, player_clock_ns: u64) -> u64 {
         self.frames_this_run += 1;
         let ready = i64::try_from(player_clock_ns).unwrap_or(i64::MAX);
-        let due = self.clock.due_ns(host_pts_ns, ready, self.frame_interval_ns);
+        let due = self.clock.due_ns(host_pts_ns, ready, self.source_interval_ns);
         // A due time in the past is a late frame and core's contract is "present at the next
         // opportunity" — which is what handing NDL a stamp at or behind its clock already means.
         let base = u64::try_from(due).unwrap_or(0).max(self.last_base_ns);
@@ -172,12 +176,15 @@ enum Mode {
 }
 
 impl Pacing {
-    pub fn new(frame_interval_ns: u64, direct: bool) -> Self {
+    /// `source_interval_ns` is the stream mode's own interval — see [`CadencePacer::new`]. The
+    /// anchor's ramp is sized against the same quantity: it pays trim debt off per FRAME, and a
+    /// frame is what the source, not the panel, delivers.
+    pub fn new(source_interval_ns: u64, direct: bool) -> Self {
         Self {
             mode: if direct {
-                Mode::Anchor(HostPtsAnchor::new(frame_interval_ns))
+                Mode::Anchor(HostPtsAnchor::new(source_interval_ns))
             } else {
-                Mode::Cadence(CadencePacer::new(frame_interval_ns))
+                Mode::Cadence(CadencePacer::new(source_interval_ns))
             },
             late_stamps: 0,
         }
