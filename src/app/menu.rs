@@ -210,6 +210,10 @@ pub(crate) enum RowLock {
     OneCodec,
     /// The active backend offers one channel count (NDL v1), so there is nothing to pick.
     StereoOnly,
+    /// Opus offload is on, and the plane's Opus decoder is stereo-only
+    /// (`AudioRoutePref::max_channels`). Unlike the TV's Sound Out, this one is knowable from the
+    /// pick alone, so the row is greyed rather than left to disappoint at connect.
+    OffloadStereoOnly,
     /// Nothing is plugged into the TV, so there is no controller to describe to the host.
     NoGamepad,
 }
@@ -255,9 +259,9 @@ pub(crate) fn audio_route_current_index(settings: &Settings) -> usize {
         .unwrap_or(0)
 }
 
-/// Applies an audio-route pick. The pick is a ceiling on the Audio row's layouts
-/// (`AudioRoutePref::max_channels`), so a width the new route can't carry comes down with it
-/// rather than staying set behind a row that no longer offers it.
+/// Applies an audio-route pick. The layout preference is left alone — it is narrowed per session
+/// by `session::connect`'s `Negotiated::clamp`, not rewritten here — but picking Offload locks the
+/// Audio row (`RowLock::OffloadStereoOnly`), so the two are set in the order the caption names.
 pub(crate) fn apply_audio_route(settings: &mut Settings, choice_index: usize) {
     let Some(&route) = audio_routes().get(choice_index) else {
         return;
@@ -275,6 +279,7 @@ pub(crate) fn row_lock(row: SettingsRow, settings: &Settings, detected: Option<G
         SettingsRow::Hdr if settings.codec == CodecPref::H264 => Some(RowLock::HdrNeedsHevc),
         SettingsRow::Codec if caps.codec_prefs().len() < 2 => Some(RowLock::OneCodec),
         SettingsRow::Audio if caps.max_channels < 2 => Some(RowLock::StereoOnly),
+        SettingsRow::Audio if settings.audio_route == AudioRoutePref::NdlOpus => Some(RowLock::OffloadStereoOnly),
         SettingsRow::Gamepad if detected.is_none() => Some(RowLock::NoGamepad),
         _ => None,
     }

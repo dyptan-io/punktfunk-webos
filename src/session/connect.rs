@@ -123,16 +123,31 @@ impl Negotiated {
         // what the selected route can carry at all, and what the TV's Sound Out passes right now.
         // Nothing is folded down later — see `AudioRoutePref::max_channels`.
         let route_max = params.audio_route.max_channels(caps);
-        let output_max = crate::platform::webos::ndl::audio_output_width().unwrap_or(u8::MAX);
+        let output_max = crate::platform::webos::ndl::audio_output_width();
         let audio_channels = params
             .audio_channels
             .min(caps.max_channels)
             .min(route_max)
-            .min(output_max);
+            .min(output_max.unwrap_or(u8::MAX));
         if audio_channels < params.audio_channels {
+            // Names the limit that actually bound, because the three are indistinguishable from
+            // the width alone and "why is this stereo" is the question the log has to answer.
+            let reason = if audio_channels == output_max.unwrap_or(u8::MAX) {
+                "the TV's audio output passes no more"
+            } else if audio_channels == route_max {
+                "the audio route carries no more"
+            } else {
+                "this client decodes no more"
+            };
             tracing::info!(
-                "audio: asking for {audio_channels} channel(s), not {} — route carries {route_max}, output passes {output_max}",
+                "audio: {} channel(s) requested, asking for {audio_channels} — {reason} \
+                 (client {}, route {route_max}, output {})",
                 params.audio_channels,
+                caps.max_channels,
+                match output_max {
+                    Some(w) => w.to_string(),
+                    None => "unknown".to_string(),
+                },
             );
         }
         let codecs = caps.codec_prefs();
