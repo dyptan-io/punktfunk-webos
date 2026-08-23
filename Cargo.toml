@@ -56,7 +56,7 @@ tracing-appender = "0.2"
 # moved), and puts `#![deny(unsafe_code)]` over the crate that parses every byte off the network.
 # The one source-visible break is `note_frame_index`, which now returns a gap WIDTH — see
 # `session::video_pump`.
-punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", tag = "v0.28.0", features = ["quic"] }
+punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", tag = "v0.31.3", features = ["quic"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # mDNS LAN discovery; direct dep (not via pf-client-core — see session.rs docs).

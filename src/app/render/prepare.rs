@@ -250,6 +250,7 @@ impl App {
             }),
             Screen::Experimental => Some(ModalShellKey::Experimental {
                 game_mode: self.settings_ui.settings.game_mode,
+                smooth_playback: self.settings_ui.settings.smooth_playback,
                 audio_route: self.settings_ui.settings.audio_route,
                 rooted: self.hosts.rooted,
             }),
@@ -345,6 +346,7 @@ impl App {
             Screen::Experimental => Some(ModalFocusKey::ExperimentalRow(
                 self.nav.cursor(ScreenKey::Experimental),
                 self.settings_ui.settings.game_mode,
+                self.settings_ui.settings.smooth_playback,
                 self.settings_ui.settings.audio_route,
                 self.hosts.rooted,
             )),

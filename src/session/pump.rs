@@ -150,6 +150,13 @@ impl VideoPump {
         self.stats
             .render_backlog
             .store(backlog.unwrap_or(-1), Ordering::Relaxed);
+        let (jitter_ns, cushion_ns, late_due, reanchors, late_stamps) = self.stage.cadence_health();
+        let to_us = |ns: i64| u32::try_from(ns.max(0) / 1_000).unwrap_or(u32::MAX);
+        self.stats.cadence_jitter_us.store(to_us(jitter_ns), Ordering::Relaxed);
+        self.stats
+            .cadence_cushion_us
+            .store(to_us(cushion_ns), Ordering::Relaxed);
+        self.stats.cadence_late.store(late_stamps, Ordering::Relaxed);
         let plane_lead = self.stage.audio_plane_lead_ms();
         if let Some(ms) = plane_lead {
             self.stats
@@ -163,6 +170,12 @@ impl VideoPump {
         // DEBUG, so it costs a telemetry listener or `TELEMETRY_LEVEL=debug` to see — the
         // on-device file sink is INFO-only (`logger::resolved_level`).
         if self.video_log.due() {
+            // See `StreamStats::cadence_jitter_us` for what these mean and why both settings log them.
+            tracing::debug!(
+                "cadence: jitter={:.1}ms cushion={:.1}ms late_stamp={late_stamps} late_due={late_due} reanchors={reanchors}",
+                jitter_ns as f64 / 1e6,
+                cushion_ns as f64 / 1e6,
+            );
             tracing::debug!(
                 "video: {} frames, parts={}, holding={}, dropped={}, backlog={}, pts_trim={}ms, plane_lead={}",
                 self.frames(),

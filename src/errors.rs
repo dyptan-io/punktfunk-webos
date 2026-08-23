@@ -38,6 +38,14 @@ pub fn reject_message(reason: RejectReason) -> String {
         RejectReason::SetupFailed => {
             "The host accepted the connection but couldn't start the stream — see host's logs.".into()
         }
+        RejectReason::AccessExpired => {
+            "Your access to this host has expired — ask the host's owner to grant it again.".into()
+        }
+        RejectReason::LaunchNotPermitted => {
+            "This device isn't permitted to launch games on the host — connect without picking a game, \
+             or ask the host's owner to allow launching."
+                .into()
+        }
     }
 }
 

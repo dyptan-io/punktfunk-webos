@@ -643,7 +643,7 @@ dependencies = [
 [[package]]
 name = "fec-rs"
 version = "0.1.0"
-source = "git+https://git.unom.io/unom/punktfunk?tag=v0.28.0#7df321f459a6708f61e12683c99ce12efa0d25bc"
+source = "git+https://git.unom.io/unom/punktfunk?tag=v0.31.3#5e30805490a835242aacd9d71556e93ef3ae7e06"
 
 [[package]]
 name = "fiat-crypto"
@@ -1272,8 +1272,8 @@ dependencies = [
 
 [[package]]
 name = "punktfunk-core"
-version = "0.28.0"
-source = "git+https://git.unom.io/unom/punktfunk?tag=v0.28.0#7df321f459a6708f61e12683c99ce12efa0d25bc"
+version = "0.31.3"
+source = "git+https://git.unom.io/unom/punktfunk?tag=v0.31.3#5e30805490a835242aacd9d71556e93ef3ae7e06"
 dependencies = [
  "aes-gcm",
  "cbindgen",
@@ -1282,6 +1282,7 @@ dependencies = [
  "hmac 0.13.0",
  "if-addrs",
  "libc",
+ "log",
  "opus",
  "quinn",
  "rand 0.9.5",

@@ -82,7 +82,7 @@ impl App {
     }
 
     /// Opens the Experimental screen (Settings → `menu::SettingsRow::Experimental`). Holds unstable,
-    /// off-by-default toggles (hardware Opus decode, Game mode on rooted sets).
+    /// off-by-default toggles (hardware Opus decode, Game mode on rooted sets, smooth playback).
     pub(crate) fn open_experimental(&mut self) {
         // Owed, not started — see `start_root_probe`.
         self.jobs.root_probe_owed = self.hosts.rooted.is_none() && self.jobs.rooted.is_none();
@@ -144,6 +144,11 @@ impl App {
                     let next = menu::cycle_index(current, len, ev == MenuEvent::Right);
                     menu::apply_audio_route(&mut self.settings_ui.settings, next);
                 }
+            }
+            (Some(menu::ExpRow::SmoothPlayback), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
+                let from = self.settings_ui.settings.smooth_playback;
+                self.settings_ui.settings.smooth_playback = !from;
+                self.arm_switch_anim(from);
             }
             (_, MenuEvent::Back) => {
                 self.persist();

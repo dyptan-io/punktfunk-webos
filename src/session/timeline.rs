@@ -30,6 +30,115 @@ pub fn reconciled_frame_interval_ns(stream_hz: u32) -> u64 {
     1_000_000_000 / u64::from(hz.max(1))
 }
 
+/// Frames the cadence loop folds before the audio plane may latch its mapping
+/// ([`CadencePacer::ready_for_audio`]). Half a second at 60 Hz — long enough for the offset
+/// estimate to leave its cold-start sample behind, short enough that offloaded audio is not
+/// audibly missing at session start. The trim path's own gate is [`TRIM_SETTLE_NS`], which is a
+/// different quantity and cannot be shared: that one waits for trimming to STOP, and this loop
+/// never stops moving.
+const PACER_AUDIO_LATCH_FRAMES: u64 = 30;
+
+/// Plays frames out on the host's own cadence instead of on their arrival instant, by stamping
+/// them from [`punktfunk_core::phase::CadenceClock`] rather than from a fixed anchor.
+///
+/// **Why this is a different shape from [`HostPtsAnchor`], not a tweak to it.** The anchor is a
+/// constant taken from frame 0 plus a one-off trim: it has no rate term (two free-running crystals
+/// produce a ramp, so the session's real lead walks away over minutes with nothing to pull it
+/// back), and its jitter margin is whatever [`TRIM_KEEP_NS`] happens to be — 4 ms, chosen for
+/// latency, and below the arrival spread of an ordinary link. Every frame arriving later than that
+/// margin is stamped in the player clock's past, which NDL answers by presenting it at feed
+/// cadence: the judder. `CadenceClock` is a type-2 loop over the same quantity (`ready − pts`) and
+/// sizes its cushion from the measured mean absolute deviation, capped at one frame interval.
+///
+/// **It smooths the OFFSET, never the timestamps** — that is core's invariant, tested there by
+/// `preserves_source_cadence`, and it is the property that makes this honest: a game genuinely
+/// rendering at an irregular rate still looks exactly as irregular as it is. What is removed is
+/// the transport's contribution, not the source's.
+///
+/// The cost is the cushion, so this is opt-in: `Settings::smooth_playback`, gating every
+/// latency-adding measure on this path (see `SinkConfig::smooth_playback`). The loop still runs
+/// when the setting is off — its health line is what says whether turning it on is worth it — but
+/// its output is discarded and the anchor above keeps stamping.
+pub struct CadencePacer {
+    clock: punktfunk_core::phase::CadenceClock,
+    /// Nominal source interval, and the cushion's ceiling (see `CadenceClock::cushion_ns`).
+    frame_interval_ns: i64,
+    /// Last stamp handed out this run. NDL reads a stamp going backwards as a rewind and answers
+    /// by muting the session for good, and the cushion CAN shrink between frames, so the sequence
+    /// is clamped monotonic — exactly as [`HostPtsAnchor::map`] does, and reset with the run for
+    /// the same reason (a flush restarts the timeline).
+    last_base_ns: u64,
+    /// Frames folded since the last [`Self::reset`], for [`Self::ready_for_audio`]. Not read off
+    /// `CadenceHealth::frames`, which counts the whole session.
+    frames_this_run: u64,
+    /// Frames whose stamp was already behind the player clock when it was fed — the direct
+    /// "the cushion is too small" signal, counted for whichever mapping is actually in use rather
+    /// than for the loop, so it is comparable across the setting.
+    late_stamps: u64,
+}
+
+impl CadencePacer {
+    pub fn new(frame_interval_ns: u64) -> Self {
+        Self {
+            // `snapping`, not `free_running`: NDL presents on the panel's own grid, so the snap-up
+            // to the next latch already carries roughly half a refresh of implicit slack and the
+            // cushion does not have to cover the distribution alone.
+            clock: punktfunk_core::phase::CadenceClock::new(punktfunk_core::phase::CadenceTuning::snapping()),
+            frame_interval_ns: i64::try_from(frame_interval_ns).unwrap_or(i64::MAX),
+            last_base_ns: 0,
+            frames_this_run: 0,
+            late_stamps: 0,
+        }
+    }
+
+    /// Fold one frame and return its stamp in the player's clock domain. `player_clock_ns` is when
+    /// the frame became presentable, i.e. now — the loop is domain-agnostic, so the constant
+    /// between the host's capture clock and NDL's player clock is simply absorbed by the offset
+    /// estimate and there is no conversion anywhere in this path.
+    pub fn map(&mut self, host_pts_ns: u64, player_clock_ns: u64) -> u64 {
+        self.frames_this_run += 1;
+        let ready = i64::try_from(player_clock_ns).unwrap_or(i64::MAX);
+        let due = self.clock.due_ns(host_pts_ns, ready, self.frame_interval_ns);
+        // A due time in the past is a late frame and core's contract is "present at the next
+        // opportunity" — which is what handing NDL a stamp at or behind its clock already means.
+        let base = u64::try_from(due).unwrap_or(0).max(self.last_base_ns);
+        self.last_base_ns = base;
+        base
+    }
+
+    /// Count one fed frame whose stamp had already passed. Called with the stamp actually used, so
+    /// the figure describes the session the user is watching and not the shadow loop.
+    pub fn note_stamp(&mut self, base_ns: u64, player_clock_ns: u64) {
+        if base_ns <= player_clock_ns {
+            self.late_stamps += 1;
+        }
+    }
+
+    /// Drop the run: the timeline jumped (a freeze-until-reanchor hold), so the offset estimate no
+    /// longer describes anything. The loop keeps its jitter estimate on purpose — that describes
+    /// the link, not the stream, and a cushion collapsing to its floor after every recovery would
+    /// spend the next few hundred frames presenting late.
+    pub fn reset(&mut self) {
+        self.clock.reset();
+        self.frames_this_run = 0;
+        // Cleared with the run, like the anchor's own: NDL has been flushed, so the stamps that
+        // came before it are no longer a floor this run has to clear.
+        self.last_base_ns = 0;
+    }
+
+    /// Whether the audio plane may latch this mapping — see [`PACER_AUDIO_LATCH_FRAMES`].
+    pub fn ready_for_audio(&self) -> bool {
+        self.frames_this_run >= PACER_AUDIO_LATCH_FRAMES
+    }
+
+    /// `(jitter_ns, cushion_ns, late_due, reanchors, late_stamps)` for the video heartbeat: the
+    /// loop's own health plus the one figure it cannot know (see [`Self::note_stamp`]).
+    pub fn health(&self) -> (i64, i64, u64, u64, u64) {
+        let h = self.clock.health();
+        (h.jitter_ns, h.cushion_ns, h.late, h.reanchors, self.late_stamps)
+    }
+}
+
 /// Window the lead minimum is taken over (see [`HostPtsAnchor::observe_lead`]). Short enough
 /// that several windows fit inside [`TRIM_SETTLE_NS`], long enough (30 frames at 60 Hz) that a
 /// single early arrival can't be mistaken for the standing floor.
@@ -330,6 +439,32 @@ mod tests {
             let base = a.map(stuck, stuck + 5_000_000 + repeat);
             assert!(base >= last, "repeat {repeat}: {base} < {last}");
             last = base;
+        }
+    }
+
+    /// The cadence loop's cushion moves with the measured jitter, and a repeated host PTS gains
+    /// nothing to cover a shrinking one — either way the stamp would step BACKWARDS, which NDL
+    /// reads as a rewind and answers by muting the session for the rest of the run. Proven
+    /// non-vacuous by planting the defect (dropping the `.max(last_base_ns)` in
+    /// `CadencePacer::map`), which fails this.
+    #[test]
+    fn the_pacer_never_walks_a_stamp_backwards_within_a_run() {
+        let interval = 16_666_666u64;
+        let mut p = CadencePacer::new(interval);
+        let mut last = 0;
+        // A jittery opening (which builds a cushion), then a dead-calm tail (which shrinks it),
+        // with a repeated stamp thrown in where the shrink is fastest.
+        for i in 0..600u64 {
+            let host_pts = i * interval;
+            let jitter = if i < 200 { (i % 7) * 2_000_000 } else { 0 };
+            let base = p.map(host_pts, host_pts + 10_000_000 + jitter);
+            assert!(base >= last, "frame {i}: {base} < {last}");
+            last = base;
+            if i == 200 {
+                let repeat = p.map(host_pts, host_pts + 10_000_000);
+                assert!(repeat >= last, "repeat: {repeat} < {last}");
+                last = repeat;
+            }
         }
     }
 

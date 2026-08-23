@@ -811,6 +811,14 @@ pub(super) fn run_inner() -> Result<()> {
                             connected.audio_buffer_ms()
                         ));
                     }
+                    // See `StreamStats::cadence_jitter_us` for what these mean and why both settings show them.
+                    lines.push(format!(
+                        "Cadence {} · jitter {:.1} ms · cush {:.1} ms · late {}",
+                        if connected.smooth_playback { "smooth" } else { "direct" },
+                        connected.stats().cadence_jitter_us.load(Ordering::Relaxed) as f32 / 1000.0,
+                        connected.stats().cadence_cushion_us.load(Ordering::Relaxed) as f32 / 1000.0,
+                        connected.stats().cadence_late.load(Ordering::Relaxed),
+                    ));
                     if let Some(line) = cpu_mem_line {
                         lines.push(line);
                     }

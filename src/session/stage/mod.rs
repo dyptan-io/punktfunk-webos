@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use punktfunk_core::quic;
 
 use crate::core::media::{AudioPlane, NotReady, SessionClock, VideoSink, VideoSinkCaps};
-use crate::session::timeline::{ms, reconciled_frame_interval_ns, HostPtsAnchor};
+use crate::session::timeline::{ms, reconciled_frame_interval_ns, CadencePacer, HostPtsAnchor};
 use crate::session::StreamStats;
 
 mod metrics;
@@ -87,6 +87,12 @@ pub struct SinkConfig {
     /// Where [`video_e2e_ns`] is published for the audio plane
     /// (`NativeClient::video_e2e_shared`). `0` = nothing on the glass yet.
     pub video_e2e: Arc<AtomicU64>,
+    /// Stamp frames from the cadence loop instead of the fixed anchor
+    /// (`Settings::smooth_playback`, Experimental). **The one gate on every latency-adding
+    /// measure on this path**: off is the shipped behaviour to the nanosecond, and on pays a
+    /// jitter-sized cushion of up to one frame interval for a cadence that does not beat against
+    /// the panel — see [`CadencePacer`].
+    pub smooth_playback: bool,
 }
 
 /// Minimum spacing between [`SinkResult::NeedKeyframe`] results: the request travels on its own
@@ -119,6 +125,19 @@ pub struct VideoStage {
     frame_interval_ns: u64,
     /// NDL host-PTS→player-clock mapping.
     host_anchor: HostPtsAnchor,
+    /// The stamp the access unit currently being fed was given, while it is still open. Every
+    /// piece of one AU must carry the SAME timestamp (NDL finds AU boundaries by start code and
+    /// has no boundary flag of its own), and — the reason this is a field rather than a
+    /// recomputation — a picture must be folded into the mappings below exactly ONCE: on a
+    /// slice-progressive session the pieces of one AU repeat its host PTS at increasing arrival
+    /// times, so re-mapping per piece teaches both mappings the AU's TAIL arrival and inflates the
+    /// measured jitter with the AU's own transmission time. `None` on the whole-AU path and
+    /// between AUs.
+    au_base_ns: Option<u64>,
+    /// The cadence loop. Folds every frame whether or not its stamps are used — with the setting
+    /// off its health line is the evidence for turning it on — and owns the stamp when
+    /// [`SinkConfig::smooth_playback`] is set.
+    pacer: CadencePacer,
     /// Last polled depth, `None` if that query failed — which must not read as an empty queue.
     backlog_cached: Option<u64>,
     /// Recent poll depths, newest last — their minimum is the cushion the decode figure excludes
@@ -164,6 +183,8 @@ impl VideoStage {
             stats,
             frame_interval_ns,
             host_anchor: HostPtsAnchor::new(frame_interval_ns),
+            pacer: CadencePacer::new(frame_interval_ns),
+            au_base_ns: None,
             cfg,
             backlog_cached: None,
             backlog_recent: std::collections::VecDeque::with_capacity(CUSHION_MIN_POLLS),
@@ -196,6 +217,8 @@ impl VideoStage {
     /// disagree.
     fn reset_timeline(&mut self) {
         self.host_anchor.reset();
+        self.pacer.reset();
+        self.au_base_ns = None;
         self.clock.clear();
     }
 
@@ -205,11 +228,28 @@ impl VideoStage {
     /// so the host's capture PTS is mapped onto it ([`HostPtsAnchor`]) — which is also what keeps
     /// video and any audio plane in ONE timeline. A sink without one presents in feed order and
     /// the stamp is discarded at the feed, so the host PTS passes through untouched.
+    /// This AU's stamp: computed on the piece that opens it and repeated for the rest — see
+    /// [`Self::au_base_ns`]. `partial` is whether this piece leaves the AU open.
+    fn au_stamp_ns(&mut self, frame_pts_ns: u64, partial: bool) -> u64 {
+        let base = match self.au_base_ns {
+            Some(open) => open,
+            None => self.pts_base_ns(frame_pts_ns),
+        };
+        self.au_base_ns = partial.then_some(base);
+        base
+    }
+
     fn pts_base_ns(&mut self, frame_pts_ns: u64) -> u64 {
         match self.sink.clock() {
             Some(clock) => {
                 let now = clock.now_ns();
-                self.host_anchor.map(frame_pts_ns, now)
+                // Both mappings are folded on every frame regardless of which is used (cheap, and
+                // each stateful over the whole run, so a lazily-fed one would be stale on demand).
+                let paced = self.pacer.map(frame_pts_ns, now);
+                let anchored = self.host_anchor.map(frame_pts_ns, now);
+                let base = if self.cfg.smooth_playback { paced } else { anchored };
+                self.pacer.note_stamp(base, now);
+                base
             }
             None => frame_pts_ns,
         }
@@ -284,6 +324,23 @@ impl VideoStage {
         }
     }
 
+    /// Whether the mapping in use has settled enough for the audio plane to latch it. The two
+    /// mappings settle on different evidence — the anchor waits for its trim to stop, the cadence
+    /// loop for enough frames to have been folded — so the gate follows whichever is stamping.
+    fn timeline_ready_for_audio(&self) -> bool {
+        if self.cfg.smooth_playback {
+            self.pacer.ready_for_audio()
+        } else {
+            self.host_anchor.ready_for_audio()
+        }
+    }
+
+    /// The cadence loop's health for the video heartbeat — see [`CadencePacer::health`]. Reported
+    /// on both settings, since the whole point of measuring with it off is to decide.
+    pub fn cadence_health(&self) -> (i64, i64, u64, u64, u64) {
+        self.pacer.health()
+    }
+
     /// Standing PTS lead this run has trimmed off NDL's stamps, in ms — the decoder-hold latency
     /// the session started with, and the only place it is observable (see [`HostPtsAnchor`]).
     pub fn pts_trimmed_ms(&self) -> u64 {
@@ -327,8 +384,10 @@ impl VideoStage {
         // the pieces so far leave this AU decodable.
         let PartStep::Feed { partial, lost_parts } = self.parts.step(frame, self.caps.partial_au) else {
             // Same reason as the `drop_open` below: the AU this was accumulating submission time
-            // for is abandoned, so its cost must not be charged to whatever AU comes next.
+            // for is abandoned, so its cost must not be charged to whatever AU comes next. Its
+            // stamp goes with it — the next AU is a new picture and maps itself.
             self.au_feed_us = 0;
+            self.au_base_ns = None;
             return SinkResult::Held;
         };
         // Only a completed AU is a frame — a session feeding pieces would otherwise count one
@@ -352,8 +411,9 @@ impl VideoStage {
         if !matches!(result, SinkResult::Presented { .. }) {
             self.parts.drop_open();
             // The AU this was accumulating for will never complete, so it must not be added to
-            // whatever AU comes next.
+            // whatever AU comes next — nor may its stamp be repeated onto one.
             self.au_feed_us = 0;
+            self.au_base_ns = None;
         }
         result
     }
@@ -364,7 +424,7 @@ impl VideoStage {
             HoldGate::Feed { request_keyframe } => request_keyframe,
         };
 
-        let base_ns = self.pts_base_ns(pts_ns);
+        let base_ns = self.au_stamp_ns(pts_ns, flags.partial);
         // The submit instant, on CLOCK_REALTIME — the same basis the host stamps `pts_ns` with and
         // the skew handshake compares, so the two are directly subtractable. Taken BEFORE the feed
         // call: `play` blocks for its submission time, and the frame enters NDL's pipeline behind
@@ -409,7 +469,7 @@ impl VideoStage {
                 // Held back until the anchor's trim has settled: audio stamps ride this offset and
                 // can only move forward, so latching onto a mapping still being pulled earlier
                 // costs lip sync (see `HostPtsAnchor::ready_for_audio`).
-                if self.host_anchor.ready_for_audio() {
+                if self.timeline_ready_for_audio() {
                     self.clock.latch(base_ns as i64 - pts_ns as i64);
                 }
                 let decode_us = self

@@ -429,13 +429,78 @@ measure-only, so there is no prior art for correcting the lip sync, only for hol
   are named on the overlay (`Opus SW` / `Opus HW`) and in the `audio path:` log line precisely so a
   report says which one produced the numbers.
 
+**3. Smooth playback: stamps from the cadence loop, not the anchor (`Settings::smooth_playback`,
+Experimental, OFF by default — 2026-08-23, no on-device numbers yet).**
+
+The anchor above is a constant plus a one-off trim, and that shape has two holes. It carries **no
+rate term**: two free-running crystals produce a ramp, so the session's real lead walks away over
+minutes (either into latency, or into stamps behind the player clock, where NDL gives up pacing) and
+nothing pulls it back — trimming stops 3 s in. And its whole jitter margin is `TRIM_KEEP_NS` = 4 ms,
+picked for latency and *below the arrival spread of an ordinary link*, so by construction the
+latest-arriving frames of every measurement window are stamped in the past. The host's capture is
+damage-driven (PipeWire) on top of that, so its cadence is genuinely uneven before the network adds
+anything. That combination is the "stutters here, looks fine on the host's own monitor" report.
+
+`session::timeline::CadencePacer` wraps **`punktfunk_core::phase::CadenceClock`** (core v0.30+, the
+same loop the desktop/Android/Apple presenters pace on, so all clients compute the same statistic):
+a type-2 loop over `ready − pts` whose cushion is `2 × measured MAD`, floored at 0.5 ms and
+**capped at one frame interval** — that ceiling is core's invariant, not a knob: past a whole frame
+the honest fix is a buffer the user asked for, not a loop quietly holding frames. `snapping()`
+tuning, because NDL presents on the panel's grid and the snap-up already carries ~half a refresh.
+
+⚠ **It smooths the offset, never the timestamps.** Core tests that (`preserves_source_cadence`), and
+it is what makes the feature honest: a game genuinely rendering at 45 fps still looks exactly as
+irregular as it is. Only the transport's contribution is removed.
+
+What it does NOT fix, and no client-side work can: a stream rate that is not the panel rate or an
+exact divisor of it. 60 on 120 is fine; 50 on 60 is arithmetic.
+
+Wiring notes worth knowing before editing:
+
+- **Both mappings fold on every frame; one is used.** With the setting off, the loop's health is the
+  only evidence that turning it on would help — `cadence:` on the video heartbeat (`jitter`,
+  `cushion`, `late_stamp`, `late_due`, `reanchors`) and the overlay's `Cadence` line. `late_stamp`
+  counts frames whose ACTUAL stamp was already behind the player clock, so it is comparable across
+  the setting: that is the judder, counted.
+- **One picture folds ONCE.** Slice-progressive delivery repeats an AU's host PTS across its
+  pieces at increasing arrival times, so mapping per piece teaches the loop the AU's *tail* arrival
+  and inflates the measured jitter by the AU's own transmission time. `VideoStage::au_base_ns` holds
+  the stamp while the AU is open — which is also what makes every piece of one AU carry the same
+  timestamp, as NDL (start-code boundaries, no AU flag) needs.
+- **The stamp sequence is clamped monotonic per run** (`last_base_ns`), because the cushion can
+  shrink between frames and NDL reads a rewind as a permanent session mute. Cleared on reset, like
+  the anchor's own — NDL has been flushed by then.
+- **The audio latch gate differs per mapping** and cannot be shared: the anchor's waits for trimming
+  to *stop* (`TRIM_SETTLE_NS`), and this loop never stops moving, so it waits
+  `PACER_AUDIO_LATCH_FRAMES` (30) instead.
+- ⚠ **Open interaction with audio offload.** `SessionClock` latches ONE constant and audio rides it
+  for the run. Under the anchor that is exact (video's own mapping is a constant too); under the
+  cadence loop the video offset keeps moving, so the offload route's lip sync drifts by whatever the
+  loop tracks — crystal skew, tens of ppm. Bounded and slow, uncorrected, and not measured on device
+  yet. A forward-only re-latch is the shape a fix would take (`derive_audio_skew` already handles a
+  new epoch), but a backward correction is impossible on that plane by construction.
+- Not tried yet, in rough order of expected value: **phase-locked capture** (core has the whole
+  protocol — `NativeClient::report_phase` + `CLIENT_CAP_PHASE_LOCK`; the host aligns its capture tick
+  to the client's panel grid, which *reduces* latency instead of buffering against it, but needs a
+  real vblank anchor and NDL is submit-only, so the anchor would have to come off the graphics plane
+  with an unknown constant offset to the video plane's latch); an **adaptive `PLANE_LEAD_MS`** on the
+  offload route (the deleted SDL `JitterPolicy` did 25→90 ms under underruns); and **not freezing on
+  a one-frame gap** when LTR/RFI recovery is available, since `HOLD_GIVE_UP` is 2 s of frozen picture
+  per loss event and each hold re-anchors the timeline.
+
 ## ABR startup probe: 2 Gbps, upstream-hardcoded
 
 **"Automatic" bitrate fires a 2 Gbps burst ~2 s into every session, and on Wi-Fi that can cost the session its video entirely** — not a slow start but a flow that never establishes. Measured on G5: a "successful" probe still reported `send_dropped=20211`, i.e. link hammered far past what it can carry (~245 Mbps airlink ceiling), and probes that get nothing back sit on core's 6 s timeout. Capped at 300 Mbps the same link reports `send_dropped=0-167` and stream starts are reliable.
 
 Don't read a slow *start* as this bug — a host compositor coming up has its own startup time, and video legitimately arrives late on first connect of a session. Signal that matters: packet drops on the probe and video that never arrives at all.
 
-This is `CAPACITY_PROBE_KBPS` in `punktfunk-core`'s `client/pump/data.rs` — a **hardcoded const with no cap knob** — directly at odds with this client capping its own speed test for the same "unbounded firehose starves the app" reason (below).
+**Fixed upstream in core v0.31.3**: the probe target is now `stream_cap_kbps × 2` (still capped at
+2 Gbps) rather than a flat 2 Gbps, and a keyframe is requested at probe end when no frame completed
+across the burst. `PUNKTFUNK_ABR_PROBE_KBPS` and its `> 0` filter are unchanged, so this client's own
+pin below still wins and still reads the same. The history is kept because the pin is why it reads
+that way.
+
+This was `CAPACITY_PROBE_KBPS` in `punktfunk-core`'s `client/pump/data.rs` — a **hardcoded const with no cap knob** — directly at odds with this client capping its own speed test for the same "unbounded firehose starves the app" reason (below).
 
 **Fixed by capping the burst**: `main.rs`'s `set_abr_env` sets `PUNKTFUNK_ABR_PROBE_KBPS` before anything spawns a thread (`setenv` isn't thread-safe, and core reads it while building its data-plane pump). Same order as the speed test's own cap, still above the airlink ceiling below — measures the link without knocking it over. Knob is core-side; **core v0.22.3 is the first release carrying it**, which is why the pin moved off v0.21.0. An older core ignores the variable.
 

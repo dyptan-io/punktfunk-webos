@@ -16,7 +16,7 @@ use anyhow::Result;
 pub const TITLE: &str = "Experimental";
 pub const SUBTITLE: &str = "Unstable, off by default.";
 
-/// Game mode, then audio processing. Order must match `menu::EXP_ROWS`. `rooted` is the
+/// Game mode, audio processing, then smooth playback. Order must match `menu::EXP_ROWS`. `rooted` is the
 /// root-probe verdict, `None` while it is still running.
 pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
     // Driving the TV's Game picture/sound modes needs the Homebrew Channel's root helper — the
@@ -32,6 +32,16 @@ pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
     .with_subtext_opt(audio_route_hint(settings.audio_route));
     // The lock's caption replaces the row's own: a row the user can't change has nothing more
     // useful to say than why.
+    // The cushion is measured, not chosen, so the caption names the ceiling rather than a
+    // figure this screen cannot know — see `session::timeline::CadencePacer`.
+    let smooth = FocusRow::toggle(
+        crate::app::view::icons::ICON_MEMORY,
+        "Smooth playback",
+        settings.smooth_playback,
+    )
+    .with_subtext(ui::widgets::RowSubtext::caution(
+        "Steadier picture, up to one frame more latency",
+    ));
     let apply = |row: FocusRow, exp: ExpRow| match menu::exp_row_lock(exp, rooted) {
         Some(lock) => row.locked(true).with_subtext(lock_caption(lock)),
         None => row,
@@ -39,6 +49,7 @@ pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
     vec![
         apply(game_mode, ExpRow::GameMode),
         apply(audio, ExpRow::AudioProcessing),
+        apply(smooth, ExpRow::SmoothPlayback),
     ]
 }
 

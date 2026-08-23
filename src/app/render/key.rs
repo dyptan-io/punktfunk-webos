@@ -37,7 +37,7 @@ pub enum ModalFocusKey<'a> {
     /// (focused row, log level, stats-overlay on, show-logs on) — any change invalidates the tile.
     DiagnosticsRow(usize, LogLevelOverride, bool, bool),
     /// (focused row, Game mode on, the audio route, the root-probe verdict).
-    ExperimentalRow(usize, bool, AudioRoutePref, Option<bool>),
+    ExperimentalRow(usize, bool, bool, AudioRoutePref, Option<bool>),
     /// (focused row, cursor-capture on, cursor-gestures on, which rows are overridden) — any
     /// change invalidates the tile.
     CursorSettingsRow(usize, bool, bool, SettingsOverride),
@@ -113,6 +113,7 @@ pub enum ModalShellKey<'a> {
     },
     Experimental {
         game_mode: bool,
+        smooth_playback: bool,
         /// Named on the Audio processing row.
         audio_route: AudioRoutePref,
         /// The root-probe verdict — it locks the Game mode row and rewrites its caption.
