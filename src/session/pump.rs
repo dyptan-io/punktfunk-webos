@@ -164,8 +164,12 @@ impl VideoPump {
         // on-device file sink is INFO-only (`logger::resolved_level`).
         if self.video_log.due() {
             tracing::debug!(
-                "video: {} frames, holding={}, dropped={}, backlog={}, pts_trim={}ms, plane_lead={}",
+                "video: {} frames, parts={}, holding={}, dropped={}, backlog={}, pts_trim={}ms, plane_lead={}",
                 self.frames(),
+                // Against `frames`: 0 means slice-progressive delivery never fired on this mode
+                // (core emits early parts only for an AU spanning more than one FEC block), so the
+                // whole lever is inert here and its copy cost is not being paid either.
+                self.stage.parts_fed(),
                 self.stage.holding(),
                 self.client.frames_dropped(),
                 backlog.map_or_else(|| "n/a".to_string(), |b| b.to_string()),

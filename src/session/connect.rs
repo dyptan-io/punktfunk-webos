@@ -210,7 +210,7 @@ fn dial(params: &ConnectParams, negotiated: &Negotiated) -> Result<NativeClient>
             quic::CLIENT_CAP_CURSOR
         },
         // Slice-progressive delivery: AU prefixes reach the decoder while the rest is still on the
-        // wire, so a frame no longer waits for its own last datagram (`session::pump`'s `AuParts`).
+        // wire, so a frame no longer waits for its own last datagram (`session::stage`'s `AuParts`).
         // On wherever it can be — NDL v2 only, per `Negotiated::clamp`: v1's feed has no timestamp
         // to repeat across pieces and SMP's load shape is fragile enough without them.
         negotiated.frame_parts,

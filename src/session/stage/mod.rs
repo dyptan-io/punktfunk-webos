@@ -5,6 +5,10 @@
 //! freeze-until-reanchor, and keyframe-request throttling. The video pump keeps only the
 //! parts that are wire-shaped — pulling frames, and *how* a keyframe is asked for, which it
 //! answers to [`SinkResult::NeedKeyframe`] with `NativeClient::request_keyframe`.
+//!
+//! Two pieces sit in submodules because they are self-contained and independently testable:
+//! [`metrics`] (the ABR decode figure and the A/V video reference) and [`parts`] (slice-progressive
+//! reassembly).
 
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -16,6 +20,12 @@ use crate::core::media::{AudioPlane, NotReady, SessionClock, VideoSink, VideoSin
 use crate::session::timeline::{ms, reconciled_frame_interval_ns, HostPtsAnchor};
 use crate::session::StreamStats;
 
+mod metrics;
+mod parts;
+
+use metrics::{cushion_frames, decode_report_us, video_e2e_ns, CUSHION_MIN_POLLS, STANDING_CUSHION_FRAMES};
+use parts::{AuParts, PartStep};
+
 /// Freeze duration after which we resume even without a clean re-anchor.
 const HOLD_GIVE_UP: Duration = Duration::from_secs(2);
 /// Feed calls slower than this suggest decoder backpressure rather than network loss.
@@ -23,94 +33,6 @@ const FEED_BACKPRESSURE_WARN: Duration = Duration::from_millis(20);
 /// How often the sink refreshes NDL's render-buffer depth for the decode-latency signal —
 /// three samples per 750 ms ABR report window; see [`VideoStage::decode_us`].
 const BACKLOG_POLL: Duration = Duration::from_millis(250);
-/// Render-buffer frames NDL holds as a *standing* present cushion, excluded from the ABR decode
-/// figure (see [`VideoStage::decode_us`]). NDL presents off its own clock, so a healthy session
-/// sits at 1-2 frames of depth indefinitely — lead, not backlog. Folded in raw it manufactures a
-/// constant 8-17ms of apparent decode latency, crossing `abr`'s 15ms decode-rise threshold and
-/// backing off bitrate for no real reason (observed on the CX 2026-08-10: 1440p120 driven from
-/// 25 Mbps to the 5 Mbps floor with zero loss and flat OWD). Subtracting it keeps the real
-/// signal — a queue that GROWS past this is genuine falling-behind — while dropping the constant.
-///
-/// Only a floor: the settled depth is NDL's business and one frame is 16.6ms at 60Hz, so a mode
-/// idling at three frames would reproduce the bug against a fixed two. The excluded depth is the
-/// rolling min over [`CUSHION_MIN_POLLS`], clamped into this..=[`CUSHION_MAX_FRAMES`] — this value
-/// covers only the first seconds, before that minimum has seen a settled queue.
-const STANDING_CUSHION_FRAMES: u64 = 2;
-/// Polls whose minimum depth is the self-calibrating cushion (see [`STANDING_CUSHION_FRAMES`]).
-/// 20 × [`BACKLOG_POLL`] = 5s: long enough that `abr`'s two-window (1.5s) decode backoff still
-/// fires on a queue that genuinely grows, short enough to follow a mode or content change.
-const CUSHION_MIN_POLLS: usize = 20;
-/// Ceiling on the self-calibrated cushion. Without it, a decoder that stays overloaded for longer
-/// than [`CUSHION_MIN_POLLS`] teaches the rolling minimum its own backlog and the signal goes
-/// quiet — the same baseline-absorption trap this fix exists to escape, just faster. Lead is a
-/// couple of frames by construction, so anything past this is queue, and queue must stay visible.
-const CUSHION_MAX_FRAMES: u64 = 4;
-
-/// This frame's video end-to-end latency, in the shape [`punktfunk_core::audio::AvSync`] compares
-/// against: the instant it reaches the glass expressed in the HOST capture clock, minus its host
-/// PTS. Published for the audio plane, which steers its ring depth to land audio WITH the picture.
-///
-/// **Why an estimate at all.** NDL is submit-only — `NDL_DirectVideoPlay` returns nothing about
-/// presentation and there is no glass callback — so the true stamp the Vulkan/Android/Apple
-/// presenters publish does not exist here. This is the fallback core's own `video_e2e_ns` field
-/// docs already sanction ("a TRUE on-glass stamp where `VK_KHR_present_wait` is available, and the
-/// submit instant otherwise"), plus the one further term this platform *can* observe: NDL's
-/// standing render queue. That middle term is the one that MOVES — a decoder falling behind
-/// buffers deeper — and it is precisely the ratchet the sync loop exists to cancel.
-///
-/// **The estimate omits one term, and that is why nothing steers on it.** NDL's decode + panel
-/// latency *after* the queue drains cannot be observed from the app at all, so it is simply absent
-/// here — which biases this figure low, biases the measured A/V offset high, and would aim the
-/// audio ring correspondingly shallow, i.e. **play audio early by the whole missing term**. At
-/// 60 Hz a plausible 2–5 frame pipeline is 33–83 ms, far outside `AvSync`'s 10 ms deadband, so
-/// acting on this would be a systematic error larger than the drift being corrected. Hence
-/// measure-only: the offset reaches the stats overlay and no target reaches `JitterPolicy` (see
-/// `platform::webos::audio`'s `observe_av`). Arming it means measuring that term on real hardware
-/// first and folding it back in as a constant — `docs/NOTES.md` § "A/V sync" has the procedure.
-///
-/// `None` when the arithmetic would place the frame on the glass *before* its own capture — a
-/// wall-clock step, a stale PTS, or a host clock that has not settled. The caller then publishes
-/// nothing, core reads the untouched cell as "nothing presented yet", and the loop stays inert
-/// rather than steering on a figure it cannot believe.
-fn video_e2e_ns(
-    submit_realtime_ns: i128,
-    clock_offset_ns: i64,
-    frame_pts_ns: u64,
-    backlog_frames: u64,
-    frame_interval_ns: u64,
-) -> Option<u64> {
-    let pipeline_ns = backlog_frames.saturating_mul(frame_interval_ns);
-    let glass_host_ns = submit_realtime_ns
-        .checked_add(i128::from(pipeline_ns))?
-        .checked_add(i128::from(clock_offset_ns))?;
-    u64::try_from(glass_host_ns.checked_sub(i128::from(frame_pts_ns))?).ok()
-}
-
-/// The decode-stage latency reported to `punktfunk_core::abr`: submission time plus the part of
-/// NDL's render queue that is genuinely backlog. See [`VideoStage::decode_us`] for why the queue
-/// belongs in it at all, and [`STANDING_CUSHION_FRAMES`] for why `cushion` comes out first.
-///
-/// Split out as a free function purely so it is testable — [`VideoStage`] owns a live NDL handle and
-/// cannot be built off-device.
-fn decode_report_us(feed_elapsed: Duration, backlog: u64, cushion: u64, frame_interval_ns: u64) -> u32 {
-    let queued_ns = backlog.saturating_sub(cushion).saturating_mul(frame_interval_ns);
-    let decode_us = u64::try_from(feed_elapsed.as_micros())
-        .unwrap_or(u64::MAX)
-        .saturating_add(queued_ns / 1_000);
-    u32::try_from(decode_us).unwrap_or(u32::MAX)
-}
-
-/// The depth [`decode_report_us`] treats as present lead rather than backlog: the rolling minimum
-/// of recent poll samples, clamped into [`STANDING_CUSHION_FRAMES`]..=[`CUSHION_MAX_FRAMES`].
-/// Empty (no poll yet) yields the floor, never 0 — a session's first windows are exactly when the
-/// buffer is still filling and a raw fold does its damage.
-fn cushion_frames(samples: impl Iterator<Item = u64>) -> u64 {
-    samples
-        .min()
-        .unwrap_or(0)
-        .clamp(STANDING_CUSHION_FRAMES, CUSHION_MAX_FRAMES)
-}
-
 /// One delivery off the transport, as the pump sees it — the stage decides what it means.
 pub struct WireFrame<'a> {
     pub data: &'a [u8],
@@ -140,92 +62,6 @@ struct FrameFlags {
     /// presentable frame, so the per-frame reference points hang off the piece that completes the
     /// AU instead. `false` for every feed on the whole-AU path.
     partial: bool,
-}
-
-/// What [`AuParts`] decided about one delivery.
-enum PartStep {
-    /// Hand the bytes to the sink. `partial` = this is not the AU's last piece; `lost_parts` = an
-    /// earlier AU died mid-flight, so decoding cannot continue from where it stopped.
-    Feed { partial: bool, lost_parts: bool },
-    /// Nothing usable — a piece of an AU already abandoned. The decoder must not see it.
-    Discard,
-}
-
-/// Slice-progressive reassembly bookkeeping (`punktfunk_core::session::FramePart`).
-///
-/// On every NDL v2 session, AU prefixes arrive while the rest is still on the wire and the decoder
-/// gets a frame's first bytes without waiting for its last datagram — a real slice of a frame
-/// period at high bitrate, and pure latency: none of that wait is decode work. On a backend that
-/// can't take them (`Negotiated::clamp`) every delivery carries `part: None` and this is a
-/// pass-through.
-///
-/// The contract enforced here is core's: parts arrive in order with no gaps, BUT the pre-decode
-/// hand-off may drop entries (memory pressure, a jump-to-live clear), so an `offset` that isn't the
-/// open AU's next expected byte means that AU is gone. There is no abort marker — a `first` part for
-/// a new index while one is still open is how a death is signalled. Both cases abandon the AU and
-/// report loss, which puts the sink into freeze-until-reanchor and asks the host for a keyframe:
-/// the decoder is holding a truncated input, and nothing short of a fresh anchor clears it.
-#[derive(Default)]
-struct AuParts {
-    /// `(frame_index, next expected byte offset)` of the AU currently being fed.
-    open: Option<(u32, u32)>,
-    /// An AU was abandoned and nothing has restarted decoding since — so whatever comes next is
-    /// resuming against a decoder that still holds a truncated frame.
-    abandoned: bool,
-}
-
-impl AuParts {
-    fn step(&mut self, frame: &WireFrame<'_>, takes_parts: bool) -> PartStep {
-        let Some(part) = frame.part.filter(|_| takes_parts) else {
-            // Whole-AU delivery: parts weren't negotiated, this backend doesn't take them, or
-            // this is an aged-out chunk-aligned partial — core hands all three over as one buffer.
-            self.open = None;
-            return PartStep::Feed {
-                partial: false,
-                lost_parts: std::mem::take(&mut self.abandoned),
-            };
-        };
-        let len = frame.data.len() as u32;
-        if part.first {
-            let lost_parts = self.open.take().is_some() | std::mem::take(&mut self.abandoned);
-            if lost_parts {
-                tracing::warn!("frame parts: AU {} starts over an unfinished one", frame.index);
-            }
-            self.open = (!part.last).then_some((frame.index, len));
-            return PartStep::Feed {
-                partial: !part.last,
-                lost_parts,
-            };
-        }
-        match self.open {
-            Some((index, next)) if index == frame.index && next == part.offset => {
-                self.open = (!part.last).then_some((index, next + len));
-                PartStep::Feed {
-                    partial: !part.last,
-                    lost_parts: false,
-                }
-            }
-            // Either nothing is open (the AU was abandoned, or this part arrived without its head)
-            // or the offset skipped — both mean the AU can never be completed.
-            open => {
-                if open.is_some() {
-                    tracing::warn!(
-                        "frame parts: AU {} broke at offset {} — abandoning",
-                        frame.index,
-                        part.offset,
-                    );
-                }
-                self.drop_open();
-                PartStep::Discard
-            }
-        }
-    }
-
-    /// Forget the AU in flight: its remaining parts are no longer feedable, and whatever restarts
-    /// decoding has to be told the decoder holds a truncated input.
-    fn drop_open(&mut self) {
-        self.abandoned |= self.open.take().is_some();
-    }
 }
 
 /// Outcome of one [`VideoStage::submit`].
@@ -292,6 +128,15 @@ pub struct VideoStage {
     cushion_frames: u64,
     last_backlog_poll: Option<Instant>,
     last_keyframe_request: Option<Instant>,
+    /// Submit time accumulated across the pieces of the AU currently being fed, so the overlay's
+    /// `feed_us` stays a figure per PICTURE. Stored per-piece it reported only the last slice,
+    /// which on a slice-progressive session is a fraction of the AU's real submission cost.
+    au_feed_us: u32,
+    /// Pieces handed to the decoder this session. Only meaningful against `stats.frames` (completed
+    /// AUs): the ratio is the one number that says whether slice-progressive delivery is doing
+    /// anything at all on this mode, which cannot be read any other way — core only emits early
+    /// parts for an AU spanning more than one FEC block, so at small AU sizes the feature is inert.
+    parts_fed: u64,
     /// Freeze-until-reanchor: while holding, frames are skipped rather than fed — the
     /// punch-through plane keeps the last good picture. Resumes on IDR / LTR-RFI recovery
     /// anchor, or after [`HOLD_GIVE_UP`]. `Some` for exactly as long as the hold lasts (see
@@ -326,6 +171,8 @@ impl VideoStage {
             last_backlog_poll: None,
             last_keyframe_request: None,
             hold_started: None,
+            au_feed_us: 0,
+            parts_fed: 0,
         }
     }
 
@@ -450,6 +297,11 @@ impl VideoStage {
         self.audio_plane.as_deref().map(AudioPlane::lead_ms)
     }
 
+    /// Pieces fed this session — see [`Self::parts_fed`]. Read against the completed-AU count.
+    pub fn parts_fed(&self) -> u64 {
+        self.parts_fed
+    }
+
     /// Whether a freeze-until-reanchor hold is currently active (stats/logging).
     pub fn holding(&self) -> bool {
         self.hold_started.is_some()
@@ -478,7 +330,9 @@ impl VideoStage {
         };
         // Only a completed AU is a frame — a session feeding pieces would otherwise count one
         // picture several times, and the overlay reads this figure as pictures per second.
-        if !partial {
+        if partial {
+            self.parts_fed += 1;
+        } else {
             self.stats.frames.fetch_add(1, Ordering::Relaxed);
         }
         let flags = FrameFlags {
@@ -494,6 +348,9 @@ impl VideoStage {
         // frame with a hole in it.
         if !matches!(result, SinkResult::Presented { .. }) {
             self.parts.drop_open();
+            // The AU this was accumulating for will never complete, so it must not be added to
+            // whatever AU comes next.
+            self.au_feed_us = 0;
         }
         result
     }
@@ -513,10 +370,13 @@ impl VideoStage {
         let feed_start = Instant::now();
         let play_result = self.sink.feed(au, base_ns);
         let feed_elapsed = feed_start.elapsed();
-        self.stats.feed_us.store(
-            u32::try_from(feed_elapsed.as_micros()).unwrap_or(u32::MAX),
-            Ordering::Relaxed,
-        );
+        self.au_feed_us = self
+            .au_feed_us
+            .saturating_add(u32::try_from(feed_elapsed.as_micros()).unwrap_or(u32::MAX));
+        if !flags.partial {
+            self.stats.feed_us.store(self.au_feed_us, Ordering::Relaxed);
+            self.au_feed_us = 0;
+        }
         if feed_elapsed >= FEED_BACKPRESSURE_WARN {
             tracing::warn!(
                 "NDL slow: {:.1}ms (frame {}, pts {:.2}ms)",
@@ -640,131 +500,4 @@ enum HoldGate {
     Feed { request_keyframe: bool },
     /// Still frozen — skip it, and report this instead.
     Skip(SinkResult),
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::{cushion_frames, decode_report_us, video_e2e_ns, CUSHION_MAX_FRAMES, STANDING_CUSHION_FRAMES};
-
-    /// 60 Hz, the cadence the frame interval reconciles to on most panels.
-    const HZ60_NS: u64 = 16_666_666;
-    /// A frame submitted 30 ms after the host captured it, with clocks aligned and nothing queued.
-    const SUBMIT: i128 = 2_000_000_000;
-    const PTS: u64 = 1_970_000_000;
-
-    fn base() -> Option<u64> {
-        video_e2e_ns(SUBMIT, 0, PTS, 0, HZ60_NS)
-    }
-
-    #[test]
-    fn e2e_is_the_glass_instant_minus_the_capture_instant() {
-        assert_eq!(base(), Some(30_000_000));
-    }
-
-    /// The term that makes this better than a bare submit stamp: frames already queued in NDL must
-    /// drain before this one is seen, so each adds one panel interval. Deleting the backlog term
-    /// collapses this onto the base case.
-    #[test]
-    fn the_render_queue_adds_its_own_drain_time() {
-        assert_eq!(video_e2e_ns(SUBMIT, 0, PTS, 3, HZ60_NS), Some(30_000_000 + 3 * HZ60_NS));
-        // And a deeper queue is strictly later — the ratchet the sync loop exists to cancel.
-        let shallow = video_e2e_ns(SUBMIT, 0, PTS, 1, HZ60_NS).unwrap();
-        let deep = video_e2e_ns(SUBMIT, 0, PTS, 6, HZ60_NS).unwrap();
-        assert!(deep > shallow, "{deep} !> {shallow}");
-    }
-
-    /// The glass instant is expressed in the HOST clock, so the skew term shifts it directly. A
-    /// host running ahead of the client makes the same frame land later in host terms.
-    #[test]
-    fn clock_skew_moves_the_glass_instant() {
-        assert_eq!(video_e2e_ns(SUBMIT, 7_000_000, PTS, 0, HZ60_NS), Some(37_000_000));
-        assert_eq!(video_e2e_ns(SUBMIT, -7_000_000, PTS, 0, HZ60_NS), Some(23_000_000));
-    }
-
-    /// A frame cannot reach the glass before it was captured. A wall-clock step or an unsettled
-    /// skew estimate produces exactly this, and steering a playback ring by it would empty or
-    /// overfill the ring outright — so it is rejected, not clamped.
-    #[test]
-    fn a_frame_landing_before_its_own_capture_is_rejected() {
-        assert_eq!(video_e2e_ns(1_000_000_000, 0, 2_000_000_000, 0, HZ60_NS), None);
-    }
-
-    /// This runs on the video thread for every presented frame, so the failure mode it guards is a
-    /// **panic**: plain `+` here aborts the stream on overflow in a debug build. Proven by planting
-    /// exactly that — swapping the `checked_add`s for `+` fails this test with an overflow panic.
-    ///
-    /// What it deliberately does NOT claim: that `checked_add` beats `wrapping_add`. With real
-    /// inputs the i128 accumulator cannot overflow at all (a realtime stamp is ~1.7e18 ns and the
-    /// whole pipeline term is bounded by `u64::MAX` ~1.8e19, against an i128 range of ~1.7e38), and
-    /// a wrapped value would be caught by the `u64::try_from` below anyway. The `checked_add`s are
-    /// belt-and-braces against garbage arguments, and this gate is about the panic.
-    #[test]
-    fn implausible_inputs_return_none_rather_than_panicking() {
-        assert_eq!(video_e2e_ns(i128::MAX, i64::MAX, 0, u64::MAX, u64::MAX), None);
-        assert_eq!(video_e2e_ns(i128::MIN, i64::MIN, u64::MAX, 0, 0), None);
-        // A saturating queue term must not wrap into a small, believable-looking number.
-        assert_eq!(video_e2e_ns(SUBMIT, 0, PTS, u64::MAX, HZ60_NS), None);
-    }
-
-    /// 120 Hz — the mode the ABR collapse was observed at (CX, 2026-08-10).
-    const HZ120_NS: u64 = 8_333_333;
-    const FEED: Duration = Duration::from_micros(400);
-
-    /// The regression the cushion exists for: folded in raw, a standing 2-frame lead reported
-    /// ~16.8 ms of "decode latency" every window and walked the rate to the floor. At the settled
-    /// depth the report must be feed time and nothing else.
-    #[test]
-    fn a_standing_present_cushion_reports_no_decode_latency() {
-        for depth in 0..=STANDING_CUSHION_FRAMES {
-            assert_eq!(
-                decode_report_us(FEED, depth, STANDING_CUSHION_FRAMES, HZ120_NS),
-                400,
-                "depth {depth} should read as lead, not queue"
-            );
-        }
-    }
-
-    /// The signal the fold exists for, still intact: a queue GROWING past the cushion is the
-    /// decoder falling behind, and each extra frame is one drain interval of real latency.
-    #[test]
-    fn queue_above_the_cushion_is_reported() {
-        let two_over = decode_report_us(FEED, STANDING_CUSHION_FRAMES + 2, STANDING_CUSHION_FRAMES, HZ120_NS);
-        assert_eq!(two_over, 400 + 2 * 8_333);
-        // And deeper is strictly worse — monotonic, or the controller can't act on it.
-        let one_over = decode_report_us(FEED, STANDING_CUSHION_FRAMES + 1, STANDING_CUSHION_FRAMES, HZ120_NS);
-        assert!(two_over > one_over, "{two_over} !> {one_over}");
-    }
-
-    /// Runs on the video thread per presented frame, so garbage must saturate rather than panic or
-    /// wrap into a believable figure (`u32::MAX` µs is ~71 min — no threshold mistakes it for calm).
-    #[test]
-    fn an_implausible_queue_saturates_instead_of_wrapping() {
-        assert_eq!(decode_report_us(FEED, u64::MAX, 0, u64::MAX), u32::MAX);
-        assert_eq!(decode_report_us(Duration::MAX, 0, 0, HZ120_NS), u32::MAX);
-    }
-
-    /// No samples yet is exactly when a raw fold does its damage — the buffer is still filling — so
-    /// assume the cushion rather than an empty queue.
-    #[test]
-    fn the_cushion_never_starts_at_zero() {
-        assert_eq!(cushion_frames(std::iter::empty()), STANDING_CUSHION_FRAMES);
-        assert_eq!(cushion_frames([0, 0, 1].into_iter()), STANDING_CUSHION_FRAMES);
-    }
-
-    /// A mode that settles deeper than the floor teaches its own lead — one frame is 16.6 ms at
-    /// 60 Hz, so a fixed floor of two would put such a mode straight back over the threshold.
-    #[test]
-    fn a_deeper_settled_queue_raises_the_cushion() {
-        assert_eq!(cushion_frames([4, 3, 5, 3].into_iter()), 3);
-    }
-
-    /// …but only so far. A decoder that stays overloaded past the sample window would otherwise
-    /// teach the minimum its own backlog and mute the signal — the same baseline-absorption trap
-    /// this fix exists to escape, just faster.
-    #[test]
-    fn a_sustained_overload_cannot_teach_the_cushion_away() {
-        assert_eq!(cushion_frames([40, 38, 44].into_iter()), CUSHION_MAX_FRAMES);
-    }
 }
