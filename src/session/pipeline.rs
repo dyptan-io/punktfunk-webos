@@ -187,13 +187,13 @@ fn load_player(params: &ConnectParams, client: &NativeClient) -> Result<(Box<dyn
         client.color.primaries,
         client.color.matrix,
     );
-    // Forward the negotiated colorimetry to the decoder for BOTH HDR and SDR
-    // streams. The SDR case is not optional: punktfunk encodes BT.709, but with
-    // missing/"unspecified" VUI colour info in the bitstream this panel guesses
-    // colorimetry from resolution — a 4K SDR stream then decodes as BT.2020,
-    // which shows up as exactly the washed-out/desaturated picture reported
-    // on-device. `client.color` arrives out-of-band in `Welcome` for precisely
-    // this purpose; only the mastering metadata alongside it is HDR-gated.
+    // Colorimetry goes to the decoder with the mastering metadata, and on this backend that means
+    // it reaches it only on an HDR stream: `NDL_DirectVideoSetHDRInfo` emits an HDR infoframe on
+    // ANY call and ignores an SDR triplet, so `NdlVideo::set_color_info` refuses `meta: None`
+    // outright (read its docs before changing this — forcing the panel into HDR for SDR content is
+    // the worse outcome, and it cost a black 1440p120 stream on a CX). `client.color` is still
+    // passed on every session: the SDR arm is a no-op only on NDL, and a backend that can take
+    // colorimetry without the HDR side effect gets it.
     if let Err(e) = player.set_color(is_hdr.then(cx_display_hdr).as_ref(), client.color) {
         tracing::warn!("NDL colour metadata failed: {e:#}");
     }
