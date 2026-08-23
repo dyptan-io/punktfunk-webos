@@ -142,10 +142,17 @@ SMP is a different pipeline, so `caps::VideoCaps::audio_plane` is false on both 
 rewrites a document carried over from a v2 set. The Audio row's layouts follow the *selected*
 route, so picking `Offload (NDL)` locks that row to stereo with the reason on it.
 
-**Nothing is ever mixed down.** Each route publishes its own ceiling
-(`AudioRoutePref::max_channels`) and the handshake asks the host for exactly that, so a layout the
-sink can't put on a speaker is never encoded, never sent and never folded. A width mismatch at
+**Nothing is ever mixed down, and the layout row is a preference.** `Settings::audio_channels` says
+"5.1 where it can play"; `Negotiated::clamp` is the one place it becomes a width, narrowing it by
+what the selected route carries (`AudioRoutePref::max_channels`) and by what the TV's Sound Out
+passes right now (`ndl::audio_output_width`). So a layout the sink can't put on a speaker is never
+encoded, never sent, never decoded and never folded — and the preference survives a route change or
+an unplugged receiver instead of being rewritten out of the document. A width mismatch at
 `AudioStage::new` is an error, not a downmix.
+
+**Nothing narrows the menu but a hard limit.** The Audio row lists everything this client can
+decode. `menu::audio_limit_reason` captions it when the pick won't be honoured; it never removes an
+entry, because the reasons are per session and one of them changes under a running app.
 
 - **The plane's ceiling is the firmware's, and it is per route.** `ndl::audio_plane_max_channels`
   is 6 where the library has `NDL_DirectAudioRegisterCallback` and 2 where it does not — webOS 7
@@ -154,13 +161,14 @@ sink can't put on a speaker is never encoded, never sent and never folded. A wid
   mapping field. It reaches `core::caps` as `plane_max_channels`, *beside* the decoder-wide
   `max_channels`, because clamping the global by it took 5.1 away from the SDL route, which plays
   it fine.
-- **Capability and routing are different questions, and only the first gates the menu.**
+- **Capability and routing are different questions, asked in different places.**
   `NDL_DirectAudioSupportMultiChannel` answers the second: whether 5.1 reaches a speaker *right
   now*, which also depends on Sound Out (TV speakers are 2.0/2.2 and ARC/optical carry 2-channel
-  PCM only). That is a setting the user can change under a running session, so gating an offered
-  layout on it leaves the menu wrong until the next launch — ss4s declines to check it at all.
-  Here it is logged on a 5.1 plane load (`log_multichannel_routing`) and nowhere else, so a
-  downmix is explainable without being self-inflicted.
+  PCM only). ss4s declines to check it at all and lets webOS fold. Here `ndl::audio_output_width`
+  reads it **once per session, at connect** — fresh, after `NDL_DirectMediaInit`, and early enough
+  to size the wire request. Never in the menu: the answer would be stale by the time it was drawn.
+  It initialises NDL a moment before the load would have anyway (process-global and idempotent),
+  so it costs no extra call.
 - ⚠ **`NDL_DirectAudioSupportMultiChannel` has an out-parameter**:
   `int NDL_DirectAudioSupportMultiChannel(int *isSupported)`, returning 0/-1, with the code written
   through the pointer — `0` unsupported, `1` no device, `2` device but not passthrough, `3` will

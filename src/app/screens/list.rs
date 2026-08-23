@@ -111,7 +111,7 @@ impl App {
             Screen::Experimental => crate::app::menu::audio_route_options(),
             Screen::Settings(set) => crate::app::menu::settings_logical_row(set, display_row)
                 .map_or_else(Vec::new, |row| {
-                    crate::app::menu::dropdown_options(row, &self.settings_ui.settings, self.detected_gamepad_type)
+                    crate::app::menu::dropdown_options(row, self.detected_gamepad_type)
                 }),
             // No dropdowns: nothing on these screens opens one, so nothing here should be
             // drawn or hit-tested as if it had.
@@ -140,9 +140,8 @@ impl App {
         match self.nav.screen {
             Screen::Diagnostics => crate::app::menu::LOG_LEVEL_OPTIONS.len(),
             Screen::Experimental => crate::app::menu::audio_routes().len(),
-            Screen::Settings(set) => crate::app::menu::settings_logical_row(set, display_row).map_or(0, |row| {
-                crate::app::menu::dropdown_option_count(row, &self.settings_ui.settings)
-            }),
+            Screen::Settings(set) => crate::app::menu::settings_logical_row(set, display_row)
+                .map_or(0, crate::app::menu::dropdown_option_count),
             _ => 0,
         }
     }

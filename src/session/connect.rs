@@ -117,10 +117,24 @@ impl Negotiated {
     /// decoder is a frozen black stream with no second chance once `Welcome` has resolved.
     fn clamp(params: &ConnectParams) -> Self {
         let caps = video_caps();
-        // The route is settled before the handshake because it decides the widest layout worth
-        // ASKING the host to encode — channels this session's sink cannot output are airlink and
-        // host CPU spent on silence. Nothing is folded down later; see `AudioRoutePref::max_channels`.
+        // `params.audio_channels` is the user's PREFERENCE; this is where it becomes a width.
+        // Two things narrow it, both settled before the handshake because channels the session
+        // cannot put on a speaker are airlink, host CPU and local decode spent on silence:
+        // what the selected route can carry at all, and what the TV's Sound Out passes right now.
+        // Nothing is folded down later — see `AudioRoutePref::max_channels`.
         let route_max = params.audio_route.max_channels(caps);
+        let output_max = crate::platform::webos::ndl::audio_output_width().unwrap_or(u8::MAX);
+        let audio_channels = params
+            .audio_channels
+            .min(caps.max_channels)
+            .min(route_max)
+            .min(output_max);
+        if audio_channels < params.audio_channels {
+            tracing::info!(
+                "audio: asking for {audio_channels} channel(s), not {} — route carries {route_max}, output passes {output_max}",
+                params.audio_channels,
+            );
+        }
         let codecs = caps.codec_prefs();
         let codec_pref = if codecs.contains(&params.codec) {
             params.codec
@@ -133,7 +147,7 @@ impl Negotiated {
         // on the *negotiated* codec being HEVC in `load_player`.
         let hdr = params.hdr_enabled && caps.hdr && codec_pref != CodecPref::H264;
         Self {
-            audio_channels: params.audio_channels.min(caps.max_channels).min(route_max),
+            audio_channels,
             // VIDEO_CAP_CHACHA20: unconditional — armv7 has no hardware AES, so ChaCha20 is
             // faster. A ≥0.17.2 host picks it up; older hosts ignore the unknown bit.
             video_caps: quic::VIDEO_CAP_CHACHA20

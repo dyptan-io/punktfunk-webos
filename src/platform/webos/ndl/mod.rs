@@ -36,6 +36,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 
+use super::device::{self, NdlGeneration};
+
 pub use v2::{NdlAudioConfig, NdlVideo};
 
 /// `NDL_VIDEO_TYPE` values this client can request (matches the codec the host's
@@ -355,16 +357,39 @@ pub fn audio_plane_max_channels() -> u8 {
     })
 }
 
-/// Logs where multi-channel PCM currently goes. Called on a 5.1 plane load and nowhere else: the
-/// query is meaningful only after `NDL_DirectMediaInit`, and its answer is a Sound Out setting the
-/// user can change under a running session — so it explains a downmix rather than causing one.
-fn log_multichannel_routing() {
-    let status = ffi::multichannel_pcm_status();
-    if status == ffi::MultiChannelPcm::Supported {
-        tracing::info!("NDL multichannel PCM: {status:?}");
-    } else {
-        tracing::warn!("NDL multichannel PCM: {status:?} — the TV will fold this 5.1 plane down");
+/// Widest layout the TV's audio output will actually pass **right now**, or `None` where it
+/// cannot be asked.
+///
+/// This is the routing half of the picture ([`audio_plane_max_channels`] is the capability half):
+/// it answers whether Sound Out is configured for multi-channel, which the user can change under
+/// a running app. Read once per session by `session::connect` and used to size the wire request,
+/// so channels the TV would only fold down are never encoded, sent or decoded. Never a menu gate —
+/// the answer would be stale by the time it was drawn.
+///
+/// `None` on NDL v1 (nothing to ask) and whenever the query fails, both of which mean "don't
+/// narrow" — the static capability ceiling has already applied by then.
+pub fn audio_output_width() -> Option<u8> {
+    if device::ndl_generation() != NdlGeneration::V2 {
+        return None;
     }
+    // The query answers nothing before `NDL_DirectMediaInit`, and this runs a moment before the
+    // load would have called it anyway — process-global and idempotent, so it is the same init.
+    if let Err(e) = ensure_init(&app_id(), true) {
+        tracing::warn!("NDL init for the audio-output query: {e:#}");
+        return None;
+    }
+    let status = ffi::multichannel_pcm_status();
+    let width = match status {
+        ffi::MultiChannelPcm::Supported => Some(6),
+        ffi::MultiChannelPcm::Unknown => None,
+        // Capable or not, stereo is what leaves the set.
+        _ => Some(2),
+    };
+    match width {
+        Some(w) => tracing::info!("NDL audio output: {status:?} — passes up to {w} channel(s)"),
+        None => tracing::warn!("NDL audio output: {status:?} — not narrowing the request"),
+    }
+    width
 }
 
 pub fn app_id() -> String {

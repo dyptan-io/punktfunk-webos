@@ -25,9 +25,7 @@ impl App {
             // `dd.row` is the display position; setting lookups need the logical row.
             let row = dd.row;
             let logical = menu::settings_logical_row(set, row);
-            let len = logical.map_or(1, |row| {
-                menu::dropdown_option_count(row, &self.settings_ui.settings).max(1)
-            });
+            let len = logical.map_or(1, |row| menu::dropdown_option_count(row).max(1));
             match ev {
                 MenuEvent::Up | MenuEvent::Down => {
                     crate::ui::widgets::list_nav(&mut dd.focused, len, menu::nav_dir(ev));

@@ -155,6 +155,12 @@ Phases 0-5 landed as six commits. Two changes to the plan:
   picks are unverifiable hardware paths, which is what that screen is for. It also gained the gate
   the plan implied but never stated: `VideoCaps::audio_plane` is false on NDL v1 and under SMP, so
   those devices are offered the software route only.
+- **Per-option locks were dropped a second time, for a better reason.** The channel row is a
+  *preference* now, not a request: it lists everything the client can decode and never hides an
+  entry, because both narrowing facts (which route is picked, whether Sound Out passes 5.1) are
+  per-session and one of them changes under a running app. `Negotiated::clamp` is the single place
+  the preference becomes a width, so "never ask for what can't play" holds without any menu having
+  to be right about the TV's current state.
 
 Everything else is as described: `core::media` holds the traits, `session::{audio,stage,pipeline}`
 the stages and assembly, `AudioRoutePref` the user-facing route pick, and no path folds a layout

@@ -41,10 +41,6 @@ fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
         menu::RowLock::NoHdr => format!("HDR is not supported by {}", source()),
         menu::RowLock::OneCodec => format!("H.264 is the only codec supported by {}", source()),
         menu::RowLock::StereoOnly => format!("Stereo is the only layout supported by {}", source()),
-        menu::RowLock::RouteStereoOnly(route) => format!(
-            "{} audio processing carries stereo only",
-            menu::audio_route_label(route)
-        ),
         menu::RowLock::NoGamepad => "Connect a controller to your TV".to_string(),
     }
 }
@@ -116,7 +112,7 @@ pub(crate) fn rows(
             "Audio",
             menu::audio_label(settings.audio_channels),
         )
-        .with_subtext_opt(menu::audio_limit_reason(settings).map(ui::widgets::RowSubtext::hint)),
+        .with_subtext_opt(menu::audio_limit_reason(settings).map(ui::widgets::RowSubtext::caution)),
         menu::SettingsRow::Gamepad => FocusRow::dropdown(
             crate::app::view::icons::ICON_GAMEPAD,
             "Controller",

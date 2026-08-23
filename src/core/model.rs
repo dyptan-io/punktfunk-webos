@@ -868,10 +868,6 @@ impl Settings {
             note!("settings: HDR needs HEVC — an explicit H.264 pick turns it off");
             self.hdr_enabled = false;
         }
-        // One ceiling, not two: the route's own limit is already `caps.max_channels` or narrower
-        // (`AudioRoutePref::max_channels`). This is also why nothing is ever folded down — a layout
-        // the route can't put on a speaker is never requested. Clamped rather than silently
-        // ignored, so the row shows what will happen.
         if !AudioRoutePref::available(caps).contains(&self.audio_route) {
             note!(
                 "settings: {:?} audio needs NDL's audio plane, which this backend has none of — using Software",
@@ -879,20 +875,17 @@ impl Settings {
             );
             self.audio_route = AudioRoutePref::Software;
         }
-        let route_max = self.audio_route.max_channels(caps);
-        if self.audio_channels > route_max {
-            if route_max == caps.max_channels {
-                note!(
-                    "settings: {} audio channels is more than this TV's audio output carries ({route_max}) — clamping",
-                    self.audio_channels,
-                );
-            } else {
-                note!(
-                    "settings: {:?} audio carries at most {route_max} channel(s) — clamping",
-                    self.audio_route,
-                );
-            }
-            self.audio_channels = route_max;
+        // The decoder-wide ceiling, and nothing else. `audio_channels` is a PREFERENCE — "5.1
+        // where it can play" — which the route's own limit and the TV's current Sound Out narrow
+        // per session, not in the document (see `session::connect`'s `Negotiated::clamp`).
+        // Rewriting it from either would lose the preference the moment a receiver was unplugged.
+        if self.audio_channels > caps.max_channels {
+            note!(
+                "settings: {} audio channels is more than this client can decode ({}) — clamping",
+                self.audio_channels,
+                caps.max_channels,
+            );
+            self.audio_channels = caps.max_channels;
         }
     }
 }

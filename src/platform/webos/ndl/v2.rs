@@ -266,9 +266,6 @@ impl NdlVideo {
             unknown1: 0,
         };
         if let Some(audio) = audio {
-            if matches!(audio, NdlAudioConfig::Pcm { channels: 6 }) {
-                super::log_multichannel_routing();
-            }
             // An audio-enabled load must PROVE itself with `LOADCOMPLETED`; a video-only one may
             // proceed unconfirmed (below). `NDL_DirectMediaLoad` returning 0 is only "request
             // accepted" — an Opus config the pipeline rejects fails asynchronously, then accepts

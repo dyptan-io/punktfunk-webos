@@ -210,11 +210,6 @@ pub(crate) enum RowLock {
     OneCodec,
     /// The active backend offers one channel count (NDL v1), so there is nothing to pick.
     StereoOnly,
-    /// The selected audio route carries stereo only, so the layout row has one entry — see
-    /// `store::AudioRoutePref::max_channels`. The decoder here handles up to 7.1; what caps this
-    /// is where the sound physically goes. Carries the route so the caption can name the pick
-    /// the user has to change to lift it.
-    RouteStereoOnly(AudioRoutePref),
     /// Nothing is plugged into the TV, so there is no controller to describe to the host.
     NoGamepad,
 }
@@ -280,9 +275,6 @@ pub(crate) fn row_lock(row: SettingsRow, settings: &Settings, detected: Option<G
         SettingsRow::Hdr if settings.codec == CodecPref::H264 => Some(RowLock::HdrNeedsHevc),
         SettingsRow::Codec if caps.codec_prefs().len() < 2 => Some(RowLock::OneCodec),
         SettingsRow::Audio if caps.max_channels < 2 => Some(RowLock::StereoOnly),
-        SettingsRow::Audio if audio_channel_options(settings).len() < 2 => {
-            Some(RowLock::RouteStereoOnly(settings.audio_route))
-        }
         SettingsRow::Gamepad if detected.is_none() => Some(RowLock::NoGamepad),
         _ => None,
     }
@@ -487,35 +479,38 @@ pub fn gamepad_auto_label(detected: Option<GamepadType>) -> String {
 /// Every channel count this client can label; what is *offered* is [`audio_channel_options`].
 const AUDIO_CHANNELS: [(u8, &str); 3] = [(2, "Stereo"), (6, "5.1 surround"), (8, "7.1 surround")];
 
-/// The channel counts offered, filtered to what the active backend can present.
+/// The channel counts offered: everything this client can decode.
+///
+/// Deliberately NOT filtered by the audio route or by the TV's current Sound Out. The row is a
+/// preference — "5.1 where it can play" — and both of those narrow the session instead
+/// (`session::connect`'s `Negotiated::clamp`), so a layout stays picked across a route change or
+/// an unplugged receiver. [`audio_limit_reason`] says when the pick won't be honoured.
 ///
 /// A prefix of [`AUDIO_CHANNELS`] rather than a fresh `Vec`, because the list is ascending and
 /// the filter is a ceiling — and because the callers that only want the count ask on every
 /// settings-geometry query, which is several times a frame.
-pub fn audio_channel_options(settings: &Settings) -> &'static [(u8, &'static str)] {
-    let max = settings.audio_route.max_channels(video_caps());
+pub fn audio_channel_options() -> &'static [(u8, &'static str)] {
+    let max = video_caps().max_channels;
     let offered = AUDIO_CHANNELS.iter().take_while(|(c, _)| *c <= max).count();
     &AUDIO_CHANNELS[..offered]
 }
 
-/// Why the Audio row offers fewer layouts than punktfunk can carry, or `None` when nothing is
-/// missing from it.
+/// Why the pick won't be honoured this session, or `None` when it will.
 ///
-/// The row lists only what the session could actually play (`audio_channel_options`), so an
-/// unsupported layout is not selectable at all — this is the other half of that: saying WHICH
-/// limit did it, since the same short list comes from the TV's output path on one route and from
-/// the route itself on another.
-pub(crate) fn audio_limit_reason(settings: &Settings) -> Option<&'static str> {
-    let caps = video_caps();
-    let offered = settings.audio_route.max_channels(caps);
-    if offered >= caps.max_channels {
+/// The Audio row never hides a layout (see [`audio_channel_options`]), so this is what tells the
+/// user their 5.1 is going to arrive as stereo, and which limit did it. Only the *static* limits
+/// are knowable here: the TV's current Sound Out is read at connect and lands in the log, not in
+/// a menu that would be stale by the time it was drawn.
+pub(crate) fn audio_limit_reason(settings: &Settings) -> Option<String> {
+    let carries = settings.audio_route.max_channels(video_caps());
+    if settings.audio_channels <= carries {
         return None;
     }
-    Some(match (settings.audio_route, offered) {
-        (AudioRoutePref::NdlOpus, _) => "Offload (NDL) audio processing is stereo only",
-        (_, 2) => "Your TV's audio plane carries stereo only",
-        _ => "Your TV's audio plane carries up to 5.1",
-    })
+    Some(format!(
+        "{} plays at most {}",
+        audio_route_label(settings.audio_route),
+        audio_label(carries).to_lowercase(),
+    ))
 }
 
 /// Dropdown label for a route. Names the decode step and the sink behind it — the pick is a
@@ -556,7 +551,7 @@ fn video_backend_label(backend: VideoBackend) -> &'static str {
 pub type Label = std::borrow::Cow<'static, str>;
 
 /// Dropdown labels for a row.
-pub fn dropdown_options(row: SettingsRow, settings: &Settings, detected: Option<GamepadType>) -> Vec<Label> {
+pub fn dropdown_options(row: SettingsRow, detected: Option<GamepadType>) -> Vec<Label> {
     match row {
         SettingsRow::Theme => crate::ui::theme::PRESETS.iter().map(|t| t.name.into()).collect(),
         SettingsRow::VideoBackend => VIDEO_BACKENDS.iter().map(|&b| video_backend_label(b).into()).collect(),
@@ -570,10 +565,7 @@ pub fn dropdown_options(row: SettingsRow, settings: &Settings, detected: Option<
             .iter()
             .map(|&p| codec_label(p).into())
             .collect(),
-        SettingsRow::Audio => audio_channel_options(settings)
-            .iter()
-            .map(|(_, s)| (*s).into())
-            .collect(),
+        SettingsRow::Audio => audio_channel_options().iter().map(|(_, s)| (*s).into()).collect(),
         SettingsRow::Gamepad => GAMEPAD_TYPES
             .iter()
             .map(|&t| {
@@ -590,14 +582,14 @@ pub fn dropdown_options(row: SettingsRow, settings: &Settings, detected: Option<
 
 /// How many options a dropdown row offers, without building the label list — the compose
 /// path needs only the count, and `dropdown_options` allocates a `String` per entry.
-pub fn dropdown_option_count(row: SettingsRow, settings: &Settings) -> usize {
+pub fn dropdown_option_count(row: SettingsRow) -> usize {
     match row {
         SettingsRow::Theme => crate::ui::theme::PRESETS.len(),
         SettingsRow::VideoBackend => VIDEO_BACKENDS.len(),
         SettingsRow::Resolution => RESOLUTIONS.len(),
         SettingsRow::Framerate => REFRESH_RATES.len(),
         SettingsRow::Codec => video_caps().codec_prefs().len(),
-        SettingsRow::Audio => audio_channel_options(settings).len(),
+        SettingsRow::Audio => audio_channel_options().len(),
         SettingsRow::Gamepad => GAMEPAD_TYPES.len(),
         _ => 0,
     }
@@ -627,7 +619,7 @@ pub fn dropdown_current_index(settings: &Settings, row: SettingsRow) -> usize {
             .iter()
             .position(|&p| p == settings.codec)
             .unwrap_or(0),
-        SettingsRow::Audio => audio_channel_options(settings)
+        SettingsRow::Audio => audio_channel_options()
             .iter()
             .position(|(c, _)| *c == settings.audio_channels)
             .unwrap_or(0),
@@ -688,7 +680,7 @@ pub fn apply_dropdown_choice(
             }
         }
         SettingsRow::Audio => {
-            if let Some((channels, _)) = audio_channel_options(settings).get(choice_index) {
+            if let Some((channels, _)) = audio_channel_options().get(choice_index) {
                 settings.audio_channels = *channels;
             }
         }
@@ -756,7 +748,7 @@ pub fn adjust_setting(settings: &mut Settings, row: SettingsRow, forward: bool, 
         | SettingsRow::Diagnostics
         | SettingsRow::About
         | SettingsRow::Reset => {
-            let len = dropdown_option_count(row, settings);
+            let len = dropdown_option_count(row);
             if len == 0 {
                 return false;
             }
@@ -905,7 +897,7 @@ mod tests {
     #[test]
     fn the_channel_table_is_ascending_so_the_offered_list_is_a_prefix() {
         assert!(AUDIO_CHANNELS.windows(2).all(|w| w[0].0 < w[1].0));
-        let offered = audio_channel_options(&Settings::default());
+        let offered = audio_channel_options();
         assert_eq!(offered, &AUDIO_CHANNELS[..offered.len()]);
     }
 
