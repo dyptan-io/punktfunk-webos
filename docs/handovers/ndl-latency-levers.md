@@ -100,3 +100,34 @@ estimator is gone, see below).
   That is not a bug report.
 - `NDL_DirectAudioSupportMultiChannel`'s return codes are **off by one** against the
   `NDLMultiChannelPCMCallback` codes the header documents.
+
+---
+
+## Follow-up: the PCM route was removed (2026-08-23)
+
+Verdict on the route this handover was written to promote: **not worth a third hardware path.** It
+bought only a small latency win over the SDL path, it cannot carry 7.1, and its `"6-channel"`
+interleave order was inferred from ss4s and never verified on a set. For stereo, Opus offload is
+shorter still; for anything wider, software is the only route that plays it. So the pipeline now
+carries **two** routes — `Software` (SDL, default) and `NdlOpus` (Offload) — and the removal was a
+straight deletion, keeping every structural gain from the pipeline rework.
+
+Deleted: `session::paced` (whole file), `AudioRoutePref::NdlPcm`, `AudioFormat::PcmS16`,
+`Samples::S16`, `AudioPlane::{target_lead_ms, feed_paced, fill_silence}`, `NdlAudioConfig` (the
+plane is always Opus stereo now, so `NdlVideo::load` takes a `bool`), `NdlVideo::burst_pcm`,
+`ffi::AudioPcmInfo`, `ffi::multichannel_pcm_mode`, `NDL_51_ORDER`, the `PCM_*` string enums and
+silence buffer, `ndl::audio_plane_max_channels`, `VideoCaps::plane_max_channels`, and
+`AudioStage`'s S16 branch with its `as_le_bytes` transmute.
+
+Kept deliberately: `ffi::multichannel_pcm_status` / `ndl::audio_output_width`, which narrows the
+wire request on the SOFTWARE route too — 5.1 the TV would only fold down is airlink, host CPU and
+local decode spent on nothing. Also `AudioPlane::lead_ms`, which is the video heartbeat's
+`plane_lead=`.
+
+Simplifications that fell out: `AudioStage` decodes only to f32 now (one branch, no conversion
+pass, no `unsafe`); `RowLock::RouteStereoOnly` lost its payload, since offload is the only route
+that can trigger it; `spawn_plane_threads` lost the boxed `plane_loop` closure.
+
+`task docker:check` + `docker:lint` clean, `task fmt` applied. Untested on hardware — the
+on-device checklist in `docs/MEDIA-PIPELINE-PLAN.md` is now two routes, and items 1, 2 and 5
+still stand.

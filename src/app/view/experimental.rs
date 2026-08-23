@@ -43,12 +43,11 @@ pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
 }
 
 /// What each audio route trades, on the row itself — the pick is a hardware path, and the
-/// difference between the three is not inferable from their names.
+/// difference between the two is not inferable from their names.
 fn audio_route_hint(route: crate::services::store::AudioRoutePref) -> Option<ui::widgets::RowSubtext> {
     use crate::services::store::AudioRoutePref;
     match route {
         AudioRoutePref::Software => None,
-        AudioRoutePref::NdlPcm => Some(ui::widgets::RowSubtext::hint("Lower latency, up to 5.1")),
         AudioRoutePref::NdlOpus => Some(ui::widgets::RowSubtext::caution("Lowest latency, stereo only")),
     }
 }

@@ -210,11 +210,11 @@ pub(crate) enum RowLock {
     OneCodec,
     /// The active backend decodes one channel count (NDL v1), so no route could offer more.
     StereoOnly,
-    /// The *selected audio processing* carries stereo only (`AudioRoutePref::max_channels`) — the
-    /// Opus plane decodes nothing wider, and the PCM plane on a pre-webOS-7 set has no
-    /// multi-channel mode. Carries the route so the caption can name which pick did it and where
-    /// to change it: unlike the TV's Sound Out, this limit follows from a setting the user owns.
-    RouteStereoOnly(AudioRoutePref),
+    /// The *selected audio processing* carries stereo only (`AudioRoutePref::max_channels`) —
+    /// i.e. audio offload, whose plane decodes nothing wider. Named as a route lock rather than
+    /// [`Self::StereoOnly`] because, unlike the TV's Sound Out or the backend, this limit follows
+    /// from a setting the user owns and the caption can say where to change it.
+    RouteStereoOnly,
     /// Nothing is plugged into the TV, so there is no controller to describe to the host.
     NoGamepad,
 }
@@ -283,9 +283,7 @@ pub(crate) fn row_lock(row: SettingsRow, settings: &Settings, detected: Option<G
         // Device before route: where the client itself decodes stereo only, no audio-processing
         // pick could widen it, and naming one would send the user somewhere that cannot help.
         SettingsRow::Audio if caps.max_channels < 2 => Some(RowLock::StereoOnly),
-        SettingsRow::Audio if audio_channel_options(settings).len() < 2 => {
-            Some(RowLock::RouteStereoOnly(settings.audio_route))
-        }
+        SettingsRow::Audio if audio_channel_options(settings).len() < 2 => Some(RowLock::RouteStereoOnly),
         SettingsRow::Gamepad if detected.is_none() => Some(RowLock::NoGamepad),
         _ => None,
     }
@@ -493,9 +491,9 @@ const AUDIO_CHANNELS: [(u8, &str); 3] = [(2, "Stereo"), (6, "5.1 surround"), (8,
 /// The channel counts offered: what this client can decode, capped by what the selected route can
 /// put on a speaker (`AudioRoutePref::max_channels`).
 ///
-/// Filtered by the route because that ceiling is static — the plane has no 7.1 mode at all, and
-/// the Opus plane none above stereo — so offering a width the route would only make the handshake
-/// clamp is a pick that does nothing. NOT filtered by the TV's current Sound Out: that one changes
+/// Filtered by the route because that ceiling is static — the Opus plane carries nothing above
+/// stereo — so offering a width the route would only make the handshake clamp is a pick that does
+/// nothing. NOT filtered by the TV's current Sound Out: that one changes
 /// under a running app and is applied per session instead (`session::connect`'s
 /// `Negotiated::clamp`).
 ///
@@ -514,8 +512,8 @@ pub fn audio_channel_options(settings: &Settings) -> &'static [(u8, &'static str
 /// down to what the route carries.
 ///
 /// The preference itself is never rewritten (`Settings::clamp_to_caps` only applies the
-/// decoder-wide ceiling), so a 7.1 pick narrowed to 5.1 by the PCM plane comes back whole on a
-/// route that plays it.
+/// decoder-wide ceiling), so a 5.1 pick narrowed to stereo by the offload route comes back whole
+/// on the software one.
 pub(crate) fn audio_row_channels(settings: &Settings) -> u8 {
     settings
         .audio_channels
@@ -527,7 +525,6 @@ pub(crate) fn audio_row_channels(settings: &Settings) -> u8 {
 pub(crate) fn audio_route_label(route: AudioRoutePref) -> &'static str {
     match route {
         AudioRoutePref::Software => "Software (SDL)",
-        AudioRoutePref::NdlPcm => "PCM (NDL)",
         AudioRoutePref::NdlOpus => "Offload (NDL)",
     }
 }

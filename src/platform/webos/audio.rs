@@ -1,14 +1,15 @@
 //! The TV's own audio device, and the sink wrapper the pipeline drives it through.
 //!
-//! One of three routes (`core::model::AudioRoutePref`) and the longest of them: software Opus
+//! One of two routes (`core::model::AudioRoutePref`) and the longer of them: software Opus
 //! decode (`session::audio`) into a ring, drained by SDL's audio callback, through whatever
 //! `PulseAudio` adds behind it. It is also the only one whose pacing behaviour is proven on this
-//! hardware, hence the default.
+//! hardware, hence the default — the offload route is shorter, but the TV's own decoder is behind
+//! the plane and some sets accept its load and then play nothing.
 //!
 //! What used to live here — a `JitterPolicy` ring with an adaptive target, crossfaded drift sheds
 //! and an `AvSync` estimator — was ~35 ms of floor on top of the device quantum, and it is gone.
 //! What is left is a prime-then-serve ring; the decode half moved up into the pipeline's audio
-//! stage, which now serves every route.
+//! stage, which serves both routes.
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
@@ -38,7 +39,7 @@ const PRIME_MS: usize = 25;
 /// the producer runs ahead by STAYS ahead. A host stall that unblocks into a burst therefore used
 /// to buy the session a permanent lip-sync debt of however long the stall was, with the picture
 /// still perfectly paced (the clock plane drives that, not this). One audible trim beats carrying
-/// it to the end of the session. Same rule, and the same reason, as `session::paced`'s ring.
+/// it to the end of the session.
 const MAX_MS: usize = 90;
 
 /// How often an over-ceiling ring may be trimmed. Slow drift is the other way the ring grows
@@ -232,8 +233,8 @@ impl sdl2::audio::AudioCallback for RingCallback {
             self.primed = false;
         }
         self.callbacks += 1;
-        // ~10 s at this device quantum. The plane must not be invisible in a log: this route only
-        // runs when the NDL plane was unavailable, which is already an unusual session.
+        // ~10 s at this device quantum — the depth this route's lip sync is made of, and the
+        // only place it is observable.
         if self.callbacks % 1_000 == 0 {
             tracing::debug!(
                 buffer_ms = self.ring.len() / self.per_ms.max(1),

@@ -25,10 +25,6 @@ pub struct VideoCaps {
     /// Highest audio channel count this client can decode and present through the SOFTWARE
     /// route — the decoder-wide ceiling.
     pub max_channels: u8,
-    /// Highest audio channel count NDL's audio plane can put on a speaker here
-    /// (`ndl::audio_plane_max_channels`). A second, narrower ceiling that applies only to the
-    /// routes that ride the plane — see `core::model::AudioRoutePref::max_channels`.
-    pub plane_max_channels: u8,
     /// Whether an NDL audio plane exists at all here. Only NDL `DirectMedia` v2 has one: v1 has
     /// no audio type, and SMP is a different pipeline entirely. False leaves
     /// `AudioRoutePref::Software` as the only route (`AudioRoutePref::available`).
@@ -43,9 +39,6 @@ impl VideoCaps {
         h265: true,
         hdr: true,
         max_channels: 8,
-        // Widest mode NDL's plane has. The platform installs the TV's real answer, which is
-        // this or stereo; the constant only covers host builds and tests.
-        plane_max_channels: 6,
         audio_plane: true,
     };
 
@@ -55,8 +48,6 @@ impl VideoCaps {
         h265: false,
         hdr: false,
         max_channels: 2,
-        // v1 has no audio type at all, so no route can ride a plane here.
-        plane_max_channels: 2,
         audio_plane: false,
     };
 

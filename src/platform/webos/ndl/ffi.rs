@@ -82,56 +82,6 @@ impl AudioOpusInfo {
     }
 }
 
-/// `NDL_DIRECTAUDIO_PCM_INFO_T` (field-for-field, `webosbrew/webos-userland`), the union's
-/// `NDL_AUDIO_TYPE_PCM` arm. What ss4s's `webos5/ndl_audio.c` uses for stereo in preference to
-/// Opus, and the reason this exists: it lets the client hand NDL the audio it has already decoded
-/// in software, on the video plane's own timeline, instead of a metronome.
-///
-/// The three `const char *` are NDL's own string enums (`S16LE`, `stereo`/`6-channel`,
-/// `interleaved`). `layout` is left null exactly as ss4s leaves it — byte-exactness with the
-/// implementation known to work on real sets is the standing policy for this struct family
-/// (docs/NOTES.md § "Wiring the plane"), and a non-null value here is untested.
-#[repr(C, align(8))]
-#[derive(Clone, Copy)]
-pub(super) struct AudioPcmInfo {
-    /// `NDL_AUDIO_TYPE`: 1 = PCM.
-    pub(super) kind: c_int,
-    pub(super) unknown1: c_int,
-    /// `NDL_DIRECTMEDIA_AUDIO_PCM_FORMAT_S16LE`.
-    pub(super) format: *const c_char,
-    /// `NDL_DIRECTMEDIA_AUDIO_PCM_LAYOUT_*`, or null.
-    pub(super) layout: *const c_char,
-    /// `NDL_DIRECTMEDIA_AUDIO_PCM_MODE_*`.
-    pub(super) channel_mode: *const c_char,
-    /// `NDL_DIRECTMEDIA_AUDIO_PCM_SAMPLE_RATE`, NOT hertz: 1 = 48 kHz.
-    pub(super) sample_rate: c_int,
-}
-
-/// Six 4-byte fields on the shipping 32-bit ABI, so the struct is 24 of the union's 32 bytes and
-/// [`AudioPcmInfo::to_union`]'s zero-fill covers the rest. Scoped like [`AudioOpusInfo`]'s assert,
-/// and for the same reason: a 64-bit build widens the pointers and the layout would have to be
-/// re-derived rather than merely re-asserted.
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(size_of::<AudioPcmInfo>() == 24);
-
-impl AudioPcmInfo {
-    /// Pack into the union [`DataInfo`] takes, zero-filling the bytes past this arm — the same
-    /// "no implicit padding reaches NDL uninitialized" rule [`AudioOpusInfo::to_union`] documents.
-    pub(super) fn to_union(self) -> AudioUnion {
-        let mut bytes = [0u8; 32];
-        // SAFETY: `Self` is `repr(C)` and no wider than the union arm on the shipping target
-        // (asserted above), so this copy stays in bounds and every byte of it is initialized.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                std::ptr::from_ref(&self).cast::<u8>(),
-                bytes.as_mut_ptr(),
-                size_of::<Self>().min(bytes.len()),
-            );
-        }
-        AudioUnion { bytes }
-    }
-}
-
 #[repr(C)]
 pub(super) struct DataInfo {
     pub(super) video: VideoInfo,
@@ -309,18 +259,6 @@ pub(super) fn v1() -> Result<&'static V1> {
     })
 }
 
-/// Whether this library has the 6-channel PCM plane mode at all — a fixed property of the
-/// firmware, and the only thing the offered layout is gated on.
-///
-/// Probed by the presence of `NDL_DirectAudioRegisterCallback`, which webOS 7 introduced
-/// alongside 6-channel PCM. This is ss4s's own test, and it is deliberately a *capability*
-/// question rather than a *routing* one: whether 5.1 currently reaches a speaker also depends on
-/// Sound Out, which the user can change mid-session, and gating a menu on that leaves the menu
-/// wrong until the next launch. See [`multichannel_pcm_status`] for the routing half.
-pub(super) fn multichannel_pcm_mode() -> bool {
-    optional_sym(c"NDL_DirectAudioRegisterCallback").is_some()
-}
-
 /// What `NDL_DirectAudioSupportMultiChannel` says about where the sound is currently going.
 ///
 /// Two conditions, not one, which is why it is a four-way answer: the output path has to be
@@ -328,8 +266,8 @@ pub(super) fn multichannel_pcm_mode() -> bool {
 /// and ARC/optical carry 2-channel PCM only, so those report [`Self::OutputNotPassthrough`] at
 /// best — 5.1 fed there is folded down inside the TV.
 ///
-/// Diagnostics only (see [`multichannel_pcm_mode`]): a transient setting, and the query is
-/// meaningful only once `NDL_DirectMediaInit` has run.
+/// A transient setting, and the query is meaningful only once `NDL_DirectMediaInit` has run — so
+/// it sizes the wire request per session and never gates a menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MultiChannelPcm {
     /// No multi-channel support here.

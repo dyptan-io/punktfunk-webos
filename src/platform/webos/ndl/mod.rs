@@ -38,7 +38,7 @@ use anyhow::{bail, Result};
 
 use super::device::{self, NdlGeneration};
 
-pub use v2::{NdlAudioConfig, NdlVideo};
+pub use v2::NdlVideo;
 
 /// `NDL_VIDEO_TYPE` values this client can request (matches the codec the host's
 /// `Welcome` resolved — see `punktfunk_core::quic::CODEC_*`).
@@ -339,29 +339,10 @@ fn ensure_init(app_id: &str, api2: bool) -> Result<()> {
 
 /// The app id NDL is initialised with. Overridable for dev builds installed under another id —
 /// NDL keys its session on the caller's app id, so a mismatch fails the load.
-/// Widest layout NDL's audio PLANE can put on a speaker here, in channels.
-///
-/// 6 where the firmware has the `"6-channel"` PCM mode, 2 otherwise — never 8: the plane's mode
-/// string enum has no 7.1 member, and NDL's Opus struct has no multistream mapping field.
-///
-/// A clamp on the PLANE ROUTES only (`core::model::AudioRoutePref::max_channels`) — the SDL route
-/// never touches the plane, and folding its caps by this number took 5.1 away from sessions that
-/// could play it. Logged once, because "why is 5.1 missing" is otherwise an unanswerable support
-/// question.
-pub fn audio_plane_max_channels() -> u8 {
-    static MAX: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
-    *MAX.get_or_init(|| {
-        let channels = if ffi::multichannel_pcm_mode() { 6 } else { 2 };
-        tracing::info!("NDL audio plane: offering up to {channels} channel(s)");
-        channels
-    })
-}
-
 /// Widest layout the TV's audio output will actually pass **right now**, or `None` where it
 /// cannot be asked.
 ///
-/// This is the routing half of the picture ([`audio_plane_max_channels`] is the capability half):
-/// it answers whether Sound Out is configured for multi-channel, which the user can change under
+/// It answers whether Sound Out is configured for multi-channel, which the user can change under
 /// a running app. Read once per session by `session::connect` and used to size the wire request,
 /// so channels the TV would only fold down are never encoded, sent or decoded. Never a menu gate —
 /// the answer would be stale by the time it was drawn.

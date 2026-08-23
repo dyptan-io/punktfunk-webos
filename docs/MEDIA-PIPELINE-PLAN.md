@@ -1,7 +1,17 @@
 # Media pipeline rework
 
-**Status: implemented on `ndl-latency-levers` (phases 0-5, one commit each). What follows is the
-plan as written; the deviations from it are listed at the bottom.**
+**Status: implemented on `ndl-latency-levers` (phases 0-5, one commit each), then narrowed to two
+audio routes. What follows is the plan as written; the deviations from it are listed at the
+bottom.**
+
+> **The NDL PCM route is gone.** Built, paced and measured, it bought only a small latency win over
+> the SDL path, could not carry 7.1, and its `"6-channel"` interleave order was never verified on a
+> set. For stereo the Opus offload route is shorter still; for anything wider software is the only
+> route that plays it. So the pipeline carries **two** routes — Software (SDL) and Offload (NDL) —
+> and `session::paced`, `ffi::AudioPcmInfo`, `AudioFormat::PcmS16`, `NDL_51_ORDER`,
+> `NdlVideo::burst_pcm`, `NdlAudioConfig` and `ndl::audio_plane_max_channels` were deleted with it.
+> Everything below that says "three routes" or names `NdlPcm` is the plan as written, kept for the
+> reasoning; `docs/NOTES.md` § "Audio" is the current state.
 
 Goal: one abstract pipeline — sources, processing stages, sinks — so an A/V change is a stage
 swap, not an edit across `connect`/`pump`/`sink`/`ndl::v2`. Secondary and equal: fewer copies,
@@ -173,14 +183,14 @@ down any more.
 
 ## On-device checklist
 
-1. **Each route in turn** (Settings → Experimental → Audio processing): confirm the log's `audio path:` line, then
-   listen. Software is the baseline; PCM and TV-decoder are the ones under test.
+1. **Each route in turn** (Settings → Experimental → Audio processing): confirm the log's
+   `audio path:` line, then listen. Software is the baseline; Offload is the one under test.
 2. **Watch for the lag report that started this.** `video: … plane_lead=` in the debug heartbeat is
-   the plane's depth; sagging toward zero under a plane route is the stutter signature. Under PCM it
-   should now sit flat at the standing lead — the `paced audio plane` debug line reports the ring
-   beside it, plus the padded/dropped ms that say whether the ring is sized right for this network.
-3. **5.1**, where the TV offers it: check channel order before anything else (`NDL_51_ORDER`).
+   the plane's depth; sagging toward zero under Offload is the stutter signature. It should sit
+   flat at `PLANE_LEAD_MS`.
+3. **5.1 on the software route**, where the TV offers it — `audio: N channel(s) requested` in the
+   log says which of the three limits bound.
 4. **`frame parts:` warnings** and picture corruption — still the open question about NDL taking a
    fragmented AU.
-5. **Loss → freeze → reanchor with audio still alive**, on every route. This path has a history of
+5. **Loss → freeze → reanchor with audio still alive**, on both routes. This path has a history of
    permanent session mutes.

@@ -553,7 +553,7 @@ pub enum CodecPref {
     Hevc,
 }
 
-/// Where a session's audio is decoded and played — the three routes this client can build,
+/// Where a session's audio is decoded and played — the two routes this client can build,
 /// selectable in Settings and swappable without touching the pipeline.
 ///
 /// The routes trade the same way: everything below [`Self::Software`] is a shorter path onto the
@@ -571,9 +571,6 @@ pub enum AudioRoutePref {
     /// on hardware — so, the default.
     #[default]
     Software,
-    /// Software Opus decode → NDL's PCM audio plane. No SDL device: decode, concealment and
-    /// layout stay local, and the samples land on the picture's own clock.
-    NdlPcm,
     /// The wire's Opus, decoded by the TV on its audio plane. No local decode at all. Stereo
     /// only — NDL's Opus struct has no multistream mapping field — and some sets accept the load
     /// and then play nothing, which no runtime probe detects.
@@ -594,7 +591,6 @@ impl AudioRoutePref {
         match self {
             Self::Software => "Opus SW",
             Self::NdlOpus => "Opus HW",
-            Self::NdlPcm => "PCM HW",
         }
     }
 
@@ -606,19 +602,17 @@ impl AudioRoutePref {
         match self {
             // SDL opens whatever the negotiated layout is; nothing folds.
             Self::Software => caps.max_channels,
-            // What the TV's own output path carries (`ndl::audio_plane_max_channels`).
-            Self::NdlPcm => caps.max_channels.min(caps.plane_max_channels),
             Self::NdlOpus => caps.max_channels.min(2),
         }
     }
 
     /// The routes this device can actually build, in display order — software first, it being
-    /// the default and the only one that needs no plane. Both plane routes need NDL v2's audio
+    /// the default and the only one that needs no plane. The offload route needs NDL v2's audio
     /// type (`VideoCaps::audio_plane`); on webOS 4 and below, and under SMP, there is no plane
     /// to ride and software is the whole list.
     pub fn available(caps: VideoCaps) -> &'static [Self] {
         if caps.audio_plane {
-            &[Self::Software, Self::NdlPcm, Self::NdlOpus]
+            &[Self::Software, Self::NdlOpus]
         } else {
             &[Self::Software]
         }
@@ -775,7 +769,7 @@ pub struct Settings {
     ///
     /// **No route decides whether NDL's audio plane exists** — every accepted V2 load has one,
     /// since NDL only paces the picture against a fed plane. The routes differ in what RIDES it:
-    /// `run_clock_plane`'s silent metronome, this client's PCM, or the host's Opus.
+    /// `run_clock_plane`'s silent metronome, or the host's Opus.
     pub audio_route: AudioRoutePref,
     /// Resolve the Magic Remote's OK button into left click / right click / drag by how long
     /// it's held (see `platform::webos::mouse::RemoteButtons`). Off by default — with it

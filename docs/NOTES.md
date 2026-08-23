@@ -116,55 +116,33 @@ CX/G5 are 32-bit userland on ARMv8-A. RustCrypto's `aes` crate has ARMv8 intrins
 - **Cover art**: `ArtLoader` request/response (UI asks for visible covers, forgets scrolled ones). Cached on disk as *encoded* bytes (`$HOME/art-cache/`, write-then-rename). Failed decodes deleted.
 - Effect at 365 titles: retained tiles drop from ~366 to ~40; decoded covers from 365 to viewport window (~5 columns).
 
-## Audio: three routes, one pipeline (SDL is the default)
+## Audio: two routes, one pipeline (SDL is the default)
 
 `Settings` → **Experimental** → **Audio processing** picks the route
-(`core::model::AudioRoutePref`), and all three are
+(`core::model::AudioRoutePref`), and both are
 built on the same pipeline: `session::audio::AudioStage` decodes (or forwards) into whatever
-`core::media::AudioSink` the route selected, and one pump drives it. Adding a fourth route is one
+`core::media::AudioSink` the route selected, and one pump drives it. Adding a third route is one
 `AudioSink` impl.
 
 | Route | Label | Path | Layouts |
 | --- | --- | --- | --- |
 | `Software` (default) | Software (SDL) | libopus here → SDL device, NDL's clock plane on its metronome | up to 7.1 |
-| `NdlPcm` | PCM (NDL) | libopus here → a paced ring → NDL's PCM plane, on the picture's own clock | what the TV's output carries (2 or 6) |
 | `NdlOpus` | Offload (NDL) | the wire's Opus, decoded by the TV | 2 |
 
 **Why software is the default.** NDL paces the picture against a *fed* audio plane, so a plane fed
 from the network inherits the stream's arrival jitter — which is the stutter the silent clock plane
-was introduced to cure, and it came back as intermittent lag with PCM as the default. The two plane
-routes are shorter and stay selectable for exactly that comparison; the overlay names which one ran
-(`Opus SW` / `PCM HW` / `Opus HW`).
+was introduced to cure. The offload route is shorter and stays selectable for exactly that
+comparison; the overlay names which one ran (`Opus SW` / `Opus HW`).
 
-**The PCM route is paced, not network-timed** (`session::paced`, added after that finding). The
-pump decodes into a ring and a feeder thread tops the plane up to its standing lead on the
-metronome's own 20 ms cadence, padding the plane's silence when the ring runs dry and dropping the
-oldest audio above a 120 ms ceiling. So the plane's depth — the thing NDL paces the picture on — is
-set by when the FEEDER ran, not by when a packet arrived, which is the property that makes the
-silent metronome smooth. Consequences worth knowing:
-- Stamps come off the plane's own clock (`AudioPlane::feed_paced` continues the ceiling), so this
-  route no longer maps a host PTS at all: lip sync is a constant offset (ring + plane lead ≈ 60 ms)
-  instead of a mapping, and it needs no latched video timeline — audio starts as soon as the ring
-  primes rather than after the PTS trim settles.
-- Host-vs-TV clock drift is absorbed by the ring exactly as the SDL device's ring absorbs it: pad
-  when dry, drop the oldest when it piles up. Both are counted and logged.
-- The whole tick reaches NDL under ONE `lock_ffi` (`NdlVideo::burst_pcm` packetizes it into 5 ms
-  stamps itself), which also takes the route from ~200 acquisitions/s to 50 in the video feed's way.
-- The feeder REPLACES the metronome on this route. Two loops topping up one plane would race for
-  the ceiling and the silence would win whenever the ring was momentarily behind.
-- ⚠ **The plane thread is reniced like the pumps** (`spawn_plane_threads`), and it was NOT before
-  the paced route landed. It holds the depth NDL paces the picture on while the boosted decode
-  threads compete for 2-3 cores — the contention this file already measured at up to 28 ms for the
-  evdev reader. It also ticks on absolute deadlines every 10 ms rather than sleeping a fixed
-  interval after the work, so a late wakeup can't push the whole cadence out and one missed tick
-  cannot starve a 40 ms lead.
-- **Read `paced audio plane` before theorising about a stutter on this route.** `min_lead_ms` is
-  the shallowest depth between samples (the instantaneous `lead_ms` says nothing about a sag),
-  `late_ticks` counts the feeder losing the CPU, and padded/dropped say whether the ring was sized
-  right. A flat `min_lead_ms` with a stutter still on screen means the plane's depth is NOT the
-  mechanism, and the next suspect is elsewhere.
+**The offload route is stereo, and stereo only.** NDL's Opus struct has no multistream mapping
+field, so there is no 5.1 to negotiate — and some sets accept the load and then play nothing, which
+no runtime probe detects. That is why it lives under Experimental rather than beside the codec pick.
 
-**The plane routes exist only under NDL v2.** v1 (webOS 4 and below) has no audio type at all and
+**Offload is not free of the metronome.** `run_clock_plane` still runs on that route, yielding to
+the real stream and filling silence only after `REAL_FEED_GRACE_MS` without a packet — a dead host
+capture would otherwise starve the plane and freeze the picture.
+
+**The offload route exists only under NDL v2.** v1 (webOS 4 and below) has no audio type at all and
 SMP is a different pipeline, so `caps::VideoCaps::audio_plane` is false on both and
 `AudioRoutePref::available` collapses to `Software` — the row locks, and `Settings::clamp_to_caps`
 rewrites a document carried over from a v2 set. The Audio row's layouts follow the *selected*
@@ -179,21 +157,13 @@ an unplugged receiver instead of being rewritten out of the document. A width mi
 `AudioStage::new` is an error, not a downmix.
 
 **The menu is narrowed by the static limits only.** The Audio row lists what this client can
-decode, capped by what the *selected* route can put on a speaker — the plane has no 7.1 mode and the
-Opus plane nothing above stereo, so those widths are never offered, and a route left with one entry
-locks the row with the reason on it. The TV's Sound Out is deliberately not in that filter: it
-changes under a running app, so it applies per session and lands in the log, not in a menu that
-would be stale by the time it was drawn. The stored `audio_channels` is still never rewritten
-(`menu::audio_row_channels` shows the preference held down to the route), so a 7.1 pick comes back
-whole on a route that plays it.
+decode, capped by what the *selected* route can put on a speaker — the Opus plane carries nothing
+above stereo, so those widths are never offered, and a route left with one entry locks the row with
+the reason on it. The TV's Sound Out is deliberately not in that filter: it changes under a running
+app, so it applies per session and lands in the log, not in a menu that would be stale by the time
+it was drawn. The stored `audio_channels` is still never rewritten (`menu::audio_row_channels` shows
+the preference held down to the route), so a 5.1 pick comes back whole on the route that plays it.
 
-- **The plane's ceiling is the firmware's, and it is per route.** `ndl::audio_plane_max_channels`
-  is 6 where the library has `NDL_DirectAudioRegisterCallback` and 2 where it does not — webOS 7
-  introduced that symbol alongside the `"6-channel"` PCM mode, and it is the test ss4s uses. Never
-  8: the mode string enum is `mono`/`stereo`/`6-channel`, and NDL's Opus struct has no multistream
-  mapping field. It reaches `core::caps` as `plane_max_channels`, *beside* the decoder-wide
-  `max_channels`, because clamping the global by it took 5.1 away from the SDL route, which plays
-  it fine.
 - **Capability and routing are different questions, asked in different places.**
   `NDL_DirectAudioSupportMultiChannel` answers the second: whether 5.1 reaches a speaker *right
   now*, which also depends on Sound Out (TV speakers are 2.0/2.2 and ARC/optical carry 2-channel
@@ -201,7 +171,8 @@ whole on a route that plays it.
   reads it **once per session, at connect** — fresh, after `NDL_DirectMediaInit`, and early enough
   to size the wire request. Never in the menu: the answer would be stale by the time it was drawn.
   It initialises NDL a moment before the load would have anyway (process-global and idempotent),
-  so it costs no extra call.
+  so it costs no extra call. It narrows the SOFTWARE route too: 5.1 the TV would only fold down is
+  airlink, host CPU and local decode spent on nothing.
 - ⚠ **`NDL_DirectAudioSupportMultiChannel` has an out-parameter**:
   `int NDL_DirectAudioSupportMultiChannel(int *isSupported)`, returning 0/-1, with the code written
   through the pointer — `0` unsupported, `1` no device, `2` device but not passthrough, `3` will
@@ -212,13 +183,9 @@ whole on a route that plays it.
   until something has `dlopen`'d `libNDL_directmedia` — and the capability probes run at startup,
   before any decode session. `ffi::optional_sym` forces `ffi::common()` first; without it every
   optional symbol reads as absent and the TV silently loses 5.1.
-- ⚠ **The 5.1 interleave order is inferred, not verified.** `NDL_51_ORDER` emits
-  `FL FR BL BR FC LFE`, from ss4s's `IsOpusPassthroughSupported` demanding an Opus mapping of
-  `{0,1,4,5,2,3}`. If dialogue lands in the surrounds, an identity `[0,1,2,3,4,5]` is the other
-  candidate. Audible, not silent.
-- **Samples are converted once, or not at all.** libopus decodes straight into the sink's declared
-  type — f32 for SDL, S16 for the plane, permuted into NDL's channel order in the same pass — and
-  `as_le_bytes` hands the plane the buffer without touching it.
+- **Samples are never converted.** libopus decodes straight into f32, which is exactly what the SDL
+  device takes; the offload route decodes nothing at all. There is no second buffer and no
+  conversion pass on either route.
 - **The SDL ring is deliberately dumb**: prime 25 ms, serve, re-prime after a dry read. No adaptive
   target and no A/V measurement — the `JitterPolicy`/`AvSync` machinery that had those was ~35 ms
   of floor and is gone. It does keep ONE ceiling: the callback pops exactly one quantum per wake,
@@ -229,6 +196,17 @@ whole on a route that plays it.
   a continuous rasp. Both counters are in the `audio playback (SDL device)` debug line.
 
 **Blind alleys, so they aren't re-tried:**
+- ⚠ **The NDL PCM plane was built, measured and removed.** A third route decoded Opus here and fed
+  NDL's `NDL_AUDIO_TYPE_PCM` plane. Fed on arrival it made the plane's depth — the thing NDL paces
+  the PICTURE on — a function of network jitter, and the field report was intermittent lag. A paced
+  ring in front of it (a feeder thread topping the plane up to a standing lead on a fixed cadence)
+  fixed that, and what was left was a **small** latency win over SDL for a route that could never
+  carry 7.1, whose `"6-channel"` interleave order was inferred from ss4s and never verified on a
+  set, and whose stamps came off the plane's own clock rather than a host PTS. Not worth a third
+  hardware path: for stereo the offload route is shorter still, and for anything wider software is
+  the only route that plays it. Deleted along with `session::paced`, `ffi::AudioPcmInfo`,
+  `NDL_51_ORDER`, `AudioFormat::PcmS16`, `NdlVideo::burst_pcm` and
+  `ndl::audio_plane_max_channels`; see git history on `ndl-latency-levers` if it is ever revisited.
 - **`sdl2::audio::AudioQueue` cannot carry a de-jitter policy** — `queue_audio`/`size`/`clear` and
   nothing else, no partial drop. That is why the pull callback stayed.
 - **Do not put the audio drain back on the main loop.** It was there because `AudioQueue` is
@@ -272,15 +250,13 @@ stuttered, and the same session with the audio plane fed was smooth.
 So **every accepted V2 load asks for a stereo audio plane**, and what rides it is a separate
 question:
 
-- **PCM to the same plane** (the default) — `session::pump::ndl_pcm_audio_pump` decodes Opus here
-  and feeds S16LE, stamped on the video timeline. See "Audio" above.
-- **Hardware Opus decode** (Experimental → "Audio offload", opt-in) — `session::pump::ndl_audio_pump`
+- **The clock plane** (the default) — `NdlVideo::run_clock_plane` feeds a silent Opus metronome
+  stamped in NDL's own player-clock domain, while `platform::webos::audio` decodes the real audio
+  to SDL. Confirmed at 4K120 5.1.
+- **Hardware Opus decode** (Experimental → "Audio processing" → Offload, opt-in) — the audio pump
   feeds the real stream, stamped on the video timeline; no SDL device is opened.
-- **The clock plane** (fallback only, when no route carries the plane) — `NdlVideo::run_clock_plane`
-  feeds a silent Opus metronome stamped in NDL's own player-clock domain, while
-  `platform::webos::audio` decodes the real audio to SDL as before. Confirmed at 4K120 5.1.
 
-`run_clock_plane` runs on **both** routes (`session::connect::spawn_plane_threads`): under offload
+`run_clock_plane` runs on **both** routes (`session::pipeline::spawn_plane_threads`): under offload
 it yields to the real stream and only fills in after 300 ms with no packet, since a host that stops
 sending would otherwise starve the plane and freeze the picture.
 
@@ -351,8 +327,8 @@ probe can distinguish the two**. If a model regresses, the `NDL load state:`
 
 The video feed itself is already copy-free — core reassembles one contiguous `Vec` (which
 `NDL_DirectVideoPlay` requires) and `sink::submit` passes that pointer straight through, no
-Annex-B rewrite, no client-side queue. So these three are about *when* bytes are released, not
-how they move.
+Annex-B rewrite, no client-side queue. So these are about *when* bytes are released, not how they
+move. (A third lever, PCM on NDL's audio plane, was built and then removed — see § "Audio".)
 
 **1. The PTS anchor's standing lead (`session::timeline`, on by default).** `HostPtsAnchor` maps
 `base = player0 + (host_pts - host0)`, which bakes frame 0's own delivery latency into every later
@@ -391,32 +367,16 @@ repeat across pieces; SMP's load shape is fragile enough already). Failure mode 
 corruption plus `frame parts:` warnings — there is no toggle, so a regression here means reverting
 `Negotiated::clamp`'s `frame_parts`.
 
-**3. PCM on NDL's audio plane (the default route).** ss4s
-(`webos5/ndl_audio.c`) *prefers* `NDL_AUDIO_TYPE_PCM` over Opus for stereo, and the struct is in
-`webos-userland`: `NDL_DIRECTAUDIO_PCM_INFO_T { type, unknown1, format, layout, channelMode,
-sampleRate }` — 24 of the union's 32 bytes on this ABI, `format` = `"S16LE"`, `sampleRate` = the
-enum's `48KHZ` (1), NOT hertz, and `layout` left **null** exactly as ss4s leaves it. So the
-software decoder can keep running (concealment, layouts, every core fix) while its samples go to
-the TV's own sink instead of SDL's: the 25-90 ms jitter ring and the 512-frame device buffer leave
-the path, and audio lands on the same hardware clock as the picture — which is also what would
-make the A/V offset measurable rather than the estimate § "A/V sync" describes.
-
-- The plane's silence is format-specific now (`NdlAudioConfig::silence`): the load prime and
-  `run_clock_plane` feed 5 ms of zeroed S16LE instead of `opus_empty_frame_211`. A PCM plane fed
-  an Opus frame would read it as 3 bytes of samples.
-- 5.1 needs the TV's output to carry it, which `NDL_DirectAudioSupportMultiChannel` answers
-  directly — see § "Audio". The Settings row is locked to stereo when it doesn't, rather than
-  offering a width the TV would fold down.
-- `NDL_DirectAudioRegisterCallback` itself is the pull-based feed, i.e. real hardware pacing. Not
-  used; it is the next step if this route proves out.
 ⚠ **Real audio on the plane must carry a lead, or the PICTURE stutters** (2026-08-21).
 `run_clock_plane` held the plane `PRIME_LEAD * PRIME_PACKET_MS` = 40 ms ahead of the player clock
 and topped it up every 20 ms; that queue depth is what NDL's audio renderer paces the video plane
-against. The PCM route makes real packets the only feed (`yields_to_real`), and fed straight off the
+against. The offload route makes real packets the only feed (`yields_to_real`), and fed straight off the
 wire they stamp at ≈ the player clock — a packet arrives *after* the frame it was captured with, and
 the PTS trim above pulled the shared offset another ~36 ms earlier. Depth ≈ 0, renderer at the edge
 of underrun, picture stutters on network jitter: the exact symptom the clock plane was introduced to
-cure, back again the moment real audio displaced the metronome. It was intermittent only because
+cure, back again the moment real audio displaced the metronome. (Found on the since-deleted PCM
+route, but the mechanism is the plane's, so it applies to offload identically.) It was intermittent
+only because
 `derive_audio_skew` picked up whatever ceiling the metronome happened to reach during its 300 ms
 grace, which is a race.
 
@@ -431,10 +391,10 @@ walk it down on device against `lead` on the overlay's audio line and `plane_lea
 heartbeat, which are the only places the depth is observable. Note the SDL path's own `AvSync` was
 measure-only, so there is no prior art for correcting the lip sync, only for holding the depth.
 
-- Unknowns, in order: the depth NDL holds on that plane (it is not `render_buffer_length` and
-  there is no query), the 5.1 interleave order (§ "Audio"), and whether PCM beats plain Opus
-  offload where offload works at all. The three routes are named on the overlay (`Opus SW` / `Opus HW` / `PCM HW`) and
-  in the `audio path:` log line precisely so a report says which one produced the numbers.
+- Unknowns, in order: the depth NDL holds on that plane (it is not `render_buffer_length` and there
+  is no query), and whether offload beats software on a set where offload works at all. Both routes
+  are named on the overlay (`Opus SW` / `Opus HW`) and in the `audio path:` log line precisely so a
+  report says which one produced the numbers.
 
 ## ABR startup probe: 2 Gbps, upstream-hardcoded
 

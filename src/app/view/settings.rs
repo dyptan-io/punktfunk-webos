@@ -43,18 +43,11 @@ fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
         menu::RowLock::NoHdr => format!("HDR is not supported by {}", source()),
         menu::RowLock::OneCodec => format!("H.264 is the only codec supported by {}", source()),
         menu::RowLock::StereoOnly => format!("Stereo is the only layout supported by {}", source()),
-        // Names the pick AND where it lives, and says whose limit it is: the Opus plane decodes
-        // stereo on every set, while the PCM plane's ceiling is this TV's firmware. A caption that
-        // only said "stereo only" would leave the user with nowhere to go.
-        menu::RowLock::RouteStereoOnly(route) => format!(
-            "{} audio processing {} — change it under Experimental",
-            menu::audio_route_label(route),
-            match route {
-                AudioRoutePref::NdlOpus => "decodes stereo only".to_string(),
-                // The plane's ceiling is the firmware's, and SMP (which `source` would offer)
-                // has no audio plane at all — so this one names the set, not a backend to try.
-                _ => format!("carries stereo only on {}", device()),
-            },
+        // Names the pick AND where it lives: a caption that only said "stereo only" would leave
+        // the user with nowhere to go.
+        menu::RowLock::RouteStereoOnly => format!(
+            "{} audio processing decodes stereo only — change it under Experimental",
+            menu::audio_route_label(AudioRoutePref::NdlOpus),
         ),
         menu::RowLock::NoGamepad => "Connect a controller to your TV".to_string(),
     }

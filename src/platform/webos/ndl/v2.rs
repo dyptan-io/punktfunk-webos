@@ -4,7 +4,7 @@
 //!
 //! Never calls `NDL_DirectVideoSetArea` — stutters above 1080p, and v2 sizes its own
 //! punch-through plane (v1 can't; see [`super::v1`]).
-use std::ffi::{c_int, c_longlong, c_uint, c_void, CStr};
+use std::ffi::{c_int, c_longlong, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -33,31 +33,6 @@ const FEED_ANYWAY_AFTER: Duration = Duration::from_millis(1_000);
 /// One empty Opus frame — `mariotaku/ss4s`'s `opus_empty_frame_211`. Its TOC declares STEREO,
 /// matching the load; the generic `0xF8 0xFF 0xFE` declares mono. (A CX took both.)
 const OPUS_SILENCE: [u8; 3] = [0xec, 0xff, 0xfe];
-
-/// One [`PRIME_PACKET_MS`] packet of S16LE silence at 48 kHz, wide enough for any layout NDL's
-/// PCM plane takes; [`NdlAudioConfig::silence`] slices it to the loaded channel count. Zeroed
-/// PCM is silence, so this needs no per-layout construction.
-const PCM_SILENCE: [u8; 240 * 6 * 2] = [0; 240 * 6 * 2];
-
-/// Interleaved 16-bit samples in one [`PRIME_PACKET_MS`] packet, per channel (48 kHz × 5 ms).
-const PCM_SILENCE_FRAMES: usize = 240;
-
-/// Interleave order NDL's `"6-channel"` PCM mode expects, as indices into punktfunk's own 5.1
-/// order (`FL FR FC LFE BL BR`) — i.e. emit `FL FR BL BR FC LFE`.
-///
-/// ⚠ **Inferred, not verified.** ss4s only accepts an Opus 5.1 stream whose multistream mapping is
-/// `{0,1,4,5,2,3}` for NDL passthrough (`IsOpusPassthroughSupported`), which says NDL wants the
-/// centre and LFE pair *last*. Since the samples are interleaved here, the same permutation is
-/// applied. If 5.1 comes out with dialogue in the surrounds, try this as an identity
-/// `[0,1,2,3,4,5]` — the failure is audible, not silent.
-const NDL_51_ORDER: [usize; 6] = [0, 1, 4, 5, 2, 3];
-
-/// NDL's PCM string enums, verbatim from `NDL_directmedia_types.h`. Static, because the pointers
-/// go into a struct NDL reads during the load.
-const PCM_FORMAT_S16LE: &CStr = c"S16LE";
-const PCM_MODE_MONO: &CStr = c"mono";
-const PCM_MODE_STEREO: &CStr = c"stereo";
-const PCM_MODE_6_CHANNEL: &CStr = c"6-channel";
 
 /// Packet duration of the prime's stamps (ms), matching the real audio plane's 48 kHz / 5 ms
 /// (`SAMPLE_RATE` in `platform::webos::audio`).
@@ -111,78 +86,24 @@ const NO_OFFSET_WARN_PACKETS: u32 = 200;
 /// encodes silence into the same continuous 5 ms datagrams. Only a dead host capture gaps this wide.
 const REAL_FEED_GRACE_MS: i64 = 300;
 
-/// What rides NDL's audio plane, and therefore how the load configures it.
+/// The audio plane every V2 load asks for: Opus, stereo, 48 kHz.
 ///
-/// **Every accepted V2 load asks for a plane either way** — NDL only paces the picture against a
-/// fed audio plane (docs/NOTES.md § "NDL's audio plane"). This is the choice of what it carries.
-#[derive(Clone, Copy)]
-pub enum NdlAudioConfig {
-    /// The wire's own Opus, decoded by the TV. Stereo only: NDL's Opus struct has no multistream
-    /// mapping field. Carries the real stream on the offload path and
-    /// [`NdlVideo::run_clock_plane`]'s metronome otherwise.
-    Opus {
-        channels: i32,
-        /// kHz, not Hz — NDL's own unit.
-        sample_rate_khz: f64,
-    },
-    /// Interleaved S16LE at 48 kHz, i.e. audio this client decoded in software and handed to the
-    /// TV's own sink. The route ss4s prefers for stereo (`webos5/ndl_audio.c`), and the one that
-    /// puts real audio and the picture on ONE hardware clock: the SDL device and its jitter ring
-    /// leave the path entirely, and A/V sync stops being an estimate NDL never reports.
-    Pcm { channels: i32 },
-}
-
-impl NdlAudioConfig {
-    fn to_union(self) -> ffi::AudioUnion {
-        match self {
-            Self::Opus {
-                channels,
-                sample_rate_khz,
-            } => ffi::AudioOpusInfo {
-                kind: 3, // NDL_AUDIO_TYPE_OPUS
-                unknown1: 0,
-                channels: channels as c_int,
-                unknown2: 0,
-                sample_rate: sample_rate_khz,
-                stream_header: std::ptr::null(),
-                _padding: [0; 4],
-            }
-            .to_union(),
-            Self::Pcm { channels } => ffi::AudioPcmInfo {
-                kind: 1, // NDL_AUDIO_TYPE_PCM
-                unknown1: 0,
-                format: PCM_FORMAT_S16LE.as_ptr(),
-                // Null exactly as ss4s leaves it — see `ffi::AudioPcmInfo`.
-                layout: std::ptr::null(),
-                channel_mode: Self::channel_mode(channels).as_ptr(),
-                sample_rate: 1, // NDL_DIRECTMEDIA_AUDIO_PCM_SAMPLE_RATE_48KHZ
-            }
-            .to_union(),
-        }
+/// **Every accepted V2 load asks for a plane** — NDL only paces the picture against a fed audio
+/// plane (docs/NOTES.md § "NDL's audio plane"). The offload route puts the wire's own Opus on it;
+/// every other session runs [`NdlVideo::run_clock_plane`]'s metronome instead, and the silent
+/// frame's TOC declares stereo either way, so the config is the same one.
+fn plane_config() -> ffi::AudioUnion {
+    ffi::AudioOpusInfo {
+        kind: 3, // NDL_AUDIO_TYPE_OPUS
+        unknown1: 0,
+        channels: 2,
+        unknown2: 0,
+        // kHz, not Hz — NDL's own unit, and what ss4s passes (`info->sampleRate / 1000.0`).
+        sample_rate: 48.0,
+        stream_header: std::ptr::null(),
+        _padding: [0; 4],
     }
-
-    /// NDL's own string enum for the layout. Anything that isn't mono or 5.1 is stereo — the
-    /// only widths this client ever loads a PCM plane for (`session::connect`).
-    fn channel_mode(channels: i32) -> &'static CStr {
-        match channels {
-            1 => PCM_MODE_MONO,
-            6 => PCM_MODE_6_CHANNEL,
-            _ => PCM_MODE_STEREO,
-        }
-    }
-
-    /// One [`PRIME_PACKET_MS`] packet of silence in this plane's own format — what the load prime
-    /// and the clock plane feed. The two formats differ only here, which is what lets every other
-    /// feed path stay format-blind.
-    fn silence(self) -> &'static [u8] {
-        match self {
-            Self::Opus { .. } => &OPUS_SILENCE,
-            Self::Pcm { channels } => {
-                let bytes = PCM_SILENCE_FRAMES * channels.clamp(1, 6) as usize * 2;
-                &PCM_SILENCE[..bytes]
-            }
-        }
-    }
+    .to_union()
 }
 
 /// One loaded NDL v2 video decode session. Dropping unloads it (not `NDL_DirectMediaQuit`).
@@ -194,11 +115,9 @@ pub struct NdlVideo {
     /// `wait_load_completed` blocked. Only [`FEED_ANYWAY_AFTER`] is measured from it; the PTS
     /// domain stays on `load_instant`.
     load_requested: Instant,
-    /// The audio plane this load asked for, `None` on a video-only load (the audio-enabled one
-    /// was rejected). What RIDES the plane — the real stream or [`Self::run_clock_plane`]'s
-    /// metronome — is the caller's choice; this is only its FORMAT, which every silence-feeding
-    /// path here has to match.
-    audio: Option<NdlAudioConfig>,
+    /// Whether this load got an audio plane. False on a video-only load, i.e. one whose
+    /// audio-enabled attempt was rejected — and with it goes the picture's pacing reference.
+    audio: bool,
     /// The session's shared host-PTS → player-clock mapping, attached by the video stage before
     /// anything is fed (`core::media::SessionClock`). Both planes stamp through it, which is the
     /// whole reason it is one object rather than two agreeing copies.
@@ -255,7 +174,7 @@ pub struct NdlVideo {
 impl NdlVideo {
     /// Load NDL video stream. Calls `NDL_DirectMediaInit` on first use.
     /// Audio request is a probe: fails silently on unsupported models, retries video-only.
-    pub fn load(app_id: &str, width: i32, height: i32, codec: NdlCodec, audio: Option<NdlAudioConfig>) -> Result<Self> {
+    pub fn load(app_id: &str, width: i32, height: i32, codec: NdlCodec, audio: bool) -> Result<Self> {
         ensure_not_poisoned()?;
         let fns = ffi::v2()?;
         ensure_init(app_id, true)?;
@@ -265,7 +184,7 @@ impl NdlVideo {
             kind: codec.ndl_type(),
             unknown1: 0,
         };
-        if let Some(audio) = audio {
+        if audio {
             // An audio-enabled load must PROVE itself with `LOADCOMPLETED`; a video-only one may
             // proceed unconfirmed (below). `NDL_DirectMediaLoad` returning 0 is only "request
             // accepted" — an Opus config the pipeline rejects fails asynchronously, then accepts
@@ -277,7 +196,7 @@ impl NdlVideo {
             // at the end of the match: a snapshot taken after it would miss that
             // `UNLOADCOMPLETED` and wait out the settle for a callback already spent.
             let unloads_before = super::unload_count();
-            match Self::try_load(fns, video, Some(audio)) {
+            match Self::try_load(fns, video, true) {
                 Ok(loaded) if loaded.load_confirmed.load(Ordering::Relaxed) => return Ok(loaded),
                 Ok(_) => tracing::warn!("NDL audio-enabled load failed (no LOADCOMPLETED) — retrying video-only"),
                 Err(e) => tracing::warn!("NDL audio-enabled load failed ({e:#}) — retrying video-only"),
@@ -288,15 +207,15 @@ impl NdlVideo {
             // land BEFORE arming below rather than racing them.
             settle_before_retry(unloads_before);
         }
-        Self::try_load(fns, video, None)
+        Self::try_load(fns, video, false)
     }
 
     /// One `NDL_DirectMediaLoad` attempt, waited out to `LOADCOMPLETED` — priming the audio plane
     /// through the wait when the load asked for one (see [`Self::prime_audio`]).
-    fn try_load(fns: &'static ffi::V2, video: ffi::VideoInfo, audio: Option<NdlAudioConfig>) -> Result<Self> {
+    fn try_load(fns: &'static ffi::V2, video: ffi::VideoInfo, audio: bool) -> Result<Self> {
         let mut info = ffi::DataInfo {
             video,
-            audio: audio.map_or(ffi::AudioUnion::SILENT, NdlAudioConfig::to_union),
+            audio: if audio { plane_config() } else { ffi::AudioUnion::SILENT },
         };
         arm_load();
         let load_requested = Instant::now();
@@ -308,9 +227,10 @@ impl NdlVideo {
         // `ret == 0` is "request accepted", not "pipeline ready" — the first feed still needs
         // LOADCOMPLETED, and an audio-enabled load will not report it until its audio plane has
         // seen a packet, which is what the prime supplies.
-        let (primed_pts_ms, confirmed) = match audio {
-            Some(cfg) => Self::prime_audio(fns, cfg.silence()),
-            None => (0, wait_load_completed()),
+        let (primed_pts_ms, confirmed) = if audio {
+            Self::prime_audio(fns)
+        } else {
+            (0, wait_load_completed())
         };
         Ok(Self {
             fns,
@@ -344,7 +264,8 @@ impl NdlVideo {
     /// domain, which also starts near 0, so without that floor the first would read as a rewind —
     /// which mutes the session permanently (see [`Self::play_audio`]). Flooring costs a few early
     /// packets their exact stamp; the alternative is no audio at all.
-    fn prime_audio(fns: &'static ffi::V2, silence: &[u8]) -> (i64, bool) {
+    fn prime_audio(fns: &'static ffi::V2) -> (i64, bool) {
+        let silence = &OPUS_SILENCE[..];
         let start = Instant::now();
         let mut pts_ms = 0;
         while !LOAD_COMPLETED.fired() {
@@ -393,7 +314,7 @@ impl NdlVideo {
     /// only paces the picture against a fed audio plane — see [`Self::run_clock_plane`]. False means
     /// the audio-enabled load was rejected and `load()` fell back to video-only.
     pub fn has_audio_plane(&self) -> bool {
-        self.audio.is_some()
+        self.audio
     }
 
     /// Place the run that starts at `base_ms` one packet above the audio ceiling, so the resumed
@@ -426,9 +347,8 @@ impl NdlVideo {
         }
     }
 
-    /// Feed one packet to NDL's audio plane — Opus or S16LE PCM, whichever the load asked for
-    /// ([`NdlAudioConfig`]); the format lives in the load, so this path is blind to it. Called only
-    /// when the real stream rides the plane. `host_pts_ns` is the packet's own host capture
+    /// Feed one Opus packet to NDL's audio plane, for the TV's own decoder to render. Called only
+    /// on the offload route, where the real stream rides the plane. `host_pts_ns` is the packet's own host capture
     /// timestamp, NOT arrival time.
     ///
     /// Every stamp carries [`PLANE_LEAD_MS`] on top of the mapped host time, so NDL always holds
@@ -525,9 +445,7 @@ impl NdlVideo {
     /// audio plane's only feed path, so no real packet can land mid-burst and read a stale ceiling
     /// — it either precedes this and is picked up by the floor, or follows the final publish.
     fn burst_silence(&self, from_ms: i64, target_ms: i64) -> Result<i64> {
-        // A plane loaded for PCM would take an Opus frame as 3 bytes of samples: the metronome has
-        // to speak the format the load asked for.
-        let silence = self.audio.map_or(&OPUS_SILENCE[..], NdlAudioConfig::silence);
+        let silence = &OPUS_SILENCE[..];
         let _ffi = lock_ffi();
         let mut pts_ms = from_ms.max(self.last_audio_pts_ms.load(Ordering::Relaxed));
         while pts_ms < target_ms {
@@ -544,52 +462,6 @@ impl NdlVideo {
                 // Publish before unwinding: this burst has already handed NDL stamps above the old
                 // ceiling, and leaving it stale lets the next real packet floor below them — a
                 // rewind, which mutes the session for good.
-                self.last_audio_pts_ms.fetch_max(pts_ms, Ordering::Relaxed);
-                bail!("NDL_DirectAudioPlay failed: ret={ret} error={}", ffi::last_error());
-            }
-        }
-        self.last_audio_pts_ms.fetch_max(pts_ms, Ordering::Relaxed);
-        Ok(pts_ms)
-    }
-
-    /// Feed `span_ms` of interleaved S16 stamped on this plane's own cadence: the burst starts at
-    /// the ceiling already fed and advances one [`PRIME_PACKET_MS`] per packet, exactly as
-    /// [`burst_silence`](Self::burst_silence) does — the two differ only in what they carry.
-    ///
-    /// Packetized here rather than by the caller because the packet duration is NDL's number, and
-    /// fed under ONE `lock_ffi` for the same reason the silence burst is: the video feed shares
-    /// that guard, and a per-packet acquire is what put 200 of them a second in the picture's way.
-    ///
-    /// A `span_ms` that doesn't divide the buffer evenly is a caller bug (the framing is fixed at
-    /// 5 ms end to end) and is rejected rather than fed at a stride NDL would read wrong.
-    fn burst_pcm(&self, pcm: &[u8], span_ms: i64) -> Result<i64> {
-        if span_ms <= 0 || pcm.is_empty() {
-            return Ok(self.last_audio_pts_ms.load(Ordering::Relaxed));
-        }
-        let packets = usize::try_from(span_ms / PRIME_PACKET_MS).unwrap_or(0);
-        if packets as i64 * PRIME_PACKET_MS != span_ms || packets == 0 || pcm.len() % packets != 0 {
-            bail!(
-                "paced PCM burst of {} bytes is not {span_ms}ms of whole packets",
-                pcm.len()
-            );
-        }
-        let per_packet = pcm.len() / packets;
-        let _ffi = lock_ffi();
-        let mut pts_ms = self.last_audio_pts_ms.load(Ordering::Relaxed);
-        for packet in pcm.chunks_exact(per_packet) {
-            pts_ms += PRIME_PACKET_MS;
-            // SAFETY: NDL reads `size` bytes synchronously and does not retain the pointer.
-            let ret = unsafe {
-                (self.fns.audio_play)(
-                    packet.as_ptr() as *mut c_void,
-                    packet.len() as c_uint,
-                    pts_ms as c_longlong,
-                )
-            };
-            if ret != 0 {
-                // Publish before unwinding, for the reason `burst_silence` does: a ceiling left
-                // stale below stamps NDL has already taken lets the next feed rewind, which mutes
-                // the session for good.
                 self.last_audio_pts_ms.fetch_max(pts_ms, Ordering::Relaxed);
                 bail!("NDL_DirectAudioPlay failed: ret={ret} error={}", ffi::last_error());
             }
@@ -858,34 +730,21 @@ impl MediaClock for NdlVideo {
 
 impl AudioSink for NdlVideo {
     fn name(&self) -> &'static str {
-        match self.audio {
-            Some(NdlAudioConfig::Pcm { .. }) => "NDL PCM plane",
-            _ => "NDL Opus plane",
-        }
+        "NDL Opus plane"
     }
 
-    /// Whatever the LOAD asked for — the plane's format is fixed at load time, and every silence
-    /// burst here already matches it.
+    /// What the load asked for, and what every silence burst here already speaks — see
+    /// [`plane_config`].
     fn format(&self) -> AudioFormat {
-        match self.audio {
-            Some(NdlAudioConfig::Pcm { channels }) => AudioFormat::PcmS16 {
-                channels: channels as u8,
-                sample_rate: 48_000,
-                // Only the 6-channel mode reorders; stereo and mono are punktfunk's own order.
-                interleave: (channels == 6).then_some(&NDL_51_ORDER),
-            },
-            _ => AudioFormat::Opus { channels: 2 },
-        }
+        AudioFormat::Opus { channels: 2 }
     }
 
     fn feed(&self, samples: Samples<'_>, host_pts_ns: u64) -> Result<()> {
-        let buf = match samples {
-            Samples::Opus(b) | Samples::S16(b) => b,
-            // The plane takes bytes in the format its load declared; f32 is the SDL device's
-            // shape and never reaches here.
-            Samples::F32(_) => bail!("NDL audio plane cannot take f32 samples"),
+        let Samples::Opus(packet) = samples else {
+            // The plane decodes; decoded samples are the SDL device's shape and never reach here.
+            bail!("NDL audio plane takes Opus packets only");
         };
-        self.play_audio(buf, host_pts_ns)
+        self.play_audio(packet, host_pts_ns)
     }
 
     fn depth_ms(&self) -> Option<i64> {
@@ -900,28 +759,6 @@ impl AudioPlane for NdlVideo {
 
     fn lead_ms(&self) -> i64 {
         self.audio_plane_lead_ms()
-    }
-
-    fn target_lead_ms(&self) -> i64 {
-        PLANE_LEAD_MS
-    }
-
-    fn feed_paced(&self, samples: Samples<'_>, span_ms: i64) -> Result<()> {
-        let Samples::S16(pcm) = samples else {
-            bail!("a paced feed carries PCM only — Opus is stamped by the plane's own decoder");
-        };
-        self.burst_pcm(pcm, span_ms)?;
-        // Same bookkeeping a host-timed feed does, so `run_clock_plane`'s grace still sees a fed
-        // plane if this route ever runs beside it.
-        self.last_real_feed_ms
-            .store((self.elapsed_ns() / 1_000_000) as i64, Ordering::Relaxed);
-        Ok(())
-    }
-
-    fn fill_silence(&self) -> Result<()> {
-        let now_ms = (self.elapsed_ns() / 1_000_000) as i64;
-        let from = self.last_audio_pts_ms.load(Ordering::Relaxed);
-        self.burst_silence(from, now_ms + PLANE_LEAD_MS).map(|_| ())
     }
 
     fn run_keepalive(&self, stop: &std::sync::atomic::AtomicBool, yields_to_real: bool) {

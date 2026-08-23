@@ -1,7 +1,7 @@
 //! The media pipeline's vocabulary: what a decode backend must offer, and what a stage above it
 //! is allowed to assume.
 //!
-//! Three backends decode video here (NDL v2, NDL v1, SMP) and three routes carry audio, and the
+//! Three backends decode video here (NDL v2, NDL v1, SMP) and two routes carry audio, and the
 //! pipeline in `session` is written against these traits rather than against any of them. In
 //! `core` for the layering reason every shared vocabulary is: `platform::webos` implements it and
 //! `session` consumes it, so it can live in neither.
@@ -185,14 +185,6 @@ pub trait VideoSink: Send {
 pub enum AudioFormat {
     /// The wire's own Opus, handed over undecoded — the sink decodes.
     Opus { channels: u8 },
-    /// Interleaved S16LE. `interleave` permutes punktfunk's channel order into the sink's, or is
-    /// `None` where the two agree; it is applied while the samples are written, so an order that
-    /// differs costs nothing extra.
-    PcmS16 {
-        channels: u8,
-        sample_rate: u32,
-        interleave: Option<&'static [usize]>,
-    },
     /// Interleaved f32 in punktfunk's own channel order — what libopus decodes to, so this is the
     /// format that costs no conversion at all.
     PcmF32 { channels: u8, sample_rate: u32 },
@@ -204,7 +196,7 @@ impl AudioFormat {
     /// mismatch here is a bug, not a case to mix down.
     pub fn channels(self) -> u8 {
         match self {
-            Self::Opus { channels } | Self::PcmS16 { channels, .. } | Self::PcmF32 { channels, .. } => channels,
+            Self::Opus { channels } | Self::PcmF32 { channels, .. } => channels,
         }
     }
 }
@@ -212,13 +204,12 @@ impl AudioFormat {
 /// One packet on its way to a sink, in whatever shape that sink declared.
 pub enum Samples<'a> {
     Opus(&'a [u8]),
-    S16(&'a [u8]),
     F32(&'a [f32]),
 }
 
-/// Somewhere a session's audio can go. Three exist here — the TV's SDL device, NDL's PCM plane
-/// and NDL's Opus plane — and `session::audio`'s stage is written against this rather than against
-/// any of them, so adding a fourth is one implementation and no pipeline change.
+/// Somewhere a session's audio can go. Two exist here — the TV's SDL device and NDL's Opus plane
+/// — and `session::audio`'s stage is written against this rather than against either of them, so
+/// adding a third is one implementation and no pipeline change.
 pub trait AudioSink: Send + Sync {
     /// For the log line and the stats overlay.
     fn name(&self) -> &'static str;
@@ -246,30 +237,10 @@ pub trait AudioPlane: AudioSink {
     /// hands the hardware is mapped through this — see [`SessionClock`].
     fn attach_clock(&self, clock: Arc<SessionClock>);
 
-    /// How far the plane's stamps run ahead of its clock, in ms — the depth NDL paces on.
+    /// How far the plane's stamps run ahead of its clock, in ms — the depth NDL paces the
+    /// PICTURE on, and so the figure a stutter report is read against. Sagging towards zero is
+    /// the signature.
     fn lead_ms(&self) -> i64;
-
-    /// The standing depth this plane wants to be held at, in ms. A feeder tops it up to this and
-    /// stops; the plane owns the number because it is the backend's pacing policy, not the
-    /// pipeline's.
-    fn target_lead_ms(&self) -> i64;
-
-    /// Feed `span_ms` of decoded samples stamped on the plane's OWN cadence — continuing the
-    /// ceiling it has already fed, rather than mapping a host PTS onto it ([`AudioSink::feed`]).
-    ///
-    /// This is what lets a route absorb arrival jitter in a ring instead of in the plane: the
-    /// queue depth then depends on when the FEEDER ran, not on when the packet arrived, which is
-    /// the whole reason the silent metronome paces the picture so much better than a
-    /// network-timed feed (docs/NOTES.md § "NDL's audio plane"). Lip sync becomes a constant
-    /// offset instead of a mapping, and drift is the feeder's problem to absorb.
-    ///
-    /// Implementations feed the whole span under ONE backend lock — the video feed shares it.
-    fn feed_paced(&self, samples: Samples<'_>, span_ms: i64) -> Result<()>;
-
-    /// Top the plane up to [`Self::target_lead_ms`] with its own silence, in the format its load
-    /// declared. What a paced feeder does when its ring runs dry, and what keeps the picture
-    /// paced through it.
-    fn fill_silence(&self) -> Result<()>;
 
     /// Keep the plane fed until `stop`, so the picture stays paced. Blocks; the caller gives it a
     /// thread. `yields_to_real` leaves the plane to whatever pump is feeding it and fills in only
