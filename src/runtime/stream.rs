@@ -227,16 +227,6 @@ pub(super) fn run_inner() -> Result<()> {
                 }
             }
         };
-        if let Some((player, _)) = &audio {
-            // Logged, not just commented: "audio sounds late" and "early" are the same user
-            // report, and only knowing whether anything steered separates them.
-            tracing::info!(
-                "SDL audio driver: {}, spec: {:?}",
-                sdl_audio.current_audio_driver(),
-                player.spec(),
-            );
-        }
-
         // Experimental: Game picture/sound mode, app-plane stand-in for HDMI ALLM. Best-effort;
         // reverted on stream exit. See `game_mode`.
         let restore_tv_modes = if settings.game_mode {

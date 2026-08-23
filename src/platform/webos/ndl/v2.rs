@@ -56,14 +56,11 @@ const PRIME_LEAD: i64 = 8;
 /// interleaving silence, which would raise the ceiling real packets then floor onto (see
 /// [`NdlVideo::play_audio`] — that is a permanent session mute, not a stutter).
 ///
-/// **The SDL path did the same thing, in its own currency.** `JitterPolicy` primed and held a
-/// 25 ms ring ahead of the speaker (`base_target_ms`, adaptive to 90 under underruns, with a
-/// crossfaded shed so it returned to target rather than ratcheting) for exactly this reason: a
-/// renderer needs data queued ahead of it. Deleting that ring with the route left NOTHING in its
-/// place — NDL takes no depth argument, so the only way to ask it for one is a stamp in the future,
-/// which is this. Note what the SDL path did *not* do: its `AvSync` was measure-only and never
-/// steered anything, so there is no prior art here for correcting the resulting lip sync, only for
-/// holding the depth.
+/// **The SDL path does the same thing, in its own currency** — `platform::webos::audio` primes and
+/// holds a 25 ms ring ahead of the speaker for exactly this reason: a renderer needs data queued
+/// ahead of it. NDL takes no depth argument, so the only way to ask it for one is a stamp in the
+/// future, which is this. Note what neither path does: correct the resulting lip sync. The A/V
+/// offset is measured and published, never steered on.
 ///
 /// The cost is lip sync: sound lands this far behind the picture. The PTS trim already moved the
 /// picture ~36 ms earlier, so it roughly cancels — walk the value down on device against

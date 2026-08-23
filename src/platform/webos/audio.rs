@@ -6,17 +6,34 @@
 //! hardware, hence the default — the offload route is shorter, but the TV's own decoder is behind
 //! the plane and some sets accept its load and then play nothing.
 //!
-//! What used to live here — a `JitterPolicy` ring with an adaptive target, crossfaded drift sheds
-//! and an `AvSync` estimator — was ~35 ms of floor on top of the device quantum, and it is gone.
-//! What is left is a prime-then-serve ring; the decode half moved up into the pipeline's audio
-//! stage, which serves both routes.
+//! The ring is served by `punktfunk_core::audio::JitterPolicy`, the same de-jitter state machine
+//! the Linux, Windows, Android and Apple rings run. That is deliberate and was re-decided once:
+//! the policy was removed on this branch for latency, and the numbers did not support it — the
+//! preset's base target is 25 ms and the fixed prime that replaced it was also 25 ms, so no floor
+//! was ever saved, while the adaptive floor and the crossfaded shed were lost. What the policy buys
+//! that a fixed prime cannot:
+//!
+//! * **An adaptive floor.** The target grows only on a set that actually underruns, instead of
+//!   every set pre-paying for the worst one — and a set that needs more than 25 ms now gets it
+//!   rather than re-priming into the same dropout forever.
+//! * **A crossfaded shed.** Drift (host capture clock vs. this DAC) is walked back to target one
+//!   5 ms frame at a time, faded. The alternative this replaces is an uncrossfaded 65 ms drop,
+//!   which is an audible click.
+//! * **Near-miss growth, hollow de-priming and a faded hard trim**, all of which core gained after
+//!   this client last used it.
+//!
+//! The A/V sync loop is deliberately NOT wired: `set_sync_target` is never called, which core
+//! documents as reproducing unsynchronised behaviour exactly. It never steered anything here — it
+//! was gated behind an `$HOME/av-trim-ms.conf` that had to be measured on hardware first — and the
+//! video reference this platform can build is biased low by NDL's unobservable decode+panel term.
+//! See `docs/NOTES.md` § "A/V sync".
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use punktfunk_core::audio::{crossfade_drop, JitterPolicy, JitterTuning};
 
 use crate::core::media::{AudioFormat, AudioSink, Samples};
 use crate::session::audio::SAMPLE_RATE;
@@ -28,29 +45,34 @@ const DEVICE_BUFFER_FRAMES: u16 = 512;
 /// Chunks in flight between the decode thread and the callback. 5 ms each.
 const CHUNK_QUEUE: usize = 64;
 
-/// Depth the ring primes to before the first sample plays, and the floor it tries to hold. A fixed
-/// number, not an adaptive target: the adaptive one belonged to a path with an A/V estimator
-/// behind it, and this one only has to not crackle.
-const PRIME_MS: usize = 25;
-
-/// Ring ceiling: above this the oldest audio is dropped back to [`PRIME_MS`].
+/// De-jitter tuning: core's Android preset, unmodified.
 ///
-/// Nothing else bounds this ring — the callback pops exactly one quantum per wake, so anything
-/// the producer runs ahead by STAYS ahead. A host stall that unblocks into a burst therefore used
-/// to buy the session a permanent lip-sync debt of however long the stall was, with the picture
-/// still perfectly paced (the clock plane drives that, not this). One audible trim beats carrying
-/// it to the end of the session.
-const MAX_MS: usize = 90;
-
-/// How often an over-ceiling ring may be trimmed. Slow drift is the other way the ring grows
-/// (host capture clock vs. this device's), and a trim per callback would turn that into a
-/// continuous rasp instead of one skip every few seconds.
-const TRIM_INTERVAL: Duration = Duration::from_secs(2);
+/// It is the right one on the merits rather than by convenience — `AAudio` hands the client a raw
+/// callback and makes it own the buffer, and Wi-Fi power-save bunching lands as underruns, which is
+/// exactly this TV's situation on a radio `docs/NOTES.md` measures with 10-29 s black-hole stalls
+/// on new flows. It is also, field for field, what this client's own local preset used to be
+/// (`base 25 / max 90 / headroom 40 / cap 120`), with the old `deprime_after: 5` **callbacks** now
+/// expressed as `deprime_ms: 60` — core moved that fuse to milliseconds precisely because a
+/// callback count means a different span of time on every device. So there is nothing left for a
+/// local copy to say, and a preset that tracks upstream is one fewer thing to re-tune by hand.
+///
+/// Two invariants worth re-checking if it is ever forked, both of which the parent programme
+/// shipped broken once:
+/// * The smooth shed must fire strictly below the hard trim, or drift correction is dead code.
+///   `shed_excess_ms()` is `max(headroom/2, 2 × FRAME_MS)` = 20 ms, so the shed point is
+///   target+20 = 45 ms against a trim at `min(target+40, 120)` = 65 ms. 45 < 65. ✓
+/// * The base target must clear the device floor. `effective_target` floors at `want + FRAME_MS`;
+///   at [`DEVICE_BUFFER_FRAMES`] that is 10.67 + 5 = 15.7 ms, under the 25 ms base — so the ring
+///   cannot oscillate prime → dropout → re-prime. ✓
+const TUNING: JitterTuning = JitterTuning::AAUDIO;
 
 /// The playback device. Holding it alive is the whole job — the ring drains on SDL's own
 /// audio thread from construction until this is dropped. See the module docs for when it is used
 /// at all.
 pub struct AudioPlayer {
+    /// Never read: this is a pure RAII guard. SDL drains the ring on its own audio thread from
+    /// `open_playback` until the device is dropped, so holding it IS the playback.
+    #[allow(dead_code)]
     device: sdl2::audio::AudioDevice<RingCallback>,
 }
 
@@ -79,25 +101,27 @@ impl AudioPlayer {
                 rx: pcm_rx,
                 recycle: recycle_tx,
                 ring: VecDeque::new(),
-                // Denominated in interleaved samples, so it is built from what the device actually
-                // negotiated rather than what was asked for.
-                prime_samples: PRIME_MS * (SAMPLE_RATE as usize / 1000) * obtained.channels as usize,
+                // Built from what the device actually negotiated, not what was asked for: the
+                // policy denominates every depth in interleaved samples, so a channel count that
+                // disagrees with the ring's stride would scale every target silently.
+                policy: JitterPolicy::new(TUNING, obtained.channels),
                 per_ms: (SAMPLE_RATE as usize / 1000) * obtained.channels as usize,
-                primed: false,
                 buffer_ms,
                 underruns: 0,
+                sheds: 0,
+                trims: 0,
                 dropped_ms: 0,
-                last_trim: None,
                 callbacks: 0,
             })
             .map_err(|e| anyhow::anyhow!("SDL open_playback: {e}"))?;
         let obtained = *device.spec();
         // The device quantum is the other half of this route's latency, and SDL is free to
-        // negotiate something other than what was asked for — a larger one also silently RAISES
-        // the effective prime, which is `max(PRIME_MS, one callback)`. Unlogged, there was no way
-        // to tell from a session log where the software route's buffering actually went.
+        // negotiate something other than what was asked for — a larger one also silently raises the
+        // policy's effective target, which is floored at `one callback + 5 ms`. Unlogged, there was
+        // no way to tell from a session log where the software route's buffering actually went.
         tracing::info!(
-            "SDL audio device: {}ch @{}Hz, {} frame(s) per callback ({:.1}ms), format {:?}",
+            "SDL audio device: {} driver, {}ch @{}Hz, {} frame(s) per callback ({:.1}ms), format {:?}",
+            sdl_audio.current_audio_driver(),
             obtained.channels,
             obtained.freq,
             obtained.samples,
@@ -125,12 +149,6 @@ impl AudioPlayer {
                 buffer_ms: depth_cell,
             },
         ))
-    }
-
-    /// The device's actually-negotiated spec — may differ from what was requested if
-    /// the device doesn't support it exactly.
-    pub fn spec(&self) -> &sdl2::audio::AudioSpec {
-        self.device.spec()
     }
 }
 
@@ -186,26 +204,28 @@ impl AudioSink for SdlAudioSink {
     }
 }
 
-/// The playback half, owned by SDL's audio thread: drain the channel into a ring, prime once, then
-/// serve. No adaptive target and no drift shed — see the module docs for why the machinery that
-/// had those is gone.
+/// The playback half, owned by SDL's audio thread: drain the channel into a ring, and serve it
+/// under [`TUNING`]'s de-jitter policy. Every decision about priming, drift and de-priming belongs
+/// to [`JitterPolicy`] — see the module docs for why this is core's state machine and not a local
+/// one.
 struct RingCallback {
     rx: Receiver<Vec<f32>>,
     recycle: SyncSender<Vec<f32>>,
     ring: VecDeque<f32>,
-    /// Interleaved samples the ring must hold before the first one plays, and again before it
-    /// resumes after running dry.
-    prime_samples: usize,
-    /// Interleaved samples per millisecond, for the depth the overlay reads.
+    /// The shared de-jitter state machine. Allocation- and syscall-free by contract, which is what
+    /// makes it safe to run inside a realtime audio callback.
+    policy: JitterPolicy,
+    /// Interleaved samples per millisecond, for the counters below.
     per_ms: usize,
-    primed: bool,
     buffer_ms: Arc<AtomicU32>,
     underruns: u64,
-    /// Audio discarded to the ceiling — the counter that distinguishes "the host burst once" from
-    /// "the clocks are drifting", which look identical from the depth alone.
+    /// Smooth drift sheds — the policy working. Counted apart from [`Self::trims`] because they
+    /// mean opposite things: sheds are drift being corrected inaudibly, trims are the link
+    /// outrunning the headroom.
+    sheds: u64,
+    trims: u64,
+    /// Total audio discarded by either correction.
     dropped_ms: u64,
-    /// When the ring was last trimmed, so [`TRIM_INTERVAL`] can space the drift case out.
-    last_trim: Option<Instant>,
     callbacks: u64,
 }
 
@@ -219,84 +239,73 @@ impl sdl2::audio::AudioCallback for RingCallback {
             chunk.clear();
             let _ = self.recycle.try_send(chunk);
         }
-        self.trim_overrun();
-        self.buffer_ms
-            .store((self.ring.len() / self.per_ms.max(1)) as u32, Ordering::Relaxed);
 
-        // Prime, then hold: serving from a ring shallower than one callback only produces a
-        // sequence of half-empty callbacks, i.e. continuous crackle instead of one gap.
-        if !self.primed {
-            let target = self.prime_samples.max(out.len());
-            if self.ring.len() < target {
-                out.fill(0.0);
-                return;
+        let step = self.policy.step(self.ring.len(), out.len());
+        if step.drop_front > 0 {
+            // Faded on BOTH paths. The hard trim used to splice raw on the reasoning that a ring
+            // which blew its ceiling is already a discontinuity — but that describes the arrivals,
+            // not the samples either side of the seam, and the trim is the drop that actually
+            // fires in the field.
+            crossfade_drop(&mut self.ring, step.drop_front, step.crossfade);
+            self.dropped_ms += (step.drop_front / self.per_ms.max(1)) as u64;
+            if step.hard_trim {
+                self.trims += 1;
+            } else {
+                self.sheds += 1;
             }
-            // Serve from EXACTLY the prime depth, not from whatever crossed it. The ring is only
-            // inspected once per callback, so the depth at this edge overshoots the target by up
-            // to one callback plus one 5 ms chunk — and nothing regulates it back down afterwards
-            // ([`MAX_MS`] is a 90 ms ceiling, not a target), so that overshoot is standing latency
-            // for the rest of the session. Dropping it here is free: not one sample has played yet
-            // on the first prime, and a re-prime follows an underrun, which is already the gap.
-            let excess = self.ring.len() - target;
-            if excess > 0 {
-                self.ring.drain(..excess);
-                tracing::debug!(
-                    excess_ms = excess / self.per_ms.max(1),
-                    depth_ms = target / self.per_ms.max(1),
-                    "audio ring primed — dropped the overshoot before the first sample",
-                );
-            }
-            self.primed = true;
+        }
+        // The SMOOTHED depth, not the instantaneous one: the raw figure swings by a whole device
+        // quantum every callback, and this is what drift correction actually reacts to.
+        self.buffer_ms.store(self.policy.avg_depth_ms(), Ordering::Relaxed);
+
+        // Priming, or re-priming after a sustained drain. Serving a ring shallower than one
+        // callback only produces a run of half-empty callbacks, i.e. continuous crackle instead of
+        // one gap. `note_read` is skipped deliberately — core ignores un-primed reads, and a
+        // deliberate silence is not an underrun.
+        if step.silence {
+            out.fill(0.0);
+            self.log_periodically();
+            return;
         }
 
-        let mut ran_short = false;
-        for slot in out.iter_mut() {
-            *slot = self.ring.pop_front().unwrap_or_else(|| {
-                ran_short = true;
-                0.0
-            });
-        }
+        // Two `copy_from_slice`s at most (the ring wraps once), rather than one `pop_front` per
+        // sample: this runs on SDL's audio thread against a hard deadline.
+        let served = out.len().min(self.ring.len());
+        let (head, tail) = self.ring.as_slices();
+        let from_head = served.min(head.len());
+        out[..from_head].copy_from_slice(&head[..from_head]);
+        out[from_head..served].copy_from_slice(&tail[..served - from_head]);
+        self.ring.drain(..served);
+        let ran_short = served < out.len();
         if ran_short {
+            out[served..].fill(0.0);
             self.underruns += 1;
-            self.primed = false;
         }
-        self.callbacks += 1;
-        // ~10 s at this device quantum — the depth this route's lip sync is made of, and the
-        // only place it is observable.
-        if self.callbacks % 1_000 == 0 {
-            tracing::debug!(
-                buffer_ms = self.ring.len() / self.per_ms.max(1),
-                underruns = self.underruns,
-                dropped_ms = self.dropped_ms,
-                "audio playback (SDL device)"
-            );
-        }
+        // Drives both the de-prime hysteresis and the adaptive floor, so it must be reported for
+        // every read the policy authorised — including the ones that went fine.
+        self.policy.note_read(ran_short);
+        self.log_periodically();
     }
 }
 
 impl RingCallback {
-    /// Drop the oldest audio back to [`PRIME_MS`] when the ring is over [`MAX_MS`] — see the
-    /// constant for why nothing else would.
-    ///
-    /// Dropped from the FRONT: the newest audio is the one that belongs with the picture on
-    /// screen, and the ring's depth IS this route's lip-sync offset.
-    fn trim_overrun(&mut self) {
-        let per_ms = self.per_ms.max(1);
-        if self.ring.len() <= MAX_MS * per_ms {
+    /// ~10 s at this device quantum. `target_ms` is the adaptive floor's current answer — the one
+    /// figure that says whether this set needed more slack than the preset's base, and the
+    /// evidence for whether the policy is earning its place here.
+    fn log_periodically(&mut self) {
+        self.callbacks += 1;
+        if self.callbacks % 1_000 != 0 {
             return;
         }
-        if self.last_trim.is_some_and(|t| t.elapsed() < TRIM_INTERVAL) {
-            return;
-        }
-        self.last_trim = Some(Instant::now());
-        let keep = PRIME_MS * per_ms;
-        let drop = self.ring.len() - keep;
-        self.ring.drain(..drop);
-        self.dropped_ms += (drop / per_ms) as u64;
         tracing::debug!(
-            dropped_ms = drop / per_ms,
-            total_ms = self.dropped_ms,
-            "audio ring over {MAX_MS}ms — trimmed to the prime depth",
+            buffer_ms = self.policy.avg_depth_ms(),
+            target_ms = self.policy.target_ms(),
+            primed = self.policy.is_primed(),
+            underruns = self.underruns,
+            sheds = self.sheds,
+            trims = self.trims,
+            dropped_ms = self.dropped_ms,
+            "audio playback (SDL device)"
         );
     }
 }

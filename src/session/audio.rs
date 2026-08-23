@@ -36,6 +36,11 @@ pub struct AudioStage {
     gaps: AudioGapTracker,
     /// Reused across packets: concealment frames first, then the packet itself.
     f32: Vec<f32>,
+    /// libopus's own output buffer, one frame at the widest layout. A field rather than a local:
+    /// as a local it is a 7.7 KB stack array zeroed on every packet, i.e. 200 pointless memsets a
+    /// second on a soft-float `SoC`. libopus overwrites what it uses, so the stale contents of the
+    /// tail are never read.
+    pcm: Box<[f32; SAMPLES_PER_FRAME * MAX_CHANNELS]>,
 }
 
 impl AudioStage {
@@ -68,6 +73,7 @@ impl AudioStage {
             // One packet plus the concealment burst that can precede it, so steady state never
             // reallocates.
             f32: Vec::with_capacity(SAMPLES_PER_FRAME * MAX_CHANNELS * 2),
+            pcm: Box::new([0.0; SAMPLES_PER_FRAME * MAX_CHANNELS]),
         })
     }
 
@@ -80,37 +86,45 @@ impl AudioStage {
     /// Concealment sits in the hole BEFORE the packet, so the buffer starts that many
     /// milliseconds earlier than the packet's own stamp and is fed at `pts - lead`.
     pub fn play(&mut self, seq: u32, pts_ns: u64, payload: &[u8]) -> Result<()> {
-        let Some(decoder) = self.decoder.as_mut() else {
+        // Destructured so the decode loop can hold `decoder`, `pcm` and `f32` at once.
+        let Self {
+            decoder,
+            f32,
+            pcm,
+            channels,
+            gaps,
+            sink,
+        } = self;
+        let Some(decoder) = decoder.as_mut() else {
             // The TV decodes: concealment, layout and framing are all its business from here.
-            return self.sink.feed(Samples::Opus(payload), pts_ns);
+            return sink.feed(Samples::Opus(payload), pts_ns);
         };
-        let missing = self.gaps.missing_before(seq);
-        self.f32.clear();
+        let channels = *channels;
+        let missing = gaps.missing_before(seq);
+        f32.clear();
         // A concealment frame gets one frame's worth of buffer, not the whole scratch: with no
         // packet to describe it libopus takes `out.len() / channels` as the frame size and
         // rejects an illegal one. 5.1 gives 1920/6 = 320.
         let cap = |i: u32| {
             if i < missing {
-                SAMPLES_PER_FRAME * self.channels
+                SAMPLES_PER_FRAME * channels
             } else {
                 SAMPLES_PER_FRAME * MAX_CHANNELS
             }
         };
         // Concealment frames first (libopus PLC — decode with empty input interpolates a frame;
-        // the alternative is a hard gap, i.e. a click), then the packet itself. The scratch lives
-        // outside the loop: libopus overwrites what it uses, so re-zeroing it per frame is waste.
-        // f32 is both what libopus produces and what the SDL device takes, so there is no
-        // conversion pass and no second buffer.
-        let mut pcm = [0f32; SAMPLES_PER_FRAME * MAX_CHANNELS];
+        // the alternative is a hard gap, i.e. a click), then the packet itself. `f32` is both what
+        // libopus produces and what the SDL device takes, so there is no conversion pass and no
+        // second buffer.
         for i in 0..=missing {
             let input: &[u8] = if i < missing { &[] } else { payload };
             let frames = decoder
                 .decode_float(input, &mut pcm[..cap(i)], false)
                 .map_err(|e| anyhow::anyhow!("opus decode: {e}"))?;
-            self.f32.extend_from_slice(&pcm[..frames * self.channels]);
+            f32.extend_from_slice(&pcm[..frames * channels]);
         }
         let pts_ns = pts_ns.saturating_sub((i64::from(missing) * FRAME_MS) as u64 * 1_000_000);
-        self.sink.feed(Samples::F32(&self.f32), pts_ns)
+        sink.feed(Samples::F32(f32), pts_ns)
     }
 
     /// The sink's own queue depth in ms, where it knows one — NDL's plane lead, or the SDL ring's
