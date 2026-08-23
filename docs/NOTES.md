@@ -186,6 +186,20 @@ the preference held down to the route), so a 5.1 pick comes back whole on the ro
 - **Samples are never converted.** libopus decodes straight into f32, which is exactly what the SDL
   device takes; the offload route decodes nothing at all. There is no second buffer and no
   conversion pass on either route.
+- **The software route's latency is buffering, not decode.** Software Opus is 5% of a core and the
+  target is hardware-FP (`-soft-float`, § "Toolchain"), so the only client-side terms are the ring
+  depth and the device quantum. Two things follow, and they are the whole lever list here:
+  - ⚠ **The ring is inspected once per callback, so the prime OVERSHOOTS.** It crosses 25 ms
+    somewhere inside a 10.67 ms callback period, in 5 ms steps, so the depth at first serve is
+    25-36 ms — and nothing pulls it back down afterwards (`MAX_MS` is a 90 ms ceiling, not a
+    target), so whatever it happened to be is standing lip sync for the session. The callback now
+    drains the excess at the prime edge, before a single sample has played, which is free by
+    construction. Re-primes get the same treatment: they follow an underrun, which is already the
+    gap.
+  - **The device quantum is logged at open** (`SDL audio device:`). SDL may negotiate something
+    other than the requested 512 frames, and a larger one silently raises the effective prime —
+    it is `max(PRIME_MS, one callback)`. Read that line before concluding anything about this
+    route's latency; without it there is no way to tell from a log where the buffering went.
 - **The SDL ring is deliberately dumb**: prime 25 ms, serve, re-prime after a dry read. No adaptive
   target and no A/V measurement — the `JitterPolicy`/`AvSync` machinery that had those was ~35 ms
   of floor and is gone. It does keep ONE ceiling: the callback pops exactly one quantum per wake,

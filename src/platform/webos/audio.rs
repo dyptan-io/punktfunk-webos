@@ -92,6 +92,18 @@ impl AudioPlayer {
             })
             .map_err(|e| anyhow::anyhow!("SDL open_playback: {e}"))?;
         let obtained = *device.spec();
+        // The device quantum is the other half of this route's latency, and SDL is free to
+        // negotiate something other than what was asked for — a larger one also silently RAISES
+        // the effective prime, which is `max(PRIME_MS, one callback)`. Unlogged, there was no way
+        // to tell from a session log where the software route's buffering actually went.
+        tracing::info!(
+            "SDL audio device: {}ch @{}Hz, {} frame(s) per callback ({:.1}ms), format {:?}",
+            obtained.channels,
+            obtained.freq,
+            obtained.samples,
+            f64::from(obtained.samples) * 1000.0 / f64::from(obtained.freq.max(1)),
+            obtained.format,
+        );
         if obtained.channels != channels || obtained.freq != SAMPLE_RATE as i32 {
             // Not fatal — SDL converts — but it means the decoder and the device disagree about
             // the frame shape, which is worth seeing in a log before it is heard.
@@ -214,9 +226,25 @@ impl sdl2::audio::AudioCallback for RingCallback {
         // Prime, then hold: serving from a ring shallower than one callback only produces a
         // sequence of half-empty callbacks, i.e. continuous crackle instead of one gap.
         if !self.primed {
-            if self.ring.len() < self.prime_samples.max(out.len()) {
+            let target = self.prime_samples.max(out.len());
+            if self.ring.len() < target {
                 out.fill(0.0);
                 return;
+            }
+            // Serve from EXACTLY the prime depth, not from whatever crossed it. The ring is only
+            // inspected once per callback, so the depth at this edge overshoots the target by up
+            // to one callback plus one 5 ms chunk — and nothing regulates it back down afterwards
+            // ([`MAX_MS`] is a 90 ms ceiling, not a target), so that overshoot is standing latency
+            // for the rest of the session. Dropping it here is free: not one sample has played yet
+            // on the first prime, and a re-prime follows an underrun, which is already the gap.
+            let excess = self.ring.len() - target;
+            if excess > 0 {
+                self.ring.drain(..excess);
+                tracing::debug!(
+                    excess_ms = excess / self.per_ms.max(1),
+                    depth_ms = target / self.per_ms.max(1),
+                    "audio ring primed — dropped the overshoot before the first sample",
+                );
             }
             self.primed = true;
         }
