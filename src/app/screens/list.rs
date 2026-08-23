@@ -99,8 +99,8 @@ impl App {
 
     /// The options the open dropdown lists, on whichever screen owns one.
     ///
-    /// Two screens have dropdowns and they read different tables — Diagnostics' log level,
-    /// and every other pick on the settings list. One exhaustive match rather than a `_ =>`
+    /// Three screens have dropdowns and they read different tables — Diagnostics' log level,
+    /// Experimental's audio route, and every other pick on the settings list. One exhaustive match rather than a `_ =>`
     /// arm per caller: the overlay's drawn height, its hit test and its focused-option tile
     /// all measure against this, so a screen absorbed into the wrong table by a fallback
     /// would draw options it cannot land on. `display_row` is the on-screen row the dropdown
@@ -108,6 +108,7 @@ impl App {
     pub(crate) fn dropdown_options(&self, display_row: usize) -> Vec<crate::app::menu::Label> {
         match self.nav.screen {
             Screen::Diagnostics => crate::app::menu::log_level_dropdown_options(),
+            Screen::Experimental => crate::app::menu::audio_route_options(),
             Screen::Settings(set) => crate::app::menu::settings_logical_row(set, display_row)
                 .map_or_else(Vec::new, |row| {
                     crate::app::menu::dropdown_options(row, &self.settings_ui.settings, self.detected_gamepad_type)
@@ -124,7 +125,6 @@ impl App {
             | Screen::About
             | Screen::SpeedTest
             | Screen::WakeSettings
-            | Screen::Experimental
             | Screen::CursorSettings(_)
             | Screen::SendLogs
             | Screen::Collections
@@ -139,6 +139,7 @@ impl App {
     pub(crate) fn dropdown_len(&self, display_row: usize) -> usize {
         match self.nav.screen {
             Screen::Diagnostics => crate::app::menu::LOG_LEVEL_OPTIONS.len(),
+            Screen::Experimental => crate::app::menu::audio_routes().len(),
             Screen::Settings(set) => crate::app::menu::settings_logical_row(set, display_row).map_or(0, |row| {
                 crate::app::menu::dropdown_option_count(row, &self.settings_ui.settings)
             }),

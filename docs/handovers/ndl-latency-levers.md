@@ -44,7 +44,7 @@ estimator is gone, see below).
 - **Row locks**: `RowLock::StereoOnly` recaptioned "Your TV's audio output only carries stereo";
   new `RowLock::OffloadStereoOnly` when Opus offload is on, plus a `Settings::clamp` rule forcing
   `audio_channels = 2` in that case.
-- Experimental now holds two rows (Audio offload, Game mode). The `ndl_audio_pcm` and
+- Experimental now holds two rows (Game mode, Audio processing). The `ndl_audio_pcm` and
   `ndl_frame_parts` settings were added and then removed again; neither exists.
 - `docs/NOTES.md`: rewrote § "Audio", § "A/V sync", § "NDL's audio plane"'s route list, and added
   § "Latency levers on the NDL path".

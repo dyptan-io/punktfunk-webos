@@ -89,8 +89,30 @@ impl App {
         self.nav.enter(Screen::Experimental, 0);
     }
 
-    /// All rows are plain Left/Right/Confirm toggles. Back saves and returns to Settings.
+    /// Game mode is a plain Left/Right/Confirm toggle; Audio processing opens the same dropdown
+    /// picker every settings dropdown uses (its row index is disambiguated from the other
+    /// screens' by `self.nav.screen`, see `dropdown_overlay_tile`'s docs). Back saves and
+    /// returns to Settings.
     pub(crate) fn handle_experimental_event(&mut self, ev: MenuEvent) {
+        if let Some(dd) = self.settings_ui.dropdown.as_mut() {
+            let len = menu::audio_routes().len();
+            match ev {
+                MenuEvent::Up | MenuEvent::Down => {
+                    crate::ui::widgets::list_nav(&mut dd.focused, len, menu::nav_dir(ev));
+                }
+                MenuEvent::Confirm => {
+                    let choice = dd.focused;
+                    self.close_audio_route_dropdown(choice);
+                    menu::apply_audio_route(&mut self.settings_ui.settings, choice);
+                }
+                MenuEvent::Back => {
+                    let focused = dd.focused;
+                    self.close_audio_route_dropdown(focused);
+                }
+                MenuEvent::Left | MenuEvent::Right | MenuEvent::Secondary => {}
+            }
+            return;
+        }
         if self.list_nav_event(ev) {
             return;
         }
@@ -107,11 +129,34 @@ impl App {
                 self.settings_ui.settings.game_mode = !from;
                 self.arm_switch_anim(from);
             }
+            (Some(menu::ExpRow::AudioProcessing), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm)
+                if menu::exp_row_lock(menu::ExpRow::AudioProcessing, self.hosts.rooted).is_none() =>
+            {
+                let current = menu::audio_route_current_index(&self.settings_ui.settings);
+                if ev == MenuEvent::Confirm {
+                    self.settings_ui.dropdown = Some(crate::app::DropdownState {
+                        row: menu::EXP_ROW_AUDIO,
+                        focused: current,
+                    });
+                    self.settings_ui.dropdown_fade.reopen();
+                } else {
+                    let len = menu::audio_routes().len();
+                    let next = menu::cycle_index(current, len, ev == MenuEvent::Right);
+                    menu::apply_audio_route(&mut self.settings_ui.settings, next);
+                }
+            }
             (_, MenuEvent::Back) => {
                 self.persist();
                 self.nav.resume(Screen::Settings(SettingsScope::Global));
             }
             _ => {}
         }
+    }
+
+    /// Runs the close fade against the row the dropdown hung off and drops it — the tail both
+    /// the pick and the dismissal share.
+    fn close_audio_route_dropdown(&mut self, focused: usize) {
+        self.settings_ui.dropdown_fade.close((menu::EXP_ROW_AUDIO, focused));
+        self.settings_ui.dropdown = None;
     }
 }

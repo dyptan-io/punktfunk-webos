@@ -16,25 +16,48 @@ use anyhow::Result;
 pub const TITLE: &str = "Experimental";
 pub const SUBTITLE: &str = "Unstable, off by default.";
 
-/// Game mode. `rooted` is the root-probe verdict, `None` while it is still running.
+/// Game mode, then audio processing. Order must match `menu::EXP_ROWS`. `rooted` is the
+/// root-probe verdict, `None` while it is still running.
 pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
     // Driving the TV's Game picture/sound modes needs the Homebrew Channel's root helper — the
     // public bus is denied `settingsservice` outright (see `platform::webos::game_mode`). The row
     // is always listed, but stays locked until the probe finds that helper actually reachable.
     let game_mode = FocusRow::toggle(crate::app::view::icons::ICON_GAMEPAD, "Game mode", settings.game_mode)
         .with_subtext(ui::widgets::RowSubtext::hint("Your TV is rooted, you can use ALLM"));
-    vec![match menu::exp_row_lock(ExpRow::GameMode, rooted) {
-        // The lock's caption replaces the row's own: a row the user can't change has nothing
-        // more useful to say than why.
-        Some(lock) => game_mode.locked(true).with_subtext(lock_caption(lock)),
-        None => game_mode,
-    }]
+    let audio = FocusRow::dropdown(
+        crate::app::view::icons::ICON_MEMORY,
+        "Audio processing",
+        menu::audio_route_label(settings.audio_route),
+    )
+    .with_subtext_opt(audio_route_hint(settings.audio_route));
+    // The lock's caption replaces the row's own: a row the user can't change has nothing more
+    // useful to say than why.
+    let apply = |row: FocusRow, exp: ExpRow| match menu::exp_row_lock(exp, rooted) {
+        Some(lock) => row.locked(true).with_subtext(lock_caption(lock)),
+        None => row,
+    };
+    vec![
+        apply(game_mode, ExpRow::GameMode),
+        apply(audio, ExpRow::AudioProcessing),
+    ]
+}
+
+/// What each audio route trades, on the row itself — the pick is a hardware path, and the
+/// difference between the three is not inferable from their names.
+fn audio_route_hint(route: crate::services::store::AudioRoutePref) -> Option<ui::widgets::RowSubtext> {
+    use crate::services::store::AudioRoutePref;
+    match route {
+        AudioRoutePref::Software => None,
+        AudioRoutePref::NdlPcm => Some(ui::widgets::RowSubtext::hint("Lower latency, up to 5.1")),
+        AudioRoutePref::NdlOpus => Some(ui::widgets::RowSubtext::caution("Lowest latency, stereo only")),
+    }
 }
 
 fn lock_caption(lock: ExpRowLock) -> ui::widgets::RowSubtext {
     match lock {
         ExpRowLock::RootUnknown => ui::widgets::RowSubtext::hint("Checking whether your TV is rooted..."),
         ExpRowLock::NotRooted => ui::widgets::RowSubtext::caution("Your TV is not rooted, Game mode is unavailable"),
+        ExpRowLock::SoftwareOnly => ui::widgets::RowSubtext::hint("This TV has no NDL audio plane"),
     }
 }
 

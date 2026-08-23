@@ -250,6 +250,7 @@ impl App {
             }),
             Screen::Experimental => Some(ModalShellKey::Experimental {
                 game_mode: self.settings_ui.settings.game_mode,
+                audio_route: self.settings_ui.settings.audio_route,
                 rooted: self.hosts.rooted,
             }),
             Screen::CursorSettings(_) => Some(ModalShellKey::CursorSettings {
@@ -344,6 +345,7 @@ impl App {
             Screen::Experimental => Some(ModalFocusKey::ExperimentalRow(
                 self.nav.cursor(ScreenKey::Experimental),
                 self.settings_ui.settings.game_mode,
+                self.settings_ui.settings.audio_route,
                 self.hosts.rooted,
             )),
             Screen::CursorSettings(_) => Some(ModalFocusKey::CursorSettingsRow(
@@ -520,8 +522,8 @@ impl App {
                         }
                     }),
                     // Every plain list modal: same tile, same geometry, built from whichever
-                    // rows the screen lists. Only Diagnostics can have a dropdown open, and
-                    // only the host menu has a ⋯ to light.
+                    // rows the screen lists. Only Diagnostics and Experimental can have a
+                    // dropdown open, and only the host menu has a ⋯ to light.
                     Screen::HostMenu
                     | Screen::WakeSettings
                     | Screen::Diagnostics
@@ -583,7 +585,9 @@ impl App {
             let options = self.dropdown_options(dd.row);
             // The overlay hangs inside whichever viewport its list is drawn in.
             let content_w = match self.nav.screen {
-                Screen::Diagnostics => self.modal_list_content(screen_w, screen_h, fonts).width(),
+                Screen::Diagnostics | Screen::Experimental => {
+                    self.modal_list_content(screen_w, screen_h, fonts).width()
+                }
                 _ => view::settings::layout(self.settings_scope(), screen_w, screen_h)
                     .1
                     .width(),

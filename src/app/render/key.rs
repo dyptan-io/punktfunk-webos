@@ -12,7 +12,7 @@
 //! outlive the state it describes would have to own a copy of every label, once per frame.
 use crate::app::screens::rowbuttons::RowButton;
 use crate::app::state::hostmenu::HostAction;
-use crate::core::model::{GamepadType, LogLevelOverride, Settings, SettingsOverride};
+use crate::core::model::{AudioRoutePref, GamepadType, LogLevelOverride, Settings, SettingsOverride};
 
 /// Focused widget in the open modal. Each variant carries its content,
 /// so value changes (not just focus moves) invalidate the tile.
@@ -36,7 +36,8 @@ pub enum ModalFocusKey<'a> {
     MenuRow(usize, HostAction, bool, Option<RowButton>),
     /// (focused row, log level, stats-overlay on, show-logs on) — any change invalidates the tile.
     DiagnosticsRow(usize, LogLevelOverride, bool, bool),
-    ExperimentalRow(usize, bool, Option<bool>),
+    /// (focused row, Game mode on, the audio route, the root-probe verdict).
+    ExperimentalRow(usize, bool, AudioRoutePref, Option<bool>),
     /// (focused row, cursor-capture on, cursor-gestures on, which rows are overridden) — any
     /// change invalidates the tile.
     CursorSettingsRow(usize, bool, bool, SettingsOverride),
@@ -112,6 +113,8 @@ pub enum ModalShellKey<'a> {
     },
     Experimental {
         game_mode: bool,
+        /// Named on the Audio processing row.
+        audio_route: AudioRoutePref,
         /// The root-probe verdict — it locks the Game mode row and rewrites its caption.
         rooted: Option<bool>,
     },

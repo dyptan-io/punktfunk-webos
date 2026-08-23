@@ -68,10 +68,6 @@ pub enum SettingsRow {
     Hdr,
     /// Locked where the backend is capped at stereo — the only channel count then.
     Audio,
-    /// Where the session's audio is decoded and played — see `store::AudioRoutePref`. Directly
-    /// below Audio, because the pick is what caps the layouts that row offers. Device-wide (it
-    /// selects a hardware path), so the per-game list doesn't carry it.
-    AudioRoute,
     /// Which controller the host presents to the game — see `store::GamepadType`. Last of the
     /// real settings: it's the only input-side one, and picking `DualSense` is what turns on
     /// adaptive triggers (`crate::platform::webos::dualsense`).
@@ -103,7 +99,7 @@ pub enum SettingsRow {
 }
 
 /// The global list, in display order.
-const GLOBAL_ROWS: [SettingsRow; 14] = [
+const GLOBAL_ROWS: [SettingsRow; 13] = [
     SettingsRow::Resolution,
     SettingsRow::Framerate,
     SettingsRow::Bitrate,
@@ -111,7 +107,6 @@ const GLOBAL_ROWS: [SettingsRow; 14] = [
     SettingsRow::Codec,
     SettingsRow::Hdr,
     SettingsRow::Audio,
-    SettingsRow::AudioRoute,
     SettingsRow::Gamepad,
     SettingsRow::Cursor,
     SettingsRow::Theme,
@@ -155,9 +150,17 @@ pub enum ExpRow {
     /// Locked whenever [`exp_row_lock`] returns a reason. Always listed, locked rather than
     /// hidden when it can't be used.
     GameMode,
+    /// Which audio route a session builds — see `store::AudioRoutePref`. The one dropdown on
+    /// this screen. Experimental because two of its three picks are hardware paths that no
+    /// runtime probe can verify; locked to the software route where there is no NDL plane.
+    AudioProcessing,
 }
 
-pub const EXP_ROWS: [ExpRow; 1] = [ExpRow::GameMode];
+pub const EXP_ROWS: [ExpRow; 2] = [ExpRow::GameMode, ExpRow::AudioProcessing];
+
+/// Display position of [`ExpRow::AudioProcessing`] — the row a dropdown can hang off, which is
+/// what `DropdownState::row` names.
+pub const EXP_ROW_AUDIO: usize = 1;
 
 /// Diagnostics modal row indices (see `app::view::diagnostics::rows`). Log level keeps
 /// index 0 so its dropdown's `(Screen, row)` tile key stays stable.
@@ -209,8 +212,9 @@ pub(crate) enum RowLock {
     StereoOnly,
     /// The selected audio route carries stereo only, so the layout row has one entry — see
     /// `store::AudioRoutePref::max_channels`. The decoder here handles up to 7.1; what caps this
-    /// is where the sound physically goes.
-    RouteStereoOnly,
+    /// is where the sound physically goes. Carries the route so the caption can name the pick
+    /// the user has to change to lift it.
+    RouteStereoOnly(AudioRoutePref),
     /// Nothing is plugged into the TV, so there is no controller to describe to the host.
     NoGamepad,
 }
@@ -223,6 +227,9 @@ pub(crate) enum ExpRowLock {
     RootUnknown,
     /// Not a rooted TV, so Game mode has no way to reach `settingsservice`.
     NotRooted,
+    /// No NDL audio plane on this backend (webOS 4 and below, or SMP), so the software route is
+    /// the whole list — see `store::AudioRoutePref::available`.
+    SoftwareOnly,
 }
 
 /// `rooted` is the root-probe verdict, `None` while it is still running.
@@ -230,8 +237,38 @@ pub(crate) fn exp_row_lock(row: ExpRow, rooted: Option<bool>) -> Option<ExpRowLo
     match (row, rooted) {
         (ExpRow::GameMode, None) => Some(ExpRowLock::RootUnknown),
         (ExpRow::GameMode, Some(false)) => Some(ExpRowLock::NotRooted),
-        (ExpRow::GameMode, Some(true)) => None,
+        (ExpRow::AudioProcessing, _) if audio_routes().len() < 2 => Some(ExpRowLock::SoftwareOnly),
+        (ExpRow::GameMode, Some(true)) | (ExpRow::AudioProcessing, _) => None,
     }
+}
+
+/// The audio routes offered here, in display order (see `store::AudioRoutePref::available`).
+pub(crate) fn audio_routes() -> &'static [AudioRoutePref] {
+    AudioRoutePref::available(video_caps())
+}
+
+/// Dropdown labels for [`ExpRow::AudioProcessing`] — the screen's only dropdown, so there is no
+/// per-row table here the way `dropdown_options` is one.
+pub(crate) fn audio_route_options() -> Vec<Label> {
+    audio_routes().iter().map(|&r| audio_route_label(r).into()).collect()
+}
+
+pub(crate) fn audio_route_current_index(settings: &Settings) -> usize {
+    audio_routes()
+        .iter()
+        .position(|&r| r == settings.audio_route)
+        .unwrap_or(0)
+}
+
+/// Applies an audio-route pick. The pick is a ceiling on the Audio row's layouts
+/// (`AudioRoutePref::max_channels`), so a width the new route can't carry comes down with it
+/// rather than staying set behind a row that no longer offers it.
+pub(crate) fn apply_audio_route(settings: &mut Settings, choice_index: usize) {
+    let Some(&route) = audio_routes().get(choice_index) else {
+        return;
+    };
+    settings.audio_route = route;
+    settings.clamp_to_caps();
 }
 
 /// `detected` is the attached pad per `gamepad::detect_type` — `None` with nothing attached
@@ -243,7 +280,9 @@ pub(crate) fn row_lock(row: SettingsRow, settings: &Settings, detected: Option<G
         SettingsRow::Hdr if settings.codec == CodecPref::H264 => Some(RowLock::HdrNeedsHevc),
         SettingsRow::Codec if caps.codec_prefs().len() < 2 => Some(RowLock::OneCodec),
         SettingsRow::Audio if caps.max_channels < 2 => Some(RowLock::StereoOnly),
-        SettingsRow::Audio if audio_channel_options(settings).len() < 2 => Some(RowLock::RouteStereoOnly),
+        SettingsRow::Audio if audio_channel_options(settings).len() < 2 => {
+            Some(RowLock::RouteStereoOnly(settings.audio_route))
+        }
         SettingsRow::Gamepad if detected.is_none() => Some(RowLock::NoGamepad),
         _ => None,
     }
@@ -302,7 +341,6 @@ fn row_fields(row: SettingsRow) -> &'static [OverrideField] {
         // Rows that override nothing: the backend is a process-global, and the rest are links
         // out or an action.
         SettingsRow::VideoBackend
-        | SettingsRow::AudioRoute
         | SettingsRow::Theme
         | SettingsRow::Experimental
         | SettingsRow::Diagnostics
@@ -460,13 +498,6 @@ pub fn audio_channel_options(settings: &Settings) -> &'static [(u8, &'static str
     &AUDIO_CHANNELS[..offered]
 }
 
-/// The audio routes offered, in display order — software first, it being the default.
-pub const AUDIO_ROUTES: [AudioRoutePref; 3] = [
-    AudioRoutePref::Software,
-    AudioRoutePref::NdlPcm,
-    AudioRoutePref::NdlOpus,
-];
-
 /// Why the Audio row offers fewer layouts than punktfunk can carry, or `None` when nothing is
 /// missing from it.
 ///
@@ -481,18 +512,19 @@ pub(crate) fn audio_limit_reason(settings: &Settings) -> Option<&'static str> {
         return None;
     }
     Some(match (settings.audio_route, offered) {
-        (AudioRoutePref::NdlOpus, _) => "This audio output is stereo only",
-        (_, 2) => "Your TV's audio output carries stereo only",
-        _ => "Your TV's audio output carries up to 5.1",
+        (AudioRoutePref::NdlOpus, _) => "Offload (NDL) audio processing is stereo only",
+        (_, 2) => "Your TV's audio plane carries stereo only",
+        _ => "Your TV's audio plane carries up to 5.1",
     })
 }
 
-/// Dropdown label for a route. Named for what the user hears through, not for the API behind it.
+/// Dropdown label for a route. Names the decode step and the sink behind it — the pick is a
+/// hardware path, and this screen's audience is the one that wants the API named.
 pub(crate) fn audio_route_label(route: AudioRoutePref) -> &'static str {
     match route {
-        AudioRoutePref::Software => "Standard",
-        AudioRoutePref::NdlPcm => "TV audio plane",
-        AudioRoutePref::NdlOpus => "TV decoder",
+        AudioRoutePref::Software => "Software (SDL)",
+        AudioRoutePref::NdlPcm => "PCM (NDL)",
+        AudioRoutePref::NdlOpus => "Offload (NDL)",
     }
 }
 
@@ -542,7 +574,6 @@ pub fn dropdown_options(row: SettingsRow, settings: &Settings, detected: Option<
             .iter()
             .map(|(_, s)| (*s).into())
             .collect(),
-        SettingsRow::AudioRoute => AUDIO_ROUTES.iter().map(|&r| audio_route_label(r).into()).collect(),
         SettingsRow::Gamepad => GAMEPAD_TYPES
             .iter()
             .map(|&t| {
@@ -567,7 +598,6 @@ pub fn dropdown_option_count(row: SettingsRow, settings: &Settings) -> usize {
         SettingsRow::Framerate => REFRESH_RATES.len(),
         SettingsRow::Codec => video_caps().codec_prefs().len(),
         SettingsRow::Audio => audio_channel_options(settings).len(),
-        SettingsRow::AudioRoute => AUDIO_ROUTES.len(),
         SettingsRow::Gamepad => GAMEPAD_TYPES.len(),
         _ => 0,
     }
@@ -600,10 +630,6 @@ pub fn dropdown_current_index(settings: &Settings, row: SettingsRow) -> usize {
         SettingsRow::Audio => audio_channel_options(settings)
             .iter()
             .position(|(c, _)| *c == settings.audio_channels)
-            .unwrap_or(0),
-        SettingsRow::AudioRoute => AUDIO_ROUTES
-            .iter()
-            .position(|&r| r == settings.audio_route)
             .unwrap_or(0),
         SettingsRow::Gamepad => GAMEPAD_TYPES
             .iter()
@@ -666,15 +692,6 @@ pub fn apply_dropdown_choice(
                 settings.audio_channels = *channels;
             }
         }
-        SettingsRow::AudioRoute => {
-            if let Some(&route) = AUDIO_ROUTES.get(choice_index) {
-                settings.audio_route = route;
-                // The pick is a ceiling on the layout row (`AudioRoutePref::max_channels`), so a
-                // width the new route can't carry has to come down with it rather than stay set
-                // behind a row that no longer offers it.
-                settings.clamp_to_caps();
-            }
-        }
         SettingsRow::Gamepad => {
             if let Some(&t) = GAMEPAD_TYPES.get(choice_index) {
                 settings.gamepad_type = t;
@@ -733,7 +750,6 @@ pub fn adjust_setting(settings: &mut Settings, row: SettingsRow, forward: bool, 
         | SettingsRow::VideoBackend
         | SettingsRow::Codec
         | SettingsRow::Audio
-        | SettingsRow::AudioRoute
         | SettingsRow::Gamepad
         | SettingsRow::Cursor
         | SettingsRow::Experimental

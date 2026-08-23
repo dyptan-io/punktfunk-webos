@@ -150,13 +150,19 @@ Phases 0-5 landed as six commits. Two changes to the plan:
   about vendor internals) and merging the clock plane's 20 ms keep-alive into a pump that parks up
   to 100 ms (a starved plane is the stutter the plane exists to prevent).
 
+- **The route row moved to Experimental** and is named "Audio processing", its options named for
+  the decode step and the sink (`Software (SDL)` / `PCM (NDL)` / `Offload (NDL)`). Two of three
+  picks are unverifiable hardware paths, which is what that screen is for. It also gained the gate
+  the plan implied but never stated: `VideoCaps::audio_plane` is false on NDL v1 and under SMP, so
+  those devices are offered the software route only.
+
 Everything else is as described: `core::media` holds the traits, `session::{audio,stage,pipeline}`
 the stages and assembly, `AudioRoutePref` the user-facing route pick, and no path folds a layout
 down any more.
 
 ## On-device checklist
 
-1. **Each route in turn** (Settings → Audio output): confirm the log's `audio path:` line, then
+1. **Each route in turn** (Settings → Experimental → Audio processing): confirm the log's `audio path:` line, then
    listen. Software is the baseline; PCM and TV-decoder are the ones under test.
 2. **Watch for the lag report that started this.** `video: … plane_lead=` in the debug heartbeat is
    the plane's depth; sagging toward zero under a plane route is the stutter signature.

@@ -118,22 +118,29 @@ CX/G5 are 32-bit userland on ARMv8-A. RustCrypto's `aes` crate has ARMv8 intrins
 
 ## Audio: three routes, one pipeline (SDL is the default)
 
-`Settings` → **Audio output** picks the route (`core::model::AudioRoutePref`), and all three are
+`Settings` → **Experimental** → **Audio processing** picks the route
+(`core::model::AudioRoutePref`), and all three are
 built on the same pipeline: `session::audio::AudioStage` decodes (or forwards) into whatever
 `core::media::AudioSink` the route selected, and one pump drives it. Adding a fourth route is one
 `AudioSink` impl.
 
 | Route | Label | Path | Layouts |
 | --- | --- | --- | --- |
-| `Software` (default) | Standard | libopus here → SDL device, NDL's clock plane on its metronome | up to 7.1 |
-| `NdlPcm` | TV audio plane | libopus here → NDL's PCM plane, on the picture's own clock | what the TV's output carries (2 or 6) |
-| `NdlOpus` | TV decoder | the wire's Opus, decoded by the TV | 2 |
+| `Software` (default) | Software (SDL) | libopus here → SDL device, NDL's clock plane on its metronome | up to 7.1 |
+| `NdlPcm` | PCM (NDL) | libopus here → NDL's PCM plane, on the picture's own clock | what the TV's output carries (2 or 6) |
+| `NdlOpus` | Offload (NDL) | the wire's Opus, decoded by the TV | 2 |
 
 **Why software is the default again.** NDL paces the picture against a *fed* audio plane, so a
 plane fed from the network inherits the stream's arrival jitter — which is the stutter the silent
 clock plane was introduced to cure, and it came back as intermittent lag with PCM as the default.
 The two plane routes are shorter and stay selectable for exactly that comparison; the overlay names
 which one ran (`Opus SW` / `PCM HW` / `Opus HW`).
+
+**The plane routes exist only under NDL v2.** v1 (webOS 4 and below) has no audio type at all and
+SMP is a different pipeline, so `caps::VideoCaps::audio_plane` is false on both and
+`AudioRoutePref::available` collapses to `Software` — the row locks, and `Settings::clamp_to_caps`
+rewrites a document carried over from a v2 set. The Audio row's layouts follow the *selected*
+route, so picking `Offload (NDL)` locks that row to stereo with the reason on it.
 
 **Nothing is ever mixed down.** Each route publishes its own ceiling
 (`AudioRoutePref::max_channels`) and the handshake asks the host for exactly that, so a layout the

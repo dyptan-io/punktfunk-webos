@@ -244,8 +244,10 @@ impl App {
             // Anchored to the animated offset (`settings_content_scroll`) so an open
             // dropdown stays attached to its row while the list is still settling.
             Screen::Settings(_) => self.scroll_list_content_scroll(screen_w, screen_h),
-            // Diagnostics doesn't scroll, so 0.
-            Screen::Diagnostics => Some((self.modal_list_geometry(screen_w, screen_h, fonts)?.1, 0)),
+            // Neither list modal scrolls, so 0.
+            Screen::Diagnostics | Screen::Experimental => {
+                Some((self.modal_list_geometry(screen_w, screen_h, fonts)?.1, 0))
+            }
             _ => None,
         }
     }

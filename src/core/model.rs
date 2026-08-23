@@ -611,6 +611,18 @@ impl AudioRoutePref {
             Self::NdlOpus => caps.max_channels.min(2),
         }
     }
+
+    /// The routes this device can actually build, in display order — software first, it being
+    /// the default and the only one that needs no plane. Both plane routes need NDL v2's audio
+    /// type (`VideoCaps::audio_plane`); on webOS 4 and below, and under SMP, there is no plane
+    /// to ride and software is the whole list.
+    pub fn available(caps: VideoCaps) -> &'static [Self] {
+        if caps.audio_plane {
+            &[Self::Software, Self::NdlPcm, Self::NdlOpus]
+        } else {
+            &[Self::Software]
+        }
+    }
 }
 
 /// Which controller the host should present to the game, selectable in Settings.
@@ -860,6 +872,13 @@ impl Settings {
         // (`AudioRoutePref::max_channels`). This is also why nothing is ever folded down — a layout
         // the route can't put on a speaker is never requested. Clamped rather than silently
         // ignored, so the row shows what will happen.
+        if !AudioRoutePref::available(caps).contains(&self.audio_route) {
+            note!(
+                "settings: {:?} audio needs NDL's audio plane, which this backend has none of — using Software",
+                self.audio_route,
+            );
+            self.audio_route = AudioRoutePref::Software;
+        }
         let route_max = self.audio_route.max_channels(caps);
         if self.audio_channels > route_max {
             if route_max == caps.max_channels {
