@@ -282,7 +282,7 @@ pub(crate) fn row_lock(row: SettingsRow, settings: &Settings, detected: Option<G
         SettingsRow::Codec if caps.codec_prefs().len() < 2 => Some(RowLock::OneCodec),
         // Device before route: where the client itself decodes stereo only, no audio-processing
         // pick could widen it, and naming one would send the user somewhere that cannot help.
-        SettingsRow::Audio if caps.max_channels < 2 => Some(RowLock::StereoOnly),
+        SettingsRow::Audio if channel_options_up_to(caps.max_channels).len() < 2 => Some(RowLock::StereoOnly),
         SettingsRow::Audio if audio_channel_options(settings).len() < 2 => Some(RowLock::RouteStereoOnly),
         SettingsRow::Gamepad if detected.is_none() => Some(RowLock::NoGamepad),
         _ => None,
@@ -503,7 +503,12 @@ const AUDIO_CHANNELS: [(u8, &str); 3] = [(2, "Stereo"), (6, "5.1 surround"), (8,
 /// the filter is a ceiling — and because the callers that only want the count ask on every
 /// settings-geometry query, which is several times a frame.
 pub fn audio_channel_options(settings: &Settings) -> &'static [(u8, &'static str)] {
-    let max = settings.audio_route.max_channels(video_caps());
+    channel_options_up_to(settings.audio_route.max_channels(video_caps()))
+}
+
+/// The prefix of [`AUDIO_CHANNELS`] a `max`-channel ceiling leaves — the shared filter, so the
+/// device ceiling and the route ceiling are read the same way.
+fn channel_options_up_to(max: u8) -> &'static [(u8, &'static str)] {
     let offered = AUDIO_CHANNELS.iter().take_while(|(c, _)| *c <= max).count();
     &AUDIO_CHANNELS[..offered]
 }
