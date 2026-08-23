@@ -93,6 +93,11 @@ pub struct HostPtsAnchor {
     /// Player clock at the most recent [`Self::map`], so [`Self::ready_for_audio`] can answer
     /// without a clock read of its own.
     last_player_ns: u64,
+    /// Last base this run handed out. The ramp is sized against the frame interval, so a delivery
+    /// whose host PTS did not advance by one (a repeated stamp, a variable-rate source) would
+    /// otherwise subtract more trim than `raw` gained and emit a stamp BEHIND its predecessor —
+    /// which NDL reads as a rewind and answers by muting the session for good.
+    last_base_ns: u64,
 }
 
 impl HostPtsAnchor {
@@ -125,6 +130,7 @@ impl HostPtsAnchor {
         self.trim_ns = 0;
         self.trim_target_ns = 0;
         self.window = None;
+        self.last_base_ns = 0;
     }
 
     /// Base reference for `host_pts_ns`. First call anchors on `player_clock_ns` and
@@ -136,12 +142,14 @@ impl HostPtsAnchor {
         let Some((host0, player0)) = self.anchor else {
             self.anchor = Some((host_pts_ns, player_clock_ns));
             self.window = Some((player_clock_ns, u64::MAX));
+            self.last_base_ns = player_clock_ns;
             return player_clock_ns;
         };
         self.trim_ns = self.trim_target_ns.min(self.trim_ns + self.ramp_ns);
         let delta = host_pts_ns as i64 - host0 as i64;
         let raw = (player0 as i64 + delta).max(0) as u64;
-        let base = raw.saturating_sub(self.trim_ns);
+        let base = raw.saturating_sub(self.trim_ns).max(self.last_base_ns);
+        self.last_base_ns = base;
         if self.trim {
             self.observe_lead(base.saturating_sub(player_clock_ns), player_clock_ns, player0);
         }
@@ -252,6 +260,37 @@ mod tests {
         }
         assert!(a.ready_for_audio());
         assert!(a.trimmed_ns() > 0);
+    }
+
+    /// The ramp is sized against the frame interval, so anything that stalls `raw` WHILE the trim
+    /// is still being paid off emits a stamp behind its predecessor. NDL reads that as a rewind and
+    /// mutes the session for the rest of the run, so it must be impossible, not merely unlikely.
+    ///
+    /// The repeat has to land mid-ramp to bite: once `trim_ns` reaches its target it stops moving
+    /// and a repeated PTS merely re-emits the same stamp. Proven non-vacuous by planting the defect
+    /// (drop the `.max(last_base_ns)` in `map`), which fails this with a stamp ~4 ms behind.
+    #[test]
+    fn a_repeated_host_pts_mid_ramp_cannot_walk_the_stamp_backwards() {
+        let interval = 16_666_666u64;
+        let mut a = HostPtsAnchor::new(interval);
+        a.map(0, 80_000_000);
+        // Frame 0 anchored 75 ms late, so there is a large trim to ramp off. Feed clean frames
+        // until the first window closes and the ramp starts owing.
+        let mut i = 1u64;
+        while a.trimmed_ns() == 0 {
+            a.map(i * interval, i * interval + 5_000_000);
+            i += 1;
+            assert!(i < 1_000, "no trim was ever taken");
+        }
+        // The ramp now owes `trimmed_ns()` and pays it at a quarter interval per frame. A delivery
+        // whose host PTS does not advance gains nothing in `raw` to cover that quarter.
+        let stuck = i * interval;
+        let mut last = a.map(stuck, stuck + 5_000_000);
+        for repeat in 0..8u64 {
+            let base = a.map(stuck, stuck + 5_000_000 + repeat);
+            assert!(base >= last, "repeat {repeat}: {base} < {last}");
+            last = base;
+        }
     }
 
     #[test]
