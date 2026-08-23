@@ -208,12 +208,13 @@ pub(crate) enum RowLock {
     NoHdr,
     /// One decodable codec, so `codec_prefs` collapses to a single entry.
     OneCodec,
-    /// The active backend offers one channel count (NDL v1), so there is nothing to pick.
+    /// The active backend decodes one channel count (NDL v1), so no route could offer more.
     StereoOnly,
-    /// Opus offload is on, and the plane's Opus decoder is stereo-only
-    /// (`AudioRoutePref::max_channels`). Unlike the TV's Sound Out, this one is knowable from the
-    /// pick alone, so the row is greyed rather than left to disappoint at connect.
-    OffloadStereoOnly,
+    /// The *selected audio processing* carries stereo only (`AudioRoutePref::max_channels`) — the
+    /// Opus plane decodes nothing wider, and the PCM plane on a pre-webOS-7 set has no
+    /// multi-channel mode. Carries the route so the caption can name which pick did it and where
+    /// to change it: unlike the TV's Sound Out, this limit follows from a setting the user owns.
+    RouteStereoOnly(AudioRoutePref),
     /// Nothing is plugged into the TV, so there is no controller to describe to the host.
     NoGamepad,
 }
@@ -260,8 +261,9 @@ pub(crate) fn audio_route_current_index(settings: &Settings) -> usize {
 }
 
 /// Applies an audio-route pick. The layout preference is left alone — it is narrowed per session
-/// by `session::connect`'s `Negotiated::clamp`, not rewritten here — but picking Offload locks the
-/// Audio row (`RowLock::OffloadStereoOnly`), so the two are set in the order the caption names.
+/// by `session::connect`'s `Negotiated::clamp`, not rewritten here — but a route that carries one
+/// layout locks the Audio row (`RowLock::RouteStereoOnly`), so the two are set in the order that
+/// row's caption names.
 pub(crate) fn apply_audio_route(settings: &mut Settings, choice_index: usize) {
     let Some(&route) = audio_routes().get(choice_index) else {
         return;
@@ -278,8 +280,12 @@ pub(crate) fn row_lock(row: SettingsRow, settings: &Settings, detected: Option<G
         SettingsRow::Hdr if !caps.hdr => Some(RowLock::NoHdr),
         SettingsRow::Hdr if settings.codec == CodecPref::H264 => Some(RowLock::HdrNeedsHevc),
         SettingsRow::Codec if caps.codec_prefs().len() < 2 => Some(RowLock::OneCodec),
-        SettingsRow::Audio if settings.audio_route == AudioRoutePref::NdlOpus => Some(RowLock::OffloadStereoOnly),
-        SettingsRow::Audio if audio_channel_options(settings).len() < 2 => Some(RowLock::StereoOnly),
+        // Device before route: where the client itself decodes stereo only, no audio-processing
+        // pick could widen it, and naming one would send the user somewhere that cannot help.
+        SettingsRow::Audio if caps.max_channels < 2 => Some(RowLock::StereoOnly),
+        SettingsRow::Audio if audio_channel_options(settings).len() < 2 => {
+            Some(RowLock::RouteStereoOnly(settings.audio_route))
+        }
         SettingsRow::Gamepad if detected.is_none() => Some(RowLock::NoGamepad),
         _ => None,
     }

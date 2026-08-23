@@ -5,7 +5,7 @@ use crate::app::menu::SettingsScope;
 use crate::app::view::scrolllist;
 use crate::core::model;
 use crate::core::VERSION;
-use crate::services::store::{GamepadType, Settings, VideoBackend};
+use crate::services::store::{AudioRoutePref, GamepadType, Settings, VideoBackend};
 use crate::ui;
 use crate::ui::render::Rect;
 use crate::ui::widgets::FocusRow;
@@ -26,14 +26,16 @@ pub(crate) const TITLE: &str = "Settings";
 fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
     // Where the Video backend row exists, the limit is the *pick*, not the TV, and SMP lifts it —
     // so the caption points at the fix instead of at a version number the user can't change.
+    // The set itself, for a limit no backend pick can lift. `source` names the *fixable* one.
+    let device = || match webos_major {
+        Some(major) => format!("webOS {major}"),
+        None => "this TV".to_string(),
+    };
     let source = || {
         if crate::core::caps::smp_selectable() {
             "the NDL backend — try SMP".to_string()
         } else {
-            match webos_major {
-                Some(major) => format!("webOS {major}"),
-                None => "this TV".to_string(),
-            }
+            device()
         }
     };
     match lock {
@@ -41,7 +43,19 @@ fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
         menu::RowLock::NoHdr => format!("HDR is not supported by {}", source()),
         menu::RowLock::OneCodec => format!("H.264 is the only codec supported by {}", source()),
         menu::RowLock::StereoOnly => format!("Stereo is the only layout supported by {}", source()),
-        menu::RowLock::OffloadStereoOnly => "Offload (NDL) audio processing is stereo only".to_string(),
+        // Names the pick AND where it lives, and says whose limit it is: the Opus plane decodes
+        // stereo on every set, while the PCM plane's ceiling is this TV's firmware. A caption that
+        // only said "stereo only" would leave the user with nowhere to go.
+        menu::RowLock::RouteStereoOnly(route) => format!(
+            "{} audio processing {} — change it under Experimental",
+            menu::audio_route_label(route),
+            match route {
+                AudioRoutePref::NdlOpus => "decodes stereo only".to_string(),
+                // The plane's ceiling is the firmware's, and SMP (which `source` would offer)
+                // has no audio plane at all — so this one names the set, not a backend to try.
+                _ => format!("carries stereo only on {}", device()),
+            },
+        ),
         menu::RowLock::NoGamepad => "Connect a controller to your TV".to_string(),
     }
 }
