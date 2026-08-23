@@ -189,25 +189,44 @@ the preference held down to the route), so a 5.1 pick comes back whole on the ro
 - **The software route's latency is buffering, not decode.** Software Opus is 5% of a core and the
   target is hardware-FP (`-soft-float`, § "Toolchain"), so the only client-side terms are the ring
   depth and the device quantum. Two things follow, and they are the whole lever list here:
-  - ⚠ **The ring is inspected once per callback, so the prime OVERSHOOTS.** It crosses 25 ms
-    somewhere inside a 10.67 ms callback period, in 5 ms steps, so the depth at first serve is
-    25-36 ms — and nothing pulls it back down afterwards (`MAX_MS` is a 90 ms ceiling, not a
-    target), so whatever it happened to be is standing lip sync for the session. The callback now
-    drains the excess at the prime edge, before a single sample has played, which is free by
-    construction. Re-primes get the same treatment: they follow an underrun, which is already the
-    gap.
+  - **The prime overshoots, and the shed is what takes it back.** The ring is inspected once per
+    callback, so it crosses the target somewhere inside a 10.67 ms period in 5 ms steps — first
+    serve is target+0..15 ms. An earlier revision drained that excess at the prime edge, which is
+    free by construction but only handles the prime; `JitterPolicy`'s drift shed handles it and
+    every later source of the same drift (host capture clock vs. this DAC) by walking the depth
+    back to target one crossfaded 5 ms frame at a time. Letting the policy own priming outright is
+    the cheaper correctness call than second-guessing its state machine for one transient.
   - **The device quantum is logged at open** (`SDL audio device:`). SDL may negotiate something
-    other than the requested 512 frames, and a larger one silently raises the effective prime —
-    it is `max(PRIME_MS, one callback)`. Read that line before concluding anything about this
-    route's latency; without it there is no way to tell from a log where the buffering went.
-- **The SDL ring is deliberately dumb**: prime 25 ms, serve, re-prime after a dry read. No adaptive
-  target and no A/V measurement — the `JitterPolicy`/`AvSync` machinery that had those was ~35 ms
-  of floor and is gone. It does keep ONE ceiling: the callback pops exactly one quantum per wake,
-  so anything the producer runs ahead by stays ahead, and a host stall that unblocks into a burst
-  would otherwise leave that much lip-sync debt for the rest of the session (the picture stays
-  paced regardless — the clock plane drives that, not this ring). Over 90 ms it drops the oldest
-  audio back to the prime depth, at most once every 2 s so slow clock drift is one skip rather than
-  a continuous rasp. Both counters are in the `audio playback (SDL device)` debug line.
+    other than the requested 512 frames, and a larger one silently raises the policy's effective
+    target, which is floored at `one callback + 5 ms`. Read that line before concluding anything
+    about this route's latency; without it there is no way to tell from a log where it went.
+- **The SDL ring runs `punktfunk_core::audio::JitterPolicy`** (`JitterTuning::AAUDIO`, unmodified),
+  the same de-jitter state machine the Linux, Windows, Android and Apple rings use. Prime to an
+  adaptive target, grow it only on a set that actually underruns, and walk drift back down one
+  crossfaded 5 ms frame at a time. `crossfade_drop` fades BOTH corrections — the smooth shed and the
+  hard-cap trim.
+  - ⚠ **This was removed once on `ndl-latency-levers` and restored deliberately.** The removal was
+    credited with "~35 ms of floor", and that was wrong: the old local preset was
+    `base_target_ms: 25` / `max_target_ms: 90` and the fixed prime that replaced it was also 25/90,
+    so no floor was ever saved. What was actually lost was jitter resilience — the adaptive floor,
+    and the crossfaded shed (replaced by an uncrossfaded drop of up to 65 ms, i.e. an audible
+    click) — on the fleet's worst link. Do not delete it again without numbers from
+    `audio playback (SDL device)`.
+  - **The preset is `AAUDIO` rather than a local copy.** Field for field it already *is* what the
+    local `WEBOS_TUNING` was, with the old `deprime_after: 5` **callbacks** now expressed as
+    `deprime_ms: 60` — core moved that fuse to time because a callback count means a different
+    span on every device. AAudio's rationale (raw callback, client owns the buffer, Wi-Fi
+    power-save bunching arrives as underruns) is this TV's situation exactly.
+  - **The A/V sync loop is not wired.** `set_sync_target` is never called, which core documents as
+    reproducing unsynchronised behaviour exactly. It never steered here anyway — it was gated
+    behind an `$HOME/av-trim-ms.conf` nobody measured, and the video reference this platform can
+    build is biased low by NDL's unobservable decode+panel term. See § "A/V sync".
+  - **Read `target_ms` in the debug line.** It is the adaptive floor's current answer, and the one
+    figure that says whether this set needed more than the 25 ms base. `sheds` vs `trims` separates
+    "drift corrected inaudibly" from "the link outran the headroom".
+  - **The device quantum is logged at open** (`SDL audio device:`). SDL may negotiate something
+    other than the requested 512 frames, and a larger one silently raises the policy's effective
+    target, which is floored at `one callback + 5 ms`.
 
 **Blind alleys, so they aren't re-tried:**
 - ⚠ **The NDL PCM plane was built, measured and removed.** A third route decoded Opus here and fed

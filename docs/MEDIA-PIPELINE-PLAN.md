@@ -1,17 +1,20 @@
 # Media pipeline rework
 
 **Status: implemented on `ndl-latency-levers` (phases 0-5, one commit each), then narrowed to two
-audio routes. What follows is the plan as written; the deviations from it are listed at the
-bottom.**
+audio routes, then reviewed. What follows is the plan as written; deviations are at the bottom.**
+
+> **Read `docs/handovers/ndl-latency-levers.md` first** — it is the current state and it records
+> two items this plan asked for that were **never implemented** (a de-jitter target inside
+> `AudioStage`, and auto-disable for slice-progressive after repeated part breaks), plus the
+> correction that deleting `JitterPolicy` did not save the ~35 ms it was credited with.
 
 > **The NDL PCM route is gone.** Built, paced and measured, it bought only a small latency win over
 > the SDL path, could not carry 7.1, and its `"6-channel"` interleave order was never verified on a
-> set. For stereo the Opus offload route is shorter still; for anything wider software is the only
-> route that plays it. So the pipeline carries **two** routes — Software (SDL) and Offload (NDL) —
-> and `session::paced`, `ffi::AudioPcmInfo`, `AudioFormat::PcmS16`, `NDL_51_ORDER`,
-> `NdlVideo::burst_pcm`, `NdlAudioConfig` and `ndl::audio_plane_max_channels` were deleted with it.
-> Everything below that says "three routes" or names `NdlPcm` is the plan as written, kept for the
-> reasoning; `docs/NOTES.md` § "Audio" is the current state.
+> set. So the pipeline carries **two** routes — Software (SDL) and Offload (NDL) — and
+> `session::paced`, `ffi::AudioPcmInfo`, `AudioFormat::PcmS16`, `NDL_51_ORDER`,
+> `NdlVideo::burst_pcm`, `NdlAudioConfig` and `ndl::audio_plane_max_channels` went with it.
+> Everything below naming three routes or `NdlPcm` is the plan as written, kept for the reasoning;
+> `docs/NOTES.md` § "Audio" is the current state.
 
 Goal: one abstract pipeline — sources, processing stages, sinks — so an A/V change is a stage
 swap, not an edit across `connect`/`pump`/`sink`/`ndl::v2`. Secondary and equal: fewer copies,
@@ -24,9 +27,9 @@ shorter path from wire to sink, lower latency. This also re-judges every change 
 | --- | --- | --- |
 | PTS lead trim (`timeline.rs`) | **Keep.** Only lever with numbers (35-39 ms). | Becomes a `LeadTrim` policy on the session clock. |
 | Deferred audio latch (`ready_for_audio`) | **Keep**, but it is a workaround for the clock having no owner. | Folded into `SessionClock::settled()`. |
-| Slice-progressive AU feed | **Unproven on hardware.** Corruption risk sits on the critical path. | Keep the code; gate on `SinkCaps::partial_au` + auto-disable after repeated part breaks. |
+| Slice-progressive AU feed | **Unproven on hardware**, and the review found it is *inert* on small AUs and costs a full-AU copy on large ones (core emits early parts only across FEC blocks). Corruption risk sits on the critical path. | Gated on `SinkCaps::partial_au`. ⚠ **Auto-disable after repeated part breaks was never built.** `parts=` now in the video heartbeat so a log says whether it fires at all. |
 | PCM plane as **default** audio route | **Reject as default.** Field report: stream goes laggy — the same class of fault the silent clock plane fixed. Feeding the pacing plane from the network makes NDL's pacing depend on audio arrival jitter. | Default back to software Opus -> SDL + silent clock plane (last known-good pacing shape). All three routes stay, user-selectable in Settings, swappable without touching the pipeline. |
-| Deletion of `JitterPolicy` / `AvSync` / crossfade shed | **Keep deleted** — but the fallback ring is the default again, and a fixed 25 ms prime is what it has. | Add a minimal, portable de-jitter target inside `AudioStage` (sink-blind), not a resurrection of the SDL-specific policy. |
+| Deletion of `JitterPolicy` / `AvSync` / crossfade shed | ⚠ **Re-opened by the review.** Old tuning was `base_target_ms: 25`/`max_target_ms: 90`; today's `PRIME_MS`/`MAX_MS` are the same 25/90, so no floor was saved — what was lost is the adaptive floor and the crossfaded shed, i.e. jitter resilience on the fleet's worst link. `AvSync` was always gated off and lost nothing. | Was: "add a minimal, portable de-jitter target inside `AudioStage`". **This was never written.** Open decision — see the handover. |
 | Channel clamp from `NDL_DirectAudioSupportMultiChannel` | **Bug as wired.** It feeds `core::caps`, so a TV whose *plane* reports stereo also loses 5.1 on the SDL route, which never touches the plane. | Per-route audio caps — see Part 2b. |
 | 7.1 -> 5.1 fold in `PcmFeed` | **Delete.** Mixing down silently is exactly what should not happen. | Offer a layout only where the selected route carries it natively; otherwise it is blocked in Settings with a reason, and the host is asked for a width the sink takes verbatim. |
 | `AudioRoute` enum threaded through `connect`/`sink`/`pump` | **Replace.** Three arms restated in five places. | Route = which `AudioSink` was constructed; format comes from the sink. |
@@ -171,11 +174,10 @@ Phases 0-5 landed as six commits. Two changes to the plan:
   move under a running app, so it stays out of the menu; `Negotiated::clamp` is the single place the
   preference becomes a width, and "never ask for what can't play" holds without any menu having to
   be right about the TV's current state.
-- **The PCM route gained a pacing ring** (`session::paced`), which the plan did not anticipate. The
-  stage feeds a ring and a feeder thread holds the plane at its standing lead on a fixed cadence,
-  because the plane's depth is what NDL paces the PICTURE on and feeding it on arrival made that
-  depth a function of network jitter. It also means the route no longer maps a host PTS — see
-  `docs/NOTES.md` § "Audio".
+- **The PCM route gained a pacing ring** (`session::paced`), which the plan did not anticipate:
+  feeding the plane on arrival made its depth — the thing NDL paces the PICTURE on — a function of
+  network jitter. Both the route and the ring were later deleted; the finding is the part worth
+  keeping, and it is why the software route still runs the silent clock plane.
 
 Everything else is as described: `core::media` holds the traits, `session::{audio,stage,pipeline}`
 the stages and assembly, `AudioRoutePref` the user-facing route pick, and no path folds a layout
@@ -183,14 +185,14 @@ down any more.
 
 ## On-device checklist
 
+Superseded by the checklist in `docs/handovers/ndl-latency-levers.md`, which is two routes and
+carries the review's additions (`parts=` vs `frames=`, and reading `underruns`/`dropped_ms` as the
+evidence for the jitter-ring decision). The items unique to this document:
+
 1. **Each route in turn** (Settings → Experimental → Audio processing): confirm the log's
    `audio path:` line, then listen. Software is the baseline; Offload is the one under test.
 2. **Watch for the lag report that started this.** `video: … plane_lead=` in the debug heartbeat is
    the plane's depth; sagging toward zero under Offload is the stutter signature. It should sit
    flat at `PLANE_LEAD_MS`.
 3. **5.1 on the software route**, where the TV offers it — `audio: N channel(s) requested` in the
-   log says which of the three limits bound.
-4. **`frame parts:` warnings** and picture corruption — still the open question about NDL taking a
-   fragmented AU.
-5. **Loss → freeze → reanchor with audio still alive**, on both routes. This path has a history of
-   permanent session mutes.
+   log says which of the limits bound.
