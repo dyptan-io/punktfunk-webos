@@ -21,11 +21,19 @@ impl App {
         // An open Resolution/Frame rate dropdown intercepts all input until it's
         // closed (by picking an option or backing out) — it's a modal overlay on
         // top of the settings row list.
+        // Read before the dropdown is borrowed mutably: the option count needs the settings
+        // document, and `dd.row` is the only thing the borrow contributes to it.
+        let dd_len = self
+            .settings_ui
+            .dropdown
+            .as_ref()
+            .and_then(|dd| menu::settings_logical_row(set, dd.row))
+            .map_or(1, |row| menu::dropdown_option_count(row, self.settings_target()).max(1));
         if let Some(dd) = self.settings_ui.dropdown.as_mut() {
             // `dd.row` is the display position; setting lookups need the logical row.
             let row = dd.row;
             let logical = menu::settings_logical_row(set, row);
-            let len = logical.map_or(1, |row| menu::dropdown_option_count(row).max(1));
+            let len = dd_len;
             match ev {
                 MenuEvent::Up | MenuEvent::Down => {
                     crate::ui::widgets::list_nav(&mut dd.focused, len, menu::nav_dir(ev));

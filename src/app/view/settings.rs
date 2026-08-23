@@ -111,9 +111,8 @@ pub(crate) fn rows(
         menu::SettingsRow::Audio => FocusRow::dropdown(
             crate::app::view::icons::ICON_SIGNAL,
             "Audio",
-            menu::audio_label(settings.audio_channels),
-        )
-        .with_subtext_opt(menu::audio_limit_reason(settings).map(ui::widgets::RowSubtext::caution)),
+            menu::audio_label(menu::audio_row_channels(settings)),
+        ),
         menu::SettingsRow::Gamepad => FocusRow::dropdown(
             crate::app::view::icons::ICON_GAMEPAD,
             "Controller",

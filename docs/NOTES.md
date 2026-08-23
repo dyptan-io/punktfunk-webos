@@ -143,16 +143,21 @@ rewrites a document carried over from a v2 set. The Audio row's layouts follow t
 route, so picking `Offload (NDL)` locks that row to stereo with the reason on it.
 
 **Nothing is ever mixed down, and the layout row is a preference.** `Settings::audio_channels` says
-"5.1 where it can play"; `Negotiated::clamp` is the one place it becomes a width, narrowing it by
+"5.1 where it can play"; `Negotiated::clamp` is the one place it becomes a width on the wire, narrowing it by
 what the selected route carries (`AudioRoutePref::max_channels`) and by what the TV's Sound Out
 passes right now (`ndl::audio_output_width`). So a layout the sink can't put on a speaker is never
 encoded, never sent, never decoded and never folded — and the preference survives a route change or
 an unplugged receiver instead of being rewritten out of the document. A width mismatch at
 `AudioStage::new` is an error, not a downmix.
 
-**Nothing narrows the menu but a hard limit.** The Audio row lists everything this client can
-decode. `menu::audio_limit_reason` captions it when the pick won't be honoured; it never removes an
-entry, because the reasons are per session and one of them changes under a running app.
+**The menu is narrowed by the static limits only.** The Audio row lists what this client can
+decode, capped by what the *selected* route can put on a speaker — the plane has no 7.1 mode and the
+Opus plane nothing above stereo, so those widths are never offered, and a route left with one entry
+locks the row with the reason on it. The TV's Sound Out is deliberately not in that filter: it
+changes under a running app, so it applies per session and lands in the log, not in a menu that
+would be stale by the time it was drawn. The stored `audio_channels` is still never rewritten
+(`menu::audio_row_channels` shows the preference held down to the route), so a 7.1 pick comes back
+whole on a route that plays it.
 
 - **The plane's ceiling is the firmware's, and it is per route.** `ndl::audio_plane_max_channels`
   is 6 where the library has `NDL_DirectAudioRegisterCallback` and 2 where it does not — webOS 7
