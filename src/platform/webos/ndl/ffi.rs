@@ -309,49 +309,79 @@ pub(super) fn v1() -> Result<&'static V1> {
     })
 }
 
-/// What `NDL_DirectAudioSupportMultiChannel` says about this TV's audio output.
+/// Whether this library has the 6-channel PCM plane mode at all — a fixed property of the
+/// firmware, and the only thing the offered layout is gated on.
 ///
-/// Two conditions, not one, which is why it is a three-way answer: the output path has to be
+/// Probed by the presence of `NDL_DirectAudioRegisterCallback`, which webOS 7 introduced
+/// alongside 6-channel PCM. This is ss4s's own test, and it is deliberately a *capability*
+/// question rather than a *routing* one: whether 5.1 currently reaches a speaker also depends on
+/// Sound Out, which the user can change mid-session, and gating a menu on that leaves the menu
+/// wrong until the next launch. See [`multichannel_pcm_status`] for the routing half.
+pub(super) fn multichannel_pcm_mode() -> bool {
+    optional_sym(c"NDL_DirectAudioRegisterCallback").is_some()
+}
+
+/// What `NDL_DirectAudioSupportMultiChannel` says about where the sound is currently going.
+///
+/// Two conditions, not one, which is why it is a four-way answer: the output path has to be
 /// capable AND the TV's Sound Out has to be configured to use it. TV speakers are a 2.0/2.2 array
-/// and ARC/optical carry 2-channel PCM only, so those report [`Self::NotPassthrough`] at best —
-/// feeding 5.1 there is decoded locally, sent over the airlink, and then folded down inside the TV
-/// for nothing.
+/// and ARC/optical carry 2-channel PCM only, so those report [`Self::OutputNotPassthrough`] at
+/// best — 5.1 fed there is folded down inside the TV.
+///
+/// Diagnostics only (see [`multichannel_pcm_mode`]): a transient setting, and the query is
+/// meaningful only once `NDL_DirectMediaInit` has run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MultiChannelPcm {
-    /// No output device that can take multi-channel PCM.
+    /// No multi-channel support here.
     Unsupported,
-    /// The device can, but Digital Sound Out is not passthrough — i.e. stereo is what leaves.
-    NotPassthrough,
-    /// Current settings do support it: real 5.1 can reach the sink.
+    /// Supported, but nothing connected takes multi-channel PCM.
+    NoDeviceConnected,
+    /// The connected device takes it, but Digital Sound Out is not passthrough.
+    OutputNotPassthrough,
+    /// Current settings do support it: real 5.1 reaches the sink.
     Supported,
-    /// The symbol does not exist (pre-webOS-7 library, or no NDL at all), so the TV cannot be
-    /// asked. Treated as stereo by every caller — the conservative read, since loading a plane
-    /// for a width the set can't take fails asynchronously and costs the picture its pacing.
+    /// The symbol is absent, the call failed, or it answered with a code the header doesn't
+    /// document.
     Unknown,
 }
 
-/// Queries multi-channel PCM support. Resolved through `RTLD_DEFAULT` (the library is opened
-/// `RTLD_GLOBAL`) and optional, because it is a webOS 7 addition — ss4s uses the presence of its
-/// sibling `NDL_DirectAudioRegisterCallback` as a bare version test, but the query itself is the
-/// actual capability answer and is worth preferring.
+/// Queries where multi-channel PCM currently goes.
 ///
-/// ⚠ The return codes are **off by one** against the `NDLMultiChannelPCMCallback` codes the header
-/// documents (`0`/`1`/`2` there); this maps the function's own `0`-is-unsupported convention.
-pub(super) fn multichannel_pcm() -> MultiChannelPcm {
-    type Query = unsafe extern "C" fn() -> c_int;
-    // SAFETY: NUL-terminated literal; the result is checked for null before it is called.
-    let ptr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"NDL_DirectAudioSupportMultiChannel".as_ptr()) };
-    if ptr.is_null() {
+/// ⚠ `int NDL_DirectAudioSupportMultiChannel(int *isSupported)` — the support code is an OUT
+/// PARAMETER and the return is 0/-1. The `NDLMultiChannelPCMCallback` codes the header documents
+/// alongside it are the same ladder shifted down by one; do not read one as the other.
+pub(super) fn multichannel_pcm_status() -> MultiChannelPcm {
+    type Query = unsafe extern "C" fn(*mut c_int) -> c_int;
+    let Some(ptr) = optional_sym(c"NDL_DirectAudioSupportMultiChannel") else {
+        return MultiChannelPcm::Unknown;
+    };
+    // SAFETY: `ptr` is a dlsym-verified address for the prototype above.
+    let query: Query = unsafe { std::mem::transmute_copy(&ptr) };
+    let mut raw: c_int = -1;
+    // SAFETY: `raw` is a live, correctly typed out-parameter for the duration of the call.
+    if unsafe { query(&raw mut raw) } != 0 {
         return MultiChannelPcm::Unknown;
     }
-    // SAFETY: `ptr` is a dlsym-verified address for a no-argument `int` function.
-    let query: Query = unsafe { std::mem::transmute_copy(&ptr) };
-    // SAFETY: no arguments, no pointers; a pure capability query.
-    match unsafe { query() } {
+    match raw {
         0 => MultiChannelPcm::Unsupported,
-        1 => MultiChannelPcm::NotPassthrough,
-        _ => MultiChannelPcm::Supported,
+        1 => MultiChannelPcm::NoDeviceConnected,
+        2 => MultiChannelPcm::OutputNotPassthrough,
+        3 => MultiChannelPcm::Supported,
+        _ => MultiChannelPcm::Unknown,
     }
+}
+
+/// One symbol that only some firmware has, or `None`.
+///
+/// Resolved through `RTLD_DEFAULT` (the library is opened `RTLD_GLOBAL`) — but only after
+/// [`common`] has forced that `dlopen`. Without it every optional symbol reads as absent on any
+/// path that runs before the first real NDL call, which is exactly where the capability probes
+/// run.
+fn optional_sym(name: &CStr) -> Option<*mut c_void> {
+    common().ok()?;
+    // SAFETY: `name` is a NUL-terminated literal; the result is checked for null.
+    let ptr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) };
+    (!ptr.is_null()).then_some(ptr)
 }
 
 /// NDL's last error string (set on the most recent failing call). Messages only, so an

@@ -53,8 +53,8 @@ estimator is gone, see below).
 ## Left
 1. Run a stereo session. Expect `audio path: software Opus decode -> NDL PCM plane`,
    `NDL PCM plane: 2 channel(s) from a 2-channel stream`, and no `frame parts:` warnings.
-2. Read `NDL audio output: <MultiChannelPcm> — offering up to N channel(s)` at startup. That one
-   line decides whether 5.1 is offered at all, and it has never been seen on a real set.
+2. Read `NDL audio plane: offering up to N channel(s)` at startup. That one line decides whether
+   5.1 is offered at all, and it has never been seen on a real set.
 3. If 5.1 is offered, listen for channel order. `NDL_51_ORDER` is `[0,1,4,5,2,3]`, inferred from
    ss4s; if dialogue lands in the surrounds, try identity `[0,1,2,3,4,5]`. Audible, not silent.
 4. Watch for `frame parts:` warnings and picture corruption — that is the whole test of whether NDL

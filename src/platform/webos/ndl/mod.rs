@@ -339,23 +339,32 @@ fn ensure_init(app_id: &str, api2: bool) -> Result<()> {
 /// NDL keys its session on the caller's app id, so a mismatch fails the load.
 /// Widest layout NDL's audio PLANE can put on a speaker here, in channels.
 ///
-/// Multi-channel where the output path takes multi-channel PCM *and* Sound Out is set for it,
-/// stereo otherwise. A clamp on the PLANE ROUTES only (`core::model::AudioRoutePref::max_channels`)
-/// — the SDL route never touches the plane, and folding its caps by this number took 5.1 away from
-/// sessions that could play it. Logged once, because "why is 5.1 missing" is otherwise an
-/// unanswerable support question.
+/// 6 where the firmware has the `"6-channel"` PCM mode, 2 otherwise — never 8: the plane's mode
+/// string enum has no 7.1 member, and NDL's Opus struct has no multistream mapping field.
+///
+/// A clamp on the PLANE ROUTES only (`core::model::AudioRoutePref::max_channels`) — the SDL route
+/// never touches the plane, and folding its caps by this number took 5.1 away from sessions that
+/// could play it. Logged once, because "why is 5.1 missing" is otherwise an unanswerable support
+/// question.
 pub fn audio_plane_max_channels() -> u8 {
     static MAX: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     *MAX.get_or_init(|| {
-        let support = ffi::multichannel_pcm();
-        let channels = if support == ffi::MultiChannelPcm::Supported {
-            8
-        } else {
-            2
-        };
-        tracing::info!("NDL audio output: {support:?} — offering up to {channels} channel(s)");
+        let channels = if ffi::multichannel_pcm_mode() { 6 } else { 2 };
+        tracing::info!("NDL audio plane: offering up to {channels} channel(s)");
         channels
     })
+}
+
+/// Logs where multi-channel PCM currently goes. Called on a 5.1 plane load and nowhere else: the
+/// query is meaningful only after `NDL_DirectMediaInit`, and its answer is a Sound Out setting the
+/// user can change under a running session — so it explains a downmix rather than causing one.
+fn log_multichannel_routing() {
+    let status = ffi::multichannel_pcm_status();
+    if status == ffi::MultiChannelPcm::Supported {
+        tracing::info!("NDL multichannel PCM: {status:?}");
+    } else {
+        tracing::warn!("NDL multichannel PCM: {status:?} — the TV will fold this 5.1 plane down");
+    }
 }
 
 pub fn app_id() -> String {

@@ -147,12 +147,30 @@ route, so picking `Offload (NDL)` locks that row to stereo with the reason on it
 sink can't put on a speaker is never encoded, never sent and never folded. A width mismatch at
 `AudioStage::new` is an error, not a downmix.
 
-- **The plane's ceiling is the TV's, and it is per route.** `ndl::audio_plane_max_channels` reads
-  `NDL_DirectAudioSupportMultiChannel` (webOS 7+; absent = stereo). Two conditions, not one: the
-  output path must be capable AND Sound Out configured for it — TV speakers are 2.0/2.2 and
-  ARC/optical carry 2-channel PCM only. It reaches `core::caps` as `plane_max_channels`, *beside*
-  the decoder-wide `max_channels`, because clamping the global by it took 5.1 away from the SDL
-  route, which plays it fine.
+- **The plane's ceiling is the firmware's, and it is per route.** `ndl::audio_plane_max_channels`
+  is 6 where the library has `NDL_DirectAudioRegisterCallback` and 2 where it does not — webOS 7
+  introduced that symbol alongside the `"6-channel"` PCM mode, and it is the test ss4s uses. Never
+  8: the mode string enum is `mono`/`stereo`/`6-channel`, and NDL's Opus struct has no multistream
+  mapping field. It reaches `core::caps` as `plane_max_channels`, *beside* the decoder-wide
+  `max_channels`, because clamping the global by it took 5.1 away from the SDL route, which plays
+  it fine.
+- **Capability and routing are different questions, and only the first gates the menu.**
+  `NDL_DirectAudioSupportMultiChannel` answers the second: whether 5.1 reaches a speaker *right
+  now*, which also depends on Sound Out (TV speakers are 2.0/2.2 and ARC/optical carry 2-channel
+  PCM only). That is a setting the user can change under a running session, so gating an offered
+  layout on it leaves the menu wrong until the next launch — ss4s declines to check it at all.
+  Here it is logged on a 5.1 plane load (`log_multichannel_routing`) and nowhere else, so a
+  downmix is explainable without being self-inflicted.
+- ⚠ **`NDL_DirectAudioSupportMultiChannel` has an out-parameter**:
+  `int NDL_DirectAudioSupportMultiChannel(int *isSupported)`, returning 0/-1, with the code written
+  through the pointer — `0` unsupported, `1` no device, `2` device but not passthrough, `3` will
+  play. Reading the *return* as the code (as this client did) is both wrong and UB on ARM EABI: the
+  callee writes through whatever `r0` held. The `NDLMultiChannelPCMCallback` codes documented beside
+  it are the same ladder shifted down by one; they are not interchangeable.
+- ⚠ **Optional NDL symbols must be probed after the library is open.** `RTLD_DEFAULT` finds nothing
+  until something has `dlopen`'d `libNDL_directmedia` — and the capability probes run at startup,
+  before any decode session. `ffi::optional_sym` forces `ffi::common()` first; without it every
+  optional symbol reads as absent and the TV silently loses 5.1.
 - ⚠ **The 5.1 interleave order is inferred, not verified.** `NDL_51_ORDER` emits
   `FL FR BL BR FC LFE`, from ss4s's `IsOpusPassthroughSupported` demanding an Opus mapping of
   `{0,1,4,5,2,3}`. If dialogue lands in the surrounds, an identity `[0,1,2,3,4,5]` is the other
