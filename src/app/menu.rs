@@ -154,14 +154,14 @@ pub enum ExpRow {
     /// this screen. Experimental because two of its three picks are hardware paths that no
     /// runtime probe can verify; locked to the software route where there is no NDL plane.
     AudioProcessing,
-    /// Play frames out on the host's cadence — `Settings::smooth_playback`. Experimental: trades
-    /// latency for smoothness, and by how much depends on the (measured, not chosen) link cushion.
-    SmoothPlayback,
+    /// Stamp from the fixed anchor instead of the cadence loop — `Settings::direct_playback`.
+    /// Experimental: trades smoothness back for latency, and what that costs depends on the link.
+    DirectPlayback,
 }
 
 /// Order is display order. `AudioProcessing` stays at index 1 so its dropdown's `(Screen, row)`
 /// tile key does not move.
-pub const EXP_ROWS: [ExpRow; 3] = [ExpRow::GameMode, ExpRow::AudioProcessing, ExpRow::SmoothPlayback];
+pub const EXP_ROWS: [ExpRow; 3] = [ExpRow::GameMode, ExpRow::AudioProcessing, ExpRow::DirectPlayback];
 
 /// Display position of [`ExpRow::AudioProcessing`] — the row a dropdown can hang off, which is
 /// what `DropdownState::row` names.
@@ -243,7 +243,7 @@ pub(crate) fn exp_row_lock(row: ExpRow, rooted: Option<bool>) -> Option<ExpRowLo
         (ExpRow::GameMode, None) => Some(ExpRowLock::RootUnknown),
         (ExpRow::GameMode, Some(false)) => Some(ExpRowLock::NotRooted),
         (ExpRow::AudioProcessing, _) if audio_routes().len() < 2 => Some(ExpRowLock::SoftwareOnly),
-        (ExpRow::GameMode, Some(true)) | (ExpRow::AudioProcessing, _) | (ExpRow::SmoothPlayback, _) => None,
+        (ExpRow::GameMode, Some(true)) | (ExpRow::AudioProcessing, _) | (ExpRow::DirectPlayback, _) => None,
     }
 }
 

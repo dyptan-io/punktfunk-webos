@@ -811,14 +811,18 @@ pub(super) fn run_inner() -> Result<()> {
                             connected.audio_buffer_ms()
                         ));
                     }
-                    // See `StreamStats::cadence_jitter_us` for what these mean and why both settings show them.
-                    lines.push(format!(
-                        "Cadence {} · jitter {:.1} ms · cush {:.1} ms · late {}",
-                        if connected.smooth_playback { "smooth" } else { "direct" },
-                        connected.stats().cadence_jitter_us.load(Ordering::Relaxed) as f32 / 1000.0,
-                        connected.stats().cadence_cushion_us.load(Ordering::Relaxed) as f32 / 1000.0,
-                        connected.stats().cadence_late.load(Ordering::Relaxed),
-                    ));
+                    // `late` is the judder, counted: frames NDL was handed too late to pace them.
+                    // `jitter` is what the cadence loop sizes its cushion from, and the anchor
+                    // measures none, so the direct mapping prints its name instead of a zero.
+                    let late = connected.stats().pacing_late.load(Ordering::Relaxed);
+                    lines.push(if connected.direct_playback {
+                        format!("Pace direct · late {late}")
+                    } else {
+                        format!(
+                            "Pace jitter {:.1} ms · late {late}",
+                            connected.stats().pacing_jitter_us.load(Ordering::Relaxed) as f32 / 1000.0,
+                        )
+                    });
                     if let Some(line) = cpu_mem_line {
                         lines.push(line);
                     }

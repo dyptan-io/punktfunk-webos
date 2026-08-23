@@ -429,8 +429,9 @@ measure-only, so there is no prior art for correcting the lip sync, only for hol
   are named on the overlay (`Opus SW` / `Opus HW`) and in the `audio path:` log line precisely so a
   report says which one produced the numbers.
 
-**3. Smooth playback: stamps from the cadence loop, not the anchor (`Settings::smooth_playback`,
-Experimental, OFF by default — 2026-08-23, no on-device numbers yet).**
+**3. Cadence pacing: stamps from the cadence loop, not the anchor (the DEFAULT since 2026-08-23;
+`Settings::direct_playback` on the Experimental screen is the way back to the anchor. No on-device
+numbers yet).**
 
 The anchor above is a constant plus a one-off trim, and that shape has two holes. It carries **no
 rate term**: two free-running crystals produce a ramp, so the session's real lead walks away over
@@ -455,13 +456,20 @@ irregular as it is. Only the transport's contribution is removed.
 What it does NOT fix, and no client-side work can: a stream rate that is not the panel rate or an
 exact divisor of it. 60 on 120 is fine; 50 on 60 is arithmetic.
 
+Why the anchor stays in the tree at all: it is the mapping every session on this client ran until
+now, so it is the known-behaviour comparison for any regression report, and it is the honest answer
+for anyone who would rather have the judder than the cushion. `session::timeline::Pacing` is the one
+object that owns the choice — nothing above it branches on which mapping is live.
+
 Wiring notes worth knowing before editing:
 
-- **Both mappings fold on every frame; one is used.** With the setting off, the loop's health is the
-  only evidence that turning it on would help — `cadence:` on the video heartbeat (`jitter`,
-  `cushion`, `late_stamp`, `late_due`, `reanchors`) and the overlay's `Cadence` line. `late_stamp`
-  counts frames whose ACTUAL stamp was already behind the player clock, so it is comparable across
-  the setting: that is the judder, counted.
+- **Only the live mapping folds.** Both are stateful over the whole run, so shadowing the idle one
+  costs a mapping nobody reads plus a second set of numbers describing a session nobody is watching.
+  What makes the two comparable is `late_stamps` — frames whose ACTUAL stamp was already behind the
+  player clock, i.e. the judder, counted — which `Pacing` computes from the stamp in use and so
+  publishes on both paths. Reported as `pacing:` on the video heartbeat and `Pace` on the overlay.
+  The anchor measures no jitter, so its overlay line prints its name where the figure would go
+  rather than a zero.
 - **One picture folds ONCE.** Slice-progressive delivery repeats an AU's host PTS across its
   pieces at increasing arrival times, so mapping per piece teaches the loop the AU's *tail* arrival
   and inflates the measured jitter by the AU's own transmission time. `VideoStage::au_base_ns` holds
@@ -469,15 +477,17 @@ Wiring notes worth knowing before editing:
   timestamp, as NDL (start-code boundaries, no AU flag) needs.
 - **The stamp sequence is clamped monotonic per run** (`last_base_ns`), because the cushion can
   shrink between frames and NDL reads a rewind as a permanent session mute. Cleared on reset, like
-  the anchor's own — NDL has been flushed by then.
+  the anchor's own — NDL has been flushed by then. `the_pacer_never_walks_a_stamp_backwards_within_a_run`
+  is the gate; it is the one invariant here whose violation costs a session its audio outright.
 - **The audio latch gate differs per mapping** and cannot be shared: the anchor's waits for trimming
   to *stop* (`TRIM_SETTLE_NS`), and this loop never stops moving, so it waits
   `PACER_AUDIO_LATCH_FRAMES` (30) instead.
-- ⚠ **Open interaction with audio offload.** `SessionClock` latches ONE constant and audio rides it
-  for the run. Under the anchor that is exact (video's own mapping is a constant too); under the
-  cadence loop the video offset keeps moving, so the offload route's lip sync drifts by whatever the
-  loop tracks — crystal skew, tens of ppm. Bounded and slow, uncorrected, and not measured on device
-  yet. A forward-only re-latch is the shape a fix would take (`derive_audio_skew` already handles a
+- ⚠ **Open interaction with audio offload**, and it is now on the DEFAULT path. `SessionClock`
+  latches ONE constant and audio rides it for the run. Under the anchor that is exact (video's own
+  mapping is a constant too); under the cadence loop the video offset keeps moving, so the offload
+  route's lip sync drifts by whatever the loop tracks — crystal skew, tens of ppm. Bounded and slow,
+  uncorrected, not measured on device yet, and it only bites the opt-in offload route: the software
+  route's stamps never ride this mapping. A forward-only re-latch is the shape a fix would take (`derive_audio_skew` already handles a
   new epoch), but a backward correction is impossible on that plane by construction.
 - Not tried yet, in rough order of expected value: **phase-locked capture** (core has the whole
   protocol — `NativeClient::report_phase` + `CLIENT_CAP_PHASE_LOCK`; the host aligns its capture tick

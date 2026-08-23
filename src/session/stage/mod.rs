@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use punktfunk_core::quic;
 
 use crate::core::media::{AudioPlane, NotReady, SessionClock, VideoSink, VideoSinkCaps};
-use crate::session::timeline::{ms, reconciled_frame_interval_ns, CadencePacer, HostPtsAnchor};
+use crate::session::timeline::{ms, reconciled_frame_interval_ns, Pacing, PacingHealth};
 use crate::session::StreamStats;
 
 mod metrics;
@@ -87,12 +87,12 @@ pub struct SinkConfig {
     /// Where [`video_e2e_ns`] is published for the audio plane
     /// (`NativeClient::video_e2e_shared`). `0` = nothing on the glass yet.
     pub video_e2e: Arc<AtomicU64>,
-    /// Stamp frames from the cadence loop instead of the fixed anchor
-    /// (`Settings::smooth_playback`, Experimental). **The one gate on every latency-adding
-    /// measure on this path**: off is the shipped behaviour to the nanosecond, and on pays a
-    /// jitter-sized cushion of up to one frame interval for a cadence that does not beat against
-    /// the panel — see [`CadencePacer`].
-    pub smooth_playback: bool,
+    /// Stamp frames from the fixed anchor rather than the cadence loop
+    /// (`Settings::direct_playback`, Experimental). **The one gate on every latency-adding measure
+    /// on this path**, from the other side: the default pays a jitter-sized cushion of at most one
+    /// frame interval for a cadence that does not beat against the panel, and this gives that back
+    /// at the price of the judder — see `session::timeline::Pacing`.
+    pub direct_playback: bool,
 }
 
 /// Minimum spacing between [`SinkResult::NeedKeyframe`] results: the request travels on its own
@@ -123,21 +123,17 @@ pub struct VideoStage {
     /// that conversion ([`video_e2e_ns`] and [`VideoStage::decode_us`]), so one depth cannot mean two
     /// different latencies.
     frame_interval_ns: u64,
-    /// NDL host-PTS→player-clock mapping.
-    host_anchor: HostPtsAnchor,
-    /// The stamp the access unit currently being fed was given, while it is still open. Every
-    /// piece of one AU must carry the SAME timestamp (NDL finds AU boundaries by start code and
-    /// has no boundary flag of its own), and — the reason this is a field rather than a
-    /// recomputation — a picture must be folded into the mappings below exactly ONCE: on a
-    /// slice-progressive session the pieces of one AU repeat its host PTS at increasing arrival
-    /// times, so re-mapping per piece teaches both mappings the AU's TAIL arrival and inflates the
-    /// measured jitter with the AU's own transmission time. `None` on the whole-AU path and
-    /// between AUs.
+    /// NDL host-PTS→player-clock mapping — the cadence loop, or the anchor under
+    /// `Settings::direct_playback`. One object, so nothing in this file branches on which.
+    pacing: Pacing,
+    /// The stamp the access unit currently being fed was given, while it is still open. Every piece
+    /// of one AU must carry the SAME timestamp (NDL finds AU boundaries by start code and has no
+    /// boundary flag of its own), and — the reason this is a field rather than a recomputation — a
+    /// picture must be mapped exactly ONCE: slice-progressive delivery repeats an AU's host PTS
+    /// across its pieces at increasing arrival times, so re-mapping per piece teaches the mapping
+    /// the AU's TAIL arrival and inflates the measured jitter by the AU's own transmission time.
+    /// `None` on the whole-AU path and between AUs.
     au_base_ns: Option<u64>,
-    /// The cadence loop. Folds every frame whether or not its stamps are used — with the setting
-    /// off its health line is the evidence for turning it on — and owns the stamp when
-    /// [`SinkConfig::smooth_playback`] is set.
-    pacer: CadencePacer,
     /// Last polled depth, `None` if that query failed — which must not read as an empty queue.
     backlog_cached: Option<u64>,
     /// Recent poll depths, newest last — their minimum is the cushion the decode figure excludes
@@ -182,8 +178,7 @@ impl VideoStage {
             audio_plane,
             stats,
             frame_interval_ns,
-            host_anchor: HostPtsAnchor::new(frame_interval_ns),
-            pacer: CadencePacer::new(frame_interval_ns),
+            pacing: Pacing::new(frame_interval_ns, cfg.direct_playback),
             au_base_ns: None,
             cfg,
             backlog_cached: None,
@@ -216,8 +211,7 @@ impl VideoStage {
     /// plane's copy of it. The two move in lockstep or the planes end up on timelines that
     /// disagree.
     fn reset_timeline(&mut self) {
-        self.host_anchor.reset();
-        self.pacer.reset();
+        self.pacing.reset();
         self.au_base_ns = None;
         self.clock.clear();
     }
@@ -243,13 +237,7 @@ impl VideoStage {
         match self.sink.clock() {
             Some(clock) => {
                 let now = clock.now_ns();
-                // Both mappings are folded on every frame regardless of which is used (cheap, and
-                // each stateful over the whole run, so a lazily-fed one would be stale on demand).
-                let paced = self.pacer.map(frame_pts_ns, now);
-                let anchored = self.host_anchor.map(frame_pts_ns, now);
-                let base = if self.cfg.smooth_playback { paced } else { anchored };
-                self.pacer.note_stamp(base, now);
-                base
+                self.pacing.map(frame_pts_ns, now)
             }
             None => frame_pts_ns,
         }
@@ -324,27 +312,15 @@ impl VideoStage {
         }
     }
 
-    /// Whether the mapping in use has settled enough for the audio plane to latch it. The two
-    /// mappings settle on different evidence — the anchor waits for its trim to stop, the cadence
-    /// loop for enough frames to have been folded — so the gate follows whichever is stamping.
-    fn timeline_ready_for_audio(&self) -> bool {
-        if self.cfg.smooth_playback {
-            self.pacer.ready_for_audio()
-        } else {
-            self.host_anchor.ready_for_audio()
-        }
+    /// What the live mapping has to say for itself — see [`PacingHealth`]. The whole point of
+    /// publishing it on both mappings is that `late_stamps` makes them comparable.
+    pub fn pacing_health(&self) -> PacingHealth {
+        self.pacing.health()
     }
 
-    /// The cadence loop's health for the video heartbeat — see [`CadencePacer::health`]. Reported
-    /// on both settings, since the whole point of measuring with it off is to decide.
-    pub fn cadence_health(&self) -> (i64, i64, u64, u64, u64) {
-        self.pacer.health()
-    }
-
-    /// Standing PTS lead this run has trimmed off NDL's stamps, in ms — the decoder-hold latency
-    /// the session started with, and the only place it is observable (see [`HostPtsAnchor`]).
-    pub fn pts_trimmed_ms(&self) -> u64 {
-        self.host_anchor.trimmed_ns() / 1_000_000
+    /// Which mapping is stamping this session (`paced` / `direct`).
+    pub fn pacing_label(&self) -> &'static str {
+        self.pacing.label()
     }
 
     /// Audio-plane queue depth in ms, or `None` on a session with no plane — see
@@ -469,7 +445,7 @@ impl VideoStage {
                 // Held back until the anchor's trim has settled: audio stamps ride this offset and
                 // can only move forward, so latching onto a mapping still being pulled earlier
                 // costs lip sync (see `HostPtsAnchor::ready_for_audio`).
-                if self.timeline_ready_for_audio() {
+                if self.pacing.ready_for_audio() {
                     self.clock.latch(base_ns as i64 - pts_ns as i64);
                 }
                 let decode_us = self

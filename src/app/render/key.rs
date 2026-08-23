@@ -113,7 +113,7 @@ pub enum ModalShellKey<'a> {
     },
     Experimental {
         game_mode: bool,
-        smooth_playback: bool,
+        direct_playback: bool,
         /// Named on the Audio processing row.
         audio_route: AudioRoutePref,
         /// The root-probe verdict — it locks the Game mode row and rewrites its caption.

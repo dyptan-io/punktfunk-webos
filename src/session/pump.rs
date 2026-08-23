@@ -150,13 +150,12 @@ impl VideoPump {
         self.stats
             .render_backlog
             .store(backlog.unwrap_or(-1), Ordering::Relaxed);
-        let (jitter_ns, cushion_ns, late_due, reanchors, late_stamps) = self.stage.cadence_health();
-        let to_us = |ns: i64| u32::try_from(ns.max(0) / 1_000).unwrap_or(u32::MAX);
-        self.stats.cadence_jitter_us.store(to_us(jitter_ns), Ordering::Relaxed);
-        self.stats
-            .cadence_cushion_us
-            .store(to_us(cushion_ns), Ordering::Relaxed);
-        self.stats.cadence_late.store(late_stamps, Ordering::Relaxed);
+        let pacing = self.stage.pacing_health();
+        self.stats.pacing_jitter_us.store(
+            u32::try_from(pacing.jitter_ns.max(0) / 1_000).unwrap_or(u32::MAX),
+            Ordering::Relaxed,
+        );
+        self.stats.pacing_late.store(pacing.late_stamps, Ordering::Relaxed);
         let plane_lead = self.stage.audio_plane_lead_ms();
         if let Some(ms) = plane_lead {
             self.stats
@@ -170,14 +169,19 @@ impl VideoPump {
         // DEBUG, so it costs a telemetry listener or `TELEMETRY_LEVEL=debug` to see — the
         // on-device file sink is INFO-only (`logger::resolved_level`).
         if self.video_log.due() {
-            // See `StreamStats::cadence_jitter_us` for what these mean and why both settings log them.
+            // `late_stamp` is the judder, counted: frames NDL was handed too late to pace. The
+            // rest describes whichever mapping produced it (see `session::timeline::PacingHealth`).
             tracing::debug!(
-                "cadence: jitter={:.1}ms cushion={:.1}ms late_stamp={late_stamps} late_due={late_due} reanchors={reanchors}",
-                jitter_ns as f64 / 1e6,
-                cushion_ns as f64 / 1e6,
+                "pacing: {} late_stamp={} jitter={:.1}ms cushion={:.1}ms reanchors={} trim={:.1}ms",
+                self.stage.pacing_label(),
+                pacing.late_stamps,
+                pacing.jitter_ns as f64 / 1e6,
+                pacing.cushion_ns as f64 / 1e6,
+                pacing.reanchors,
+                pacing.trimmed_ns as f64 / 1e6,
             );
             tracing::debug!(
-                "video: {} frames, parts={}, holding={}, dropped={}, backlog={}, pts_trim={}ms, plane_lead={}",
+                "video: {} frames, parts={}, holding={}, dropped={}, backlog={}, plane_lead={}",
                 self.frames(),
                 // Against `frames`: 0 means slice-progressive delivery never fired on this mode
                 // (core emits early parts only for an AU spanning more than one FEC block), so the
@@ -186,7 +190,6 @@ impl VideoPump {
                 self.stage.holding(),
                 self.client.frames_dropped(),
                 backlog.map_or_else(|| "n/a".to_string(), |b| b.to_string()),
-                self.stage.pts_trimmed_ms(),
                 // The audio plane's depth is a video figure: NDL paces the picture on it, and a
                 // lead sagging towards zero is what a stutter report should be read against.
                 plane_lead.map_or_else(|| "n/a".to_string(), |ms| format!("{ms}ms")),
