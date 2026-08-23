@@ -4,8 +4,6 @@
 //! Free functions rather than [`VideoStage`](super::VideoStage) methods purely so they are
 //! testable: the stage owns a live NDL handle and cannot be built off-device.
 
-use std::time::Duration;
-
 /// Render-buffer frames NDL holds as a *standing* present cushion, excluded from the ABR decode
 /// figure (see [`VideoStage::decode_us`]). NDL presents off its own clock, so a healthy session
 /// sits at 1-2 frames of depth indefinitely — lead, not backlog. Folded in raw it manufactures a
@@ -73,13 +71,15 @@ pub(super) fn video_e2e_ns(
 /// NDL's render queue that is genuinely backlog. See [`VideoStage::decode_us`] for why the queue
 /// belongs in it at all, and [`STANDING_CUSHION_FRAMES`] for why `cushion` comes out first.
 ///
+/// `submit_us` is the whole access unit's feed time, not the last slice's: on a slice-progressive
+/// session a picture is submitted in pieces, and the controller is comparing this against a
+/// per-picture budget.
+///
 /// Split out as a free function purely so it is testable — [`VideoStage`] owns a live NDL handle and
 /// cannot be built off-device.
-pub(super) fn decode_report_us(feed_elapsed: Duration, backlog: u64, cushion: u64, frame_interval_ns: u64) -> u32 {
+pub(super) fn decode_report_us(submit_us: u32, backlog: u64, cushion: u64, frame_interval_ns: u64) -> u32 {
     let queued_ns = backlog.saturating_sub(cushion).saturating_mul(frame_interval_ns);
-    let decode_us = u64::try_from(feed_elapsed.as_micros())
-        .unwrap_or(u64::MAX)
-        .saturating_add(queued_ns / 1_000);
+    let decode_us = u64::from(submit_us).saturating_add(queued_ns / 1_000);
     u32::try_from(decode_us).unwrap_or(u32::MAX)
 }
 
@@ -96,8 +96,6 @@ pub(super) fn cushion_frames(samples: impl Iterator<Item = u64>) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::{cushion_frames, decode_report_us, video_e2e_ns, CUSHION_MAX_FRAMES, STANDING_CUSHION_FRAMES};
 
     /// 60 Hz, the cadence the frame interval reconciles to on most panels.
@@ -162,7 +160,7 @@ mod tests {
 
     /// 120 Hz — the mode the ABR collapse was observed at (CX, 2026-08-10).
     const HZ120_NS: u64 = 8_333_333;
-    const FEED: Duration = Duration::from_micros(400);
+    const FEED_US: u32 = 400;
 
     /// The regression the cushion exists for: folded in raw, a standing 2-frame lead reported
     /// ~16.8 ms of "decode latency" every window and walked the rate to the floor. At the settled
@@ -171,7 +169,7 @@ mod tests {
     fn a_standing_present_cushion_reports_no_decode_latency() {
         for depth in 0..=STANDING_CUSHION_FRAMES {
             assert_eq!(
-                decode_report_us(FEED, depth, STANDING_CUSHION_FRAMES, HZ120_NS),
+                decode_report_us(FEED_US, depth, STANDING_CUSHION_FRAMES, HZ120_NS),
                 400,
                 "depth {depth} should read as lead, not queue"
             );
@@ -182,10 +180,10 @@ mod tests {
     /// decoder falling behind, and each extra frame is one drain interval of real latency.
     #[test]
     fn queue_above_the_cushion_is_reported() {
-        let two_over = decode_report_us(FEED, STANDING_CUSHION_FRAMES + 2, STANDING_CUSHION_FRAMES, HZ120_NS);
+        let two_over = decode_report_us(FEED_US, STANDING_CUSHION_FRAMES + 2, STANDING_CUSHION_FRAMES, HZ120_NS);
         assert_eq!(two_over, 400 + 2 * 8_333);
         // And deeper is strictly worse — monotonic, or the controller can't act on it.
-        let one_over = decode_report_us(FEED, STANDING_CUSHION_FRAMES + 1, STANDING_CUSHION_FRAMES, HZ120_NS);
+        let one_over = decode_report_us(FEED_US, STANDING_CUSHION_FRAMES + 1, STANDING_CUSHION_FRAMES, HZ120_NS);
         assert!(two_over > one_over, "{two_over} !> {one_over}");
     }
 
@@ -193,8 +191,8 @@ mod tests {
     /// wrap into a believable figure (`u32::MAX` µs is ~71 min — no threshold mistakes it for calm).
     #[test]
     fn an_implausible_queue_saturates_instead_of_wrapping() {
-        assert_eq!(decode_report_us(FEED, u64::MAX, 0, u64::MAX), u32::MAX);
-        assert_eq!(decode_report_us(Duration::MAX, 0, 0, HZ120_NS), u32::MAX);
+        assert_eq!(decode_report_us(FEED_US, u64::MAX, 0, u64::MAX), u32::MAX);
+        assert_eq!(decode_report_us(u32::MAX, 1, 0, HZ120_NS), u32::MAX);
     }
 
     /// No samples yet is exactly when a raw fold does its damage — the buffer is still filling — so

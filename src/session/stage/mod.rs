@@ -221,17 +221,17 @@ impl VideoStage {
     }
 
     /// The decode figure reported to the host's ABR controller. NDL's `play` is
-    /// decode-AND-present in one opaque call, so `feed_elapsed` alone is *submission*
-    /// time — a decoder quietly falling behind buffers frames internally and the feed
-    /// stays fast, which left the controller's decode-rise signal (`abr::DECODE_RISE_US`,
+    /// decode-AND-present in one opaque call, so `submit_us` (the whole AU's feed time) is
+    /// *submission* time alone — a decoder quietly falling behind buffers frames internally and the
+    /// feed stays fast, which left the controller's decode-rise signal (`abr::DECODE_RISE_US`,
     /// built precisely for "the decoder saturates before the link does") effectively
     /// blind on this client. The render-buffer backlog IS that standing decode queue, so
     /// it's folded in as queue-above-cushion × the drain interval (see [`decode_report_us`]).
     /// Polled on a cadence rather than every frame — three samples per 750 ms ABR report window is
     /// plenty, and assuming an NDL query is cheap enough for per-frame use is exactly the mistake
     /// docs/NOTES.md warns against; between polls the cached depth is reused.
-    fn decode_us(&self, feed_elapsed: Duration, backlog: u64) -> u32 {
-        decode_report_us(feed_elapsed, backlog, self.cushion_frames, self.frame_interval_ns)
+    fn decode_us(&self, submit_us: u32, backlog: u64) -> u32 {
+        decode_report_us(submit_us, backlog, self.cushion_frames, self.frame_interval_ns)
     }
 
     /// NDL's render-queue depth, refreshed on [`BACKLOG_POLL`]'s cadence and cached between polls.
@@ -326,6 +326,9 @@ impl VideoStage {
         // truncated input and only a re-anchor clears it. `Discard` says so; `Feed` carries whether
         // the pieces so far leave this AU decodable.
         let PartStep::Feed { partial, lost_parts } = self.parts.step(frame, self.caps.partial_au) else {
+            // Same reason as the `drop_open` below: the AU this was accumulating submission time
+            // for is abandoned, so its cost must not be charged to whatever AU comes next.
+            self.au_feed_us = 0;
             return SinkResult::Held;
         };
         // Only a completed AU is a frame — a session feeding pieces would otherwise count one
@@ -373,8 +376,12 @@ impl VideoStage {
         self.au_feed_us = self
             .au_feed_us
             .saturating_add(u32::try_from(feed_elapsed.as_micros()).unwrap_or(u32::MAX));
+        // Read before the reset below, because BOTH consumers are per PICTURE: the overlay's
+        // figure and the ABR submission term. Taking the last slice's `feed_elapsed` for the
+        // latter reports a fraction of the AU's real cost on a slice-progressive session.
+        let au_feed_us = self.au_feed_us;
         if !flags.partial {
-            self.stats.feed_us.store(self.au_feed_us, Ordering::Relaxed);
+            self.stats.feed_us.store(au_feed_us, Ordering::Relaxed);
             self.au_feed_us = 0;
         }
         if feed_elapsed >= FEED_BACKPRESSURE_WARN {
@@ -408,7 +415,7 @@ impl VideoStage {
                 let decode_us = self
                     .cfg
                     .report_decode_latency
-                    .then(|| self.decode_us(feed_elapsed, backlog));
+                    .then(|| self.decode_us(au_feed_us, backlog));
                 (decode_us, false)
             }
             Err(e) => (None, self.on_play_error(&e, &flags, base_ns)),
