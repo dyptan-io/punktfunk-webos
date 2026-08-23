@@ -79,8 +79,13 @@ const TRIM_RAMP_DIVISOR: u64 = 4;
 pub struct HostPtsAnchor {
     /// `(host_pts_ns, player_clock_ns)` of the frame the current run anchored on.
     anchor: Option<(u64, u64)>,
-    /// Whether [`Self::map`] is allowed to trim (see [`Self::new`]).
+    /// Whether [`Self::map`] is allowed to trim (see [`Self::new`]). Re-armed on every
+    /// [`Self::reset`] — each run's anchor bakes in its own lead.
     trim: bool,
+    /// Whether any run of this session has finished trimming. Survives [`Self::reset`], and is
+    /// what lets a re-anchor latch audio immediately instead of muting it for another
+    /// [`TRIM_SETTLE_NS`] — see [`Self::ready_for_audio`].
+    settled_once: bool,
     /// Trim actually applied so far, ramped toward `trim_target_ns` (see [`TRIM_RAMP_DIVISOR`]).
     trim_ns: u64,
     /// Trim the windows have asked for. `trim_ns` catches up to it over the following frames.
@@ -117,13 +122,27 @@ impl HostPtsAnchor {
     /// be anchored to a timeline the trim is still pulling earlier, and it cannot follow. The audio
     /// pump drops its packets until this turns true and says so in the log
     /// (`NdlVideo::play_audio`), while the clock plane keeps the picture paced.
+    ///
+    /// **Only the session's FIRST run waits.** Once a run has settled, every later one is ready on
+    /// its first mapped frame — see [`Self::settled_once`]. Making each run wait afresh cost
+    /// [`TRIM_SETTLE_NS`] of *silence* after every freeze-until-reanchor recovery, and a loss event
+    /// is exactly when the user is least willing to lose the sound too. What the early latch pays
+    /// instead is the trim that run goes on to take, landing as lip-sync error rather than latency
+    /// saved — bounded by one window's standing lead, i.e. tens of ms against 600 of dropout.
     pub fn ready_for_audio(&self) -> bool {
         let Some((_, anchor_player_ns)) = self.anchor else {
             return false;
         };
+        if self.settled_once {
+            return true;
+        }
         self.trim_ns == self.trim_target_ns && self.last_player_ns.saturating_sub(anchor_player_ns) >= TRIM_SETTLE_NS
     }
 
+    /// Drop the mapping — the timeline jumped and nothing derived from it holds. Trimming re-arms
+    /// with it: the new anchor bakes in its own delivery latency (a recovery keyframe arriving late
+    /// behind a loss burst is a bad one to inherit), so the lead has to be measured again.
+    /// [`Self::settled_once`] is what does NOT reset.
     pub fn reset(&mut self) {
         self.anchor = None;
         self.trim = true;
@@ -184,6 +203,7 @@ impl HostPtsAnchor {
         // being collected with it, so the steady state is one subtraction per frame.
         if player_clock_ns.saturating_sub(anchor_player_ns) >= TRIM_SETTLE_NS {
             self.trim = false;
+            self.settled_once = true;
             tracing::debug!("pts lead: settled with {:.1}ms trimmed", ms(self.trim_ns));
             return;
         }
@@ -260,6 +280,26 @@ mod tests {
         }
         assert!(a.ready_for_audio());
         assert!(a.trimmed_ns() > 0);
+    }
+
+    /// A freeze-until-reanchor reset must not re-open the settle window: `play_audio` drops every
+    /// packet while the mapping is unlatched, so re-arming the wait is 600 ms of silence on every
+    /// loss recovery. Planting the defect (re-arming `settled_once` in `reset`) fails this.
+    #[test]
+    fn a_re_anchor_does_not_mute_audio_for_another_settle_window() {
+        let mut a = run(50_000_000, 10_000_000, 400);
+        assert!(a.ready_for_audio(), "the first run should have settled");
+        a.reset();
+        assert!(!a.ready_for_audio(), "no anchor yet");
+        // The recovery keyframe anchors 50 ms late, as a frame behind a loss burst does.
+        a.map(0, 1_050_000_000);
+        assert!(a.ready_for_audio(), "the re-anchor must be ready on its first frame");
+        // …and the new run still trims: that keyframe's own lead is not inherited for the session.
+        for i in 1..400u64 {
+            let host_pts = i * 16_666_666;
+            a.map(host_pts, 1_010_000_000 + host_pts);
+        }
+        assert!(a.trimmed_ns() > 0, "the re-anchored run took no trim");
     }
 
     /// The ramp is sized against the frame interval, so anything that stalls `raw` WHILE the trim
