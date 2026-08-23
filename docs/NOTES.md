@@ -209,8 +209,13 @@ whole on a route that plays it.
   type — f32 for SDL, S16 for the plane, permuted into NDL's channel order in the same pass — and
   `as_le_bytes` hands the plane the buffer without touching it.
 - **The SDL ring is deliberately dumb**: prime 25 ms, serve, re-prime after a dry read. No adaptive
-  target, no shed, no A/V measurement — the `JitterPolicy`/`AvSync` machinery that had those was
-  ~35 ms of floor and is gone.
+  target and no A/V measurement — the `JitterPolicy`/`AvSync` machinery that had those was ~35 ms
+  of floor and is gone. It does keep ONE ceiling: the callback pops exactly one quantum per wake,
+  so anything the producer runs ahead by stays ahead, and a host stall that unblocks into a burst
+  would otherwise leave that much lip-sync debt for the rest of the session (the picture stays
+  paced regardless — the clock plane drives that, not this ring). Over 90 ms it drops the oldest
+  audio back to the prime depth, at most once every 2 s so slow clock drift is one skip rather than
+  a continuous rasp. Both counters are in the `audio playback (SDL device)` debug line.
 
 **Blind alleys, so they aren't re-tried:**
 - **`sdl2::audio::AudioQueue` cannot carry a de-jitter policy** — `queue_audio`/`size`/`clear` and

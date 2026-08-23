@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
@@ -30,6 +31,20 @@ const CHUNK_QUEUE: usize = 64;
 /// number, not an adaptive target: the adaptive one belonged to a path with an A/V estimator
 /// behind it, and this one only has to not crackle.
 const PRIME_MS: usize = 25;
+
+/// Ring ceiling: above this the oldest audio is dropped back to [`PRIME_MS`].
+///
+/// Nothing else bounds this ring — the callback pops exactly one quantum per wake, so anything
+/// the producer runs ahead by STAYS ahead. A host stall that unblocks into a burst therefore used
+/// to buy the session a permanent lip-sync debt of however long the stall was, with the picture
+/// still perfectly paced (the clock plane drives that, not this). One audible trim beats carrying
+/// it to the end of the session. Same rule, and the same reason, as `session::paced`'s ring.
+const MAX_MS: usize = 90;
+
+/// How often an over-ceiling ring may be trimmed. Slow drift is the other way the ring grows
+/// (host capture clock vs. this device's), and a trim per callback would turn that into a
+/// continuous rasp instead of one skip every few seconds.
+const TRIM_INTERVAL: Duration = Duration::from_secs(2);
 
 /// The playback device. Holding it alive is the whole job — the ring drains on SDL's own
 /// audio thread from construction until this is dropped. See the module docs for when it is used
@@ -70,6 +85,8 @@ impl AudioPlayer {
                 primed: false,
                 buffer_ms,
                 underruns: 0,
+                dropped_ms: 0,
+                last_trim: None,
                 callbacks: 0,
             })
             .map_err(|e| anyhow::anyhow!("SDL open_playback: {e}"))?;
@@ -171,6 +188,11 @@ struct RingCallback {
     primed: bool,
     buffer_ms: Arc<AtomicU32>,
     underruns: u64,
+    /// Audio discarded to the ceiling — the counter that distinguishes "the host burst once" from
+    /// "the clocks are drifting", which look identical from the depth alone.
+    dropped_ms: u64,
+    /// When the ring was last trimmed, so [`TRIM_INTERVAL`] can space the drift case out.
+    last_trim: Option<Instant>,
     callbacks: u64,
 }
 
@@ -184,6 +206,7 @@ impl sdl2::audio::AudioCallback for RingCallback {
             chunk.clear();
             let _ = self.recycle.try_send(chunk);
         }
+        self.trim_overrun();
         self.buffer_ms
             .store((self.ring.len() / self.per_ms.max(1)) as u32, Ordering::Relaxed);
 
@@ -215,8 +238,36 @@ impl sdl2::audio::AudioCallback for RingCallback {
             tracing::debug!(
                 buffer_ms = self.ring.len() / self.per_ms.max(1),
                 underruns = self.underruns,
+                dropped_ms = self.dropped_ms,
                 "audio playback (SDL device)"
             );
         }
+    }
+}
+
+impl RingCallback {
+    /// Drop the oldest audio back to [`PRIME_MS`] when the ring is over [`MAX_MS`] — see the
+    /// constant for why nothing else would.
+    ///
+    /// Dropped from the FRONT: the newest audio is the one that belongs with the picture on
+    /// screen, and the ring's depth IS this route's lip-sync offset.
+    fn trim_overrun(&mut self) {
+        let per_ms = self.per_ms.max(1);
+        if self.ring.len() <= MAX_MS * per_ms {
+            return;
+        }
+        if self.last_trim.is_some_and(|t| t.elapsed() < TRIM_INTERVAL) {
+            return;
+        }
+        self.last_trim = Some(Instant::now());
+        let keep = PRIME_MS * per_ms;
+        let drop = self.ring.len() - keep;
+        self.ring.drain(..drop);
+        self.dropped_ms += (drop / per_ms) as u64;
+        tracing::debug!(
+            dropped_ms = drop / per_ms,
+            total_ms = self.dropped_ms,
+            "audio ring over {MAX_MS}ms — trimmed to the prime depth",
+        );
     }
 }
