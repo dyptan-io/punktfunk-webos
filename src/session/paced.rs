@@ -23,16 +23,18 @@
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
 use crate::core::media::{AudioFormat, AudioPlane, AudioSink, Samples};
 use crate::session::audio::SAMPLE_RATE;
 
-/// Feeder cadence — the metronome's, because the plane is being held at the same depth the
-/// metronome holds it at.
-const TICK: Duration = Duration::from_millis(20);
+/// Feeder cadence. Half the metronome's, deliberately: the plane starves when the gap between two
+/// top-ups exceeds its standing lead, so a shorter tick buys headroom against a missed wakeup
+/// without costing a millisecond of latency (each tick tops up to the same depth). Still half the
+/// backend-lock traffic a per-packet feed had.
+const TICK: Duration = Duration::from_millis(10);
 
 /// Depth the ring accumulates before the first real sample is fed, and again after it runs dry.
 /// The jitter budget this route trades latency for; sized like the SDL ring's own prime, which is
@@ -82,6 +84,12 @@ pub struct PlaneFeeder {
     /// say whether the ring is sized right for this network.
     padded_ms: u64,
     dropped_ms: u64,
+    /// Ticks that woke more than one whole [`TICK`] late — this thread losing the CPU, which is
+    /// the other way the plane's depth sags once arrival jitter is out of the picture.
+    late_ticks: u64,
+    /// Shallowest lead seen since the last log line. The instantaneous reading says nothing about
+    /// a sag between two samples; this is what the pacing question is actually about.
+    min_lead_ms: i64,
 }
 
 impl PacedPlane {
@@ -109,6 +117,8 @@ impl PacedPlane {
                 burst: Vec::with_capacity(bytes_per_ms * MAX_QUEUE_MS as usize),
                 padded_ms: 0,
                 dropped_ms: 0,
+                late_ticks: 0,
+                min_lead_ms: i64::MAX,
             },
         )
     }
@@ -163,8 +173,13 @@ impl PlaneFeeder {
         let target = self.plane.target_lead_ms();
         let mut primed = false;
         let mut ticks: u64 = 0;
+        // Absolute deadlines, not `sleep(TICK)` per pass: sleeping a fixed interval after however
+        // long the work took lets every late wakeup push the whole cadence out, and the depth this
+        // holds is only as regular as the cadence is.
+        let start = Instant::now();
         while !stop.load(Ordering::Relaxed) {
             ticks += 1;
+            self.min_lead_ms = self.min_lead_ms.min(self.plane.lead_ms());
             primed |= self.queued_ms.load(Ordering::Relaxed) >= PRIME_MS;
             if primed {
                 self.drop_overrun();
@@ -192,17 +207,28 @@ impl PlaneFeeder {
                 tracing::debug!(
                     ring_ms = self.queued_ms.load(Ordering::Relaxed),
                     lead_ms = self.plane.lead_ms(),
+                    min_lead_ms = self.min_lead_ms,
                     padded_ms = self.padded_ms,
                     dropped_ms = self.dropped_ms,
+                    late_ticks = self.late_ticks,
                     "paced audio plane",
                 );
+                self.min_lead_ms = i64::MAX;
             }
-            std::thread::sleep(TICK);
+            // A tick that overran its slot is not slept off — the next deadline has already
+            // passed, so the loop runs straight through and the depth catches up.
+            let elapsed = start.elapsed();
+            let deadline = TICK * u32::try_from(ticks).unwrap_or(u32::MAX);
+            match deadline.checked_sub(elapsed) {
+                Some(wait) => std::thread::sleep(wait),
+                None => self.late_ticks += u64::from(elapsed.saturating_sub(deadline) > TICK),
+            }
         }
         tracing::info!(
-            "paced plane ending: {}ms padded, {}ms dropped",
+            "paced plane ending: {}ms padded, {}ms dropped, {} late tick(s)",
             self.padded_ms,
             self.dropped_ms,
+            self.late_ticks,
         );
     }
 

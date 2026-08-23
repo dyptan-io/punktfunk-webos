@@ -152,6 +152,17 @@ silent metronome smooth. Consequences worth knowing:
   stamps itself), which also takes the route from ~200 acquisitions/s to 50 in the video feed's way.
 - The feeder REPLACES the metronome on this route. Two loops topping up one plane would race for
   the ceiling and the silence would win whenever the ring was momentarily behind.
+- ⚠ **The plane thread is reniced like the pumps** (`spawn_plane_threads`), and it was NOT before
+  the paced route landed. It holds the depth NDL paces the picture on while the boosted decode
+  threads compete for 2-3 cores — the contention this file already measured at up to 28 ms for the
+  evdev reader. It also ticks on absolute deadlines every 10 ms rather than sleeping a fixed
+  interval after the work, so a late wakeup can't push the whole cadence out and one missed tick
+  cannot starve a 40 ms lead.
+- **Read `paced audio plane` before theorising about a stutter on this route.** `min_lead_ms` is
+  the shallowest depth between samples (the instantaneous `lead_ms` says nothing about a sag),
+  `late_ticks` counts the feeder losing the CPU, and padded/dropped say whether the ring was sized
+  right. A flat `min_lead_ms` with a stutter still on screen means the plane's depth is NOT the
+  mechanism, and the next suspect is elsewhere.
 
 **The plane routes exist only under NDL v2.** v1 (webOS 4 and below) has no audio type at all and
 SMP is a different pipeline, so `caps::VideoCaps::audio_plane` is false on both and

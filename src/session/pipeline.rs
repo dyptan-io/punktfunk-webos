@@ -322,7 +322,15 @@ fn spawn_plane_threads(
         let stop = stop.clone();
         std::thread::Builder::new()
             .name("punktfunk-webos-clock".into())
-            .spawn(move || plane_loop(&stop))
+            .spawn(move || {
+                // The same boost the video pump and the audio drain take for themselves. This
+                // thread is a 20 ms metronome holding the depth NDL paces the PICTURE on, and at
+                // nice 0 it competes with the boosted decode threads on a 2-3 core SoC — the
+                // contention docs/NOTES.md measured at up to 28 ms for the evdev reader. A late
+                // top-up is a sagging plane, which is a stutter.
+                crate::platform::webos::device::boost_current_thread();
+                plane_loop(&stop);
+            })
             .context("spawn clock plane thread")?
     };
     let Some(sink) = sink else {
