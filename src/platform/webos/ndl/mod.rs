@@ -322,17 +322,9 @@ fn ensure_init(app_id: &str, api2: bool) -> Result<()> {
     }
     let fns = ffi::common()?;
     let c_app_id = CString::new(app_id).unwrap_or_default();
-    // SAFETY: `c_app_id` is valid for the duration of this call.
-    let ret = unsafe {
-        if api2 {
-            (fns.init_v2)(c_app_id.as_ptr())
-        } else {
-            (fns.init_v1)(c_app_id.as_ptr(), None)
-        }
-    };
-    if ret != 0 {
+    if let Err(e) = fns.init(&c_app_id, api2) {
         INIT_DONE.store(false, Ordering::SeqCst);
-        bail!("NDL_DirectMediaInit failed: ret={ret} error={}", ffi::last_error());
+        return Err(e);
     }
     Ok(())
 }
@@ -385,9 +377,6 @@ pub fn quit() {
     // Same symbol on both generations, so no branch needed — and the table must have resolved
     // for `INIT_DONE` to have been set.
     if let Ok(fns) = ffi::common() {
-        // SAFETY: no arguments.
-        unsafe {
-            (fns.quit)();
-        }
+        fns.quit();
     }
 }

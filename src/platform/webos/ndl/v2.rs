@@ -4,7 +4,7 @@
 //!
 //! Never calls `NDL_DirectVideoSetArea` — stutters above 1080p, and v2 sizes its own
 //! punch-through plane (v1 can't; see [`super::v1`]).
-use std::ffi::{c_int, c_longlong, c_uint, c_void};
+use std::ffi::c_uint;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -198,8 +198,8 @@ impl NdlVideo {
                 Ok(_) => tracing::warn!("NDL audio-enabled load failed (no LOADCOMPLETED) — retrying video-only"),
                 Err(e) => tracing::warn!("NDL audio-enabled load failed ({e:#}) — retrying video-only"),
             }
-            // SAFETY: no arguments; best-effort cleanup of the rejected load.
-            let _ = unsafe { (fns.unload)() };
+            // Best-effort cleanup of the rejected load.
+            fns.unload();
             // The rejected load's callbacks are indistinguishable from the retry's, so let them
             // land BEFORE arming below rather than racing them.
             settle_before_retry(unloads_before);
@@ -216,11 +216,7 @@ impl NdlVideo {
         };
         arm_load();
         let load_requested = Instant::now();
-        // SAFETY: `info` is valid for the duration of this call.
-        let ret = unsafe { (fns.load)(&mut info, Some(super::on_load_state)) };
-        if ret != 0 {
-            bail!("NDL_DirectMediaLoad failed: ret={ret} error={}", ffi::last_error());
-        }
+        fns.load(&mut info, Some(super::on_load_state))?;
         // `ret == 0` is "request accepted", not "pipeline ready" — the first feed still needs
         // LOADCOMPLETED, and an audio-enabled load will not report it until its audio plane has
         // seen a packet, which is what the prime supplies.
@@ -280,19 +276,8 @@ impl NdlVideo {
             {
                 let _ffi = lock_ffi();
                 while pts_ms < target_ms {
-                    // SAFETY: NDL reads `size` bytes synchronously and does not retain the pointer.
-                    let ret = unsafe {
-                        (fns.audio_play)(
-                            silence.as_ptr() as *mut c_void,
-                            silence.len() as c_uint,
-                            pts_ms as c_longlong,
-                        )
-                    };
-                    if ret != 0 {
-                        tracing::warn!(
-                            "NDL audio prime rejected at {pts_ms}ms: ret={ret} error={}",
-                            ffi::last_error()
-                        );
+                    if let Err(e) = fns.audio_play(silence, pts_ms) {
+                        tracing::warn!("NDL audio prime rejected at {pts_ms}ms: {e:#}");
                         return (pts_ms, LOAD_COMPLETED.fired());
                     }
                     pts_ms += PRIME_PACKET_MS;
@@ -395,7 +380,7 @@ impl NdlVideo {
         if self.skew_epoch.swap(epoch, Ordering::Relaxed) != epoch {
             self.derive_audio_skew((probe_ns / 1_000_000) as i64);
         }
-        let ret = {
+        {
             let _ffi = lock_ffi();
             // Re-read under the guard: the check above is only a fast path, and a clear/re-latch
             // landing between the two would pair a stale mapping with the new skew.
@@ -406,17 +391,7 @@ impl NdlVideo {
                 .saturating_add(self.audio_skew_ms.load(Ordering::Relaxed))
                 .saturating_add(PLANE_LEAD_MS);
             let pts_ms = self.last_audio_pts_ms.fetch_max(raw_ms, Ordering::Relaxed).max(raw_ms);
-            // SAFETY: NDL reads `size` bytes synchronously and does not retain the pointer.
-            unsafe {
-                (self.fns.audio_play)(
-                    packet.as_ptr() as *mut c_void,
-                    packet.len() as c_uint,
-                    pts_ms as c_longlong,
-                )
-            }
-        };
-        if ret != 0 {
-            bail!("NDL_DirectAudioPlay failed: ret={ret} error={}", ffi::last_error());
+            self.fns.audio_play(packet, pts_ms)?;
         }
         // Player clock, not the packet's domain: the reader asks "how long since a packet ARRIVED".
         self.last_real_feed_ms
@@ -447,20 +422,12 @@ impl NdlVideo {
         let mut pts_ms = from_ms.max(self.last_audio_pts_ms.load(Ordering::Relaxed));
         while pts_ms < target_ms {
             pts_ms += PRIME_PACKET_MS;
-            // SAFETY: NDL reads `size` bytes synchronously and does not retain the pointer.
-            let ret = unsafe {
-                (self.fns.audio_play)(
-                    silence.as_ptr() as *mut c_void,
-                    silence.len() as c_uint,
-                    pts_ms as c_longlong,
-                )
-            };
-            if ret != 0 {
+            if let Err(e) = self.fns.audio_play(silence, pts_ms) {
                 // Publish before unwinding: this burst has already handed NDL stamps above the old
                 // ceiling, and leaving it stale lets the next real packet floor below them — a
                 // rewind, which mutes the session for good.
                 self.last_audio_pts_ms.fetch_max(pts_ms, Ordering::Relaxed);
-                bail!("NDL_DirectAudioPlay failed: ret={ret} error={}", ffi::last_error());
+                return Err(e);
             }
         }
         self.last_audio_pts_ms.fetch_max(pts_ms, Ordering::Relaxed);
@@ -592,15 +559,7 @@ impl NdlVideo {
 
     fn set_hdr_info(&self, info: ffi::HdrInfo) -> Result<()> {
         let _ffi = lock_ffi();
-        // SAFETY: passed by value; no pointers or aliasing.
-        let ret = unsafe { (self.fns.set_hdr_info)(info) };
-        if ret != 0 {
-            bail!(
-                "NDL_DirectVideoSetHDRInfo failed: ret={ret} error={}",
-                ffi::last_error()
-            );
-        }
-        Ok(())
+        self.fns.set_hdr_info(info)
     }
 
     /// Feed one access unit at `pts_ns` (ns since `load()`), truncated to ms for NDL.
@@ -608,15 +567,10 @@ impl NdlVideo {
     /// so video and offloaded audio share one timeline.
     pub fn play(&self, au: &[u8], pts_ns: u64) -> Result<()> {
         self.ensure_loaded()?;
-        let pts_ms = (pts_ns / 1_000_000) as c_longlong;
+        let pts_ms = (pts_ns / 1_000_000) as i64;
         let first_frame = {
             let _ffi = lock_ffi();
-            // SAFETY: NDL reads `size` bytes from `buffer` synchronously and does not
-            // retain the pointer.
-            let ret = unsafe { (self.fns.video_play)(au.as_ptr() as *mut c_void, au.len() as c_uint, pts_ms) };
-            if ret != 0 {
-                bail!("NDL_DirectVideoPlay failed: ret={ret} error={}", ffi::last_error());
-            }
+            self.fns.video_play(au, pts_ms)?;
             mark_frame_fed_logged("NDL", self.load_instant)
         };
         // Outside the FFI guard — `replay_pending_hdr` takes it again, and it isn't reentrant.
@@ -682,11 +636,8 @@ impl NdlVideo {
     /// Buffered-but-undisplayed frames in NDL (None if the query fails).
     /// Rising length = decoder behind; flat near-zero with stutter = upstream problem.
     pub fn render_buffer_length(&self) -> Option<i32> {
-        let mut length: c_int = 0;
         let _ffi = lock_ffi();
-        // SAFETY: `length` is a valid, writable `c_int` for the duration of the call.
-        let ret = unsafe { (self.fns.get_render_buffer_length)(&mut length) };
-        (ret == 0).then_some(length)
+        self.fns.render_buffer_length()
     }
 
     pub fn flush(&self) -> Result<()> {
@@ -698,15 +649,7 @@ impl NdlVideo {
             return Ok(());
         }
         let _ffi = lock_ffi();
-        // SAFETY: no arguments.
-        let ret = unsafe { (self.fns.flush_render_buffer)() };
-        if ret != 0 {
-            bail!(
-                "NDL_DirectVideoFlushRenderBuffer failed: ret={ret} error={}",
-                ffi::last_error()
-            );
-        }
-        Ok(())
+        self.fns.flush_render_buffer()
     }
 }
 
@@ -714,8 +657,7 @@ impl Drop for NdlVideo {
     fn drop(&mut self) {
         // Re-arm so `playing()` stops reporting the load being torn down here.
         arm_load();
-        // SAFETY: best-effort teardown; error ignored (Drop can't propagate a Result).
-        let _ = unsafe { (self.fns.unload)() };
+        self.fns.unload();
     }
 }
 

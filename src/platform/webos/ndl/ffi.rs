@@ -143,33 +143,186 @@ pub(super) type FrameCallback = Option<extern "C" fn(c_ulonglong)>;
 pub(super) type InitV1 = unsafe extern "C" fn(*const c_char, ResourceReleased) -> c_int;
 pub(super) type InitV2 = unsafe extern "C" fn(*const c_char) -> c_int;
 
+// --- The safe surface ------------------------------------------------------------------------
+//
+// Every `unsafe` in this module is below, and nowhere else in `ndl`: the tables' function pointers
+// are private, so the only way to reach NDL is through these methods. They own the pointer/length
+// derivation and the `0 = ok` convention; the modules above own the policy.
+//
+// **They do NOT take `FFI_LOCK`.** Serializing NDL is [`super::lock_ffi`]'s job and several callers
+// deliberately hold that guard across a whole burst of calls, which a lock taken in here would
+// deadlock on.
+
+/// NDL's convention: `0` is success and anything else a failure whose detail sits in the library's
+/// own last-error buffer. One place builds that message, so no call site repeats it.
+fn check(call: &str, ret: c_int) -> Result<()> {
+    if ret == 0 {
+        return Ok(());
+    }
+    bail!("{call} failed: ret={ret} error={}", last_error())
+}
+
 /// The three calls both generations share.
 pub(super) struct Common {
-    pub(super) get_error: unsafe extern "C" fn() -> *const c_char,
-    pub(super) init_v1: InitV1,
-    pub(super) init_v2: InitV2,
-    pub(super) quit: unsafe extern "C" fn() -> c_int,
+    get_error: unsafe extern "C" fn() -> *const c_char,
+    init_v1: InitV1,
+    init_v2: InitV2,
+    quit: unsafe extern "C" fn() -> c_int,
+}
+
+impl Common {
+    /// `NDL_DirectMediaInit`. One symbol, two prototypes: `api2` picks the app-id-only form v2
+    /// declares, against v1's app id plus resource-released callback (always NULL here).
+    pub(super) fn init(&self, app_id: &CStr, api2: bool) -> Result<()> {
+        // SAFETY: `app_id` is NUL-terminated and valid for the duration of the call.
+        let ret = unsafe {
+            if api2 {
+                (self.init_v2)(app_id.as_ptr())
+            } else {
+                (self.init_v1)(app_id.as_ptr(), None)
+            }
+        };
+        check("NDL_DirectMediaInit", ret)
+    }
+
+    /// Process-wide teardown. Best-effort: there is no recovery from a failure on the way out.
+    pub(super) fn quit(&self) {
+        // SAFETY: no arguments.
+        unsafe { (self.quit)() };
+    }
 }
 
 /// webOS 5+ `DirectMedia` v2. Every symbol is required: a partial table means an unknown
 /// flavour of the library, and guessing which calls are safe on it is worse than refusing.
 pub(super) struct V2 {
-    pub(super) load: unsafe extern "C" fn(*mut DataInfo, LoadStateCallback) -> c_int,
-    pub(super) unload: unsafe extern "C" fn() -> c_int,
-    pub(super) video_play: unsafe extern "C" fn(*mut c_void, c_uint, c_longlong) -> c_int,
-    pub(super) flush_render_buffer: unsafe extern "C" fn() -> c_int,
-    pub(super) get_render_buffer_length: unsafe extern "C" fn(*mut c_int) -> c_int,
-    pub(super) audio_play: unsafe extern "C" fn(*mut c_void, c_uint, c_longlong) -> c_int,
-    pub(super) set_hdr_info: unsafe extern "C" fn(HdrInfo) -> c_int,
+    load: unsafe extern "C" fn(*mut DataInfo, LoadStateCallback) -> c_int,
+    unload: unsafe extern "C" fn() -> c_int,
+    video_play: unsafe extern "C" fn(*mut c_void, c_uint, c_longlong) -> c_int,
+    flush_render_buffer: unsafe extern "C" fn() -> c_int,
+    get_render_buffer_length: unsafe extern "C" fn(*mut c_int) -> c_int,
+    audio_play: unsafe extern "C" fn(*mut c_void, c_uint, c_longlong) -> c_int,
+    set_hdr_info: unsafe extern "C" fn(HdrInfo) -> c_int,
+}
+
+impl V2 {
+    /// `NDL_DirectMediaLoad`. Success here is only "request accepted" — see [`super::v2`] for what
+    /// still has to be waited out.
+    pub(super) fn load(&self, info: &mut DataInfo, on_state: LoadStateCallback) -> Result<()> {
+        // SAFETY: `info` is a live, fully initialized `DataInfo` for the duration of the call, and
+        // `on_state` an `extern "C"` fn with no captured state.
+        let ret = unsafe { (self.load)(info, on_state) };
+        check("NDL_DirectMediaLoad", ret)
+    }
+
+    /// Best-effort teardown: every caller is either in `Drop` or already unwinding an error it
+    /// cannot improve on.
+    pub(super) fn unload(&self) {
+        // SAFETY: no arguments.
+        unsafe { (self.unload)() };
+    }
+
+    /// Feed one access unit (or one piece of one) at `pts_ms` in the decoder's own clock domain.
+    pub(super) fn video_play(&self, au: &[u8], pts_ms: i64) -> Result<()> {
+        check("NDL_DirectVideoPlay", self.play(self.video_play, au, pts_ms))
+    }
+
+    /// Feed one Opus packet to the audio plane at `pts_ms`.
+    pub(super) fn audio_play(&self, packet: &[u8], pts_ms: i64) -> Result<()> {
+        check("NDL_DirectAudioPlay", self.play(self.audio_play, packet, pts_ms))
+    }
+
+    /// The shape both feeds share: a borrowed buffer NDL reads synchronously, and a stamp.
+    fn play(
+        &self,
+        feed: unsafe extern "C" fn(*mut c_void, c_uint, c_longlong) -> c_int,
+        data: &[u8],
+        pts_ms: i64,
+    ) -> c_int {
+        // The `*mut` in the prototype is NDL's declaration, not a licence to write: both feeds are
+        // reads. `data.len()` is what bounds the read, so the cast cannot narrow it.
+        let len = c_uint::try_from(data.len()).unwrap_or(c_uint::MAX);
+        // SAFETY: NDL reads `len` bytes synchronously and does not retain the pointer, so the
+        // borrow outlives the call.
+        unsafe { feed(data.as_ptr().cast_mut().cast::<c_void>(), len, pts_ms as c_longlong) }
+    }
+
+    /// Drop whatever the decoder has queued for presentation.
+    pub(super) fn flush_render_buffer(&self) -> Result<()> {
+        // SAFETY: no arguments.
+        let ret = unsafe { (self.flush_render_buffer)() };
+        check("NDL_DirectVideoFlushRenderBuffer", ret)
+    }
+
+    /// Frames buffered but not yet displayed, or `None` if the query failed — which is not the same
+    /// answer as an empty queue, and the stage above treats it differently.
+    pub(super) fn render_buffer_length(&self) -> Option<c_int> {
+        let mut length: c_int = 0;
+        // SAFETY: `length` is a live, correctly typed out-parameter for the duration of the call.
+        let ret = unsafe { (self.get_render_buffer_length)(&raw mut length) };
+        (ret == 0).then_some(length)
+    }
+
+    /// Hand the panel HDR mastering metadata. Passed **by value**; see [`HdrInfo`] on why the
+    /// trailing padding is carried.
+    pub(super) fn set_hdr_info(&self, info: HdrInfo) -> Result<()> {
+        // SAFETY: passed by value; no pointers and no aliasing.
+        let ret = unsafe { (self.set_hdr_info)(info) };
+        check("NDL_DirectVideoSetHDRInfo", ret)
+    }
 }
 
 /// webOS 3.5-4.x `DirectMedia` v1 — see [`super::v1`].
 pub(super) struct V1 {
-    pub(super) video_open: unsafe extern "C" fn(*mut V1VideoInfo) -> c_int,
-    pub(super) video_close: unsafe extern "C" fn() -> c_int,
-    pub(super) video_set_area: unsafe extern "C" fn(c_int, c_int, c_int, c_int) -> c_int,
-    pub(super) video_set_callback: unsafe extern "C" fn(FrameCallback) -> c_int,
-    pub(super) video_play_with_callback: unsafe extern "C" fn(*mut c_void, usize, c_ulonglong) -> c_int,
+    video_open: unsafe extern "C" fn(*mut V1VideoInfo) -> c_int,
+    video_close: unsafe extern "C" fn() -> c_int,
+    video_set_area: unsafe extern "C" fn(c_int, c_int, c_int, c_int) -> c_int,
+    video_set_callback: unsafe extern "C" fn(FrameCallback) -> c_int,
+    video_play_with_callback: unsafe extern "C" fn(*mut c_void, usize, c_ulonglong) -> c_int,
+}
+
+impl V1 {
+    /// Open the video plane for a stream of `info`'s dimensions.
+    pub(super) fn video_open(&self, info: &mut V1VideoInfo) -> Result<()> {
+        // SAFETY: `info` is a live, fully initialized `V1VideoInfo`; NDL copies what it needs.
+        let ret = unsafe { (self.video_open)(info) };
+        check("NDL_DirectVideoOpen", ret)
+    }
+
+    /// Best-effort teardown — the only caller is `Drop`, which cannot propagate a failure.
+    pub(super) fn video_close(&self) -> Result<()> {
+        // SAFETY: no arguments.
+        let ret = unsafe { (self.video_close)() };
+        check("NDL_DirectVideoClose", ret)
+    }
+
+    /// Place the fixed display rect (see [`super::v1`]'s `fit_video`).
+    pub(super) fn video_set_area(&self, x: c_int, y: c_int, w: c_int, h: c_int) -> Result<()> {
+        // SAFETY: plain integer arguments.
+        let ret = unsafe { (self.video_set_area)(x, y, w, h) };
+        check("NDL_DirectVideoSetArea", ret)
+    }
+
+    /// Register the frame-done callback.
+    pub(super) fn video_set_callback(&self, cb: FrameCallback) -> Result<()> {
+        // SAFETY: `cb` is an `extern "C"` fn with no captured state.
+        let ret = unsafe { (self.video_set_callback)(cb) };
+        check("NDL_DirectVideoSetCallback", ret)
+    }
+
+    /// Feed one access unit. No timestamp: v1 presents frames as they are fed. `userdata` is
+    /// echoed back by the frame-done callback.
+    pub(super) fn video_play(&self, au: &[u8], userdata: u64) -> Result<()> {
+        // SAFETY: NDL reads `au.len()` bytes synchronously and does not retain the pointer. The
+        // `*mut` is its declaration, not a write: this feed is a read.
+        let ret = unsafe {
+            (self.video_play_with_callback)(
+                au.as_ptr().cast_mut().cast::<c_void>(),
+                au.len(),
+                userdata as c_ulonglong,
+            )
+        };
+        check("NDL_DirectVideoPlayWithCallback", ret)
+    }
 }
 
 // --- Resolution ------------------------------------------------------------------------------

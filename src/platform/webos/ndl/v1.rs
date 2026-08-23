@@ -23,7 +23,7 @@
 //! NOPs two bytes out of a `MStar` codec-type whitelist so *non-H.264* types pass. We only ever
 //! feed H.264 here, and unverifiable patching of vendor code is what `docs/NOTES.md` argues
 //! against.
-use std::ffi::{c_ulonglong, c_void};
+use std::ffi::c_ulonglong;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -52,10 +52,8 @@ fn fit_video(fns: &ffi::V1, width: i32, height: i32) {
             ((PLANE_WIDTH - w) / 2, 0, w, PLANE_HEIGHT)
         }
     };
-    // SAFETY: plain integer arguments.
-    let ret = unsafe { (fns.video_set_area)(x, y, w, h) };
-    if ret != 0 {
-        tracing::warn!("NDL v1 SetArea({x},{y},{w},{h}) failed: ret={ret}");
+    if let Err(e) = fns.video_set_area(x, y, w, h) {
+        tracing::warn!("NDL v1 SetArea({x},{y},{w},{h}): {e:#}");
     }
     tracing::info!("NDL v1 plane: {w}x{h}+{x}+{y} for a {width}x{height} stream");
 }
@@ -96,15 +94,9 @@ impl NdlV1Video {
         };
         // Re-arm before opening, so the reveal gate can't be satisfied by a previous session.
         arm_load();
-        // SAFETY: `info` is valid for the duration of this call; NDL copies what it needs.
-        let ret = unsafe { (fns.video_open)(&mut info) };
-        if ret != 0 {
-            bail!("NDL_DirectVideoOpen failed: ret={ret}");
-        }
-        // SAFETY: `on_frame` is an `extern "C"` fn with no captured state.
-        let ret = unsafe { (fns.video_set_callback)(Some(on_frame)) };
-        if ret != 0 {
-            tracing::warn!("NDL v1 SetCallback failed: ret={ret} — presence signal unavailable");
+        fns.video_open(&mut info)?;
+        if let Err(e) = fns.video_set_callback(Some(on_frame)) {
+            tracing::warn!("NDL v1 SetCallback failed ({e:#}) — presence signal unavailable");
         }
         fit_video(fns, width, height);
         Ok(Self {
@@ -119,11 +111,7 @@ impl NdlV1Video {
     pub fn play(&self, au: &[u8]) -> Result<()> {
         let frame = self.frames_fed.fetch_add(1, Ordering::Relaxed);
         let _ffi = lock_ffi();
-        // SAFETY: NDL reads `size` bytes synchronously and does not retain the pointer.
-        let ret = unsafe { (self.fns.video_play_with_callback)(au.as_ptr() as *mut c_void, au.len(), frame) };
-        if ret != 0 {
-            bail!("NDL_DirectVideoPlayWithCallback failed: ret={ret}");
-        }
+        self.fns.video_play(au, frame)?;
         // Same reveal gate as v2, and not left to `on_frame` alone: a model that never delivers
         // the callback would hold the menu up until `runtime::stream`'s reveal timeout.
         mark_frame_fed_logged("NDL v1", self.open_instant);
@@ -136,10 +124,9 @@ impl Drop for NdlV1Video {
         // Re-arm so the reveal gate stops reporting the session being torn down here.
         arm_load();
         let _ffi = lock_ffi();
-        // SAFETY: best-effort teardown; error ignored (Drop can't propagate a Result).
-        let ret = unsafe { (self.fns.video_close)() };
-        if ret != 0 {
-            tracing::warn!("NDL_DirectVideoClose failed: ret={ret}");
+        // Best-effort: `Drop` can't propagate a failure.
+        if let Err(e) = self.fns.video_close() {
+            tracing::warn!("{e:#}");
         }
     }
 }
