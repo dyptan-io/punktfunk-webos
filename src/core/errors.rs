@@ -2,7 +2,7 @@
 //!
 //! Ported from `pf-client-core::trust`'s `connect_reject_message`/`pair_error_message` —
 //! the same wording every other punktfunk client shows — rather than depending on that
-//! crate (see `session.rs`'s module docs for why this client can't).
+//! crate (see `session`'s module docs for why this client can't).
 //!
 //! Without this, failures rendered as Debug strings (e.g., "connect: Rejected(Busy)").
 //! This translates them to user-facing sentences.

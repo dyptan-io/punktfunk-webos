@@ -93,7 +93,7 @@ impl App {
                     outcome: Box::new(r.outcome),
                     confirmed: r.confirmed,
                 }),
-                Err(e) => tx.send(SpeedTestMsg::Failed(crate::errors::friendly(&e))),
+                Err(e) => tx.send(SpeedTestMsg::Failed(crate::core::errors::friendly(&e))),
             };
         });
     }

@@ -104,7 +104,11 @@ pub(super) fn run_inner() -> Result<()> {
     let identity = store::load_or_create_identity().context("load_or_create_identity")?;
 
     // Sized for a 10-foot TV viewing distance.
-    let text_raster = crate::platform::webos::text_sdl::SdlTextRaster::new(&ttf, display_mode.h as u32)?;
+    let typefaces = crate::platform::webos::text_sdl::Typefaces {
+        text: crate::app::assets::geist,
+        icon: crate::app::assets::ICON_FONT_BYTES,
+    };
+    let text_raster = crate::platform::webos::text_sdl::SdlTextRaster::new(&ttf, display_mode.h as u32, &typefaces)?;
     let fonts = crate::ui::text::Fonts {
         raster: &text_raster,
         label: crate::ui::text::FontId::Label,
@@ -156,7 +160,7 @@ pub(super) fn run_inner() -> Result<()> {
             Err(e) => {
                 // Return to the menu with the reason on screen instead of `?`-ing the app down.
                 tracing::error!("session connect failed: {e:#}");
-                menu_status = Some(format!("Couldn't connect: {}", crate::errors::friendly(&e)));
+                menu_status = Some(format!("Couldn't connect: {}", crate::core::errors::friendly(&e)));
                 continue;
             }
         };

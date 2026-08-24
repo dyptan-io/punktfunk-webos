@@ -7,9 +7,7 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 #[cfg(target_os = "linux")]
 mod app;
-mod assets;
 mod core;
-mod errors;
 mod logger;
 #[cfg(target_os = "linux")]
 mod platform;

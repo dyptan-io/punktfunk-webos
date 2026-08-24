@@ -85,7 +85,7 @@ impl GridReveal {
                 return None;
             }
         }
-        let (idx, _) = crate::assets::spinner_frame_at(since.elapsed().as_secs_f32());
+        let (idx, _) = crate::app::assets::spinner_frame_at(since.elapsed().as_secs_f32());
         (self.frame != Some(idx)).then(|| {
             self.frame = Some(idx);
             idx

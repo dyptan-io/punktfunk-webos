@@ -13,7 +13,7 @@ fn upload_spinner(
     if compositor.has_tile(tile) {
         return Ok(());
     }
-    if let Some(frame) = crate::assets::spinner_frame(idx) {
+    if let Some(frame) = crate::app::assets::spinner_frames().get(idx) {
         compositor.upload(texture_creator, tile, frame, false)?;
     }
     Ok(())
@@ -78,7 +78,7 @@ pub(super) fn run_ui_flow(
     // that meant the first spin cycle stalled once per unique frame, right when the
     // spinner is supposed to look smooth. `clear_all` (stream handoff) drops these
     // along with everything else, so this needs redoing on every re-entry here.
-    for idx in 0..crate::assets::spinner_frames().len() {
+    for idx in 0..crate::ui::spinner::FRAMES {
         upload_spinner(compositor, texture_creator, idx)?;
     }
     // E.g. "the last connect attempt failed, and here's why" — shown on the

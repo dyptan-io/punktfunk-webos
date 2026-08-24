@@ -117,7 +117,7 @@ impl App {
         std::thread::spawn(move || {
             let result =
                 crate::session::probe::request_access(&host, port, identity, crate::services::budget::HOST_WAIT)
-                    .map_err(|e| crate::errors::friendly(&e));
+                    .map_err(|e| crate::core::errors::friendly(&e));
             let _ = tx.send(PairingOutcome {
                 host,
                 port,
@@ -236,7 +236,7 @@ impl App {
                 // host-wait budget rather than the old 30 s.
                 crate::services::budget::HOST_WAIT,
             )
-            .map_err(|e| crate::errors::pair_message(&e));
+            .map_err(|e| crate::core::errors::pair_message(&e));
             // Send failing just means the user backed out and the receiver is
             // gone — nothing to deliver to.
             let _ = tx.send(PairingOutcome {

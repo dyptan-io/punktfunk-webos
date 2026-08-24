@@ -7,20 +7,34 @@ use anyhow::{Context, Result};
 use sdl2::ttf::{Font, Sdl2TtfContext};
 use tiny_skia::{IntSize, Pixmap};
 
-use crate::assets::{geist, ICON_FONT_BYTES};
 use crate::ui::painter::premultiply_rgba;
 use crate::ui::render::Color;
 use crate::ui::text::FontId;
 use crate::ui::text::FontWeight;
 use crate::ui::text::TextRaster;
 
-/// Load Geist weight at size proportional to display height (720px reference).
-fn load_font(ttf: &Sdl2TtfContext, height_px: u32, design_size: u16, weight: FontWeight) -> Result<Font<'_, 'static>> {
-    let bytes = geist(weight);
+/// The typefaces to rasterize with. Supplied by the caller: `platform` loads whatever bytes it
+/// is handed and deliberately does not know which typeface backs the brand (see `app::assets`).
+pub struct Typefaces {
+    /// The typeface for a `ui` text weight.
+    pub text: fn(FontWeight) -> &'static [u8],
+    /// The icon typeface, one face at every size.
+    pub icon: &'static [u8],
+}
+
+/// Load the text weight at a size proportional to display height (720px reference).
+fn load_font<'ttf>(
+    ttf: &'ttf Sdl2TtfContext,
+    typefaces: &Typefaces,
+    height_px: u32,
+    design_size: u16,
+    weight: FontWeight,
+) -> Result<Font<'ttf, 'static>> {
+    let bytes = (typefaces.text)(weight);
     let scaled = (u32::from(design_size) * height_px / 720).max(10) as u16;
-    let rwops = sdl2::rwops::RWops::from_bytes(bytes).map_err(|e| anyhow::anyhow!("geist rwops: {e}"))?;
+    let rwops = sdl2::rwops::RWops::from_bytes(bytes).map_err(|e| anyhow::anyhow!("text font rwops: {e}"))?;
     ttf.load_font_from_rwops(rwops, scaled)
-        .map_err(|e| anyhow::anyhow!("load_font (Geist): {e}"))
+        .map_err(|e| anyhow::anyhow!("load_font: {e}"))
 }
 
 /// Loads the bundled icon font at a fixed, generously large size — icon glyphs are
@@ -29,8 +43,8 @@ fn load_font(ttf: &Sdl2TtfContext, height_px: u32, design_size: u16, weight: Fon
 /// rect the caller actually wants, so a single oversized rasterization (rather than
 /// one `load_icon_font` call per distinct icon size, the way the three text fonts
 /// each get their own) is enough to stay crisp at every icon size this UI uses.
-fn load_icon_font(ttf: &Sdl2TtfContext) -> Result<Font<'_, 'static>> {
-    let rwops = sdl2::rwops::RWops::from_bytes(ICON_FONT_BYTES).map_err(|e| anyhow::anyhow!("icon font rwops: {e}"))?;
+fn load_icon_font<'ttf>(ttf: &'ttf Sdl2TtfContext, typefaces: &Typefaces) -> Result<Font<'ttf, 'static>> {
+    let rwops = sdl2::rwops::RWops::from_bytes(typefaces.icon).map_err(|e| anyhow::anyhow!("icon font rwops: {e}"))?;
     ttf.load_font_from_rwops(rwops, 128)
         .map_err(|e| anyhow::anyhow!("load_icon_font: {e}"))
 }
@@ -84,13 +98,13 @@ type MeasureCache = HashMap<Box<str>, (u32, u32)>;
 const MEASURE_CACHE_MAX: usize = 4096;
 
 impl<'ttf> SdlTextRaster<'ttf> {
-    pub fn new(ttf: &'ttf Sdl2TtfContext, height_px: u32) -> Result<Self> {
+    pub fn new(ttf: &'ttf Sdl2TtfContext, height_px: u32, typefaces: &Typefaces) -> Result<Self> {
         Ok(Self {
-            label: load_font(ttf, height_px, 22, FontWeight::Medium)?,
-            value: load_font(ttf, height_px, 20, FontWeight::Regular)?,
-            title: load_font(ttf, height_px, 40, FontWeight::SemiBold)?,
-            icon: load_icon_font(ttf)?,
-            caption: load_font(ttf, height_px, 14, FontWeight::Regular)?,
+            label: load_font(ttf, typefaces, height_px, 22, FontWeight::Medium)?,
+            value: load_font(ttf, typefaces, height_px, 20, FontWeight::Regular)?,
+            title: load_font(ttf, typefaces, height_px, 40, FontWeight::SemiBold)?,
+            icon: load_icon_font(ttf, typefaces)?,
+            caption: load_font(ttf, typefaces, height_px, 14, FontWeight::Regular)?,
             measured: RefCell::new(std::array::from_fn(|_| HashMap::new())),
         })
     }

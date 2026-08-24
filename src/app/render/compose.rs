@@ -836,7 +836,7 @@ impl App {
                 });
             }
         } else if !input.grid_reveal_ready {
-            let (idx, frame) = crate::assets::spinner_frame_at(self.render.grid.reveal.phase());
+            let (idx, frame) = crate::app::assets::spinner_frame_at(self.render.grid.reveal.phase());
             let (fw, fh) = (frame.width(), frame.height());
             let x = grid_x + (available_w as i32 - fw as i32) / 2;
             // 40% down rather than dead-center, which reads as slightly low on a TV.

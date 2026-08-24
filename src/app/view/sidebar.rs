@@ -111,7 +111,7 @@ pub fn draw(
         ui::theme::palette().panel,
     );
     // Logo is 1:1 (no runtime scaling); bundled at exact display size.
-    if let Some(logo) = crate::assets::logo_pixmap() {
+    if let Some(logo) = crate::app::assets::logo_pixmap() {
         let logo_x = (ui::widgets::SIDEBAR_W as i32 - logo.width() as i32) / 2;
         c.painter.draw_pixmap(logo_x, 32, logo);
     }

@@ -4,6 +4,7 @@
 //! Per-screen `impl App` blocks are split by concern: `state` (event handling, transitions)
 //! and `view` (geometry + draw-list building). Keeping them under `app` lets `ui`/`core`
 //! stay dependency leaves — neither reaches back into `App`.
+pub(crate) mod assets;
 pub(crate) mod grid;
 pub(crate) mod hero;
 pub(crate) mod hosts;
@@ -284,7 +285,6 @@ impl App {
                 app.select_host(host, port, mgmt_port);
             }
         }
-        // Rasterizes the spinner's frames off the render thread (OnceLock warm-up).
         // Applies the persisted "Show logs" preference to the otherwise-ephemeral overlay.
         if app.settings_ui.settings.show_logs {
             crate::runtime::set_log_overlay_enabled(true);
@@ -292,7 +292,9 @@ impl App {
         // Same call the Experimental toggle makes, so the persisted value and a live flip take
         // exactly the same path into `ui::theme`.
         app.restyle();
-        std::thread::spawn(crate::assets::spinner_frames);
+        // Rasterizes the spinner's frames off the render thread (OnceLock warm-up). After
+        // `restyle`, because the cache snapshots the palette it rasterizes in.
+        std::thread::spawn(crate::app::assets::spinner_frames);
         app
     }
 

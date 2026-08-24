@@ -1,4 +1,5 @@
 pub mod caps;
+pub mod errors;
 pub mod event;
 pub mod media;
 pub mod model;
