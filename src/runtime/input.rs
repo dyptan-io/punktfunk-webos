@@ -433,7 +433,17 @@ pub(super) struct UiInput {
     /// Hold-to-pin on Home (see `CARD_HOLD`), while OK is held on a pinnable card.
     pub(super) card_held: Option<CardHold>,
     stick_nav: crate::platform::webos::input::StickMenuNav,
+    /// When the last wheel detent arrived, for the [`WHEEL_MOTION_GUARD`] window.
+    wheel_at: Option<Instant>,
 }
+
+/// How long the wheel owns focus after a detent, pointer motion ignored. Scrolling
+/// emits motion at the same time — the Magic Remote keeps moving while its wheel
+/// turns, and a hand on a HID mouse never holds still — which would hand focus back
+/// to whatever row is under the cursor and undo the scroll. Distance can't separate
+/// the two (a real mouse move is arbitrarily large), so the wheel just wins for long
+/// enough to cover the pause between detents; a click ends the window early.
+const WHEEL_MOTION_GUARD: Duration = Duration::from_millis(500);
 
 /// What the UI loop should do with the event `handle_ui_event` just consumed.
 pub(super) enum EventAction {
@@ -622,7 +632,9 @@ pub(super) fn handle_ui_event(
     // event handled below, redraw only if the motion actually changed the
     // focused/hovered element, not on every no-op tick.
     if let Event::MouseMotion { x, y, .. } = event {
-        *dirty |= app.handle_mouse_motion(x, y, w, h, fonts);
+        if !input.wheel_at.is_some_and(|t| t.elapsed() < WHEEL_MOTION_GUARD) {
+            *dirty |= app.handle_mouse_motion(x, y, w, h, fonts);
+        }
         return EventAction::Next;
     }
     // The Magic Remote's scroll wheel — scrolls the game grid on Home (wheel
@@ -630,6 +642,7 @@ pub(super) fn handle_ui_event(
     // redraws when the offset actually moved (a wheel tick at either clamp
     // edge is a no-op).
     if let Event::MouseWheel { y: wheel_y, .. } = event {
+        input.wheel_at = Some(Instant::now());
         match app.nav.screen {
             Screen::About => {
                 /// Licence-wall px per wheel detent — a few lines at a time.
@@ -659,6 +672,11 @@ pub(super) fn handle_ui_event(
             _ => {}
         }
         return EventAction::Next;
+    }
+    // A click is deliberate input: it takes focus at the press point regardless of a
+    // recent wheel detent, so drop the guard before either press path resolves hover focus.
+    if matches!(event, Event::MouseButtonDown { .. }) {
+        input.wheel_at = None;
     }
     if let Some(action) = card_hold_gate(app, &event, input, display_mode, fonts, dirty) {
         return action;
