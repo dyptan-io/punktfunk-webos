@@ -727,9 +727,13 @@ impl App {
                 let rows_top = window_top + title_h as i32;
                 // The selection sits under the row text, not over it: the band is an opaque
                 // surface fill, so a label drawn beneath it would be covered outright.
-                // It rides `rows_top` too, staying on its row for the whole rise.
+                // Held back until the rise lands: the band's shadow margin and its focus pop are
+                // added after `card_menu_band` clipped to the panel, so on a half-revealed row
+                // they hang the lit pill below the card's bottom edge. It still takes `rows_top`
+                // so the geometry stays one path with the labels.
                 if let Some((band, tile)) = self
                     .card_menu_band(r, panel_h, rows_top)
+                    .filter(|_| wipe >= 1.0)
                     .zip(tiles.get(tile::CARD_MENU_BAND))
                 {
                     // The rows block hangs off the *top* of the revealed window, so a row that
