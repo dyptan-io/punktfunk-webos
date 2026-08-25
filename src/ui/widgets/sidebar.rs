@@ -39,7 +39,7 @@ pub fn sidebar_icon_rect(drawn: Rect) -> Rect {
 /// A row's ⋯ button. The single-button case of a focus row's trailing buttons — one
 /// geometry, so the sidebar's ⋯ and a list row's cannot drift apart.
 pub fn sidebar_menu_button_rect(row_rect: Rect) -> Rect {
-    super::trailing_button_rect(row_rect, 1, 0)
+    super::trailing_button_rect(row_rect, 1, 0, false)
 }
 
 impl Painter {

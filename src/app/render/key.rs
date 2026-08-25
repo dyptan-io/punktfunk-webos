@@ -135,6 +135,8 @@ pub enum ModalShellKey<'a> {
     /// nothing about the collections themselves belongs here except how many there are (the
     /// card's height follows the row count).
     Collections {
+        /// Picks the heading — see `App::collections_target_held`.
+        held: bool,
         card: &'a str,
         rows: usize,
     },

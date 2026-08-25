@@ -460,6 +460,7 @@ impl App {
             }),
             Screen::Collections => f(&view::collections::Modal {
                 rows: self.collections_row_count(),
+                title: view::collections::heading(self.collections_target_held()),
                 card: Some(self.collections_heading()),
             }),
             Screen::Pairing => f(&view::pairing::Modal {

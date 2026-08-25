@@ -90,11 +90,14 @@ impl App {
     /// exactly as a click that misses the ⋯ always has.
     pub(crate) fn row_button_at(&self, row: usize, row_rect: Rect, x: i32, y: i32) -> Option<RowButton> {
         let (leading, trailing) = self.row_buttons(row);
+        // The collections list always marks one row, so `align_values` keeps the dot's gutter
+        // clear on every row of it and its buttons sit that much further left.
+        let marked = matches!(self.nav.screen, Screen::Collections);
         if leading && leading_button_rect(row_rect).contains_point((x, y)) {
             return Some(RowButton::Leading);
         }
         (0..trailing.len())
-            .find(|&i| trailing_button_rect(row_rect, trailing.len(), i).contains_point((x, y)))
+            .find(|&i| trailing_button_rect(row_rect, trailing.len(), i, marked).contains_point((x, y)))
             .map(RowButton::Trailing)
     }
 }

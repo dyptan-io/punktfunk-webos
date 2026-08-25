@@ -86,6 +86,16 @@ impl App {
         }
     }
 
+    /// Whether a collection already holds the card the modal is acting on — which is all the
+    /// heading needs (`view::collections::heading`), and what the shell tile keys on.
+    pub(crate) fn collections_target_held(&self) -> bool {
+        self.screens
+            .collections
+            .target
+            .as_deref()
+            .is_some_and(|target| self.card_is_held(target))
+    }
+
     /// Whether the focused row's leading button is held open on `screen` — the drag handle
     /// of a collection row being moved, and nothing on any other scrolling list.
     pub(crate) fn dragged_handle(&self, screen: Screen) -> bool {

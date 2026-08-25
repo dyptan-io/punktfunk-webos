@@ -14,7 +14,30 @@ use crate::ui::ModalMetrics;
 use crate::ui::ModalScreen;
 use anyhow::Result;
 
-pub(crate) const TITLE: &str = "Add to";
+const TITLE: &str = "Add to";
+const MOVE_TITLE: &str = "Move to";
+/// What the list is doing, by whether a collection already holds the card: one that sits in
+/// Library can only be gained by a collection, one that is held leaves its own behind. The
+/// card menu's row ([`menu_row_label`]) opens this modal, so both read it from here and the
+/// two can't drift apart.
+pub(crate) fn heading(held: bool) -> &'static str {
+    if held {
+        MOVE_TITLE
+    } else {
+        TITLE
+    }
+}
+
+/// [`heading`] as the card menu's row reads it — the same words, with the ellipsis that says
+/// it opens something.
+pub(crate) fn menu_row_label(held: bool) -> &'static str {
+    if held {
+        "Move to\u{2026}"
+    } else {
+        "Add to\u{2026}"
+    }
+}
+
 pub(crate) const ADD_ROW: &str = "Add collection";
 pub(crate) const REMOVE_TITLE: &str = "Remove collection?";
 /// Replaces the card's name in the heading while a row is being dragged: the list is doing
@@ -105,6 +128,9 @@ pub(crate) fn rows(host: &KnownHost, holding: Option<usize>) -> Vec<FocusRow> {
     if host.can_add_collection() {
         rows.push(FocusRow::action(icons::ICON_ADD, ADD_ROW.to_string()));
     }
+    // Library has no Remove and one row wears the mark dot, both of which would otherwise
+    // shift that row's count.
+    ui::widgets::align_values(&mut rows);
     rows
 }
 
@@ -117,14 +143,18 @@ pub(crate) fn row_count(host: &KnownHost) -> usize {
 fn count_label(count: Option<usize>) -> String {
     match count {
         Some(1) => "1 game".to_string(),
+        // "0 games" is noise next to the subtext that already says the row is hidden, and
+        // Library has no count at all.
+        Some(0) | None => String::new(),
         Some(n) => format!("{n} games"),
-        None => String::new(),
     }
 }
 
 /// The modal as a [`ModalScreen`] — the shell only; its rows are their own tiles.
 pub(crate) struct Modal<'a> {
     pub rows: usize,
+    /// From [`heading`].
+    pub title: &'static str,
     /// The card being moved, named after the heading so the list says what it acts on.
     pub card: Option<&'a str>,
 }
@@ -141,7 +171,7 @@ impl ModalScreen for Modal<'_> {
             c,
             self.rows,
             scrolllist::COLLECTIONS_WIDTH_FRAC,
-            TITLE,
+            self.title,
             self.card,
             hover_close,
         )

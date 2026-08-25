@@ -48,6 +48,12 @@ pub struct FocusRow {
     /// action stays a single press. Per-row, so one row in a list can offer fewer than its
     /// neighbours (Library has no Remove). Empty (the default) draws nothing.
     pub trailing: &'static [&'static str],
+    /// Room to keep clear at the row's right end, in trailing buttons, when placing the
+    /// value label — over and above the buttons this row actually has. A list whose rows
+    /// carry different counts (Library has no Remove) would otherwise hang its values at
+    /// different x; [`align_values`] sets this so the column lines up. 0 (the default)
+    /// reserves exactly the row's own buttons.
+    pub value_reserve: usize,
     /// The row's own [`icon`](Self::icon) is a button too, in the slot it already draws in —
     /// reached with Left, where [`trailing`](Self::trailing) is reached with Right. For the
     /// action a row wants *before* its label rather than after it (a collection's drag
@@ -67,6 +73,10 @@ pub struct FocusRow {
     /// is the caller's business. `None` (the default) draws nothing and leaves the row's
     /// control the width the dot would have taken.
     pub mark: Option<Color>,
+    /// Keep the [`mark`](Self::mark) gutter clear even though this row wears no dot — what
+    /// [`align_values`] sets on a list where some *other* row does, so one marked row does
+    /// not pull its own value 32px left of its neighbours'.
+    pub mark_reserve: bool,
     /// A small secondary line drawn under the row's label *only while the row is focused*
     /// (e.g. the high-bitrate "may be unstable on Wi-Fi" caution on the Bitrate row).
     /// Unfocused, the label stays vertically centred and nothing is drawn; on focus the
@@ -127,11 +137,13 @@ impl FocusRow {
             danger: false,
             locked: false,
             trailing: &[],
+            value_reserve: 0,
             trailing_focused: None,
             leading_button: false,
             leading_focused: false,
             leading_active: false,
             mark: None,
+            mark_reserve: false,
             subtext: None,
         }
     }
@@ -269,9 +281,19 @@ pub struct RowGeom {
     pub mark: Rect,
 }
 
+/// The room a row keeps clear at its right end for the [`FocusRow::mark`] dot, 0 on a list
+/// where none is drawn. Every right-anchored piece — the control, the value label, the
+/// trailing buttons — starts inside it, so nothing lands under the dot.
+pub fn mark_gutter(marked: bool) -> i32 {
+    if marked {
+        2 * MARK_DOT_R + MARK_GAP
+    } else {
+        0
+    }
+}
+
 pub fn row_layout(row_rect: Rect, marked: bool) -> RowGeom {
-    let reserve = if marked { 2 * MARK_DOT_R + MARK_GAP } else { 0 };
-    let control_right = row_rect.right() - CONTROL_PAD - reserve;
+    let control_right = row_rect.right() - CONTROL_PAD - mark_gutter(marked);
     let track_w = 220u32.min(row_rect.width() / 3);
     let cy = row_rect.y() + row_rect.height() as i32 / 2;
     RowGeom {
@@ -309,18 +331,32 @@ pub fn trailing_width(count: usize) -> i32 {
     count as i32 * (SIDEBAR_MENU_BTN as i32 + TRAILING_GAP)
 }
 
+/// Puts every row's value label in one column: each reserves the widest row's
+/// trailing-button room, and the mark gutter if any row is marked
+/// ([`FocusRow::value_reserve`], [`FocusRow::mark_reserve`]). A right-aligned value otherwise
+/// stops wherever its own row's buttons and dot leave off, so one odd row out looks ragged.
+pub fn align_values(rows: &mut [FocusRow]) {
+    let widest = rows.iter().map(|r| r.trailing.len()).max().unwrap_or(0);
+    let any_marked = rows.iter().any(|r| r.mark.is_some());
+    for row in rows {
+        row.value_reserve = widest;
+        row.mark_reserve = any_marked;
+    }
+}
+
 /// Gap between two trailing buttons, and between the last one and the row's edge.
 const TRAILING_GAP: i32 = 10;
 
 /// Trailing button `i` of `count`, packed from the row's right edge in the order they are
-/// drawn. The one-button case is exactly a sidebar row's ⋯, which is what the host menu's
+/// drawn — inside the [`mark_gutter`], so the last button clears the dot rather than sitting
+/// under it. The one-button case is exactly a sidebar row's ⋯, which is what the host menu's
 /// Wake row draws — one geometry, so the pointer's per-icon hit test and the painter cannot
 /// disagree about where a button is.
-pub fn trailing_button_rect(row_rect: Rect, count: usize, i: usize) -> Rect {
+pub fn trailing_button_rect(row_rect: Rect, count: usize, i: usize, marked: bool) -> Rect {
     let from_right = count.saturating_sub(i + 1) as i32;
     let stride = SIDEBAR_MENU_BTN as i32 + TRAILING_GAP;
     Rect::new(
-        row_rect.right() - SIDEBAR_MENU_BTN as i32 - TRAILING_GAP - from_right * stride,
+        row_rect.right() - mark_gutter(marked) - SIDEBAR_MENU_BTN as i32 - TRAILING_GAP - from_right * stride,
         row_rect.y() + (row_rect.height() as i32 - SIDEBAR_MENU_BTN as i32) / 2,
         SIDEBAR_MENU_BTN,
         SIDEBAR_MENU_BTN,
@@ -490,11 +526,13 @@ pub struct FocusRowKey<'a> {
     danger: bool,
     locked: bool,
     trailing: &'a [&'static str],
+    value_reserve: usize,
     trailing_focused: Option<usize>,
     leading_button: bool,
     leading_focused: bool,
     leading_active: bool,
     mark: Option<Rgba8>,
+    mark_reserve: bool,
     subtext: Option<(&'a str, Rgba8)>,
 }
 
@@ -514,11 +552,13 @@ impl FocusRow {
             danger: self.danger,
             locked: self.locked,
             trailing: self.trailing,
+            value_reserve: self.value_reserve,
             trailing_focused: self.trailing_focused,
             leading_button: self.leading_button,
             leading_focused: self.leading_focused,
             leading_active: self.leading_active,
             mark: self.mark.map(color_bytes),
+            mark_reserve: self.mark_reserve,
             subtext: self.subtext.as_ref().map(|s| (s.text.as_str(), color_bytes(s.color))),
         }
     }
@@ -549,7 +589,8 @@ impl Canvas<'_, '_> {
         self.painter.selectable_fixed(row_rect, focused);
 
         // Past the row's control, on the right edge — the width `row_layout` took off it.
-        let geom = row_layout(row_rect, row.mark.is_some());
+        let marked = row.mark.is_some() || row.mark_reserve;
+        let geom = row_layout(row_rect, marked);
         if let Some(color) = row.mark {
             self.painter.fill_rounded_rect(geom.mark, MARK_DOT_R, color);
         }
@@ -627,7 +668,7 @@ impl Canvas<'_, '_> {
             // Action rows have no control; `value` is a muted hint only, never interactive.
             RowKind::Action => {
                 if !row.value.is_empty() {
-                    let menu_w = trailing_width(row.trailing.len());
+                    let menu_w = trailing_width(row.value_reserve.max(row.trailing.len()));
                     let value_w = self.fonts.raster.measure(value_font, &row.value).0;
                     self.text(
                         value_font,
@@ -641,7 +682,7 @@ impl Canvas<'_, '_> {
         }
         for (i, &icon) in row.trailing.iter().enumerate() {
             self.row_button(
-                trailing_button_rect(row_rect, row.trailing.len(), i),
+                trailing_button_rect(row_rect, row.trailing.len(), i, marked),
                 icon,
                 focused,
                 row.trailing_focused == Some(i),

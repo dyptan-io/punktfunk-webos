@@ -20,7 +20,7 @@ impl App {
     /// count is safe at that point.
     pub(crate) fn card_menu_row_kinds(&self, pin_id: &str) -> &'static [CardMenuRow] {
         // Nothing to remove a Library card from — Library *is* "in no collection".
-        if self.collection_of_card(pin_id).is_some() {
+        if self.card_is_held(pin_id) {
             &[CardMenuRow::MoveTo, CardMenuRow::Remove, CardMenuRow::Settings]
         } else {
             &[CardMenuRow::MoveTo, CardMenuRow::Settings]
@@ -30,10 +30,11 @@ impl App {
     /// [`card_menu_row_kinds`](Self::card_menu_row_kinds) with the icon and label each row
     /// draws.
     pub(crate) fn card_menu_rows(&self, pin_id: &str) -> Vec<(&'static str, &'static str)> {
+        let held = self.card_is_held(pin_id);
         self.card_menu_row_kinds(pin_id)
             .iter()
             .map(|kind| match kind {
-                CardMenuRow::MoveTo => (crate::ui::theme::icons().pin, "Add to\u{2026}"),
+                CardMenuRow::MoveTo => (crate::ui::theme::icons().pin, view::collections::menu_row_label(held)),
                 CardMenuRow::Remove => (view::icons::ICON_DELETE, "Remove"),
                 CardMenuRow::Settings => (view::icons::ICON_SETTINGS, "Settings"),
             })
@@ -42,7 +43,7 @@ impl App {
 
     /// How many rows the submenu on `pin_id`'s card has — what its geometry divides by.
     pub(crate) fn card_menu_row_count(&self, pin_id: &str) -> usize {
-        2 + usize::from(self.collection_of_card(pin_id).is_some())
+        2 + usize::from(self.card_is_held(pin_id))
     }
 
     /// The open submenu's rows band in screen space, and the card it hangs off — the

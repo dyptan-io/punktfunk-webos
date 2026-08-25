@@ -208,6 +208,7 @@ impl App {
                 game: self.editing_game().map(|gs| gs.title.as_str()),
             }),
             Screen::Collections => Some(ModalShellKey::Collections {
+                held: self.collections_target_held(),
                 card: self.collections_heading(),
                 rows: self.collections_row_count(),
             }),

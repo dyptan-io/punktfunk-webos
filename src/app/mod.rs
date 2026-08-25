@@ -759,6 +759,13 @@ impl App {
         self.selected_known_host()?.collection_of(pin_id)
     }
 
+    /// Whether a collection holds `pin_id` — what the card menu's Remove row, its Add/Move
+    /// wording and the collections modal's heading all turn on. Library *is* "in no
+    /// collection", so a card there is not held.
+    pub(crate) fn card_is_held(&self, pin_id: &str) -> bool {
+        self.collection_of_card(pin_id).is_some()
+    }
+
     pub(crate) fn known_host_mut(&mut self, host: &str, port: u16) -> Option<&mut KnownHost> {
         self.hosts.known.iter_mut().find(|h| h.host == host && h.port == port)
     }
