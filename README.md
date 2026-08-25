@@ -25,6 +25,18 @@ Built on the [punktfunk](https://git.unom.io/unom/punktfunk) project by **Enrico
 belongs there. This repo is only the webOS-specific client: an SDL2 UI, NDL DirectMedia hardware
 video decode, and webOS packaging.
 
+<details>
+<summary><b>Screenshots</b></summary>
+
+<p align="center">
+  <img src="assets/screenshots/home.jpg" width="32%" alt="Home / game library">
+  <img src="assets/screenshots/collections.jpg" width="32%" alt="Collections">
+  <img src="assets/screenshots/settings.jpg" width="32%" alt="Settings">
+</p>
+
+</details>
+
+
 ## Features
 
 - **Video** — up to 4K120 with HDR. H.264 or HEVC, decoded by the TV's hardware media pipeline
@@ -46,17 +58,6 @@ video decode, and webOS packaging.
 > **Controller feedback needs newer webOS version.** Rumble, DualSense triggers, haptics and lightbar all
 > rely on the kernel's `hid-playstation` driver, which LG ships only on latest webOS versions 24+.
 > On webOS 5.x (e.g. the CX) the pad still works as an *input*, but no feedback reaches it.
-
-<details>
-<summary><b>Screenshots</b></summary>
-
-<p align="center">
-  <img src="assets/screenshots/home.jpg" width="32%" alt="Home / game library">
-  <img src="assets/screenshots/host-menu.jpg" width="32%" alt="Host menu">
-  <img src="assets/screenshots/settings.jpg" width="32%" alt="Settings">
-</p>
-
-</details>
 
 ## Installing
 
