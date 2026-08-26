@@ -31,10 +31,11 @@ pub(crate) enum ScreenKey {
     Collections,
     RenameCollection,
     RemoveCollection,
+    ResetGameSettings,
 }
 
 impl ScreenKey {
-    pub const COUNT: usize = Self::RemoveCollection as usize + 1;
+    pub const COUNT: usize = Self::ResetGameSettings as usize + 1;
 
     pub const fn of(screen: Screen) -> Self {
         match screen {
@@ -56,6 +57,7 @@ impl ScreenKey {
             Screen::Collections => Self::Collections,
             Screen::RenameCollection => Self::RenameCollection,
             Screen::RemoveCollection => Self::RemoveCollection,
+            Screen::ResetGameSettings => Self::ResetGameSettings,
         }
     }
 }
@@ -77,6 +79,7 @@ pub(crate) const fn over_scroll_list(screen: Screen) -> bool {
             | Screen::SendLogs
             | Screen::RenameCollection
             | Screen::RemoveCollection
+            | Screen::ResetGameSettings
     )
 }
 

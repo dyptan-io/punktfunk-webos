@@ -206,7 +206,12 @@ impl App {
             // so the pointer can pick action-vs-Cancel, not just confirm whatever the D-pad
             // last focused. `confirm_subtitle` is `None` for the variants with no buttons up
             // (a Wake with no MAC, a test still running), which reads as nothing to hover.
-            Screen::ForgetHost | Screen::SendLogs | Screen::Wake | Screen::SpeedTest | Screen::RemoveCollection => {
+            Screen::ForgetHost
+            | Screen::SendLogs
+            | Screen::Wake
+            | Screen::SpeedTest
+            | Screen::RemoveCollection
+            | Screen::ResetGameSettings => {
                 let Some(subtitle) = self.confirm_subtitle() else {
                     return false;
                 };
@@ -551,7 +556,12 @@ impl App {
             }
             // Nothing positional to hit: the confirm dialogs confirm whichever button
             // already has focus.
-            Screen::Wake | Screen::ForgetHost | Screen::SpeedTest | Screen::SendLogs | Screen::RemoveCollection => {}
+            Screen::Wake
+            | Screen::ForgetHost
+            | Screen::SpeedTest
+            | Screen::SendLogs
+            | Screen::RemoveCollection
+            | Screen::ResetGameSettings => {}
             // Nothing clickable but the close button (handled above).
             Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::About => return None,
         }

@@ -19,7 +19,12 @@ use crate::core::screen::Screen;
 /// absorbed by a `_ =>` arm into the wrong geometry.
 pub(crate) const fn is_confirm(screen: Screen) -> bool {
     match screen {
-        Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest | Screen::RemoveCollection => true,
+        Screen::Wake
+        | Screen::ForgetHost
+        | Screen::SendLogs
+        | Screen::SpeedTest
+        | Screen::RemoveCollection
+        | Screen::ResetGameSettings => true,
         Screen::Home
         | Screen::Pairing
         | Screen::Settings(_)
@@ -58,7 +63,8 @@ pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
         | Screen::CursorSettings(_)
         | Screen::SendLogs
         | Screen::RenameCollection
-        | Screen::RemoveCollection => false,
+        | Screen::RemoveCollection
+        | Screen::ResetGameSettings => false,
     }
 }
 
@@ -87,6 +93,7 @@ pub(crate) const fn is_list_modal(screen: Screen) -> bool {
         // Collections is a scrolling list too, and its name dialog is a text form.
         | Screen::Collections
         | Screen::RenameCollection
-        | Screen::RemoveCollection => false,
+        | Screen::RemoveCollection
+        | Screen::ResetGameSettings => false,
     }
 }

@@ -60,7 +60,8 @@ impl App {
             // text form with no rows at all.
             | Screen::Collections
             | Screen::RenameCollection
-            | Screen::RemoveCollection => 0,
+            | Screen::RemoveCollection
+            | Screen::ResetGameSettings => 0,
         }
     }
 
@@ -129,7 +130,8 @@ impl App {
             | Screen::SendLogs
             | Screen::Collections
             | Screen::RenameCollection
-            | Screen::RemoveCollection => Vec::new(),
+            | Screen::RemoveCollection
+            | Screen::ResetGameSettings => Vec::new(),
         }
     }
 

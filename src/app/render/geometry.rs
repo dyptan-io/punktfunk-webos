@@ -216,7 +216,8 @@ impl App {
             | Screen::CursorSettings(_)
             | Screen::SendLogs
             | Screen::RenameCollection
-            | Screen::RemoveCollection => 1,
+            | Screen::RemoveCollection
+            | Screen::ResetGameSettings => 1,
         }
     }
 
@@ -372,7 +373,12 @@ impl App {
             }
             // Every two-button confirm dialog: one subtitle drives the card, so one
             // button-row geometry serves all four.
-            Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest | Screen::RemoveCollection => self
+            Screen::Wake
+            | Screen::ForgetHost
+            | Screen::SendLogs
+            | Screen::SpeedTest
+            | Screen::RemoveCollection
+            | Screen::ResetGameSettings => self
                 .confirm_subtitle()
                 .zip(self.confirm_focused())
                 .map(|(subtitle, i)| Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &subtitle, i)),
@@ -510,6 +516,10 @@ impl App {
             }),
             Screen::RemoveCollection => f(&view::confirm::Modal {
                 title: view::collections::REMOVE_TITLE,
+                confirm: confirm.as_ref()?,
+            }),
+            Screen::ResetGameSettings => f(&view::confirm::Modal {
+                title: view::resetgame::TITLE,
                 confirm: confirm.as_ref()?,
             }),
         })

@@ -111,7 +111,7 @@ impl App {
                 // Puts the whole screen back: defaults on the global one, "inherit
                 // everything" on the per-game one. Both keep the row list and the focus
                 // where they are — nothing is shown or hidden by this (see `row_shown`).
-                Some(menu::SettingsRow::Reset) => self.reset_settings(),
+                Some(menu::SettingsRow::Reset) => self.open_reset_game_settings(),
                 // A locked row (see `menu::row_lock`) never opens its dropdown — there is
                 // nothing to pick, which is exactly what the greyed row already says.
                 Some(
@@ -162,7 +162,7 @@ impl App {
     ///
     /// Per-game only: the row appears on `SettingsScope::Game` alone (see
     /// `menu::settings_visible_logical_rows`), so a global screen can never reach here.
-    fn reset_settings(&mut self) {
+    pub(crate) fn reset_settings(&mut self) {
         let inherited = self.settings_ui.settings.presentable();
         if let Some(gs) = self.editing_game_mut() {
             gs.over = crate::services::store::SettingsOverride::default();

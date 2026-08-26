@@ -19,6 +19,7 @@ pub(crate) mod home;
 pub(crate) mod hostmenu;
 pub(crate) mod icons;
 pub(crate) mod pairing;
+pub(crate) mod resetgame;
 pub(crate) mod scrolllist;
 pub(crate) mod sendlogs;
 pub(crate) mod settings;

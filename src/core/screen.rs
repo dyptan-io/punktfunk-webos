@@ -44,6 +44,9 @@ pub enum Screen {
     RenameCollection,
     /// "Remove collection?" — its games return to Library (see `app/state/collections.rs`).
     RemoveCollection,
+    /// "Reset game settings?" — the per-game Reset row's confirmation, raised over
+    /// `Settings(Game)` (see `app/state/gamesettings.rs`).
+    ResetGameSettings,
 }
 
 /// Pairing modal's focused input: PIN row or "Request access" button.
