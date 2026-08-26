@@ -132,6 +132,10 @@ pub struct NdlVideo {
     /// ([`Self::derive_audio_skew`]) so a resumed run lands above [`Self::last_audio_pts_ms`]
     /// rather than flooring onto it — see [`Self::play_audio`].
     audio_skew_ms: AtomicI64,
+    /// Set by [`Self::run_clock_plane`] on every silence burst so the next real packet re-derives
+    /// its skew instead of flooring onto the moved ceiling. Consumed alongside a mapping-epoch
+    /// change in [`Self::play_audio`], which needs the same correction.
+    ceiling_raised: AtomicBool,
     /// Real packets dropped since the current offset gap opened; both the periodic warning and
     /// the one on the packet that ends the gap read it.
     dropped_no_offset: AtomicU32,
@@ -234,6 +238,7 @@ impl NdlVideo {
             skew_epoch: AtomicU64::new(0),
             last_audio_pts_ms: AtomicI64::new(primed_pts_ms),
             audio_skew_ms: AtomicI64::new(0),
+            ceiling_raised: AtomicBool::new(false),
             dropped_no_offset: AtomicU32::new(0),
             last_real_feed_ms: AtomicI64::new(0),
             load_confirmed: AtomicBool::new(confirmed),
@@ -373,11 +378,16 @@ impl NdlVideo {
             }
             return Ok(());
         };
-        // A mapping this thread hasn't stamped against yet needs its skew re-derived first — the
-        // run has to land ABOVE the ceiling the previous one (or the metronome) left behind.
+        // Re-derive skew on a new mapping epoch, or when the clock plane raised the ceiling
+        // without an epoch change (a hiccup it filled over) — either way the run must land
+        // ABOVE the ceiling left behind, or it floors and the session's audio is gone for good.
         // Outside `lock_ffi`, which `derive_audio_skew` takes for itself.
         let epoch = clock.epoch();
-        if self.skew_epoch.swap(epoch, Ordering::Relaxed) != epoch {
+        // Unconditional swaps: `||` short-circuiting past the second leaves the flag set,
+        // re-deriving again on the next packet onto the same stamp this one just published.
+        let new_epoch = self.skew_epoch.swap(epoch, Ordering::Relaxed) != epoch;
+        let raised = self.ceiling_raised.swap(false, Ordering::Relaxed);
+        if new_epoch || raised {
             self.derive_audio_skew((probe_ns / 1_000_000) as i64);
         }
         {
@@ -473,7 +483,11 @@ impl NdlVideo {
                 );
                 filling = true;
             }
-            match self.burst_silence(pts_ms, base_ms + now_ms + PRIME_LEAD * PRIME_PACKET_MS) {
+            let burst = self.burst_silence(pts_ms, base_ms + now_ms + PRIME_LEAD * PRIME_PACKET_MS);
+            // Per burst, including a failed one (it still published stamps before unwinding, and
+            // this thread won't run again): the real stream must re-skew off the moved ceiling.
+            self.ceiling_raised.store(true, Ordering::Relaxed);
+            match burst {
                 Ok(fed_to) => pts_ms = fed_to,
                 Err(e) => {
                     // Dead for the session; the picture keeps running unpaced, as it did before
