@@ -5,7 +5,7 @@ use crate::app::menu::SettingsScope;
 use crate::app::view::scrolllist;
 use crate::core::model;
 use crate::core::VERSION;
-use crate::services::store::{AudioRoutePref, GamepadType, Settings, VideoBackend};
+use crate::services::store::{AudioRoutePref, GamepadType, Settings};
 use crate::ui;
 use crate::ui::render::Rect;
 use crate::ui::widgets::FocusRow;
@@ -21,22 +21,11 @@ pub(crate) const TITLE: &str = "Settings";
 /// Lives on the row that is *immutable*, not on the one that caused it — the greyed control is
 /// what the user is looking at when they want the reason.
 ///
-/// `webos_major` is the OS major (`None` where it couldn't be read); named only where the OS is
-/// the whole story, i.e. where there's no backend to switch to either.
+/// `webos_major` is the OS major (`None` where it couldn't be read).
 fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
-    // Where the Video backend row exists, the limit is the *pick*, not the TV, and SMP lifts it —
-    // so the caption points at the fix instead of at a version number the user can't change.
-    // The set itself, for a limit no backend pick can lift. `source` names the *fixable* one.
-    let device = || match webos_major {
+    let source = || match webos_major {
         Some(major) => format!("webOS {major}"),
         None => "this TV".to_string(),
-    };
-    let source = || {
-        if crate::core::caps::smp_selectable() {
-            "the NDL backend — try SMP".to_string()
-        } else {
-            device()
-        }
     };
     match lock {
         menu::RowLock::HdrNeedsHevc => "HDR is not supported by H.264".to_string(),
@@ -100,14 +89,6 @@ pub(crate) fn rows(
         .with_subtext_opt(
             (settings.bitrate_kbps > menu::BITRATE_WARN_KBPS)
                 .then(|| ui::widgets::RowSubtext::caution("May be unstable on Wi-Fi — try Ethernet")),
-        ),
-        menu::SettingsRow::VideoBackend => FocusRow::dropdown(
-            crate::app::view::icons::ICON_MEMORY,
-            "Video backend",
-            match settings.video_backend {
-                VideoBackend::Ndl => "NDL",
-                VideoBackend::Smp => "SMP",
-            },
         ),
         menu::SettingsRow::Codec => FocusRow::dropdown(
             crate::app::view::icons::ICON_MOVIE,

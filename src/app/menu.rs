@@ -6,7 +6,7 @@ use crate::core::caps::video_caps;
 use crate::core::event::MenuEvent;
 use crate::core::model::{BITRATE_AUTOMATIC, BITRATE_MAX_KBPS, BITRATE_MIN_KBPS, BITRATE_STEP_KBPS};
 use crate::services::store::{
-    AudioRoutePref, CodecPref, GamepadType, LogLevelOverride, OverrideField, Settings, SettingsOverride, VideoBackend,
+    AudioRoutePref, CodecPref, GamepadType, LogLevelOverride, OverrideField, Settings, SettingsOverride,
 };
 use crate::ui::focus::Dir;
 use crate::ui::widgets::{FocusRow, RowSubtext};
@@ -56,10 +56,6 @@ pub enum SettingsRow {
     Resolution,
     Framerate,
     Bitrate,
-    /// Which decode pipeline to load — see `store::VideoBackend`. Only offered where there is
-    /// a choice (webOS 3.5-4.x, see `caps::smp_selectable`), and above Codec deliberately: the
-    /// pick is what decides whether HEVC and HDR exist as options at all.
-    VideoBackend,
     /// Locked where the backend has no HEVC — there is only one decodable codec then (see
     /// [`row_lock`]).
     Codec,
@@ -99,11 +95,10 @@ pub enum SettingsRow {
 }
 
 /// The global list, in display order.
-const GLOBAL_ROWS: [SettingsRow; 13] = [
+const GLOBAL_ROWS: [SettingsRow; 12] = [
     SettingsRow::Resolution,
     SettingsRow::Framerate,
     SettingsRow::Bitrate,
-    SettingsRow::VideoBackend,
     SettingsRow::Codec,
     SettingsRow::Hdr,
     SettingsRow::Audio,
@@ -120,9 +115,7 @@ const GLOBAL_ROWS: [SettingsRow; 13] = [
 /// therefore every mutator, dropdown list and lock in this module.
 pub use crate::core::screen::SettingsScope;
 
-/// The per-game list. No [`SettingsRow::VideoBackend`] (`caps::set_backend` is a
-/// process-global, so a per-game backend would need an apply/restore around every launch) and
-/// no links out — Experimental and Diagnostics are device-wide, so neither they nor anything
+/// The per-game list. No links out — Experimental and Diagnostics are device-wide, so neither they nor anything
 /// behind them appears. Cursor keeps its link row and its sub-screen, exactly as on the global
 /// list — it holds two toggles either way, and duplicating that layout only for this screen
 /// would make the same settings look like two different things. See `store::SettingsOverride`.
@@ -180,21 +173,16 @@ pub const DIAGNOSTICS_ROW_COUNT: usize = 4;
 
 /// Whether one focusable row is offered at all.
 ///
-/// **The sole visibility predicate.** A row is hidden only when nothing the user can reach from
-/// inside the app could ever make it usable — the environment decides it (the OS release for the
-/// backend row, root for Experimental's Game mode). Everything a *setting* constrains stays on
+/// **The sole visibility predicate.** A row would be hidden only when nothing the user can reach
+/// from inside the app could ever make it usable — the environment decides it. Nothing qualifies
+/// today; the predicate stays as the one place that would. Everything a *setting* constrains stays on
 /// screen and greys out instead, so the dependency is visible rather than inferred from a
 /// vanishing row: see [`row_lock`].
 ///
 /// Consequence worth keeping: no user action changes this, so the display↔logical mapping is
 /// fixed for the run and no site has to re-anchor focus after a mutation.
-pub(crate) fn row_shown(row: SettingsRow) -> bool {
-    match row {
-        // Only a choice where NDL is the narrow v1 generation — everywhere else NDL v2 is
-        // strictly better and the row would be a trap.
-        SettingsRow::VideoBackend => crate::core::caps::smp_selectable(),
-        _ => true,
-    }
+pub(crate) fn row_shown(_row: SettingsRow) -> bool {
+    true
 }
 
 /// Why a row is shown but not editable, or `None` while it is. Distinct from [`row_shown`]:
@@ -232,7 +220,7 @@ pub(crate) enum ExpRowLock {
     RootUnknown,
     /// Not a rooted TV, so Game mode has no way to reach `settingsservice`.
     NotRooted,
-    /// No NDL audio plane on this backend (webOS 4 and below, or SMP), so the software route is
+    /// No NDL audio plane on this backend (webOS 4 and below), so the software route is
     /// the whole list — see `store::AudioRoutePref::available`.
     SoftwareOnly,
 }
@@ -344,10 +332,8 @@ fn row_fields(row: SettingsRow) -> &'static [OverrideField] {
         SettingsRow::CursorCapture => &[OverrideField::CursorCapture],
         SettingsRow::CursorGestures => &[OverrideField::CursorGestures],
         SettingsRow::Cursor => &[OverrideField::CursorCapture, OverrideField::CursorGestures],
-        // Rows that override nothing: the backend is a process-global, and the rest are links
-        // out or an action.
-        SettingsRow::VideoBackend
-        | SettingsRow::Theme
+        // Rows that override nothing: links out or an action.
+        SettingsRow::Theme
         | SettingsRow::Experimental
         | SettingsRow::Diagnostics
         | SettingsRow::About
@@ -546,20 +532,6 @@ pub(crate) fn audio_label(channels: u8) -> String {
         .map_or_else(|| format!("{channels} channels"), |(_, s)| (*s).to_string())
 }
 
-/// The backend choices offered, in display order (NDL first — it's the default and needs no
-/// wrapper `.so`). Only reachable while the row is shown (see `row_shown`).
-pub const VIDEO_BACKENDS: [VideoBackend; 2] = [VideoBackend::Ndl, VideoBackend::Smp];
-
-/// Dropdown label for a backend. Derived from the value, not a parallel list: the dropdown is
-/// indexed into [`VIDEO_BACKENDS`], so two lists that drift apply the option above or below the
-/// one the user picked. The row's own value column uses the short name instead.
-fn video_backend_label(backend: VideoBackend) -> &'static str {
-    match backend {
-        VideoBackend::Ndl => "NDL (DirectMedia)",
-        VideoBackend::Smp => "SMP (Media Pipeline)",
-    }
-}
-
 /// One dropdown option's label. A `Cow`, because most rows offer `&'static str` constants and
 /// only three (resolution, framerate, the detected-gamepad line) format anything: the open
 /// dropdown's labels are rebuilt every frame it is up, so a `String` per option per frame is
@@ -570,7 +542,6 @@ pub type Label = std::borrow::Cow<'static, str>;
 pub fn dropdown_options(row: SettingsRow, settings: &Settings, detected: Option<GamepadType>) -> Vec<Label> {
     match row {
         SettingsRow::Theme => crate::ui::theme::PRESETS.iter().map(|t| t.name.into()).collect(),
-        SettingsRow::VideoBackend => VIDEO_BACKENDS.iter().map(|&b| video_backend_label(b).into()).collect(),
         SettingsRow::Resolution => RESOLUTIONS
             .iter()
             .map(|(w, h, _, name)| resolution_dropdown_label(*w, *h, name).into())
@@ -604,7 +575,6 @@ pub fn dropdown_options(row: SettingsRow, settings: &Settings, detected: Option<
 pub fn dropdown_option_count(row: SettingsRow, settings: &Settings) -> usize {
     match row {
         SettingsRow::Theme => crate::ui::theme::PRESETS.len(),
-        SettingsRow::VideoBackend => VIDEO_BACKENDS.len(),
         SettingsRow::Resolution => RESOLUTIONS.len(),
         SettingsRow::Framerate => REFRESH_RATES.len(),
         SettingsRow::Codec => video_caps().codec_prefs().len(),
@@ -628,10 +598,6 @@ pub fn dropdown_current_index(settings: &Settings, row: SettingsRow) -> usize {
         SettingsRow::Framerate => REFRESH_RATES
             .iter()
             .position(|hz| *hz == settings.refresh_hz)
-            .unwrap_or(0),
-        SettingsRow::VideoBackend => VIDEO_BACKENDS
-            .iter()
-            .position(|&b| b == settings.video_backend)
             .unwrap_or(0),
         SettingsRow::Codec => video_caps()
             .codec_prefs()
@@ -677,16 +643,6 @@ pub fn apply_dropdown_choice(
         SettingsRow::Framerate => {
             if let Some(hz) = REFRESH_RATES.get(choice_index) {
                 settings.refresh_hz = *hz;
-            }
-        }
-        SettingsRow::VideoBackend => {
-            if let Some(&backend) = VIDEO_BACKENDS.get(choice_index) {
-                settings.video_backend = backend;
-                // The pick IS the capability set (see `core::caps::set_backend`), so publish it
-                // before clamping — switching back to NDL has to take a now-unpresentable HEVC
-                // or HDR value with it rather than leaving it set behind a hidden row.
-                crate::core::caps::set_backend(backend);
-                settings.clamp_to_caps();
             }
         }
         SettingsRow::Codec => {
@@ -758,7 +714,6 @@ pub fn adjust_setting(settings: &mut Settings, row: SettingsRow, forward: bool, 
         SettingsRow::Resolution
         | SettingsRow::Framerate
         | SettingsRow::Theme
-        | SettingsRow::VideoBackend
         | SettingsRow::Codec
         | SettingsRow::Audio
         | SettingsRow::Gamepad
@@ -827,16 +782,11 @@ mod tests {
         }
     }
 
-    /// The per-game list carries no links out and no backend row, but keeps Cursor and Reset.
+    /// The per-game list carries no links out, but keeps Cursor and Reset.
     #[test]
     fn the_game_scope_lists_its_own_rows_only() {
         let game: Vec<SettingsRow> = settings_visible_logical_rows(SettingsScope::Game).collect();
-        for absent in [
-            SettingsRow::VideoBackend,
-            SettingsRow::Experimental,
-            SettingsRow::Diagnostics,
-            SettingsRow::About,
-        ] {
+        for absent in [SettingsRow::Experimental, SettingsRow::Diagnostics, SettingsRow::About] {
             assert!(
                 !game.contains(&absent),
                 "row {absent:?} must not be on the per-game list"

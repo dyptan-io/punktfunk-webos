@@ -225,7 +225,7 @@ impl VideoStage {
 
     /// This frame's stamp in the sink's own clock domain.
     ///
-    /// A sink with a clock has no PTS clock of its own (NDL and SMP both count from their load),
+    /// A sink with a clock has no PTS clock of its own (NDL counts from its load),
     /// so the host's capture PTS is mapped onto it ([`HostPtsAnchor`]) — which is also what keeps
     /// video and any audio plane in ONE timeline. A sink without one presents in feed order and
     /// the stamp is discarded at the feed, so the host PTS passes through untouched.

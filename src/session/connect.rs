@@ -13,7 +13,7 @@ use punktfunk_core::quic;
 
 use crate::core::caps::video_caps;
 use crate::platform::webos::device::{self, NdlGeneration};
-use crate::services::store::{CodecPref, GamepadType, VideoBackend};
+use crate::services::store::{CodecPref, GamepadType};
 use crate::session::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
 use crate::session::pipeline::{cx_display_hdr, MediaPipeline};
 use crate::session::StreamStats;
@@ -83,7 +83,6 @@ pub struct ConnectParams {
     /// Handshake budget.
     pub timeout: Duration,
     pub codec: CodecPref,
-    pub video_backend: VideoBackend,
     pub gamepad_type: GamepadType,
     pub cursor_capture: bool,
     pub audio_route: crate::services::store::AudioRoutePref,
@@ -181,8 +180,7 @@ impl Negotiated {
             video_codecs: codecs.iter().fold(0, |set, &pref| set | codec_bit(pref)),
             preferred_codec: codec_bit(codec_pref),
             display_hdr: hdr.then(cx_display_hdr),
-            frame_parts: device::ndl_generation() == NdlGeneration::V2
-                && crate::core::caps::effective_backend(params.video_backend) != VideoBackend::Smp,
+            frame_parts: device::ndl_generation() == NdlGeneration::V2,
         }
     }
 }
@@ -217,7 +215,7 @@ fn dial(params: &ConnectParams, negotiated: &Negotiated) -> Result<NativeClient>
         // Slice-progressive delivery: AU prefixes reach the decoder while the rest is still on the
         // wire, so a frame no longer waits for its own last datagram (`session::stage`'s `AuParts`).
         // On wherever it can be — NDL v2 only, per `Negotiated::clamp`: v1's feed has no timestamp
-        // to repeat across pieces and SMP's load shape is fragile enough without them.
+        // to repeat across pieces.
         negotiated.frame_parts,
         params.launch.clone(),
         // Device name for the host's pending-approval list. `None` keeps the host's

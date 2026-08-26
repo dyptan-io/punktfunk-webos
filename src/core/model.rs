@@ -125,9 +125,7 @@ macro_rules! settings_override {
         /// **not** clear it — "pinned to 60 Hz" must survive the global moving away again.
         ///
         /// Deliberately *not* every field. Experimental and diagnostics toggles are
-        /// device-wide, and `video_backend` is a process-global (`core::caps::set_backend`,
-        /// read by `session::connect`'s clamp and the row locks), so a per-game value would
-        /// need an apply/restore around every launch.
+        /// device-wide.
         ///
         /// `Copy + Hash + Eq` because it rides the render cache keys next to `Settings`.
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -493,19 +491,6 @@ pub fn upsert_known_host(hosts: &mut Vec<KnownHost>, mut new: KnownHost) {
     *existing = new;
 }
 
-/// Video decode backend, selectable in Settings on webOS 3.5-4.x only — see
-/// [`crate::core::caps`]. On webOS 5+ NDL v2 is the only path and the row is hidden.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum VideoBackend {
-    /// NDL `DirectMedia` — v2 on webOS 5+, v1 on 3.5-4.x (H.264/SDR there).
-    #[default]
-    Ndl,
-    /// SMP (`libplayerAPIs_C.so`): HEVC and HDR on a TV whose NDL generation has
-    /// neither, plus `pauseAtDecodeTime` pacing. Falls back to NDL if the load fails.
-    Smp,
-}
-
 /// Which look the menus draw in, picked on the Settings screen — the persisted name of a
 /// `ui::theme` preset, and the only part of a theme that belongs to the domain.
 ///
@@ -608,8 +593,8 @@ impl AudioRoutePref {
 
     /// The routes this device can actually build, in display order — software first, it being
     /// the default and the only one that needs no plane. The offload route needs NDL v2's audio
-    /// type (`VideoCaps::audio_plane`); on webOS 4 and below, and under SMP, there is no plane
-    /// to ride and software is the whole list.
+    /// type (`VideoCaps::audio_plane`); on webOS 4 and below there is no plane to ride and
+    /// software is the whole list.
     pub fn available(caps: VideoCaps) -> &'static [Self] {
         if caps.audio_plane {
             &[Self::Software, Self::NdlOpus]
@@ -720,10 +705,6 @@ pub struct Settings {
     pub hdr_enabled: bool,
     /// Preferred session codec — see [`CodecPref`].
     pub codec: CodecPref,
-    /// Which decode pipeline to load — see [`VideoBackend`]. Only offered on webOS 3.5-4.x;
-    /// takes effect on the next stream, and changes what this client advertises
-    /// (`core::caps::set_backend`).
-    pub video_backend: VideoBackend,
     /// Whether the in-stream stats overlay (resolution/codec, measured fps, drops,
     /// decoder feed time) is drawn in the top-right corner during a stream. Off by
     /// default; takes effect on the next stream.
@@ -804,7 +785,6 @@ impl Default for Settings {
             hdr_enabled: true,
             stats_overlay: false,
             codec: CodecPref::Auto,
-            video_backend: VideoBackend::Ndl,
             audio_channels: 2,
             log_level_override: LogLevelOverride::Info,
             show_logs: false,
@@ -822,8 +802,8 @@ impl Default for Settings {
 impl Settings {
     /// Normalise to what the active backend can present (`core::caps`), plus the one
     /// cross-field rule: HDR needs HEVC, so an explicit H.264 pick turns it off. Called on
-    /// load and on every backend change, so the document never holds a *set* value whose row
-    /// the UI has just hidden or locked. `session::connect` clamps the wire regardless.
+    /// load, so the document never holds a *set* value whose row the UI has just hidden or
+    /// locked. `session::connect` clamps the wire regardless.
     ///
     /// Neither this nor [`Settings::presentable`] ever rewrites an override: one a current
     /// global pick shadows stays in the document, unused, and applies again once it doesn't.
@@ -843,11 +823,6 @@ impl Settings {
         // Only ever narrows, so `log` gating a line can't gate a mutation with it.
         macro_rules! note {
             ($($arg:tt)*) => { if log { tracing::info!($($arg)*); } };
-        }
-        let backend = crate::core::caps::effective_backend(self.video_backend);
-        if backend != self.video_backend {
-            note!("settings: SMP isn't offerable on this TV — using NDL");
-            self.video_backend = backend;
         }
         let caps = crate::core::caps::video_caps();
         // Before the HDR rules below: which codec is in force is what decides them.

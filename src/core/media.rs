@@ -1,7 +1,7 @@
 //! The media pipeline's vocabulary: what a decode backend must offer, and what a stage above it
 //! is allowed to assume.
 //!
-//! Three backends decode video here (NDL v2, NDL v1, SMP) and two routes carry audio, and the
+//! Two backends decode video here (NDL v2, NDL v1) and two routes carry audio, and the
 //! pipeline in `session` is written against these traits rather than against any of them. In
 //! `core` for the layering reason every shared vocabulary is: `platform::webos` implements it and
 //! `session` consumes it, so it can live in neither.
@@ -133,7 +133,7 @@ impl VideoSinkCaps {
     };
 }
 
-/// A monotonic clock a sink presents against. NDL and SMP each have their own, unrelated to the
+/// A monotonic clock a sink presents against. NDL has its own, unrelated to the
 /// host's capture clock and to wall-clock — mapping between them is `session::timeline`'s job, and
 /// this is the only thing it needs from a backend.
 pub trait MediaClock: Send + Sync {

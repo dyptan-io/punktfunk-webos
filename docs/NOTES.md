@@ -142,8 +142,8 @@ no runtime probe detects. That is why it lives under Experimental rather than be
 the real stream and filling silence only after `REAL_FEED_GRACE_MS` without a packet — a dead host
 capture would otherwise starve the plane and freeze the picture.
 
-**The offload route exists only under NDL v2.** v1 (webOS 4 and below) has no audio type at all and
-SMP is a different pipeline, so `caps::VideoCaps::audio_plane` is false on both and
+**The offload route exists only under NDL v2.** v1 (webOS 4 and below) has no audio type at all,
+so `caps::VideoCaps::audio_plane` is false there and
 `AudioRoutePref::available` collapses to `Software` — the row locks, and `Settings::clamp_to_caps`
 rewrites a document carried over from a v2 set. The Audio row's layouts follow the *selected*
 route, so picking `Offload (NDL)` locks that row to stereo with the reason on it.
@@ -294,7 +294,7 @@ it yields to the real stream and only fills in after 300 ms with no packet, sinc
 sending would otherwise starve the plane and freeze the picture.
 
 A set that refuses the audio-enabled load falls back to video-only inside `NdlVideo::load` and
-gives up pacing with it; the session log names which of the routes it took. **NDL v1 and SMP have
+gives up pacing with it; the session log names which of the routes it took. **NDL v1 has
 no Opus audio type at all**, so webOS 4 has no pacing reference — the lever there would be gating
 frame release at feed time, which is not built.
 
@@ -396,7 +396,7 @@ last, since a piece is not a presentable frame.
 ⚠ **NDL has no `PARTIAL_FRAME` flag and no AU-boundary flag at all** — it takes raw Annex-B and
 must be finding boundaries by start code, which is the whole reason to expect a fragmented feed to
 work, and the whole reason it might not. Clamped to NDL v2 (v1's feed carries no timestamp to
-repeat across pieces; SMP's load shape is fragile enough already). Failure mode is visible
+repeat across pieces). Failure mode is visible
 corruption plus `frame parts:` warnings — there is no toggle, so a regression here means reverting
 `Negotiated::clamp`'s `frame_parts`.
 
@@ -547,22 +547,11 @@ Blind alleys, so they aren't re-tried:
 
 Burst is 320 Mbps / 3 s (not 3 Gbps / 5 s) — the UI thread shares a 3-core Cortex-A9, and an unbounded firehose starves the app. 320 still detects any ceiling that would change the clamped recommendation (>~285 Mbps). Probe must advertise `VIDEO_CAP_CHACHA20` like a real session (core's `bytes_received` increments *after* AEAD decrypt). **~245 Mbps airlink ceiling** measured on G5 Wi-Fi (MediaTek USB 2.0 Hi-Speed bus), nothing client code can raise. New flows sometimes black-hole 10-29 s (AP/driver setup), so `session::probe::run_speed_probe` waits for the first completed video frame (cap 35 s) before bursting — plane live, path warm.
 
-## Video backends: NDL (default) + SMP on webOS <5
+## Video backend: NDL
 
-NDL DirectMedia is the only backend on webOS 5+. NDL has no decode context; calls go through `NdlVideo::ffi` mutex (header says not thread-safe). AV1 remains disabled (never produced picture).
+NDL DirectMedia is the only backend. NDL has no decode context; calls go through `NdlVideo::ffi` mutex (header says not thread-safe). AV1 remains disabled (never produced picture).
 
-SMP (`libplayerAPIs_C.so`, loaded via `dlopen`) is only for webOS 3.5-4.x, where it is the only HEVC/HDR path. Choosing SMP widens `core::caps`; SMP load failure falls back to NDL v1.
-
-Critical SMP constraints:
-
-- **Sink wiring is version-specific** (`smp/sink.rs`):
-  - webOS 5+: SDL exported window id in load payload.
-  - webOS 3.5-4.x: ACB (`libAcbAPI.so`) path, no window. Required sequence: `initialize(PLAYER_TYPE_MSE=10)`, `setMediaId(getMediaID())` pre-load, `setSinkType(MAIN)` + `setState(LOADED)` on LOADCOMPLETED, `setDisplayWindow`, then `setState(PLAYING)` on first accepted frame, and `setMediaVideoData` with `STR_VIDEO_INFO` (+`hdrType` for HDR).
-  - Wrong shape: load succeeds, frames accepted, nothing composited.
-- **Feed PTS must be SMP-relative** (`now - openTime` ns), not host clock. `session::sink` maps host PTS through `HostPtsAnchor` (same model as NDL v2).
-- **Load payload is fragile:** only one known shape works; trimmed variants never completed load.
-
-Still unverified on real 3.5-4.x hardware. webOS 3.5 may require `playerAPIs_C_Legacy`; `c_shim.cpp` currently targets the current SDK header.
+An SMP (Starfish Media Pipeline) backend for webOS 3.5-4.x was built and removed (2026-08-26, issue #164): never verified on real 3.5-4.x hardware, and it carried a C++ shim `.so`, an ACB sink and a Settings row for the whole NDL v1 audience. Those TVs get NDL v1 (H.264/SDR).
 
 ## NDL generations: v2 (webOS 5+) and v1 (3.5-4.x)
 

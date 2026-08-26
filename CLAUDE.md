@@ -26,7 +26,7 @@ Layered, deps point inward, acyclic:
 `core` (pure domain: `Settings`, `Screen`, events, `caps`) ← `ui` (presentation, `tiny_skia`
 only, **no sdl2**) and `services` (portable I/O: store, discovery, mTLS library, art, wol)
 ← `session` (streaming on `punktfunk-core`, **no sdl2**) and `platform/webos` (the SDL2 and
-hardware boundary — compositor, input, NDL/SMP video, audio, evdev) ← `app` (the `App` state
+hardware boundary — compositor, input, NDL video, audio, evdev) ← `app` (the `App` state
 machine) ← `runtime` (the two top-level loops).
 
 - **`ui`** is namespaced after Ratatui: `render`/`canvas`/`painter`/`layout`/`widgets`/`tiles`/
@@ -65,7 +65,7 @@ doing" under Phase 4 in `docs/APP-REWORK-PLAN.md`.
   hands the first card a `TileId` a fixed tile already owns.
 - **NDL is `dlopen`'d, never linked** — a `DT_NEEDED` breaks webOS 4 startup before `main`.
 - Video decodes through NDL DirectMedia (opaque decode+present, two generations picked by
-  `device::ndl_generation()`; SMP is a webOS <5 alternative); audio is client-side Opus.
+  `device::ndl_generation()`); audio is client-side Opus.
   `core::caps` publishes the resulting limits and has three readers that must agree.
 
 **Before any platform, perf or A/V work, read `docs/NOTES.md`** — soft-float, glibc shims, the

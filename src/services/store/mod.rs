@@ -15,7 +15,7 @@ use serde_json::Value;
 pub use crate::core::model::{
     desktop_capture_override, new_host_collections, new_host_games, upsert_known_host, AudioRoutePref, CodecPref,
     Collection, GamepadType, KnownHost, LogLevelOverride, OverrideField, Persisted, Settings, SettingsOverride,
-    VideoBackend, DESKTOP_PIN_ID,
+    DESKTOP_PIN_ID,
 };
 pub use crate::services::paths::app_dir;
 pub use identity::load_or_create_identity;
@@ -57,20 +57,6 @@ pub fn load() -> Loaded {
     // of them — leaving a *set* value whose row the UI hides.
     state.settings.clamp_to_caps();
     Loaded { state, new_build }
-}
-
-/// Just the persisted backend pick, for `core::caps` at startup. Not [`load`]: that clamps
-/// against the caps this very value decides, so it has to be read first. Reads either
-/// document shape (same reasoning as [`persisted_log_level`]).
-pub fn persisted_video_backend() -> VideoBackend {
-    let Some(doc) = read_document() else {
-        return VideoBackend::default();
-    };
-    let settings = doc.get("settings").unwrap_or(&doc);
-    settings
-        .get("video_backend")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default()
 }
 
 /// The version this build writes into the document.

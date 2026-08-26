@@ -183,23 +183,14 @@ pub fn playing() -> bool {
 }
 
 /// Whether a frame of the current load has reached the decoder: the plane has a picture and is
-/// safe to uncover. Both NDL generations report through this, and so does SMP (see
-/// [`arm_frame_gate`]), so `runtime`'s reveal gate is backend-blind.
+/// safe to uncover. Both NDL generations report through this, so `runtime`'s reveal gate is
+/// generation-blind.
 pub fn presenting() -> bool {
     FRAME_FED.fired()
 }
 
-/// The reveal gate for a backend outside this module (`platform::webos::smp`). It lives here
-/// because the gate is process-global, like the video plane it guards; a backend that doesn't
-/// arm and bump it leaves `runtime`'s reveal waiting out its full timeout on every session.
-/// Arm before opening the session and again on teardown, and bump on the first accepted frame.
-pub fn arm_frame_gate() {
-    FRAME_FED.arm();
-}
-
-/// Records the first frame of the armed session (see [`arm_frame_gate`]); `true` if it was the
-/// first.
-pub fn mark_frame_fed() -> bool {
+/// Records the first frame of the armed load (see [`arm_load`]); `true` if it was the first.
+fn mark_frame_fed() -> bool {
     FRAME_FED.bump_first()
 }
 

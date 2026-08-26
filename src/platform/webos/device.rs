@@ -121,12 +121,6 @@ pub fn sdk_version() -> Option<(u32, u32)> {
     })
 }
 
-/// Whether this is a pre-webOS-5 TV (the releases with NDL v1 and a selectable SMP backend).
-/// Unknown counts as 5+, matching [`ndl_generation`]'s default.
-pub fn is_webos_pre5() -> bool {
-    matches!(sdk_version(), Some((major, _)) if major < 5)
-}
-
 /// `otaId` from Luna's `getSystemInfo`, e.g. `HE_DTV_W19H_...`. Display-only.
 fn ota_id() -> Option<String> {
     json_str_field(system_info(), "otaId")

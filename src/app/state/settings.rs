@@ -117,7 +117,6 @@ impl App {
                 Some(
                     logical @ (menu::SettingsRow::Resolution
                     | menu::SettingsRow::Framerate
-                    | menu::SettingsRow::VideoBackend
                     | menu::SettingsRow::Codec
                     | menu::SettingsRow::Audio
                     | menu::SettingsRow::Gamepad

@@ -101,7 +101,6 @@ fn spawn_connect(
                 // black launch scrim. Waiting on an operator is the pairing flow's job.
                 timeout: crate::services::budget::HANDSHAKE,
                 codec: settings.codec,
-                video_backend: settings.video_backend,
                 gamepad_type: settings.gamepad_type,
                 cursor_capture: settings.cursor_capture,
                 audio_route: settings.audio_route,
@@ -225,10 +224,6 @@ pub fn run() -> Result<()> {
     // Before settings load or any UI exists: `store::load` clamps against this and
     // `app::menu::row_shown` hides what it can't offer.
     crate::core::caps::install(crate::platform::webos::device::video_caps());
-    // The backend pick widens the caps on a legacy TV, so it has to be applied before anything
-    // clamps against them (`store::load`) — hence the raw read rather than the loaded document.
-    crate::core::caps::set_backend(store::persisted_video_backend());
-
     // A panic on ANY thread otherwise goes only to stderr, which a SAM-launched
     // native app has no terminal for — the app simply vanishes back to the
     // launcher with nothing written down. Routing it through `tracing` puts the

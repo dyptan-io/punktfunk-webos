@@ -15,7 +15,7 @@ use crate::core::media::{AudioPlane, AudioSink, VideoSink};
 use crate::platform::webos::device::{self, NdlGeneration};
 use crate::platform::webos::ndl::v1::NdlV1Video;
 use crate::platform::webos::ndl::{NdlCodec, NdlVideo};
-use crate::services::store::{AudioRoutePref, VideoBackend};
+use crate::services::store::AudioRoutePref;
 use crate::session::audio::AudioStage;
 use crate::session::connect::ConnectParams;
 use crate::session::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
@@ -31,7 +31,7 @@ pub struct MediaPipeline {
     /// SDL device belongs to whichever thread initialised SDL and the loop spawns it instead.
     audio_thread: Option<std::thread::JoinHandle<()>>,
     /// The audio plane's keep-alive, on every V2 load that got a plane. `None` only when the load
-    /// has no plane at all (V1, SMP, or a rejected audio load).
+    /// has no plane at all (V1, or a rejected audio load).
     clock_thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -49,7 +49,7 @@ impl MediaPipeline {
         stop: &Arc<AtomicBool>,
         stats: &Arc<StreamStats>,
     ) -> Result<(Self, AudioRoutePref, bool)> {
-        let (player, is_hdr) = load_player(params, client)?;
+        let (player, is_hdr) = load_player(client)?;
         // Re-checked against the plane the load actually produced: a rejected audio-enabled load
         // leaves no plane to ride.
         let plane = player.audio_plane();
@@ -111,7 +111,7 @@ impl MediaPipeline {
 /// comparison; until one of them is measured better on real hardware, the metronome keeps the plane
 /// and the audio takes the longer path.
 ///
-/// A rejected audio-enabled load (`NdlVideo::load` falls back to video-only), V1 or SMP leaves no
+/// A rejected audio-enabled load (`NdlVideo::load` falls back to video-only) and V1 leave no
 /// plane to ride, and software is what is left.
 fn resolve_route(pref: AudioRoutePref, channels: u8, has_plane: bool) -> AudioRoutePref {
     // Stereo or nothing: `Settings::clamp` already holds the document to it, and a session the
@@ -140,33 +140,22 @@ pub(super) fn cx_display_hdr() -> quic::HdrMeta {
 ///
 /// Returns the player and whether HDR mastering metadata is being applied — the answer the
 /// video pump needs to know whether to forward per-content metadata at all.
-fn load_player(params: &ConnectParams, client: &NativeClient) -> Result<(Box<dyn VideoSink>, bool)> {
+fn load_player(client: &NativeClient) -> Result<(Box<dyn VideoSink>, bool)> {
     let resolved_mode = client.mode();
     let fps = resolved_mode.refresh_hz.max(1);
     let codec =
         NdlCodec::from_wire(client.codec).with_context(|| format!("unsupported codec 0x{:02x}", client.codec))?;
     let app_id = crate::platform::webos::ndl::app_id();
     let (width, height) = (resolved_mode.width as i32, resolved_mode.height as i32);
-    // SMP is only selectable where NDL is the narrow v1 generation (`core::caps::smp_selectable`),
-    // so trying it can't displace the v2 path. A load that fails falls back to NDL, but only
-    // H.264 survives that — v1 decodes nothing else.
-    let smp = (crate::core::caps::effective_backend(params.video_backend) == VideoBackend::Smp)
-        .then(|| crate::platform::webos::smp::SmpVideo::load(&app_id, width, height, fps, codec))
-        .transpose()
-        .unwrap_or_else(|e| {
-            tracing::warn!("SMP load failed ({e:#}) — falling back to NDL");
-            None
-        });
-    let player: Box<dyn VideoSink> = match (smp, device::ndl_generation()) {
-        (Some(sf), _) => Box::new(sf),
-        (None, NdlGeneration::V2) => Box::new(Arc::new(
+    let player: Box<dyn VideoSink> = match device::ndl_generation() {
+        NdlGeneration::V2 => Box::new(Arc::new(
             // Every V2 load asks for a plane: a fed one is what makes NDL pace the picture at
             // all (docs/NOTES.md § "NDL's audio plane"). What rides it — the real stream or
             // `run_clock_plane`'s metronome — is the route's business. A set that refuses the
             // load falls back to video-only in `NdlVideo::load`, and gives up pacing with it.
             NdlVideo::load(&app_id, width, height, codec, true).context("NDL load")?,
         )),
-        (None, NdlGeneration::V1) => Box::new(NdlV1Video::load(&app_id, width, height, codec).context("NDL v1 load")?),
+        NdlGeneration::V1 => Box::new(NdlV1Video::load(&app_id, width, height, codec).context("NDL v1 load")?),
     };
     tracing::info!(
         "{} loaded ({codec:?} {}x{}@{fps}fps)",
@@ -212,7 +201,7 @@ fn audio_path_label(route: AudioRoutePref, has_plane: bool) -> &'static str {
         // A plane the real stream is not using is the pacing metronome — see
         // `NdlVideo::run_clock_plane`.
         (AudioRoutePref::Software, true) => "software Opus decode -> SDL2 + NDL clock plane",
-        // No plane means no pacing reference either: this backend has none (NDL v1, SMP), or the
+        // No plane means no pacing reference either: NDL v1 has none, or the
         // audio-enabled load did not confirm and `load()` fell back to video-only.
         (AudioRoutePref::Software, false) => "software Opus decode -> SDL2, no clock plane",
     }
