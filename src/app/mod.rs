@@ -45,11 +45,6 @@ pub(crate) const CARD_GROWTH: f32 = 0.045;
 pub(crate) const LAUNCH_GROWTH: f32 = 3.5;
 pub(crate) const CARD_POP: Duration = Duration::from_millis(300);
 pub(crate) const CARD_POP_SHRINK: f32 = 0.14;
-/// Transparent margin the modal tile leaves around the card so its drop shadow
-/// (`Painter::card_shadow`: blur `SHADOW_BLUR`=14, offset dy 5) fits inside the tile.
-/// The tile is sized to the card's bounding box plus this pad rather than the whole
-/// screen, so every open rasterizes and uploads a fraction of the pixels it used to.
-pub(crate) const MODAL_TILE_PAD: i32 = 24;
 pub(crate) const SCROLL_INDICATOR_HOLD: Duration = Duration::from_millis(700);
 pub(crate) const SCROLL_INDICATOR_FADE: Duration = Duration::from_millis(350);
 pub(crate) const SCROLL_INDICATOR_LIFETIME: Duration =

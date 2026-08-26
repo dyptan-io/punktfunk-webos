@@ -75,29 +75,27 @@ impl Painter {
     /// The same card in [`Glass::panel`](crate::ui::theme::Glass::panel) — for a
     /// menu modal, whose compositor draws a `DrawCmd::Frost` of the same rect and radius
     /// underneath it.
+    /// No drop shadow: the modal card's shadow is nine GPU draws from
+    /// [`tile::MODAL_SHADOW`](crate::app::render::tile::MODAL_SHADOW), not a card-sized blit
+    /// baked in here. On a 1190x924 card that blit measured 205ms of a 260ms shell raster —
+    /// `draw_pixmap` runs a pattern shader per pixel, at a measured 5.6 megapixels a second, so the cost was
+    /// the card's whole area, paid on every open. See [`shadow_atlas`](crate::ui::painter::shadow_atlas).
     pub fn modal_card_glass(&mut self, rect: Rect) {
-        self.glass_panel(rect, MODAL_RADIUS);
+        self.glass_face(rect, MODAL_RADIUS, crate::ui::theme::glass_fill());
     }
 
-    /// Every raised glass surface in the menus: a shadow, the shared
-    /// [`Glass::panel`](crate::ui::theme::Glass::panel) fill and the shared
-    /// [`Palette::glass_edge`](crate::ui::theme::Palette::glass_edge) hairline, at `radius`.
-    ///
-    /// The modal card, a dropdown's popup and a toast are the same material at different
-    /// sizes; each used to mix its own fill and its own white for the edge, which is only
-    /// invisible until two of them are on screen together.
-    pub fn glass_panel(&mut self, rect: Rect, radius: i32) {
-        self.panel_in(rect, radius, crate::ui::theme::glass_fill());
-    }
-
-    /// [`Self::glass_panel`] in a fill of its own — for a surface that has to sit darker than
-    /// the shared glass, like the dropdown popup over a lit settings row.
+    /// [`Self::glass_face`] with a drop shadow baked in beside it — for a surface drawn
+    /// into a painter big enough to hold that shadow, which in practice means the in-stream
+    /// dialogs, whose whole frame is one painter. Anything rendering into a tile sized to
+    /// the surface itself wants `glass_face` plus a composited shadow instead (see
+    /// [`shadow_atlas`](crate::ui::painter::shadow_atlas)) — a baked one would only be
+    /// clipped away.
     pub fn panel_in(&mut self, rect: Rect, radius: i32, fill: Color) {
         self.card_shadow(rect, radius);
         self.glass_face(rect, radius, fill);
     }
 
-    /// [`Self::glass_panel`] without the drop shadow — for a surface drawn into a tile sized to
+    /// [`Self::panel_in`] without the drop shadow — for a surface drawn into a tile sized to
     /// the panel exactly, where every shadow pixel would fall outside the canvas or be
     /// overpainted by the fill, and the blur that produced it is pure waste.
     pub fn glass_face(&mut self, rect: Rect, radius: i32, fill: Color) {

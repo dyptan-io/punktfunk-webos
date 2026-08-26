@@ -39,7 +39,9 @@ impl Widget for DropdownOverlay<'_> {
             area.width(),
             self.options.len() as u32 * DROPDOWN_OPTION_H,
         );
-        c.painter.panel_in(bg_rect, CARD_RADIUS, DROPDOWN_FILL);
+        // No baked shadow: this tile is the panel's own size, so one would be clipped away.
+        // `compose_modal_card` nine-slices `tile::PANEL_SHADOW` underneath instead.
+        c.painter.glass_face(bg_rect, CARD_RADIUS, DROPDOWN_FILL);
         for (i, opt) in self.options.iter().enumerate() {
             c.dropdown_option(opt, false, dropdown_option_rect(area, i))?;
         }

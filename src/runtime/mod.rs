@@ -266,7 +266,6 @@ enum StreamOutcome {
 /// cache that exists for reuse *between consecutive rebuilds* rather than for permanence.
 const OVERLAY_TEXT_CAP: usize = 256;
 
-mod frame_timer;
 mod input;
 mod session_ext;
 mod stream;

@@ -6,7 +6,7 @@
 //! reports the tiles it rebuilt so `runtime` can re-upload their textures.
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::app::hosts::HostEntry;
 use crate::app::nav::ScreenKey;
@@ -373,6 +373,20 @@ impl App {
     /// `ModalFocusKey`). Extracted from `prepare_tiles` (A2 staging).
     fn prepare_modal(&mut self, ctx: &mut RenderCtx<'_>) -> Result<()> {
         self.snapshot_closing_modal(ctx);
+        // The panel shadows, once per style epoch: small atlases the compositor stretches over
+        // whatever card or popup is open (see `ui::painter::shadow_atlas`). Built here rather
+        // than lazily at the first open so the open itself pays nothing for them.
+        for (id, radius) in [
+            (tile::MODAL_SHADOW, ui::widgets::MODAL_RADIUS),
+            (tile::PANEL_SHADOW, ui::widgets::CARD_RADIUS),
+        ] {
+            if ctx.tiles.ensure_static(id, || {
+                let atlas = ui::painter::shadow_atlas(radius).context("shadow atlas")?;
+                Ok(Painter::from_pixmap(atlas))
+            })? {
+                ctx.updated.push(id);
+            }
+        }
         let (content_dirty, screen_changed) = (ctx.content_dirty, ctx.screen_changed);
         let RenderCtx {
             tiles,

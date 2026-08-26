@@ -216,23 +216,6 @@ impl TileStore {
         self.store(id, Entry { version, painter });
     }
 
-    /// How many tiles are resident — the tile store is pruned only by its callers
-    /// (the grid's eviction window), so this is the only account of its size.
-    pub fn len(&self) -> usize {
-        self.slots.iter().flatten().count()
-    }
-
-    /// Bytes of rasterized pixels resident, at 4 bytes a pixel. The one family that scales
-    /// with anything the user controls is the grid's cards, and those are held to the scroll
-    /// window — this is what makes that claim checkable rather than argued (see G5).
-    pub fn bytes(&self) -> usize {
-        self.slots
-            .iter()
-            .flatten()
-            .map(|e| e.painter.width() as usize * e.painter.height() as usize * 4)
-            .sum()
-    }
-
     /// Drops `id`, reporting whether it was there. The GPU texture is the caller's to
     /// release (see `Compositor::drop_tile`).
     pub fn remove(&mut self, id: TileId) -> bool {

@@ -35,7 +35,8 @@ pub const FOCUS_GLOW_BLUR: f32 = 18.0;
 impl Painter {
     /// Soft drop shadow matching moonlight-tv's card look.
     pub fn card_shadow(&mut self, rect: Rect, radius: i32) {
-        self.fill_shadow(rect, radius, 3.0, 5.0, SHADOW_BLUR, 0x60);
+        let (dx, dy) = SHADOW_OFFSET;
+        self.fill_shadow(rect, radius, dx as f32, dy as f32, SHADOW_BLUR, SHADOW_OPACITY);
     }
 
     /// Soft glow behind a focused card — a blurred halo in the accent color,

@@ -1,4 +1,3 @@
-use super::frame_timer::{FrameStats, FrameTimer, Stage};
 use super::*;
 use crate::app::render::ctx::RenderCtx;
 use crate::ui::render::Size;
@@ -161,7 +160,8 @@ pub(super) fn run_ui_flow(
     // hitch on cold rasterization. Reset per menu entry — `text_cache` is too.
     let mut prewarmed = false;
     'ui: loop {
-        let mut frame = FrameTimer::start();
+        // Start of this tick, for the loop's own pacing against `TICK_BUDGET`.
+        let frame_start = Instant::now();
         if QUIT_REQUESTED.load(Ordering::Relaxed) {
             tracing::warn!("SIGTERM/SIGINT received during UI");
             return Ok(None);
@@ -415,7 +415,7 @@ pub(super) fn run_ui_flow(
             // up-to-16ms delay a plain sleep put between a keypress and the poll that sees it.
             // The timeout keeps the loop's own polling (discovery, art, reachability) on the
             // same cadence it had.
-            let elapsed = frame.elapsed();
+            let elapsed = frame_start.elapsed();
             if elapsed < TICK_BUDGET {
                 crate::platform::webos::input::wait_for_event(TICK_BUDGET - elapsed);
             }
@@ -425,7 +425,7 @@ pub(super) fn run_ui_flow(
         dirty = false;
         // Advance per-tick app state (card size, modal fades) exactly once before compose.
         let screen_changed = app.advance_frame(display_mode.w as u32);
-        let updated = frame.stage(Stage::Prepare, || {
+        let updated = {
             let mut ctx = RenderCtx::new(
                 &mut tiles,
                 &mut text_cache,
@@ -434,115 +434,96 @@ pub(super) fn run_ui_flow(
                 content_dirty,
                 screen_changed,
             );
-            app.prepare_tiles(&mut ctx)
-        })?;
-        let rebuilt = updated.len();
-        frame.stage(Stage::Upload, || -> Result<()> {
-            // Free old textures before uploading new (reduce peak memory during scroll).
-            for tile in std::mem::take(&mut app.render.evicted_tiles) {
-                compositor.drop_tile(tile);
+            app.prepare_tiles(&mut ctx)?
+        };
+        // Free old textures before uploading new (reduce peak memory during scroll).
+        for tile in std::mem::take(&mut app.render.evicted_tiles) {
+            compositor.drop_tile(tile);
+        }
+        // Two families upload from outside the tile store (the spinner's pre-rasterized
+        // frames, the hero's raw decoded cover art); everything else is a tile the store
+        // just built.
+        for id in updated {
+            if let Some(idx) = tile::spinner_index(id) {
+                upload_spinner(compositor, texture_creator, idx)?;
+            } else if id == tile::HERO {
+                if let Some(hero) = app.render.hero.uploaded_image() {
+                    compositor.upload_raw(
+                        texture_creator,
+                        id,
+                        hero.width,
+                        hero.height,
+                        sdl2::pixels::PixelFormatEnum::RGB565,
+                        &hero.pixels,
+                    )?;
+                }
+            } else if let Some(pm) = tiles.get(id) {
+                compositor.upload(texture_creator, id, pm, id == tile::SIDEBAR)?;
             }
-            // Two families upload from outside the tile store (the spinner's pre-rasterized
-            // frames, the hero's raw decoded cover art); everything else is a tile the store
-            // just built.
-            for id in updated {
-                if let Some(idx) = tile::spinner_index(id) {
-                    upload_spinner(compositor, texture_creator, idx)?;
-                } else if id == tile::HERO {
-                    if let Some(hero) = app.render.hero.uploaded_image() {
-                        compositor.upload_raw(
-                            texture_creator,
-                            id,
-                            hero.width,
-                            hero.height,
-                            sdl2::pixels::PixelFormatEnum::RGB565,
-                            &hero.pixels,
-                        )?;
+        }
+        let mut cmds = app.draw_list(&tiles, display_mode.w as u32, display_mode.h as u32, fonts);
+        // Appended into the same single draw list/present as the rest of the
+        // screen — this loop has no separate overlay pass (see the streaming
+        // loop's `tile::LOG_OVERLAY` handling for why that one differs).
+        //
+        // Text is only re-rendered/re-uploaded when `log_overlay_due` (~2Hz) —
+        // otherwise every animation tick (scroll, focus pop, hover) while the
+        // overlay is on would re-rasterize and re-upload it on every single
+        // frame instead of twice a second, which is what made the menu feel
+        // laggy with the overlay enabled (the streaming loop already gated
+        // this correctly; this one didn't).
+        if let Some(lines) = log_overlay_lines() {
+            if log_overlay_due {
+                log_overlay_last = Some(Instant::now());
+                match crate::ui::rasterize(
+                    crate::ui::tiles::LogOverlayTile {
+                        screen_w: display_mode.w as u32,
+                        lines: &lines,
+                    },
+                    &mut overlay_text,
+                    fonts,
+                ) {
+                    Ok(tile) => {
+                        log_overlay_dims = Some((tile.width(), tile.height()));
+                        compositor.upload(texture_creator, tile::LOG_OVERLAY, &tile, false)?;
                     }
-                } else if let Some(pm) = tiles.get(id) {
-                    compositor.upload(texture_creator, id, pm, id == tile::SIDEBAR)?;
+                    Err(e) => tracing::warn!("log overlay render failed: {e:#}"),
                 }
             }
-            Ok(())
-        })?;
-        let cmds = frame.stage(Stage::Compose, || -> Result<Vec<DrawCmd>> {
-            let mut cmds = app.draw_list(&tiles, display_mode.w as u32, display_mode.h as u32, fonts);
-            // Appended into the same single draw list/present as the rest of the
-            // screen — this loop has no separate overlay pass (see the streaming
-            // loop's `tile::LOG_OVERLAY` handling for why that one differs).
-            //
-            // Text is only re-rendered/re-uploaded when `log_overlay_due` (~2Hz) —
-            // otherwise every animation tick (scroll, focus pop, hover) while the
-            // overlay is on would re-rasterize and re-upload it on every single
-            // frame instead of twice a second, which is what made the menu feel
-            // laggy with the overlay enabled (the streaming loop already gated
-            // this correctly; this one didn't).
-            if let Some(lines) = log_overlay_lines() {
-                if log_overlay_due {
-                    log_overlay_last = Some(Instant::now());
-                    match crate::ui::rasterize(
-                        crate::ui::tiles::LogOverlayTile {
-                            screen_w: display_mode.w as u32,
-                            lines: &lines,
-                        },
-                        &mut overlay_text,
-                        fonts,
-                    ) {
-                        Ok(tile) => {
-                            log_overlay_dims = Some((tile.width(), tile.height()));
-                            compositor.upload(texture_creator, tile::LOG_OVERLAY, &tile, false)?;
-                        }
-                        Err(e) => tracing::warn!("log overlay render failed: {e:#}"),
-                    }
-                }
-                if let Some((tw, th)) = log_overlay_dims {
-                    cmds.push(DrawCmd::Tex {
-                        tile: tile::LOG_OVERLAY,
-                        dst: crate::ui::render::Rect::new(0, display_mode.h - th as i32, tw, th),
-                        alpha: 0xff,
-                    });
-                }
+            if let Some((tw, th)) = log_overlay_dims {
+                cmds.push(DrawCmd::Tex {
+                    tile: tile::LOG_OVERLAY,
+                    dst: crate::ui::render::Rect::new(0, display_mode.h - th as i32, tw, th),
+                    alpha: 0xff,
+                });
             }
-            toast.draw(
-                compositor,
-                texture_creator,
-                (fonts, &mut overlay_text),
-                &notif_frame,
-                display_mode.w,
-                &mut cmds,
-            )?;
-            // Quit dialog overlay, appended to this loop's single command list rather than
-            // getting its own present (unlike the stream, which draws over the video plane).
-            quit_dialog.draw(
-                compositor,
-                texture_creator,
-                fonts,
-                crate::ui::render::Size::new(display_mode.w as u32, display_mode.h as u32),
-                // Blurrable: this loop's backdrop is the framebuffer.
-                true,
-                &mut cmds,
-            )?;
-            Ok(cmds)
-        })?;
-        frame.stage(Stage::Present, || -> Result<()> {
-            canvas.set_blend_mode(sdl2::render::BlendMode::None);
-            let bg = crate::ui::theme::palette().bg;
-            canvas.set_draw_color(sdl2::pixels::Color::RGBA(bg.r, bg.g, bg.b, bg.a));
-            canvas.clear();
-            compositor.present(canvas, &cmds)?;
-            canvas.present();
-            Ok(())
-        })?;
-        frame.report(
-            TICK_BUDGET,
-            &FrameStats {
-                screen: app.nav.screen,
-                rebuilt,
-                tiles: &tiles,
-                text: text_cache.len(),
-            },
-        );
-        let elapsed = frame.elapsed();
+        }
+        toast.draw(
+            compositor,
+            texture_creator,
+            (fonts, &mut overlay_text),
+            &notif_frame,
+            display_mode.w,
+            &mut cmds,
+        )?;
+        // Quit dialog overlay, appended to this loop's single command list rather than
+        // getting its own present (unlike the stream, which draws over the video plane).
+        quit_dialog.draw(
+            compositor,
+            texture_creator,
+            fonts,
+            crate::ui::render::Size::new(display_mode.w as u32, display_mode.h as u32),
+            // Blurrable: this loop's backdrop is the framebuffer.
+            true,
+            &mut cmds,
+        )?;
+        canvas.set_blend_mode(sdl2::render::BlendMode::None);
+        let bg = crate::ui::theme::palette().bg;
+        canvas.set_draw_color(sdl2::pixels::Color::RGBA(bg.r, bg.g, bg.b, bg.a));
+        canvas.clear();
+        compositor.present(canvas, &cmds)?;
+        canvas.present();
+        let elapsed = frame_start.elapsed();
         if elapsed < TICK_BUDGET {
             std::thread::sleep(TICK_BUDGET - elapsed);
         }

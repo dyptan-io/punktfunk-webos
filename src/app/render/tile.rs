@@ -76,6 +76,15 @@ pub const CARD_MENU_TITLE: TileId = TileId(27);
 /// That panel's selection band, one row tall with the card's rounded bottom corners — used
 /// for the bottom row, whose band ends on that edge; higher rows are a plain square fill.
 pub const CARD_MENU_BAND: TileId = TileId(28);
+/// The modal card's drop shadow, as a small nine-sliceable atlas rather than a card-sized
+/// blit baked into [`MODAL`]. Built once per style epoch and stretched to whatever card is
+/// open — see `ui::painter::shadow_atlas` for why the slices are exact, and
+/// `compose::push_shadow` for the nine draws that place it.
+pub const MODAL_SHADOW: TileId = TileId(29);
+/// The same atlas at the smaller `CARD_RADIUS`, for the panels that are not the modal card —
+/// currently the dropdown popup, whose own tile is sized to the panel and so could never
+/// have held a baked shadow.
+pub const PANEL_SHADOW: TileId = TileId(30);
 
 /// First id of the row band — one slot per on-screen row of whichever scrolling list is open
 /// (see [`list_row`]). Fixed rather than interned: the lists are short, their rows are

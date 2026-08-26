@@ -262,3 +262,49 @@ impl Size {
         Self { w, h }
     }
 }
+
+/// Stretches a square nine-sliceable texture over `dst`: the four corners are drawn at
+/// their own size, the four edges stretched along one axis and the middle across both.
+///
+/// `slice` is the side of the corner slices; whatever lies between them in the atlas (the
+/// flat middle, however few pixels it is) supplies both the edges and the centre. The atlas
+/// is assumed to be `2 * slice + centre` on both axes, `centre` being the leftover.
+///
+/// A `dst` too small to hold both corner slices on an axis has no middle to stretch, so it
+/// gets one draw of the whole atlas — the honest degenerate case.
+pub fn push_nine_slice(cmds: &mut DrawList, tile: TileId, atlas: u32, slice: u32, dst: Rect, alpha: u8) {
+    if alpha == 0 || dst.width() == 0 || dst.height() == 0 {
+        return;
+    }
+    let centre = atlas.saturating_sub(2 * slice);
+    if centre == 0 || dst.width() < 2 * slice || dst.height() < 2 * slice {
+        cmds.push(DrawCmd::TexCropped {
+            tile,
+            src: Rect::new(0, 0, atlas, atlas),
+            dst,
+            alpha,
+        });
+        return;
+    }
+    let edge = slice as i32;
+    // Same three spans on both axes — the atlas is square and `dst` is sliced the same way.
+    let src = [(0, slice), (edge, centre), (edge + centre as i32, slice)];
+    let spans = |start: i32, len: u32| {
+        [
+            (start, slice),
+            (start + edge, len - 2 * slice),
+            (start + len as i32 - edge, slice),
+        ]
+    };
+    let (cols, rows) = (spans(dst.x(), dst.width()), spans(dst.y(), dst.height()));
+    for (&(sy, sh), &(dy, dh)) in src.iter().zip(&rows) {
+        for (&(sx, sw), &(dx, dw)) in src.iter().zip(&cols) {
+            cmds.push(DrawCmd::TexCropped {
+                tile,
+                src: Rect::new(sx, sy, sw, sh),
+                dst: Rect::new(dx, dy, dw, dh),
+                alpha,
+            });
+        }
+    }
+}

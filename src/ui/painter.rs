@@ -137,6 +137,12 @@ impl Painter {
         }
     }
 
+    /// Wraps an already-rasterized pixmap — for a tile whose pixels come from a shape
+    /// renderer rather than from drawing calls (the modal shadow's nine-slice atlas).
+    pub fn from_pixmap(pixmap: Pixmap) -> Self {
+        Self { pixmap, origin: (0, 0) }
+    }
+
     /// `new(width, height)`, but reusing `recycled`'s pixmap when it is already that size —
     /// wiped, since a recycled surface holds the previous tile's pixels and neither a rounded
     /// card nor a rounded cover draws over its own corners. A buffer of the wrong size is
@@ -259,7 +265,7 @@ impl Painter {
         if rect.width() == 0 || rect.height() == 0 {
             return;
         }
-        let pad = blur.ceil().max(0.0) as i32 + 1;
+        let pad = shadow_pad(blur);
         let (ox, oy) = self.origin;
         let key = ShadowKey {
             w: rect.width(),
@@ -280,13 +286,11 @@ impl Painter {
                     e.insert(shape)
                 }
             };
-            self.pixmap.draw_pixmap(
+            blit_src_over(
+                &mut self.pixmap,
                 rect.x() - pad + dx.round() as i32 - ox,
                 rect.y() - pad + dy.round() as i32 - oy,
-                shape.as_ref(),
-                &PixmapPaint::default(),
-                Transform::identity(),
-                None,
+                shape,
             );
         });
     }
@@ -298,7 +302,7 @@ impl Painter {
         if rect.width() == 0 || rect.height() == 0 {
             return;
         }
-        let pad = blur.ceil().max(0.0) as i32 + 1;
+        let pad = shadow_pad(blur);
         let (ox, oy) = self.origin;
         let key = GlowKey {
             w: rect.width(),
@@ -318,14 +322,7 @@ impl Painter {
                     e.insert(shape)
                 }
             };
-            self.pixmap.draw_pixmap(
-                rect.x() - pad - ox,
-                rect.y() - pad - oy,
-                shape.as_ref(),
-                &PixmapPaint::default(),
-                Transform::identity(),
-                None,
-            );
+            blit_src_over(&mut self.pixmap, rect.x() - pad - ox, rect.y() - pad - oy, shape);
         });
     }
 
@@ -344,8 +341,9 @@ impl Painter {
         let Some(mut cut) = Pixmap::new(max_w, src.height()) else {
             return;
         };
-        // Identity blit into a narrower buffer: the crop is the clip.
-        cut.draw_pixmap(0, 0, src.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        // Identity blit into a narrower buffer: the crop is the clip. `cut` is freshly
+        // zeroed, so source-over is the same copy a shader-path blit would make.
+        blit_src_over(&mut cut, 0, 0, src);
         let w = max_w as usize;
         let fade = (FADE_EDGE_W as usize).min(w);
         // Per column, not per pixel: the ramp doesn't vary down the line.
@@ -362,14 +360,7 @@ impl Painter {
     }
 
     pub fn draw_pixmap(&mut self, x: i32, y: i32, src: &Pixmap) {
-        self.pixmap.draw_pixmap(
-            x - self.origin.0,
-            y - self.origin.1,
-            src.as_ref(),
-            &PixmapPaint::default(),
-            Transform::identity(),
-            None,
-        );
+        blit_src_over(&mut self.pixmap, x - self.origin.0, y - self.origin.1, src);
     }
 
     /// Composites `src` scaled to exactly fill `dst` — only ever at tile-build time
@@ -446,6 +437,71 @@ pub fn fade_step(i: usize, len: usize) -> u8 {
 /// constant (not derived from anything) picked to read as a soft TV-scale shadow.
 pub const SHADOW_BLUR: f32 = 14.0;
 
+/// The alpha [`Painter::card_shadow`] casts its shadow at.
+pub const SHADOW_OPACITY: u8 = 0x60;
+
+/// Where [`Painter::card_shadow`]'s shadow falls relative to the shape casting it.
+pub const SHADOW_OFFSET: (i32, i32) = (3, 5);
+
+/// The inset a blurred shape is drawn at inside its own pixmap, so the blur has room to
+/// spread on every side. Every shadow's geometry — the cached shape, where it blits, and
+/// [`crate::ui::widgets::modal_shadow_rect`]'s atlas rect — is measured from this one rule.
+pub fn shadow_pad(blur: f32) -> i32 {
+    blur.ceil().max(0.0) as i32 + 1
+}
+
+/// Slack past the blur's exact reach, so a nine-slice's slice boundary sits in provably flat
+/// pixels rather than on the last one that still varies. A pixel of error here would tile as a
+/// seam down the middle of every panel; four pixels of atlas is the cheapest insurance.
+const SHADOW_SLICE_MARGIN: i32 = 4;
+
+/// Side of the corner slice in [`shadow_atlas`]: everything whose alpha still varies — the pad
+/// the blur spreads into, the corner's own radius, and the blur's reach past it (three box
+/// passes of `SHADOW_BLUR / 2`). Past this the shadow is flat in both axes, which is what
+/// makes the nine-slice exact rather than an approximation of the blit it replaces.
+pub fn shadow_slice(radius: i32) -> u32 {
+    (shadow_pad(SHADOW_BLUR) + radius + 3 * (SHADOW_BLUR as i32 / 2) + SHADOW_SLICE_MARGIN) as u32
+}
+
+/// Side of the square atlas [`shadow_atlas`] builds: two corner slices either side of the two
+/// flat pixels that stretch across the middle.
+pub fn shadow_atlas_side(radius: i32) -> u32 {
+    2 * shadow_slice(radius) + 2
+}
+
+/// A rounded-rect drop shadow as a nine-sliceable atlas: the same shadow
+/// [`Painter::card_shadow`] draws, rasterized once at the smallest size whose middle is
+/// genuinely flat, for the compositor to stretch over any panel of that corner radius.
+///
+/// This is what a surface drawn into a tile of its own size uses instead of baking the
+/// shadow: a baked one costs the whole surface's area in blur and blit (on a 1190x924 modal
+/// card that measured 205ms of a 260ms raster) and, in a tile sized to the surface, is then
+/// clipped away almost entirely. Nine stretched GPU draws cost neither.
+///
+/// The centre strip is two pixels of that flat middle, so stretching it reproduces the
+/// interior the full-size blit painted — a glass panel sits at `0xc0`, so that interior is
+/// not invisible and dropping it would lighten every card.
+pub fn shadow_atlas(radius: i32) -> Option<Pixmap> {
+    let pad = shadow_pad(SHADOW_BLUR);
+    // Two flat pixels between the corner slices; `render_shadow_shape` grows this by `pad` on
+    // every side, so the shape passed in is the atlas minus its padding.
+    let side = 2 * (shadow_slice(radius) as i32 - pad) + 2;
+    render_shadow_shape(side as u32, side as u32, radius, pad, SHADOW_BLUR, SHADOW_OPACITY)
+}
+
+/// The rect [`shadow_atlas`] is stretched over for `rect`: the surface, moved by
+/// [`SHADOW_OFFSET`] and grown by the pad its blur needs on every side.
+pub fn shadow_rect(rect: Rect) -> Rect {
+    let (dx, dy) = SHADOW_OFFSET;
+    let pad = shadow_pad(SHADOW_BLUR);
+    Rect::new(
+        rect.x() + dx - pad,
+        rect.y() + dy - pad,
+        rect.width() + 2 * pad as u32,
+        rect.height() + 2 * pad as u32,
+    )
+}
+
 /// How hard [`render_glow_shape`] drives the dense end of its blur ramp to full
 /// coverage — the collar of light sitting on the shape's own edge.
 const GLOW_EDGE_GAIN: f32 = 2.1;
@@ -474,8 +530,11 @@ pub fn render_shadow_shape(w: u32, h: u32, radius: i32, pad: i32, blur: f32, opa
     // channel directly rather than blurring all 4 for no visual difference.
     let mut alpha: Vec<u8> = shape.data().iter().skip(3).step_by(4).copied().collect();
     let radius_px = (blur / 2.0).round().max(1.0) as usize;
+    let (pwu, phu) = (pw as usize, ph as usize);
+    let mut tmp = vec![0u8; alpha.len()];
+    let mut prefix = vec![0u32; pwu.max(phu) + 1];
     for _ in 0..3 {
-        box_blur(&mut alpha, pw as usize, ph as usize, radius_px);
+        box_blur(&mut alpha, &mut tmp, &mut prefix, pwu, phu, radius_px);
     }
     for (i, a) in alpha.into_iter().enumerate() {
         shape.data_mut()[i * 4 + 3] = a; // R/G/B stay 0 (premultiplied black)
@@ -508,9 +567,10 @@ pub fn render_glow_shape(w: u32, h: u32, radius: i32, pad: i32, blur: f32, color
     let mut data = shape.data().to_vec();
     let mut scratch = vec![0u8; pwu * phu];
     let radius_px = (blur / 2.0).round().max(1.0) as usize;
+    let mut prefix = vec![0u32; pwu.max(phu) + 1];
     for _ in 0..3 {
         for channel in 0..4 {
-            box_blur_channel(&mut data, &mut scratch, pwu, phu, channel, radius_px);
+            box_blur_channel(&mut data, &mut scratch, &mut prefix, pwu, phu, channel, radius_px);
         }
     }
     // A blur alone leaves a symmetric ramp — half-strength exactly at the shape's edge,
@@ -544,27 +604,38 @@ pub fn render_glow_shape(w: u32, h: u32, radius: i32, pad: i32, blur: f32, color
 
 /// Separable box blur (horizontal pass into `tmp`, then vertical back into
 /// `pixels`) — both passes are the same 1D sliding-window average, just walking
-/// the buffer in a different direction (see `blur_1d`).
-pub fn box_blur(pixels: &mut [u8], w: usize, h: usize, radius: usize) {
+/// the buffer in a different direction (see [`blur_line`]).
+///
+/// Both scratch buffers belong to the caller, so a three-pass blur allocates once rather
+/// than once per pass: `tmp` sized like `pixels`, `prefix` at least `w.max(h) + 1`.
+pub fn box_blur(pixels: &mut [u8], tmp: &mut [u8], prefix: &mut [u32], w: usize, h: usize, radius: usize) {
     if radius == 0 {
         return;
     }
-    let mut tmp = vec![0u8; pixels.len()];
     for y in 0..h {
-        blur_1d(w, radius, |x| pixels[y * w + x], |x, v| tmp[y * w + x] = v);
+        blur_line(prefix, w, radius, |x| pixels[y * w + x], |x, v| tmp[y * w + x] = v);
     }
     for x in 0..w {
-        blur_1d(h, radius, |y| tmp[y * w + x], |y, v| pixels[y * w + x] = v);
+        blur_line(prefix, h, radius, |y| tmp[y * w + x], |y, v| pixels[y * w + x] = v);
     }
 }
 
 /// `box_blur`, but for one channel of a packed RGBA buffer, with a caller-supplied scratch buffer.
-pub fn box_blur_channel(region: &mut [u8], scratch: &mut [u8], w: usize, h: usize, channel: usize, radius: usize) {
+pub fn box_blur_channel(
+    region: &mut [u8],
+    scratch: &mut [u8],
+    prefix: &mut [u32],
+    w: usize,
+    h: usize,
+    channel: usize,
+    radius: usize,
+) {
     if radius == 0 {
         return;
     }
     for y in 0..h {
-        blur_1d(
+        blur_line(
+            prefix,
             w,
             radius,
             |x| region[(y * w + x) * 4 + channel],
@@ -572,7 +643,8 @@ pub fn box_blur_channel(region: &mut [u8], scratch: &mut [u8], w: usize, h: usiz
         );
     }
     for x in 0..w {
-        blur_1d(
+        blur_line(
+            prefix,
             h,
             radius,
             |y| scratch[y * w + x],
@@ -582,10 +654,24 @@ pub fn box_blur_channel(region: &mut [u8], scratch: &mut [u8], w: usize, h: usiz
 }
 
 /// A 1D sliding-window average over `len` samples (read/written through the given
-/// accessors, so the same core serves both a blur's horizontal and vertical
-/// passes), via a prefix sum so each output sample is O(1) regardless of `radius`.
-pub fn blur_1d(len: usize, radius: usize, read: impl Fn(usize) -> u8, mut write: impl FnMut(usize, u8)) {
-    let mut prefix = vec![0u32; len + 1];
+/// accessors, so the same core serves both a blur's horizontal and vertical passes), via a
+/// prefix sum so each output sample is O(1) regardless of `radius`.
+///
+/// The prefix buffer belongs to the caller so that a blur pass allocates once rather than
+/// once per line — a card-sized shadow runs this ~2,200 times per pass, and the allocation
+/// was most of what a line cost. It must hold at least `len + 1` entries; anything past that
+/// is left alone, which is what lets one buffer serve both a pass's rows and its columns.
+fn blur_line(
+    prefix: &mut [u32],
+    len: usize,
+    radius: usize,
+    read: impl Fn(usize) -> u8,
+    mut write: impl FnMut(usize, u8),
+) {
+    if len == 0 {
+        return;
+    }
+    prefix[0] = 0;
     for i in 0..len {
         prefix[i + 1] = prefix[i] + u32::from(read(i));
     }
@@ -594,6 +680,61 @@ pub fn blur_1d(len: usize, radius: usize, read: impl Fn(usize) -> u8, mut write:
         let hi = (i + radius).min(len - 1);
         let count = (hi - lo + 1) as u32;
         write(i, ((prefix[hi + 1] - prefix[lo]) / count) as u8);
+    }
+}
+
+/// Composites `src` over `dst` at `(x, y)`, one row at a time, clipped to `dst`.
+///
+/// This is what every glyph, icon and cached text run in the app is drawn with, so it is worth
+/// not going through a shader for. `Pixmap::draw_pixmap` at an identity transform still sets up
+/// `tiny_skia`'s pattern pipeline and samples per pixel, which measured ~5.6 megapixels a
+/// second on this hardware — the About document's licence lines cost 5.2ms *each* to blit, and
+/// a modal's card-sized shadow cost 205ms, both of them straight copies. Both operands are
+/// premultiplied, so source-over is `src + dst * (1 - src_a)` per channel and needs no shader
+/// at all.
+///
+/// Blends in integer arithmetic where `tiny_skia` uses floats, so a blended channel can land a
+/// single step off what the pipeline produced — see the tests, which hold it to that.
+fn blit_src_over(dst: &mut Pixmap, x: i32, y: i32, src: &Pixmap) {
+    let (dst_w, dst_h) = (dst.width() as i32, dst.height() as i32);
+    let (src_w, src_h) = (src.width() as i32, src.height() as i32);
+    // The overlap, in destination space: a run placed past an edge draws the part that lands.
+    let (x0, y0) = (x.max(0), y.max(0));
+    let (x1, y1) = ((x + src_w).min(dst_w), (y + src_h).min(dst_h));
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    let cols = (x1 - x0) as usize;
+    let (dst_stride, src_stride) = (dst.width() as usize, src.width() as usize);
+    let src_data = src.data();
+    let dst_data = dst.data_mut();
+    for row in y0..y1 {
+        let src_start = ((row - y) as usize * src_stride + (x0 - x) as usize) * 4;
+        let dst_start = (row as usize * dst_stride + x0 as usize) * 4;
+        let src_row = &src_data[src_start..src_start + cols * 4];
+        let dst_row = &mut dst_data[dst_start..dst_start + cols * 4];
+        for (s, d) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+            // Fixed-size views of an exact chunk (a no-op at runtime): every index below is
+            // then in range at compile time, so the four blends unroll without bounds checks.
+            let s: &[u8; 4] = s.try_into().expect("chunks_exact(4)");
+            let d: &mut [u8; 4] = d.try_into().expect("chunks_exact_mut(4)");
+            match s[3] {
+                // Glyph runs and shadows are mostly one or the other, and skipping the clear
+                // pixels is what makes text cheap.
+                0 => {}
+                255 => d.copy_from_slice(s),
+                alpha => {
+                    let inv = 255 - u32::from(alpha);
+                    for channel in 0..4 {
+                        let scaled = u32::from(d[channel]) * inv;
+                        // `(v + 128 + ((v + 128) >> 8)) >> 8` — the usual rounding division by
+                        // 255, exact for every value a channel can hold.
+                        let rounded = (scaled + 128 + ((scaled + 128) >> 8)) >> 8;
+                        d[channel] = s[channel].saturating_add(rounded as u8);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -607,5 +748,138 @@ pub fn premultiply_rgba(rgba: &mut [u8]) {
         px[0] = ((u32::from(px[0]) * a) / 255) as u8;
         px[1] = ((u32::from(px[1]) * a) / 255) as u8;
         px[2] = ((u32::from(px[2]) * a) / 255) as u8;
+    }
+}
+
+#[cfg(test)]
+mod blit_tests {
+    use super::*;
+
+    /// A pixmap of pseudo-random *valid* premultiplied pixels — every channel held at or under
+    /// its own alpha, which is the invariant both blends rely on.
+    fn noise(w: u32, h: u32, seed: u32) -> Pixmap {
+        let mut pixmap = Pixmap::new(w, h).expect("test pixmap");
+        for (i, px) in pixmap.data_mut().chunks_exact_mut(4).enumerate() {
+            let n = (i as u32).wrapping_mul(2_654_435_761).wrapping_add(seed);
+            let a = (n >> 24) as u8;
+            px[0] = ((n & 0xff) as u8).min(a);
+            px[1] = (((n >> 8) & 0xff) as u8).min(a);
+            px[2] = (((n >> 16) & 0xff) as u8).min(a);
+            px[3] = a;
+        }
+        pixmap
+    }
+
+    /// What `Pixmap::draw_pixmap` produces for the same call — the pipeline this replaced.
+    fn reference(dst: &Pixmap, x: i32, y: i32, src: &Pixmap) -> Pixmap {
+        let mut out = dst.clone();
+        out.draw_pixmap(x, y, src.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        out
+    }
+
+    fn assert_matches_reference(dst: &Pixmap, x: i32, y: i32, src: &Pixmap) {
+        let expected = reference(dst, x, y, src);
+        let mut got = dst.clone();
+        blit_src_over(&mut got, x, y, src);
+        let worst = got
+            .data()
+            .iter()
+            .zip(expected.data())
+            .map(|(a, b)| i32::from(*a) - i32::from(*b))
+            .map(i32::abs)
+            .max()
+            .unwrap_or(0);
+        assert!(
+            worst <= 1,
+            "blit differs from tiny-skia by {worst} at offset ({x}, {y})"
+        );
+    }
+
+    /// The whole point: the hand-written blend has to land where the shader pipeline did.
+    /// Integer rounding against `tiny_skia`'s floats allows one step and no more.
+    #[test]
+    fn the_blit_matches_tiny_skias_own_within_one_step() {
+        let dst = noise(40, 24, 7);
+        let src = noise(17, 9, 91);
+        assert_matches_reference(&dst, 5, 3, &src);
+        assert_matches_reference(&dst, 0, 0, &src);
+    }
+
+    /// Every edge, including the corners where both axes clip at once, and placements that
+    /// miss the destination entirely.
+    #[test]
+    fn the_blit_clips_at_every_edge() {
+        let dst = noise(40, 24, 3);
+        let src = noise(17, 9, 41);
+        for (x, y) in [
+            (-5, 3),
+            (3, -5),
+            (-16, -8),
+            (35, 20),
+            (30, 3),
+            (3, 20),
+            (-17, 0),
+            (40, 0),
+            (0, -9),
+            (0, 24),
+        ] {
+            assert_matches_reference(&dst, x, y, &src);
+        }
+    }
+
+    /// The two shortcuts the loop takes for the alpha values text is mostly made of.
+    #[test]
+    fn clear_pixels_leave_the_destination_and_opaque_ones_replace_it() {
+        let dst = noise(8, 4, 11);
+        let mut src = Pixmap::new(8, 4).expect("test pixmap");
+        for (i, px) in src.data_mut().chunks_exact_mut(4).enumerate() {
+            // Alternating clear and fully opaque pixels.
+            px.copy_from_slice(if i % 2 == 0 { &[0, 0, 0, 0] } else { &[10, 20, 30, 255] });
+        }
+        let mut got = dst.clone();
+        blit_src_over(&mut got, 0, 0, &src);
+        for (i, (g, d)) in got.data().chunks_exact(4).zip(dst.data().chunks_exact(4)).enumerate() {
+            if i % 2 == 0 {
+                assert_eq!(g, d, "clear source pixel changed the destination");
+            } else {
+                assert_eq!(g, [10, 20, 30, 255], "opaque source pixel did not replace it");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod shadow_atlas_tests {
+    use super::*;
+
+    /// Both radii the app nine-slices: the modal card and the smaller panels.
+    const RADII: [i32; 2] = [crate::ui::widgets::MODAL_RADIUS, crate::ui::widgets::CARD_RADIUS];
+
+    /// The nine-slice's arithmetic: the atlas is exactly two corner slices plus the two flat
+    /// pixels between them, so the three source spans tile it with nothing left over. If this
+    /// drifts, every panel grows a seam.
+    #[test]
+    fn an_atlas_is_exactly_two_slices_and_a_flat_middle() {
+        for radius in RADII {
+            let atlas = shadow_atlas(radius).expect("atlas builds");
+            assert_eq!(atlas.width(), atlas.height());
+            assert_eq!(atlas.width(), shadow_atlas_side(radius));
+        }
+    }
+
+    /// The middle really is flat — that is what lets the centre strip stretch across a panel.
+    /// Sampled on the alpha channel, which is all a black shadow has.
+    #[test]
+    fn an_atlas_middle_is_flat() {
+        for radius in RADII {
+            let atlas = shadow_atlas(radius).expect("atlas builds");
+            let (w, mid) = (atlas.width() as usize, atlas.width() / 2);
+            let alpha_at = |x: u32, y: u32| atlas.data()[(y as usize * w + x as usize) * 4 + 3];
+            let centre = alpha_at(mid, mid);
+            for offset in 0..2 {
+                assert_eq!(alpha_at(shadow_slice(radius) + offset, mid), centre);
+                assert_eq!(alpha_at(mid, shadow_slice(radius) + offset), centre);
+            }
+        }
     }
 }

@@ -10,7 +10,7 @@ use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
 use crate::app::{
     hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP, CARD_POP_SHRINK, LAUNCH_GROWTH,
-    MODAL_TILE_PAD, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD, SCROLL_INDICATOR_TILE_W, STATUS_BG_PAD,
+    SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD, SCROLL_INDICATOR_TILE_W, STATUS_BG_PAD,
 };
 use crate::ui;
 use crate::ui::cache::TileStore;
@@ -119,9 +119,13 @@ impl App {
         if let Some((alpha, prev)) = closing {
             let dy = ui::animation::modal_rise(alpha);
             let a = (255.0 * alpha) as u8;
+            // The snapshot is a copy of `tile::MODAL`, which no longer carries a shadow of its
+            // own — so the leaving card needs the same nine draws the entering one gets.
+            let region = prev.region.offset(0, dy);
+            Self::push_shadow(cmds, tile::MODAL_SHADOW, ui::widgets::MODAL_RADIUS, region, a);
             cmds.push(DrawCmd::Tex {
                 tile: tile::MODAL_PREV,
-                dst: prev.region.offset(0, dy),
+                dst: region,
                 alpha: a,
             });
             // The leaving body, through whichever of the two live paths drew it: a crop of
@@ -146,9 +150,7 @@ impl App {
     /// The frosted-glass pane under a modal card: the compositor blurs what this frame has
     /// already drawn and masks it to the card's own rounded shape, so the translucent
     /// `Glass::panel` fill in the tile above lands on blurred backdrop rather than on a sharp
-    /// one. `tile_region` is the card grown by [`MODAL_TILE_PAD`] for its shadow, so the
-    /// shape comes back out of it by the same pad — frosting the padding would put a blurred
-    /// square behind the shadow.
+    /// one. `tile_region` is the card exactly, so the pane is the card's own rounded shape.
     ///
     /// Menu only. The in-stream dialogs never reach here (`main.rs` composes those), which is
     /// what keeps the frost off a frame whose video lives on a hardware plane the blur cannot
@@ -161,7 +163,7 @@ impl App {
             return;
         };
         cmds.push(DrawCmd::Frost(Box::new(ui::render::FrostPane::whole(
-            tile_region.inflate(-MODAL_TILE_PAD),
+            tile_region,
             ui::render::FrostMask {
                 radius: ui::widgets::MODAL_RADIUS,
                 corners: ui::render::Corners::All,
@@ -170,6 +172,29 @@ impl App {
             alpha,
             Some(ui::theme::palette().panel),
         ))));
+    }
+
+    /// A panel's drop shadow, as nine stretched draws from one small atlas
+    /// ([`tile::MODAL_SHADOW`], [`tile::PANEL_SHADOW`]) instead of a panel-sized CPU blit
+    /// baked into the panel's own tile.
+    ///
+    /// The shadow is a blurred rounded rect, so it is exactly nine-sliceable: the corner
+    /// slices carry everything whose alpha varies and the centre is two flat pixels stretched
+    /// across the card's middle — the same interior the baked blit painted, which the card's
+    /// `0xc0` glass lets through. Measured on a 1190x924 card, that blit was 205ms of a 260ms
+    /// shell raster and it was paid on every open; these nine `copy` calls are the GPU's.
+    ///
+    /// Pushed immediately under its panel so the ordering a baked shadow had is kept: over
+    /// this layer's frost pane and its scrim, under the panel's own tile.
+    fn push_shadow(cmds: &mut Vec<DrawCmd>, tile: ui::render::TileId, radius: i32, panel: Rect, alpha: u8) {
+        ui::render::push_nine_slice(
+            cmds,
+            tile,
+            ui::painter::shadow_atlas_side(radius),
+            ui::painter::shadow_slice(radius),
+            ui::painter::shadow_rect(panel),
+            alpha,
+        );
     }
 
     /// The open modal itself: its card, its scrollable content, an open dropdown and the
@@ -193,6 +218,13 @@ impl App {
         // scale.
         // Its frost pane went in ahead of the scrim (see `compose_modal`), at this same rect.
         let modal_base = self.render.modal.tile_region.offset(0, dy);
+        Self::push_shadow(
+            cmds,
+            tile::MODAL_SHADOW,
+            ui::widgets::MODAL_RADIUS,
+            modal_base,
+            (255.0 * m) as u8,
+        );
         cmds.push(DrawCmd::Tex {
             tile: tile::MODAL,
             dst: modal_base,
@@ -249,14 +281,17 @@ impl App {
         // Dropdown overlay (Settings or Diagnostics).
         if let Some((row, _, overlay_rect, dd_alpha)) = dropdown {
             let options_len = self.dropdown_len(row);
+            let panel = Rect::new(
+                overlay_rect.x(),
+                overlay_rect.y() + dy,
+                overlay_rect.width(),
+                options_len as u32 * ui::widgets::DROPDOWN_OPTION_H,
+            );
+            // The popup lifts off the row behind it, same as the card lifts off the screen.
+            Self::push_shadow(cmds, tile::PANEL_SHADOW, ui::widgets::CARD_RADIUS, panel, dd_alpha);
             cmds.push(DrawCmd::Tex {
                 tile: tile::DROPDOWN_OVERLAY,
-                dst: Rect::new(
-                    overlay_rect.x(),
-                    overlay_rect.y() + dy,
-                    overlay_rect.width(),
-                    options_len as u32 * ui::widgets::DROPDOWN_OPTION_H,
-                ),
+                dst: panel,
                 alpha: dd_alpha,
             });
         }

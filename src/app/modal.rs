@@ -38,8 +38,8 @@ pub(crate) struct ModalState {
     /// Which screen `scroll_px` describes, so opening a different modal snaps instead of gliding
     /// from the previous one's offset.
     pub scroll_screen: Option<Screen>,
-    /// Screen-space region the `tile::MODAL` painter currently covers (card bbox +
-    /// `MODAL_TILE_PAD`) — set by `prepare_modal` when it (re)builds the tile, read by
+    /// Screen-space region the `tile::MODAL` painter currently covers (the card exactly)
+    /// — set by `prepare_modal` when it (re)builds the tile, read by
     /// `compose_modal` to place it. Only the *live* modal's; a fading one carries its own region
     /// in [`ModalSnapshot`].
     pub tile_region: Rect,

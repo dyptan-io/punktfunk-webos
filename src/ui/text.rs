@@ -96,12 +96,6 @@ impl TextCache {
         }
     }
 
-    /// Resident entries. Read back by the frame report — this cache is the one that grows
-    /// with what the app has *said*, not with what it shows.
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
     /// Hashes `(font, text, color)` into the key the cache stores under.
     ///
     /// Keying by the hash rather than by the tuple is what keeps the *hit* path free of both
@@ -309,6 +303,25 @@ pub fn fitting_font(raster: &dyn TextRaster, text: &str, max_w: u32) -> FontId {
 /// Assumes negligible word-to-word kerning at the space boundary, same as every other
 /// width-budget calculation in this UI already does.
 pub fn wrap_text(raster: &dyn TextRaster, font: FontId, text: &str, max_w: u32) -> Vec<String> {
+    // A line that already fits needs no per-word walk. The loop below would put every word on
+    // one line and push exactly this join, and the joined form is never wider than the text it
+    // came from — so a fitting original guarantees a fitting single line, and the two paths
+    // agree. `wrap_document` runs this over About's ~10,000-line licence wall, where it is the
+    // difference between one measurement per line and one per word.
+    if raster.measure(font, text).0 <= max_w {
+        // Built in one pass rather than `collect::<Vec<_>>().join(" ")`: the licence wall is
+        // ~10,000 lines, and the intermediate `Vec` buys nothing.
+        let mut joined = String::with_capacity(text.len());
+        for word in text.split_whitespace() {
+            if !joined.is_empty() {
+                joined.push(' ');
+            }
+            joined.push_str(word);
+        }
+        // Whitespace-only input wraps to nothing, same as falling through the loop with an
+        // empty `current`.
+        return if joined.is_empty() { Vec::new() } else { vec![joined] };
+    }
     let space_w = raster.measure(font, " ").0;
     let mut lines = Vec::new();
     let mut current = String::new();
@@ -360,4 +373,58 @@ pub fn modal_header_end_y(fonts: &Fonts, card: Rect, subtitle: &str) -> i32 {
     let (_, subtitle_y, max_w) = modal_header_geometry(fonts.raster, fonts.label, card);
     let lines = wrap_text(fonts.raster, fonts.value, subtitle, max_w).len() as i32;
     subtitle_y + lines * (fonts.raster.height(fonts.value) + MODAL_SUBTITLE_LINE_GAP)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::text_raster::{FontId, TextRaster};
+
+    /// One pixel per byte, so a string's width is its length and the expected wrapping can be
+    /// read straight off the input.
+    struct ByteWidth;
+
+    impl TextRaster for ByteWidth {
+        fn rasterize(&self, _font: FontId, _text: &str, _color: Color) -> anyhow::Result<Pixmap> {
+            unimplemented!("wrapping never rasterizes")
+        }
+
+        fn measure(&self, _font: FontId, text: &str) -> (u32, u32) {
+            (text.len() as u32, 1)
+        }
+
+        fn height(&self, _font: FontId) -> i32 {
+            1
+        }
+    }
+
+    fn wrap(text: &str, max_w: u32) -> Vec<String> {
+        wrap_text(&ByteWidth, FontId::Value, text, max_w)
+    }
+
+    /// The fast path collapses runs of whitespace exactly as the word-by-word loop does — a
+    /// line that fits must not come out looking different from one that had to wrap.
+    #[test]
+    fn a_fitting_line_is_normalized_the_same_way_a_wrapped_one_is() {
+        assert_eq!(wrap("  two   words  ", 64), vec!["two words"]);
+        assert_eq!(wrap("two words", 64), vec!["two words"]);
+    }
+
+    #[test]
+    fn whitespace_wraps_to_nothing() {
+        assert!(wrap("", 64).is_empty());
+        assert!(wrap("   ", 64).is_empty());
+    }
+
+    /// Past the width the loop still runs, and the fast path must not have swallowed it.
+    #[test]
+    fn an_overlong_line_still_wraps() {
+        assert_eq!(wrap("aaaa bbbb cccc", 9), vec!["aaaa bbbb", "cccc"]);
+    }
+
+    /// A single word wider than the budget has nowhere to break: one over-wide line, not none.
+    #[test]
+    fn a_word_wider_than_the_budget_is_its_own_line() {
+        assert_eq!(wrap("aaaaaaaaaa", 4), vec!["aaaaaaaaaa"]);
+    }
 }
