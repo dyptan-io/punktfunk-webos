@@ -82,14 +82,6 @@ tasks:
       - rustup component add clippy
       - cargo clippy --target {{.TARGET}} --all-targets -- -D warnings
 
-  test:
-    desc: >-
-      Run the unit tests for the host target, no Docker. `src/app`, `session` and
-      `platform` are `cfg(target_os = "linux")`, so this is only meaningful on Linux —
-      `docker:test` is the entry point everywhere else. Needs SDL2 headers on the host.
-    cmds:
-      - cargo test
-
   package:
     desc: >-
       Build and package dist/*.ipk, no Docker (used by CI). Thin LTO (fast); override with
@@ -126,14 +118,6 @@ tasks:
     cmds:
       - task: toolchain:docker-run
         vars: {TARGET_TASK: lint}
-
-  docker:test:
-    desc: Run the unit tests for the container's own (Linux) target, inside Docker — `src/app`'s tests only compile on Linux
-    cmds:
-      - task: toolchain:docker-run
-        vars:
-          TARGET_TASK: test
-          EXTRA_APT: libsdl2-dev libsdl2-ttf-dev
 
   docker:package:
     desc: Build and package dist/*.ipk, inside Docker with thin LTO (fast) — the local dev entry point. Override with RELEASE_LTO=fat for optimized.

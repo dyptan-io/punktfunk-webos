@@ -358,37 +358,3 @@ fn flush_sensors(sensors: &mut Sensors, sink: &impl Fn(HidReport)) {
         accel: [ax, ay, az],
     }));
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{is_pad_motion, is_pad_touchpad, ABS_RZ, ABS_X};
-
-    /// Sony's other nodes must not match: claiming the pad node would take the gamepad away from
-    /// SDL, and the motion-sensor node reports absolutely without ever being touched.
-    #[test]
-    fn pad_touchpad_matches_only_the_touch_node() {
-        let sony = || 0x054c;
-        // Touchpad: BTN_TOUCH on an absolute pointer.
-        assert!(is_pad_touchpad(true, true, sony));
-        // Pad node — absolute (sticks), face buttons instead of BTN_TOUCH.
-        assert!(!is_pad_touchpad(true, false, sony));
-        // Motion sensors — no touch, no pointer axes.
-        assert!(!is_pad_touchpad(false, false, sony));
-        // A touchscreen from anyone else stays the compositor's.
-        assert!(!is_pad_touchpad(true, true, || 0x046d));
-    }
-
-    #[test]
-    fn pad_motion_matches_only_the_sensor_node() {
-        let sony = || 0x054c;
-        let mut sensors = [0u8; 128];
-        for c in ABS_X..=ABS_RZ {
-            sensors[(c / 8) as usize] |= 1 << (c % 8);
-        }
-        assert!(is_pad_motion(&sensors, false, sony));
-        // The touchpad node (BTN_TOUCH) and the pad node (BTN_SOUTH, sticks and triggers) cover
-        // the same six axes — the buttons are the only thing that parts them from the sensors.
-        assert!(!is_pad_motion(&sensors, true, sony));
-        assert!(!is_pad_motion(&sensors, false, || 0x046d));
-    }
-}

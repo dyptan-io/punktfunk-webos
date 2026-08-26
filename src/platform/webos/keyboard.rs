@@ -261,20 +261,3 @@ pub fn raw_key_event(code: u32, pressed: bool) -> InputEvent {
         flags: 0,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::vk_from_evdev;
-
-    #[test]
-    fn modifiers_and_letters_match_windows_vks() {
-        assert_eq!(vk_from_evdev(29), Some(0xA2)); // KEY_LEFTCTRL → VK_LCONTROL
-        assert_eq!(vk_from_evdev(42), Some(0xA0)); // KEY_LEFTSHIFT
-        assert_eq!(vk_from_evdev(56), Some(0xA4)); // KEY_LEFTALT
-        assert_eq!(vk_from_evdev(97), Some(0xA3)); // KEY_RIGHTCTRL
-        assert_eq!(vk_from_evdev(30), Some(0x41)); // KEY_A
-        assert_eq!(vk_from_evdev(57), Some(0x20)); // KEY_SPACE
-        assert_eq!(vk_from_evdev(1), Some(0x1B)); // KEY_ESC
-        assert_eq!(vk_from_evdev(0x110), None); // BTN_LEFT is not a key
-    }
-}

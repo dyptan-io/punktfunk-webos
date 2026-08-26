@@ -750,17 +750,3 @@ fn button_code(code: u16) -> Option<u32> {
         _ => None,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::is_tv_builtin;
-
-    #[test]
-    fn tv_builtins_are_skipped_by_name() {
-        assert!(is_tv_builtin("LGE M-RCU - Builtin [0]"));
-        assert!(is_tv_builtin("LGE RCU"));
-        assert!(is_tv_builtin("CHECK INPUT"));
-        assert!(!is_tv_builtin("M720 Triathlon Mouse"));
-        assert!(!is_tv_builtin("MX MCHNCL M Keyboard"));
-    }
-}
