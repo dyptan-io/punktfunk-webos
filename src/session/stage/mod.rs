@@ -451,9 +451,12 @@ impl VideoStage {
                 // its audio outright.
                 // Held back until the anchor's trim has settled: audio stamps ride this offset and
                 // can only move forward, so latching onto a mapping still being pulled earlier
-                // costs lip sync (see `HostPtsAnchor::ready_for_audio`).
+                // costs lip sync (see `Pacing::ready_for_audio`). The mapping only converges once
+                // per session: telling the pacer it landed on an ACCEPTED frame is what lets a
+                // recovery run re-latch without another window of silence.
                 if self.pacing.ready_for_audio() {
                     self.clock.latch(base_ns as i64 - pts_ns as i64);
+                    self.pacing.note_audio_latched();
                 }
                 let decode_us = self
                     .cfg

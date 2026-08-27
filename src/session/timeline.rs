@@ -34,13 +34,22 @@ pub fn reconciled_frame_interval_ns(stream_hz: u32) -> u64 {
     1_000_000_000 / u64::from(hz.max(1))
 }
 
-/// Frames the cadence loop folds before the audio plane may latch its mapping
-/// ([`CadencePacer::ready_for_audio`]). Half a second at 60 Hz — long enough for the offset
-/// estimate to leave its cold-start sample behind, short enough that offloaded audio is not
-/// audibly missing at session start. The trim path's own gate is [`TRIM_SETTLE_NS`], which is a
-/// different quantity and cannot be shared: that one waits for trimming to STOP, and this loop
-/// never stops moving.
-const PACER_AUDIO_LATCH_FRAMES: u64 = 30;
+/// Evidence before the audio plane may latch the cadence mapping.
+///
+/// This used to be 30 frames, which made the wait inversely proportional to the delivered frame
+/// rate: 500 ms at 60 Hz became 3 seconds at 10 Hz. Wall clock is the honest quantity, so the gate
+/// is eight on-cadence samples AND half a second — a floor that costs a 240 Hz stream 500 ms where
+/// the frame count charged it 125, which is the right way round: a converged estimate is what the
+/// audio plane is waiting on, not a frame tally.
+///
+/// The deadline caps the silence at a fixed wall time once ONE genuine sample has anchored the
+/// estimate and a second delivery has arrived, whatever kind. A static desktop delivers one genuine
+/// stamp and then repeats indefinitely; gating on genuine samples alone leaves that session with no
+/// audio at all. The deadline is deliberately degraded operation: a small A/V offset is better than
+/// silence.
+const PACER_AUDIO_LATCH_FRAMES: u64 = 8;
+const PACER_AUDIO_LATCH_NS: u64 = 500_000_000;
+const PACER_AUDIO_DEADLINE_NS: u64 = 1_000_000_000;
 
 /// Plays frames out on the host's own cadence instead of on their arrival instant, by stamping
 /// them from [`punktfunk_core::phase::CadenceClock`] rather than from a fixed anchor.
@@ -73,9 +82,24 @@ pub struct CadencePacer {
     /// is clamped monotonic — exactly as [`HostPtsAnchor::map`] does, and reset with the run for
     /// the same reason (a flush restarts the timeline).
     last_base_ns: u64,
-    /// Frames folded since the last [`Self::reset`], for [`Self::ready_for_audio`]. Not read off
-    /// `CadenceHealth::frames`, which counts the whole session.
+    /// On-cadence frames folded since the last [`Self::reset`], for [`Self::ready_for_audio`]. Not
+    /// read off `CadenceHealth::frames`, which counts the whole session.
     frames_this_run: u64,
+    /// Every delivery this run, repeats included — what the deadline path counts, so a repeat-only
+    /// stream still reaches it.
+    deliveries_this_run: u64,
+    /// Player-clock start of this run's convergence window.
+    run_started_ns: Option<u64>,
+    /// Once a run converged the NORMAL way, recovery runs may latch on their first accepted frame.
+    /// Never set from the deadline path: promoting a deliberately degraded latch would let every
+    /// later run in the session skip the wait on the strength of one that never converged.
+    settled_once: bool,
+    /// This run reached the full evidence bar, as opposed to the deadline.
+    converged_normally: bool,
+    /// This run has enough evidence to latch if the decoder accepts the frame.
+    convergence_ready: bool,
+    /// Exact repeated source stamps are off-cadence, not estimator observations.
+    last_host_pts_ns: Option<u64>,
 }
 
 impl CadencePacer {
@@ -91,6 +115,12 @@ impl CadencePacer {
             source_interval_ns: i64::try_from(source_interval_ns).unwrap_or(i64::MAX),
             last_base_ns: 0,
             frames_this_run: 0,
+            deliveries_this_run: 0,
+            run_started_ns: None,
+            settled_once: false,
+            converged_normally: false,
+            convergence_ready: false,
+            last_host_pts_ns: None,
         }
     }
 
@@ -99,9 +129,26 @@ impl CadencePacer {
     /// between the host's capture clock and NDL's player clock is simply absorbed by the offset
     /// estimate and there is no conversion anywhere in this path.
     pub fn map(&mut self, host_pts_ns: u64, player_clock_ns: u64) -> u64 {
-        self.frames_this_run += 1;
+        let started_ns = *self.run_started_ns.get_or_insert(player_clock_ns);
         let ready = i64::try_from(player_clock_ns).unwrap_or(i64::MAX);
-        let due = self.clock.due_ns(host_pts_ns, ready, self.source_interval_ns);
+        let repeated = self.last_host_pts_ns == Some(host_pts_ns);
+        let due = if repeated {
+            self.clock.note_off_cadence(ready, self.source_interval_ns)
+        } else {
+            self.frames_this_run += 1;
+            self.clock.due_ns(host_pts_ns, ready, self.source_interval_ns)
+        };
+        self.last_host_pts_ns = Some(host_pts_ns);
+        self.deliveries_this_run += 1;
+        let elapsed_ns = player_clock_ns.saturating_sub(started_ns);
+        let normal = self.frames_this_run >= PACER_AUDIO_LATCH_FRAMES && elapsed_ns >= PACER_AUDIO_LATCH_NS;
+        // One genuine sample has anchored the estimate; the second delivery may be a repeat, whose
+        // stamp is that same estimate plus the cushion — see [`PACER_AUDIO_DEADLINE_NS`].
+        let deadline = self.frames_this_run >= 1
+            && self.deliveries_this_run >= 2
+            && elapsed_ns >= PACER_AUDIO_DEADLINE_NS;
+        self.converged_normally |= normal;
+        self.convergence_ready |= normal || deadline;
         // A due time in the past is a late frame and core's contract is "present at the next
         // opportunity" — which is what handing NDL a stamp at or behind its clock already means.
         let base = u64::try_from(due).unwrap_or(0).max(self.last_base_ns);
@@ -116,14 +163,28 @@ impl CadencePacer {
     pub fn reset(&mut self) {
         self.clock.reset();
         self.frames_this_run = 0;
+        self.deliveries_this_run = 0;
+        self.run_started_ns = None;
+        self.converged_normally = false;
+        self.convergence_ready = false;
+        self.last_host_pts_ns = None;
         // Cleared with the run, like the anchor's own: NDL has been flushed, so the stamps that
         // came before it are no longer a floor this run has to clear.
         self.last_base_ns = 0;
     }
 
-    /// Whether the audio plane may latch this mapping — see [`PACER_AUDIO_LATCH_FRAMES`].
+    /// Whether an accepted completed AU may latch this mapping. A repeat may carry it: by the time
+    /// either gate opens, at least one genuine sample has anchored the estimate, and a repeat is
+    /// stamped from that same estimate. Refusing them instead would mute a static desktop, which
+    /// delivers one genuine stamp and then repeats.
     pub fn ready_for_audio(&self) -> bool {
-        self.frames_this_run >= PACER_AUDIO_LATCH_FRAMES
+        self.settled_once || self.convergence_ready
+    }
+
+    /// Records that NDL accepted the frame carrying the mapping the audio plane latched — see
+    /// [`Self::settled_once`], which only a normally converged run sets.
+    pub fn note_audio_latched(&mut self) {
+        self.settled_once |= self.converged_normally;
     }
 
     fn health(&self) -> punktfunk_core::phase::CadenceHealth {
@@ -212,11 +273,19 @@ impl Pacing {
 
     /// Whether the audio plane may latch this mapping. The two settle on different evidence and
     /// cannot share a gate: the anchor waits for trimming to STOP, and the cadence loop never stops
-    /// moving, so it waits for enough frames instead.
+    /// moving, so it waits for a converged offset estimate instead (see
+    /// [`CadencePacer::ready_for_audio`]).
     pub fn ready_for_audio(&self) -> bool {
         match &self.mode {
             Mode::Cadence(p) => p.ready_for_audio(),
             Mode::Anchor(a) => a.ready_for_audio(),
+        }
+    }
+
+    /// Records the accepted frame on which the shared audio mapping latched.
+    pub fn note_audio_latched(&mut self) {
+        if let Mode::Cadence(p) = &mut self.mode {
+            p.note_audio_latched();
         }
     }
 
