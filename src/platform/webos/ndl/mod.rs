@@ -356,6 +356,29 @@ pub fn audio_output_width() -> Option<u8> {
     width
 }
 
+/// Spawns the metronome that keeps the audio plane fed.
+///
+/// NDL paces the *picture* off a fed audio plane — without one it ignores presentation times and
+/// the picture stalls (docs/NOTES.md § "NDL's audio plane"). Both callers spawn the same thread
+/// for the same reason: a stream whose audio decodes in software, and the HDR calibration feed.
+/// It lives here so the boost comes with it — this is a 20 ms metronome holding the depth NDL
+/// paces on, and at nice 0 it competes with the boosted decode threads on a 2-3 core `SoC`.
+///
+/// `yields_to_real` is the difference between the two audio paths — see
+/// [`v2::NdlVideo::run_clock_plane`].
+pub fn spawn_clock_plane(
+    plane: std::sync::Arc<dyn crate::core::media::AudioPlane>,
+    stop: std::sync::Arc<AtomicBool>,
+    yields_to_real: bool,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("punktfunk-webos-clock".into())
+        .spawn(move || {
+            device::boost_current_thread();
+            plane.run_keepalive(&stop, yields_to_real);
+        })
+}
+
 pub fn app_id() -> String {
     std::env::var("APPID").unwrap_or_else(|_| "io.dyptan.punktfunk.webos".into())
 }

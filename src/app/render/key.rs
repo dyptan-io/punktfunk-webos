@@ -11,8 +11,9 @@
 //! `App::modal_shell_version`). The borrowed `&str` fields say so in the type: a key that could
 //! outlive the state it describes would have to own a copy of every label, once per frame.
 use crate::app::screens::rowbuttons::RowButton;
+use crate::app::state::hdrcalibration::HdrStep;
 use crate::app::state::hostmenu::HostAction;
-use crate::core::model::{AudioRoutePref, GamepadType, LogLevelOverride, Settings, SettingsOverride};
+use crate::core::model::{AudioRoutePref, GamepadType, HdrDisplay, LogLevelOverride, Settings, SettingsOverride};
 
 /// Focused widget in the open modal. Each variant carries its content,
 /// so value changes (not just focus moves) invalidate the tile.
@@ -36,8 +37,23 @@ pub enum ModalFocusKey<'a> {
     MenuRow(usize, HostAction, bool, Option<RowButton>),
     /// (focused row, log level, stats-overlay on, show-logs on) — any change invalidates the tile.
     DiagnosticsRow(usize, LogLevelOverride, bool, bool),
-    /// (focused row, Game mode on, the audio route, the root-probe verdict).
-    ExperimentalRow(usize, bool, bool, AudioRoutePref, Option<bool>),
+    /// The focused row plus everything its label, caption and control are derived from — the
+    /// same set its shell key carries, named for the same reason (see `ModalShellKey`).
+    ExperimentalRow {
+        row: usize,
+        /// Which of the row's buttons is lit — the Calibrate row's Clear.
+        button: Option<RowButton>,
+        game_mode: bool,
+        direct_playback: bool,
+        audio_route: AudioRoutePref,
+        hdr_enabled: bool,
+        hdr: Option<HdrDisplay>,
+        rooted: Option<bool>,
+    },
+    /// (focused row, which measurement is being made, the volume it has reached, whether the
+    /// pattern feed has stalled, whether the tick has focus) — the card's copy, its slider and
+    /// its caution all move with these.
+    HdrCalibrationRow(usize, HdrStep, HdrDisplay, bool, Option<RowButton>),
     /// (focused row, cursor-capture on, cursor-gestures on, which rows are overridden) — any
     /// change invalidates the tile.
     CursorSettingsRow(usize, bool, bool, SettingsOverride),
@@ -45,6 +61,8 @@ pub enum ModalFocusKey<'a> {
     SendLogsButton(usize),
     /// Which `Screen::RemoveCollection` button is focused (0 = Remove, 1 = Cancel).
     RemoveCollectionButton(usize),
+    /// Which `Screen::ResetHdrCalibration` button is focused (0 = Clear, 1 = Cancel).
+    ResetHdrButton(usize),
     /// (focused row, the row's name, whether it is the one already holding the card, which
     /// trailing button is focused, whether the row is being dragged) — what the focused row
     /// draws, and nothing else: the list behind it is its own tiles.
@@ -116,8 +134,19 @@ pub enum ModalShellKey<'a> {
         direct_playback: bool,
         /// Named on the Audio processing row.
         audio_route: AudioRoutePref,
+        /// HDR off locks the Calibrate row and rewrites its caption.
+        hdr_enabled: bool,
+        /// The measured volume, named on the Calibrate row; `None` until it has been measured.
+        hdr: Option<HdrDisplay>,
         /// The root-probe verdict — it locks the Game mode row and rewrites its caption.
         rooted: Option<bool>,
+    },
+    /// The calibration card: its subtitle is the step's instruction and its rows carry the
+    /// measurement, so both move the whole shell.
+    HdrCalibration {
+        step: HdrStep,
+        display: HdrDisplay,
+        stalled: bool,
     },
     CursorSettings {
         cursor_capture: bool,
@@ -126,6 +155,8 @@ pub enum ModalShellKey<'a> {
     },
     /// Fixed warning copy + two buttons — nothing screen-specific left to key on.
     SendLogs,
+    /// Fixed copy too: what it clears is the one calibration there is.
+    ResetHdrCalibration,
     /// The card it asks about, by what the subtitle is derived from.
     RemoveCollection {
         name: &'a str,

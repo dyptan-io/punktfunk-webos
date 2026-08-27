@@ -7,6 +7,7 @@ pub mod dualsense;
 pub mod evdev;
 pub mod game_mode;
 pub mod gamepad;
+pub mod hdr_pattern;
 pub mod input;
 pub mod keyboard;
 pub mod luna;

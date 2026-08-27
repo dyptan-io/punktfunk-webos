@@ -62,8 +62,7 @@ pub(crate) fn rows(
     let bitrate_frac = if settings.bitrate_kbps == model::BITRATE_AUTOMATIC {
         0.0
     } else {
-        (settings.bitrate_kbps.saturating_sub(model::BITRATE_MIN_KBPS)) as f32
-            / (model::BITRATE_MAX_KBPS - model::BITRATE_MIN_KBPS) as f32
+        model::BITRATE.fraction(settings.bitrate_kbps)
     };
     let row_for = |logical: menu::SettingsRow| match logical {
         menu::SettingsRow::Resolution => FocusRow::dropdown(

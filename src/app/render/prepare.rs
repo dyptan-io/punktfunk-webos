@@ -253,7 +253,14 @@ impl App {
                 game_mode: self.settings_ui.settings.game_mode,
                 direct_playback: self.settings_ui.settings.direct_playback,
                 audio_route: self.settings_ui.settings.audio_route,
+                hdr_enabled: self.settings_ui.settings.hdr_enabled,
+                hdr: self.calibrated_hdr_display(),
                 rooted: self.hosts.rooted,
+            }),
+            Screen::HdrCalibration => self.hdr_calibration_view().map(|m| ModalShellKey::HdrCalibration {
+                step: m.step,
+                display: m.display,
+                stalled: m.stalled,
             }),
             Screen::CursorSettings(_) => Some(ModalShellKey::CursorSettings {
                 cursor_capture: self.settings_target().cursor_capture,
@@ -261,6 +268,7 @@ impl App {
                 over: self.editing_override(),
             }),
             Screen::SendLogs => Some(ModalShellKey::SendLogs),
+            Screen::ResetHdrCalibration => Some(ModalShellKey::ResetHdrCalibration),
             Screen::RemoveCollection => self
                 .removed_collection()
                 .map(|(name, games)| ModalShellKey::RemoveCollection { name, games }),
@@ -344,13 +352,25 @@ impl App {
                 self.settings_ui.settings.stats_overlay,
                 self.settings_ui.settings.show_logs,
             )),
-            Screen::Experimental => Some(ModalFocusKey::ExperimentalRow(
-                self.nav.cursor(ScreenKey::Experimental),
-                self.settings_ui.settings.game_mode,
-                self.settings_ui.settings.direct_playback,
-                self.settings_ui.settings.audio_route,
-                self.hosts.rooted,
-            )),
+            Screen::Experimental => Some(ModalFocusKey::ExperimentalRow {
+                row: self.nav.cursor(ScreenKey::Experimental),
+                button: self.screens.row_button,
+                game_mode: self.settings_ui.settings.game_mode,
+                direct_playback: self.settings_ui.settings.direct_playback,
+                audio_route: self.settings_ui.settings.audio_route,
+                hdr_enabled: self.settings_ui.settings.hdr_enabled,
+                hdr: self.calibrated_hdr_display(),
+                rooted: self.hosts.rooted,
+            }),
+            Screen::HdrCalibration => self.hdr_calibration_view().map(|m| {
+                ModalFocusKey::HdrCalibrationRow(
+                    self.nav.cursor(ScreenKey::HdrCalibration),
+                    m.step,
+                    m.display,
+                    m.stalled,
+                    self.screens.row_button,
+                )
+            }),
             Screen::CursorSettings(_) => Some(ModalFocusKey::CursorSettingsRow(
                 self.nav.cursor(ScreenKey::CursorSettings),
                 self.settings_target().cursor_capture,
@@ -360,6 +380,9 @@ impl App {
             Screen::SendLogs => Some(ModalFocusKey::SendLogsButton(self.nav.cursor(ScreenKey::SendLogs))),
             Screen::RemoveCollection => Some(ModalFocusKey::RemoveCollectionButton(
                 self.nav.cursor(ScreenKey::RemoveCollection),
+            )),
+            Screen::ResetHdrCalibration => Some(ModalFocusKey::ResetHdrButton(
+                self.nav.cursor(ScreenKey::ResetHdrCalibration),
             )),
             // None has a single focused widget: the address form is one always-active
             // field, and About is a scrolling document.
@@ -496,7 +519,8 @@ impl App {
                     | Screen::ForgetHost
                     | Screen::SendLogs
                     | Screen::SpeedTest
-                    | Screen::RemoveCollection => match (self.confirm_of(), self.confirm_focused()) {
+                    | Screen::RemoveCollection
+                    | Screen::ResetHdrCalibration => match (self.confirm_of(), self.confirm_focused()) {
                         (Some(confirm), Some(i)) => {
                             let rect = Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &confirm.subtitle, i);
                             Some(ui::rasterize(
@@ -545,6 +569,7 @@ impl App {
                     | Screen::WakeSettings
                     | Screen::Diagnostics
                     | Screen::Experimental
+                    | Screen::HdrCalibration
                     | Screen::CursorSettings(_) => {
                         let rows = self.list_modal_rows().unwrap_or_default();
                         let content = self.modal_list_content(screen_w, screen_h, fonts);

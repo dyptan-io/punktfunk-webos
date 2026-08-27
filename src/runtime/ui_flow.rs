@@ -196,7 +196,7 @@ pub(super) fn run_ui_flow(
             dirty = true;
         }
         dirty |= app.drain_jobs();
-        dirty |= app.tick_wake();
+        dirty |= app.tick_screens();
         // Fire on hold elapsed, not release, so user sees it before letting go.
         if let Some(hold) = input
             .card_held
@@ -518,7 +518,7 @@ pub(super) fn run_ui_flow(
             &mut cmds,
         )?;
         canvas.set_blend_mode(sdl2::render::BlendMode::None);
-        let bg = crate::ui::theme::palette().bg;
+        let bg = app.frame_clear_color();
         canvas.set_draw_color(sdl2::pixels::Color::RGBA(bg.r, bg.g, bg.b, bg.a));
         canvas.clear();
         compositor.present(canvas, &cmds)?;

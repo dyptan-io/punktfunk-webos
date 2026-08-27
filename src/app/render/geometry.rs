@@ -213,10 +213,12 @@ impl App {
             | Screen::WakeSettings
             | Screen::Diagnostics
             | Screen::Experimental
+            | Screen::HdrCalibration
             | Screen::CursorSettings(_)
             | Screen::SendLogs
             | Screen::RenameCollection
-            | Screen::RemoveCollection => 1,
+            | Screen::RemoveCollection
+            | Screen::ResetHdrCalibration => 1,
         }
     }
 
@@ -372,7 +374,12 @@ impl App {
             }
             // Every two-button confirm dialog: one subtitle drives the card, so one
             // button-row geometry serves all four.
-            Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest | Screen::RemoveCollection => self
+            Screen::Wake
+            | Screen::ForgetHost
+            | Screen::SendLogs
+            | Screen::SpeedTest
+            | Screen::RemoveCollection
+            | Screen::ResetHdrCalibration => self
                 .confirm_subtitle()
                 .zip(self.confirm_focused())
                 .map(|(subtitle, i)| Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &subtitle, i)),
@@ -392,6 +399,7 @@ impl App {
             | Screen::WakeSettings
             | Screen::Diagnostics
             | Screen::Experimental
+            | Screen::HdrCalibration
             | Screen::CursorSettings(_) => self.list_modal_focus_rect(screen_w, screen_h, fonts),
             // No single focused widget: a text form is one always-active field, and About is
             // a scrolling document.
@@ -496,6 +504,7 @@ impl App {
             Screen::Diagnostics => f(&view::diagnostics::Modal {
                 settings: &self.settings_ui.settings,
             }),
+            Screen::HdrCalibration => f(&self.hdr_calibration_view()?),
             Screen::Experimental => f(&view::experimental::Modal {
                 settings: &self.settings_ui.settings,
                 rooted: self.hosts.rooted,
@@ -510,6 +519,10 @@ impl App {
             }),
             Screen::RemoveCollection => f(&view::confirm::Modal {
                 title: view::collections::REMOVE_TITLE,
+                confirm: confirm.as_ref()?,
+            }),
+            Screen::ResetHdrCalibration => f(&view::confirm::Modal {
+                title: view::hdrcalibration::RESET_TITLE,
                 confirm: confirm.as_ref()?,
             }),
         })

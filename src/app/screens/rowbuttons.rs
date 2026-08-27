@@ -54,6 +54,14 @@ impl App {
                     .copied()
                     .map_or(&[][..], host_menu_trailing),
             ),
+            Screen::Experimental => (
+                false,
+                crate::app::menu::EXP_ROWS.get(row).map_or(&[][..], |&r| {
+                    view::experimental::trailing(r, &self.settings_ui.settings)
+                }),
+            ),
+            // One row, one button: the tick that finishes the measurement.
+            Screen::HdrCalibration => (false, view::hdrcalibration::ACTION_ICONS),
             Screen::Collections => self
                 .selected_known_host()
                 .and_then(|host| host.collections().get(row))

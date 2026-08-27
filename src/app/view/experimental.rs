@@ -3,6 +3,7 @@
 //! `rooted` reaches every entry point rather than being read here, so this module stays
 //! platform-neutral.
 use crate::app::menu::{self, ExpRow, ExpRowLock};
+use crate::app::view::icons;
 use crate::services::store::Settings;
 use crate::ui;
 use crate::ui::render::Rect;
@@ -40,9 +41,21 @@ pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
     .with_subtext(ui::widgets::RowSubtext::caution(
         "Up to one frame less latency, may stutter",
     ));
+    // Named on the row once measured, because "is this TV calibrated, and to what" is the only
+    // question anyone opens this row to answer.
+    let calibrate = FocusRow::action(icons::ICON_SUN, "Calibrate HDR")
+        .with_trailing(trailing(ExpRow::HdrCalibration, settings))
+        .with_subtext(if settings.hdr_calibrated {
+            ui::widgets::RowSubtext::hint(format!(
+                "{} nits peak, {} nits full screen",
+                settings.hdr_peak_nits, settings.hdr_frame_avg_nits
+            ))
+        } else {
+            ui::widgets::RowSubtext::hint("Measure this panel brightness — turn the dynamic tone mapping off")
+        });
     // The lock's caption replaces the row's own: a row the user can't change has nothing more
     // useful to say than why.
-    let apply = |row: FocusRow, exp: ExpRow| match menu::exp_row_lock(exp, rooted) {
+    let apply = |row: FocusRow, exp: ExpRow| match menu::exp_row_lock(exp, settings, rooted) {
         Some(lock) => row.locked(true).with_subtext(lock_caption(lock)),
         None => row,
     };
@@ -50,6 +63,7 @@ pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
         apply(game_mode, ExpRow::GameMode),
         apply(audio, ExpRow::AudioProcessing),
         apply(direct, ExpRow::DirectPlayback),
+        apply(calibrate, ExpRow::HdrCalibration),
     ]
 }
 
@@ -63,11 +77,23 @@ fn audio_route_hint(route: crate::services::store::AudioRoutePref) -> Option<ui:
     }
 }
 
+/// A row's trailing buttons. Only the Calibrate row has one, and only once there is a
+/// measurement to clear — an unmeasured panel is already at the default the button would put it
+/// back to.
+#[must_use]
+pub fn trailing(row: ExpRow, settings: &Settings) -> &'static [&'static str] {
+    match row {
+        ExpRow::HdrCalibration if settings.hdr_calibrated => &[icons::ICON_DELETE],
+        _ => &[],
+    }
+}
+
 fn lock_caption(lock: ExpRowLock) -> ui::widgets::RowSubtext {
     match lock {
         ExpRowLock::RootUnknown => ui::widgets::RowSubtext::hint("Checking whether your TV is rooted..."),
         ExpRowLock::NotRooted => ui::widgets::RowSubtext::caution("Your TV is not rooted, Game mode is unavailable"),
         ExpRowLock::SoftwareOnly => ui::widgets::RowSubtext::hint("This TV has no NDL audio plane"),
+        ExpRowLock::HdrOff => ui::widgets::RowSubtext::hint("Turn HDR on in Settings to calibrate it"),
     }
 }
 

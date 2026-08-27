@@ -3,6 +3,7 @@ pub mod errors;
 pub mod event;
 pub mod media;
 pub mod model;
+pub mod pq;
 pub mod screen;
 
 /// The packaged version (e.g. `0.4.0+git.abc12345`), threaded in at compile time via

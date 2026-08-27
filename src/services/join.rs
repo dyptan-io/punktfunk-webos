@@ -1,13 +1,17 @@
-//! Bounded thread joins for session teardown.
+//! Bounded thread joins.
+//!
+//! Teardown of anything holding the vendor video stack — a stream's pumps, the HDR calibration
+//! screen's pattern feed — has the same problem: the thread re-checks its stop flag on a bounded
+//! cadence, but the FFI call it is inside between checks has no timeout of its own. Lives here
+//! rather than in `session` so `platform` can reach it too.
 
 use std::time::Duration;
 
-/// Ceiling on each teardown join below. The video/audio pumps re-check `stop` on a bounded
-/// cadence, but the FFI calls they make between checks (NDL `play`/`play_audio`, and the
+/// Ceiling on each teardown join. The FFI calls involved (NDL `play`/`play_audio`, and the
 /// QUIC-close worker `NativeClient::drop` joins internally) have no timeout of their own — an
 /// intermittently wedged vendor call must not freeze the whole app on the caller's thread.
 /// Also the ceiling the stream teardown waits on (a different mechanism, same rationale).
-pub(super) const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+pub const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Joins `handle` from a watcher thread so a hang inside it can't block the caller past
 /// `timeout`. Returns `false` (and leaks the watcher, still waiting on the real join) if it
@@ -18,7 +22,7 @@ pub(super) const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// wedged thread might still be inside it (`|| ndl::poison()`). The watcher already outlives the
 /// timeout, so this needs no second thread; threads with nothing to hold pass `|| ()`. Not called
 /// at all when the join lands in time.
-pub(super) fn join_with_timeout<T: Send + 'static, G: Send + 'static>(
+pub fn join_with_timeout<T: Send + 'static, G: Send + 'static>(
     handle: std::thread::JoinHandle<T>,
     timeout: Duration,
     name: &str,

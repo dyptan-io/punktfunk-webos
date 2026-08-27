@@ -4,7 +4,7 @@
 //! *widgets*, not this app's menus.
 use crate::core::caps::video_caps;
 use crate::core::event::MenuEvent;
-use crate::core::model::{BITRATE_AUTOMATIC, BITRATE_MAX_KBPS, BITRATE_MIN_KBPS, BITRATE_STEP_KBPS};
+use crate::core::model::{BITRATE, BITRATE_AUTOMATIC, BITRATE_MIN_KBPS};
 use crate::services::store::{
     AudioRoutePref, CodecPref, GamepadType, LogLevelOverride, OverrideField, Settings, SettingsOverride,
 };
@@ -150,11 +150,20 @@ pub enum ExpRow {
     /// Stamp from the fixed anchor instead of the cadence loop — `Settings::direct_playback`.
     /// Experimental: trades smoothness back for latency, and what that costs depends on the link.
     DirectPlayback,
+    /// Opens `Screen::HdrCalibration` — measures this panel's HDR volume so the client stops
+    /// advertising one TV's numbers to every TV. Experimental because the measurement is by eye
+    /// and the patterns run on the video plane outside a session.
+    HdrCalibration,
 }
 
 /// Order is display order. `AudioProcessing` stays at index 1 so its dropdown's `(Screen, row)`
 /// tile key does not move.
-pub const EXP_ROWS: [ExpRow; 3] = [ExpRow::GameMode, ExpRow::AudioProcessing, ExpRow::DirectPlayback];
+pub const EXP_ROWS: [ExpRow; 4] = [
+    ExpRow::GameMode,
+    ExpRow::AudioProcessing,
+    ExpRow::DirectPlayback,
+    ExpRow::HdrCalibration,
+];
 
 /// Display position of [`ExpRow::AudioProcessing`] — the row a dropdown can hang off, which is
 /// what `DropdownState::row` names.
@@ -223,15 +232,21 @@ pub(crate) enum ExpRowLock {
     /// No NDL audio plane on this backend (webOS 4 and below), so the software route is
     /// the whole list — see `store::AudioRoutePref::available`.
     SoftwareOnly,
+    /// HDR is switched off in Settings, so there is no PQ signal to measure a panel with.
+    HdrOff,
 }
 
 /// `rooted` is the root-probe verdict, `None` while it is still running.
-pub(crate) fn exp_row_lock(row: ExpRow, rooted: Option<bool>) -> Option<ExpRowLock> {
+pub(crate) fn exp_row_lock(row: ExpRow, settings: &Settings, rooted: Option<bool>) -> Option<ExpRowLock> {
     match (row, rooted) {
         (ExpRow::GameMode, None) => Some(ExpRowLock::RootUnknown),
         (ExpRow::GameMode, Some(false)) => Some(ExpRowLock::NotRooted),
         (ExpRow::AudioProcessing, _) if audio_routes().len() < 2 => Some(ExpRowLock::SoftwareOnly),
-        (ExpRow::GameMode, Some(true)) | (ExpRow::AudioProcessing, _) | (ExpRow::DirectPlayback, _) => None,
+        (ExpRow::HdrCalibration, _) if !settings.hdr_enabled || !video_caps().hdr => Some(ExpRowLock::HdrOff),
+        (ExpRow::GameMode, Some(true))
+        | (ExpRow::AudioProcessing, _)
+        | (ExpRow::DirectPlayback, _)
+        | (ExpRow::HdrCalibration, _) => None,
     }
 }
 
@@ -689,10 +704,8 @@ pub fn adjust_setting(settings: &mut Settings, row: SettingsRow, forward: bool, 
             } else if !forward && settings.bitrate_kbps == BITRATE_MIN_KBPS {
                 settings.bitrate_kbps = BITRATE_AUTOMATIC;
             } else {
-                let delta = i64::from(BITRATE_STEP_KBPS) * if forward { 1 } else { -1 };
-                let next = (i64::from(settings.bitrate_kbps) + delta)
-                    .clamp(i64::from(BITRATE_MIN_KBPS), i64::from(BITRATE_MAX_KBPS));
-                settings.bitrate_kbps = next as u32;
+                let stop = BITRATE.index(settings.bitrate_kbps) as i32 + if forward { 1 } else { -1 };
+                settings.bitrate_kbps = BITRATE.value(stop);
             }
             true
         }
@@ -733,17 +746,15 @@ pub fn adjust_setting(settings: &mut Settings, row: SettingsRow, forward: bool, 
     }
 }
 
-/// Sets the Bitrate row directly from a dragged/clicked `fraction` (0.0-1.0 along the
-/// track), snapped to [`BITRATE_STEP_KBPS`] — the mouse-drag counterpart of
-/// [`adjust_setting`]'s per-notch `Left`/`Right`. Below one step above the floor snaps to
-/// `Automatic`, mirroring the notch `adjust_setting` leaves for it at the low end.
+/// Sets the Bitrate row directly from a dragged/clicked `fraction` (0.0-1.0 along the track),
+/// snapped to the nearest [`BITRATE`] stop — the mouse-drag counterpart of [`adjust_setting`]'s
+/// per-notch `Left`/`Right`. The bottom stop snaps to `Automatic`, mirroring the notch
+/// `adjust_setting` leaves for it at the low end.
 pub fn set_bitrate_fraction(settings: &mut Settings, fraction: f32) {
-    let span = BITRATE_MAX_KBPS - BITRATE_MIN_KBPS;
-    let raw = BITRATE_MIN_KBPS + (fraction.clamp(0.0, 1.0) * span as f32) as u32;
-    let stepped = ((raw + BITRATE_STEP_KBPS / 2) / BITRATE_STEP_KBPS) * BITRATE_STEP_KBPS;
+    let stepped = BITRATE.value(BITRATE.stop_at(fraction));
     settings.bitrate_kbps = if stepped <= BITRATE_MIN_KBPS {
         BITRATE_AUTOMATIC
     } else {
-        stepped.clamp(BITRATE_MIN_KBPS, BITRATE_MAX_KBPS)
+        stepped
     };
 }

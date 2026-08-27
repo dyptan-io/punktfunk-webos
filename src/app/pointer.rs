@@ -45,11 +45,11 @@ impl App {
         screen_h: u32,
         fonts: &ui::text::Fonts,
     ) -> bool {
-        // A press already landed on the Bitrate track (see `handle_mouse_click`) — every
-        // motion until release drags the thumb, rather than re-hit-testing the row list
-        // under a pointer that may have wandered off it.
+        // A press already landed on a slider track (see `handle_mouse_click`) — every motion
+        // until release drags that thumb, rather than re-hit-testing the row list under a
+        // pointer that may have wandered off it.
         if self.settings_ui.slider_drag {
-            self.drag_bitrate_slider(x, screen_w, screen_h);
+            self.drag_slider(x, screen_w, screen_h, fonts);
             return true;
         }
         let focus_changed = self.hover_focus_at(x, y, screen_w, screen_h, fonts);
@@ -169,7 +169,7 @@ impl App {
                 changed
             }
             Screen::HostMenu => {
-                let Some((i, button)) = self.host_menu_row_at(x, y, screen_w, screen_h, fonts) else {
+                let Some((i, button)) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts) else {
                     return false;
                 };
                 let changed = self.nav.cursor(ScreenKey::HostMenu) != i || self.screens.row_button != button;
@@ -178,8 +178,12 @@ impl App {
                 changed
             }
             // Identical row-list geometry; only which focus field they carry differs.
-            Screen::WakeSettings | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
-                let Some(row) = self.modal_list_row_at(x, y, screen_w, screen_h, fonts) else {
+            Screen::WakeSettings
+            | Screen::Diagnostics
+            | Screen::Experimental
+            | Screen::HdrCalibration
+            | Screen::CursorSettings(_) => {
+                let Some((row, button)) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts) else {
                     return false;
                 };
                 // Same per-screen field table the keyboard path indexes, so hover and
@@ -189,7 +193,9 @@ impl App {
                 };
                 let changed = *focused != row;
                 *focused = row;
-                changed
+                let button_changed = self.screens.row_button != button;
+                self.screens.row_button = button;
+                changed || button_changed
             }
             Screen::Pairing => {
                 let card = view::pairing::card_rect(screen_w, screen_h, fonts);
@@ -206,7 +212,12 @@ impl App {
             // so the pointer can pick action-vs-Cancel, not just confirm whatever the D-pad
             // last focused. `confirm_subtitle` is `None` for the variants with no buttons up
             // (a Wake with no MAC, a test still running), which reads as nothing to hover.
-            Screen::ForgetHost | Screen::SendLogs | Screen::Wake | Screen::SpeedTest | Screen::RemoveCollection => {
+            Screen::ForgetHost
+            | Screen::SendLogs
+            | Screen::Wake
+            | Screen::SpeedTest
+            | Screen::RemoveCollection
+            | Screen::ResetHdrCalibration => {
                 let Some(subtitle) = self.confirm_subtitle() else {
                     return false;
                 };
@@ -290,19 +301,41 @@ impl App {
         (row_rect, ui::widgets::row_layout(row_rect, marked).track)
     }
 
+    /// The calibration row's rect and slider track, taken from the row itself so they are the
+    /// rects the renderer drew and not a second guess at them. Its buttons come from
+    /// `row_button_at`, like every other row's.
+    fn hdr_row_and_track(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<(Rect, Rect)> {
+        let rows = self.list_modal_rows()?;
+        let row = rows.get(view::hdrcalibration::ROW_SLIDER)?;
+        let rect = ui::widgets::focus_row_rect(
+            self.modal_list_content(screen_w, screen_h, fonts),
+            view::hdrcalibration::ROW_SLIDER,
+        );
+        Some((rect, ui::widgets::row_geom(rect, row).track))
+    }
+
     /// Sets the Bitrate row from the pointer's current x against its track — shared by the
     /// initial press (which also has to decide whether the click landed on the track at
     /// all) and every drag motion after it.
     fn set_bitrate_from_x(&mut self, x: i32, track: Rect) {
-        let fraction = (x - track.x()) as f32 / track.width() as f32;
-        menu::set_bitrate_fraction(self.settings_target_mut(), fraction);
+        menu::set_bitrate_fraction(self.settings_target_mut(), track_fraction(x, track));
         self.capture_game_override(menu::SettingsRow::Bitrate);
     }
 
-    /// Drags the Bitrate slider to `x`.
-    fn drag_bitrate_slider(&mut self, x: i32, screen_w: u32, screen_h: u32) {
-        let (_, track) = self.bitrate_row_and_track(screen_w, screen_h);
-        self.set_bitrate_from_x(x, track);
+    /// Drags whichever slider the armed press landed on to `x` — the one place that knows which
+    /// screen's slider that is, shared by the arming press and every motion after it.
+    fn drag_slider(&mut self, x: i32, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) {
+        match self.nav.screen {
+            Screen::HdrCalibration => {
+                if let Some((_, track)) = self.hdr_row_and_track(screen_w, screen_h, fonts) {
+                    self.set_hdr_fraction(track_fraction(x, track));
+                }
+            }
+            _ => {
+                let (_, track) = self.bitrate_row_and_track(screen_w, screen_h);
+                self.set_bitrate_from_x(x, track);
+            }
+        }
     }
 
     /// The dropdown option index under the pointer, if a dropdown is open and the
@@ -339,7 +372,7 @@ impl App {
     /// Hover and click both go through this, so hovering previews exactly what clicking will
     /// do — a click on a row's ⋯ opens that instead of the row's own action, the same split
     /// as a sidebar host row's button.
-    fn host_menu_row_at(
+    fn list_modal_row_button_at(
         &self,
         x: i32,
         y: i32,
@@ -520,12 +553,9 @@ impl App {
                     .is_none()
                 {
                     let (row_rect, track) = self.bitrate_row_and_track(screen_w, screen_h);
-                    // Full row height, not just the thin track — vertical precision on a
-                    // slider isn't worth demanding of a Magic Remote pointer.
-                    let in_track = x >= track.x() && x < track.right() && y >= row_rect.y() && y < row_rect.bottom();
-                    if in_track {
+                    if on_track(x, y, track, row_rect) {
                         self.settings_ui.slider_drag = true;
-                        self.set_bitrate_from_x(x, track);
+                        self.drag_slider(x, screen_w, screen_h, fonts);
                         return None;
                     }
                 }
@@ -540,21 +570,55 @@ impl App {
                 self.screens.pairing_focus = PairingFocus::RequestAccess;
             }
             Screen::HostMenu => {
-                let (i, button) = self.host_menu_row_at(x, y, screen_w, screen_h, fonts)?;
+                let (i, button) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts)?;
                 self.nav.set_cursor(ScreenKey::HostMenu, i);
                 self.screens.row_button = button;
             }
             // Identical row-list geometry; only which focus field they carry differs.
             Screen::WakeSettings | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
-                let row = self.modal_list_row_at(x, y, screen_w, screen_h, fonts)?;
+                let (row, button) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts)?;
                 *self.list_modal_focused_mut()? = row;
+                self.screens.row_button = button;
+            }
+            // The one row is a track and a button, so a press is one or the other. Only the
+            // button falls through to `press` below, which is what advances the step.
+            Screen::HdrCalibration => {
+                let (_, button) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts)?;
+                // Focus follows the click, exactly as it does on a collection row's buttons.
+                self.screens.row_button = button;
+                if button.is_none() {
+                    let (row_rect, track) = self.hdr_row_and_track(screen_w, screen_h, fonts)?;
+                    if on_track(x, y, track, row_rect) {
+                        self.settings_ui.slider_drag = true;
+                        self.drag_slider(x, screen_w, screen_h, fonts);
+                    }
+                    return None;
+                }
             }
             // Nothing positional to hit: the confirm dialogs confirm whichever button
             // already has focus.
-            Screen::Wake | Screen::ForgetHost | Screen::SpeedTest | Screen::SendLogs | Screen::RemoveCollection => {}
+            Screen::Wake
+            | Screen::ForgetHost
+            | Screen::SpeedTest
+            | Screen::SendLogs
+            | Screen::RemoveCollection
+            | Screen::ResetHdrCalibration => {}
             // Nothing clickable but the close button (handled above).
             Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::About => return None,
         }
         self.press(screen_w, screen_h, fonts)
     }
+}
+
+/// Whether a press at `(x, y)` counts as landing on `track`. The full row height counts, not
+/// just the thin track: vertical precision on a slider isn't worth demanding of a Magic Remote
+/// pointer.
+fn on_track(x: i32, y: i32, track: Rect, row_rect: Rect) -> bool {
+    x >= track.x() && x < track.right() && y >= row_rect.y() && y < row_rect.bottom()
+}
+
+/// Where `x` sits along `track`, as 0..1. Shared by the press that arms a drag and every
+/// motion after it, so the thumb lands under the cursor exactly where the track was drawn.
+fn track_fraction(x: i32, track: Rect) -> f32 {
+    ((x - track.x()) as f32 / track.width().max(1) as f32).clamp(0.0, 1.0)
 }

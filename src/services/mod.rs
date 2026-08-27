@@ -2,6 +2,8 @@ pub mod art;
 pub mod atomic;
 pub mod budget;
 pub mod discovery;
+pub mod hevc;
+pub mod join;
 pub mod library;
 pub mod paths;
 pub mod pinned_tls;

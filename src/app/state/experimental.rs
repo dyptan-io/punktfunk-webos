@@ -86,6 +86,10 @@ impl App {
     pub(crate) fn open_experimental(&mut self) {
         // Owed, not started — see `start_root_probe`.
         self.jobs.root_probe_owed = self.hosts.rooted.is_none() && self.jobs.rooted.is_none();
+        // `row_button` is one field for every list, and Confirm here reads it (the Calibrate
+        // row's Clear). A screen that leaves without clearing it — the host menu's Back — would
+        // otherwise hand this screen a button focus that belongs to a row it never opened.
+        self.screens.row_button = None;
         self.nav.enter(Screen::Experimental, 0);
     }
 
@@ -116,6 +120,15 @@ impl App {
         if self.list_nav_event(ev) {
             return;
         }
+        // Right steps onto the Calibrate row's Clear button, exactly as it does on a collection
+        // row's — and reports false on every row without one, leaving Left/Right to the controls.
+        if matches!(ev, MenuEvent::Left | MenuEvent::Right) && self.step_row_button(ev == MenuEvent::Right) {
+            return;
+        }
+        if self.screens.row_button.is_some() && ev == MenuEvent::Confirm {
+            self.open_reset_hdr_calibration();
+            return;
+        }
         match (
             menu::EXP_ROWS.get(self.nav.cursor(ScreenKey::Experimental)).copied(),
             ev,
@@ -123,14 +136,20 @@ impl App {
             // A locked row (see `menu::exp_row_lock`) rejects the press — the greyed control
             // already says the value is fixed.
             (Some(menu::ExpRow::GameMode), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm)
-                if menu::exp_row_lock(menu::ExpRow::GameMode, self.hosts.rooted).is_none() =>
+                if menu::exp_row_lock(menu::ExpRow::GameMode, &self.settings_ui.settings, self.hosts.rooted)
+                    .is_none() =>
             {
                 let from = self.settings_ui.settings.game_mode;
                 self.settings_ui.settings.game_mode = !from;
                 self.arm_switch_anim(from);
             }
             (Some(menu::ExpRow::AudioProcessing), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm)
-                if menu::exp_row_lock(menu::ExpRow::AudioProcessing, self.hosts.rooted).is_none() =>
+                if menu::exp_row_lock(
+                    menu::ExpRow::AudioProcessing,
+                    &self.settings_ui.settings,
+                    self.hosts.rooted,
+                )
+                .is_none() =>
             {
                 let current = menu::audio_route_current_index(&self.settings_ui.settings);
                 if ev == MenuEvent::Confirm {
@@ -150,12 +169,34 @@ impl App {
                 self.settings_ui.settings.direct_playback = !from;
                 self.arm_switch_anim(from);
             }
+            (Some(menu::ExpRow::HdrCalibration), MenuEvent::Confirm)
+                if menu::exp_row_lock(
+                    menu::ExpRow::HdrCalibration,
+                    &self.settings_ui.settings,
+                    self.hosts.rooted,
+                )
+                .is_none() =>
+            {
+                // Saved first: the calibration screen loads its own NDL player, and a crash or a
+                // hard power-off from there must not take the rest of the screen's edits with it.
+                self.persist();
+                self.open_hdr_calibration();
+            }
             (_, MenuEvent::Back) => {
                 self.persist();
                 self.nav.resume(Screen::Settings(SettingsScope::Global));
             }
             _ => {}
         }
+    }
+
+    /// The measured panel volume, or `None` while it is still the shipped default — what the
+    /// Calibrate row names and what its tile key turns on.
+    pub(crate) fn calibrated_hdr_display(&self) -> Option<crate::core::model::HdrDisplay> {
+        self.settings_ui
+            .settings
+            .hdr_calibrated
+            .then(|| self.settings_ui.settings.hdr_display())
     }
 
     /// Runs the close fade against the row the dropdown hung off and drops it — the tail both

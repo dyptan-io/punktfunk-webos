@@ -5,7 +5,7 @@ font (`font/MaterialIcons-Regular.ttf`), licensed under the Apache License, Vers
 (full text in `LICENSE`, this directory).
 
 Subsetted with `fonttools`' `pyftsubset` down to only the glyphs `ui.rs` actually draws —
-the full font is ~357 KB covering 2000+ icons; this subset is ~3.5 KB:
+the full font is ~357 KB covering 2000+ icons; this subset is ~3.6 KB:
 
 | Icon (`ui::icon_font` constant) | Material Icons name   | Codepoint |
 |----------------------------------|-----------------------|-----------|
@@ -37,13 +37,14 @@ the full font is ~357 KB covering 2000+ icons; this subset is ~3.5 KB:
 | `ICON_MOUSE`                      | `mouse`               | `U+E323`  |
 | `ICON_TOUCH`                      | `touch_app`           | `U+E913`  |
 | `ICON_REORDER`                    | `drag_indicator`      | `U+E945`  |
+| `ICON_CHECK`                      | `check`               | `U+E5CA`  |
 
 To regenerate after adding/changing an icon, re-run against a fresh copy of the upstream
 font with the updated codepoint list:
 
 ```
 pyftsubset MaterialIcons-Regular.ttf \
-  --unicodes=U+E333,U+E897,U+E145,U+E5CD,U+E8B8,U+E8B5,U+E202,U+E430,U+E5C5,U+EF5B,U+E8AC,U+E872,U+E3C9,U+E88E,U+E5D3,U+F10D,U+E869,U+E868,U+E6E1,U+E40A,U+E322,U+E02C,U+E8F4,U+E163,U+E338,U+E323,U+E913,U+E945 \
+  --unicodes=U+E333,U+E897,U+E145,U+E5CD,U+E8B8,U+E8B5,U+E202,U+E430,U+E5C5,U+EF5B,U+E8AC,U+E872,U+E3C9,U+E88E,U+E5D3,U+F10D,U+E869,U+E868,U+E6E1,U+E40A,U+E322,U+E02C,U+E8F4,U+E163,U+E338,U+E323,U+E913,U+E945,U+E5CA \
   --output-file=MaterialIcons-subset.ttf \
   --no-hinting --desubroutinize --name-IDs="" --notdef-glyph --notdef-outline
 ```

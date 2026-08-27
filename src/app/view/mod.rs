@@ -15,6 +15,7 @@ pub(crate) mod cursorsettings;
 pub(crate) mod diagnostics;
 pub(crate) mod experimental;
 pub(crate) mod forget;
+pub(crate) mod hdrcalibration;
 pub(crate) mod home;
 pub(crate) mod hostmenu;
 pub(crate) mod icons;

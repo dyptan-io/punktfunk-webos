@@ -26,15 +26,17 @@ pub(crate) enum ScreenKey {
     WakeSettings,
     Diagnostics,
     Experimental,
+    HdrCalibration,
     CursorSettings,
     SendLogs,
     Collections,
     RenameCollection,
     RemoveCollection,
+    ResetHdrCalibration,
 }
 
 impl ScreenKey {
-    pub const COUNT: usize = Self::RemoveCollection as usize + 1;
+    pub const COUNT: usize = Self::ResetHdrCalibration as usize + 1;
 
     pub const fn of(screen: Screen) -> Self {
         match screen {
@@ -51,11 +53,13 @@ impl ScreenKey {
             Screen::WakeSettings => Self::WakeSettings,
             Screen::Diagnostics => Self::Diagnostics,
             Screen::Experimental => Self::Experimental,
+            Screen::HdrCalibration => Self::HdrCalibration,
             Screen::CursorSettings(_) => Self::CursorSettings,
             Screen::SendLogs => Self::SendLogs,
             Screen::Collections => Self::Collections,
             Screen::RenameCollection => Self::RenameCollection,
             Screen::RemoveCollection => Self::RemoveCollection,
+            Screen::ResetHdrCalibration => Self::ResetHdrCalibration,
         }
     }
 }
@@ -72,11 +76,16 @@ pub(crate) const fn over_scroll_list(screen: Screen) -> bool {
     matches!(
         screen,
         Screen::Experimental
+            // Included even though nothing behind it is drawn (see `screens::over_video`): this
+            // decides tile *retention*, and dropping the row band would make the return from a
+            // calibration a re-raster of the whole settings list.
+            | Screen::HdrCalibration
             | Screen::Diagnostics
             | Screen::CursorSettings(_)
             | Screen::SendLogs
             | Screen::RenameCollection
             | Screen::RemoveCollection
+            | Screen::ResetHdrCalibration
     )
 }
 

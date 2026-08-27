@@ -19,7 +19,12 @@ use crate::core::screen::Screen;
 /// absorbed by a `_ =>` arm into the wrong geometry.
 pub(crate) const fn is_confirm(screen: Screen) -> bool {
     match screen {
-        Screen::Wake | Screen::ForgetHost | Screen::SendLogs | Screen::SpeedTest | Screen::RemoveCollection => true,
+        Screen::Wake
+        | Screen::ForgetHost
+        | Screen::SendLogs
+        | Screen::SpeedTest
+        | Screen::RemoveCollection
+        | Screen::ResetHdrCalibration => true,
         Screen::Home
         | Screen::Pairing
         | Screen::Settings(_)
@@ -30,10 +35,21 @@ pub(crate) const fn is_confirm(screen: Screen) -> bool {
         | Screen::WakeSettings
         | Screen::Diagnostics
         | Screen::Experimental
+        | Screen::HdrCalibration
         | Screen::CursorSettings(_)
         | Screen::Collections
         | Screen::RenameCollection => false,
     }
+}
+
+/// Whether `screen` draws over the video plane instead of over the menu.
+///
+/// The patterns the calibration screen measures play on the NDL plane *underneath* the graphics
+/// plane, so everything the menu would normally composite behind a card — the sidebar, the grid,
+/// the status block, the scrim, the frost pane — has to be left out rather than drawn and covered
+/// (see `render::compose`, and `runtime::ui_flow` for the transparent clear that goes with it).
+pub(crate) const fn over_video(screen: Screen) -> bool {
+    matches!(screen, Screen::HdrCalibration)
 }
 
 /// Whether `screen` is a *scrolling* row list: a shell tile plus one tile per row, cropped to
@@ -55,10 +71,12 @@ pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
         | Screen::WakeSettings
         | Screen::Diagnostics
         | Screen::Experimental
+        | Screen::HdrCalibration
         | Screen::CursorSettings(_)
         | Screen::SendLogs
         | Screen::RenameCollection
-        | Screen::RemoveCollection => false,
+        | Screen::RemoveCollection
+        | Screen::ResetHdrCalibration => false,
     }
 }
 
@@ -72,6 +90,9 @@ pub(crate) const fn is_list_modal(screen: Screen) -> bool {
         | Screen::WakeSettings
         | Screen::Diagnostics
         | Screen::Experimental
+        // A list modal like any other, even though it draws over the video plane rather than
+        // over the menu — that difference is `compose_modal`'s, not this family's.
+        | Screen::HdrCalibration
         | Screen::CursorSettings(_) => true,
         Screen::Home
         | Screen::Pairing
@@ -87,6 +108,7 @@ pub(crate) const fn is_list_modal(screen: Screen) -> bool {
         // Collections is a scrolling list too, and its name dialog is a text form.
         | Screen::Collections
         | Screen::RenameCollection
-        | Screen::RemoveCollection => false,
+        | Screen::RemoveCollection
+        | Screen::ResetHdrCalibration => false,
     }
 }

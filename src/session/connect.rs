@@ -13,9 +13,9 @@ use punktfunk_core::quic;
 
 use crate::core::caps::video_caps;
 use crate::platform::webos::device::{self, NdlGeneration};
+use crate::services::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
 use crate::services::store::{CodecPref, GamepadType};
-use crate::session::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
-use crate::session::pipeline::{cx_display_hdr, MediaPipeline};
+use crate::session::pipeline::MediaPipeline;
 use crate::session::StreamStats;
 
 pub struct Connected {
@@ -88,6 +88,8 @@ pub struct ConnectParams {
     pub audio_route: crate::services::store::AudioRoutePref,
     /// `Settings::direct_playback` — see `session::stage::SinkConfig`.
     pub direct_playback: bool,
+    /// The volume to render into, and whether anything may move it — see [`HdrPolicy`].
+    pub hdr: crate::core::model::HdrPolicy,
 }
 
 /// One `quic::CODEC_*` bit, or 0 where the preference names no single codec.
@@ -179,7 +181,15 @@ impl Negotiated {
             // precedence ladder can never auto-pick a path this client can't present.
             video_codecs: codecs.iter().fold(0, |set, &pref| set | codec_bit(pref)),
             preferred_codec: codec_bit(codec_pref),
-            display_hdr: hdr.then(cx_display_hdr),
+            // `pf-client-core` lets `PUNKTFUNK_CLIENT_PEAK_NITS` replace this on its way out
+            // (`punktfunk_core::client::display_hdr_env_override`), so a calibration would go
+            // quietly unused with it set. Say so rather than leave it to be discovered.
+            display_hdr: hdr.then(|| {
+                if !params.hdr.follow_content && std::env::var_os("PUNKTFUNK_CLIENT_PEAK_NITS").is_some() {
+                    tracing::warn!("PUNKTFUNK_CLIENT_PEAK_NITS is set — it overrides this TV's calibrated volume");
+                }
+                params.hdr.display.hdr_meta()
+            }),
             frame_parts: device::ndl_generation() == NdlGeneration::V2,
         }
     }

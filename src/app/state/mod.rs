@@ -11,6 +11,7 @@ mod edithost;
 mod experimental;
 mod forget;
 pub(crate) mod gamesettings;
+pub(crate) mod hdrcalibration;
 mod home;
 pub(crate) mod hostmenu;
 mod pairing;
@@ -21,3 +22,30 @@ pub(crate) mod speedtest;
 pub(crate) mod textfield;
 mod wake;
 mod wakesettings;
+
+use crate::app::App;
+
+impl App {
+    /// Everything an open screen changes *by itself*, with no event behind it — a wake probe
+    /// landing, a pattern feed starting to present or giving up. Returns whether any of it moved
+    /// pixels, which is the loop's whole interest in it.
+    pub(crate) fn tick_screens(&mut self) -> bool {
+        let mut changed = self.tick_wake();
+        changed |= self.tick_hdr_pattern();
+        changed
+    }
+
+    /// What the frame is cleared to before the draw list runs.
+    ///
+    /// Transparent while a screen is drawing over the video plane and that plane is actually
+    /// presenting (see `screens::over_video`): NDL is an *underlay*, and the menu's opaque
+    /// background is what normally hides it. Clearing transparent instead leaves the graphics
+    /// plane carrying only the card, with the picture showing through everywhere else.
+    pub(crate) fn frame_clear_color(&self) -> crate::ui::render::Color {
+        if crate::app::screens::over_video(self.nav.screen) && self.hdr_pattern_presenting() {
+            crate::ui::render::Color::RGBA(0, 0, 0, 0)
+        } else {
+            crate::ui::theme::palette().bg
+        }
+    }
+}

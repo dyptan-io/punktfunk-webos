@@ -8,6 +8,7 @@ use std::ops::Range;
 use crate::app::grid::GridLayout;
 use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
+use crate::app::screens;
 use crate::app::{
     hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP, CARD_POP_SHRINK, LAUNCH_GROWTH,
     SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD, SCROLL_INDICATOR_TILE_W, STATUS_BG_PAD,
@@ -59,6 +60,20 @@ impl App {
         // `snapshot_closing_modal`) — the entering one owns `tile::MODAL` from this frame.
         // The two overlap, so leaving one modal for another cross-fades.
         let screen = self.nav.screen;
+        // Over live video the card is all there is: the full-screen scrim and the frost pane are
+        // graphics that would cover the pattern being measured. No open animation either — the
+        // card must not move while a step changes, or the eye reads the motion as the pattern.
+        if screens::over_video(screen) {
+            self.compose_modal_card(
+                tiles,
+                screen,
+                ui::render::Size::new(screen_w, screen_h),
+                fonts,
+                1.0,
+                cmds,
+            );
+            return;
+        }
         let m = if matches!(screen, Screen::Home) {
             0.0
         } else {
@@ -851,59 +866,64 @@ impl App {
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
 
-        cmds.push(DrawCmd::Tex {
-            tile: tile::SIDEBAR,
-            dst: Rect::new(0, 0, ui::widgets::SIDEBAR_W, screen_h),
-            alpha: 0xff,
-        });
-
-        if !input.host_selected {
-            if let Some(p) = tiles.get(tile::NO_HOST) {
-                cmds.push(DrawCmd::Tex {
-                    tile: tile::NO_HOST,
-                    dst: Rect::new(
-                        grid_x + view::home::GRID_PAD,
-                        view::home::GRID_TOP_Y,
-                        p.width(),
-                        p.height(),
-                    ),
-                    alpha: 0xff,
-                });
-            }
-        } else if !input.grid_reveal_ready {
-            let (idx, frame) = crate::app::assets::spinner_frame_at(self.render.grid.reveal.phase());
-            let (fw, fh) = (frame.width(), frame.height());
-            let x = grid_x + (available_w as i32 - fw as i32) / 2;
-            // 40% down rather than dead-center, which reads as slightly low on a TV.
-            let area_h = screen_h as i32 - view::home::GRID_TOP_Y;
-            let y = view::home::GRID_TOP_Y + (area_h - fh as i32) * 2 / 5;
+        // A screen that draws over the video plane composes nothing behind its own card: the
+        // sidebar, the grid and the status block are graphics that would cover the very thing
+        // the user is looking at (see `screens::over_video`).
+        if !screens::over_video(self.nav.screen) {
             cmds.push(DrawCmd::Tex {
-                tile: tile::spinner(idx),
-                dst: Rect::new(x, y, fw, fh),
+                tile: tile::SIDEBAR,
+                dst: Rect::new(0, 0, ui::widgets::SIDEBAR_W, screen_h),
                 alpha: 0xff,
             });
-        } else {
-            self.compose_grid(tiles, ui::render::Size::new(screen_w, screen_h), &mut cmds);
-        }
-        if input.has_status {
-            if let Some(p) = tiles.get(tile::STATUS) {
-                let line_h = fonts.raster.height(fonts.label) + 6;
-                let box_h = 2 * line_h as u32 + 2 * STATUS_BG_PAD as u32;
-                let box_y = screen_h as i32 - box_h as i32;
-                cmds.push(DrawCmd::Fill {
-                    rect: Rect::new(grid_x, box_y, available_w, box_h),
-                    color: ui::theme::palette().scrim,
-                });
-                let y = box_y + (box_h as i32 - p.height() as i32) / 2;
+
+            if !input.host_selected {
+                if let Some(p) = tiles.get(tile::NO_HOST) {
+                    cmds.push(DrawCmd::Tex {
+                        tile: tile::NO_HOST,
+                        dst: Rect::new(
+                            grid_x + view::home::GRID_PAD,
+                            view::home::GRID_TOP_Y,
+                            p.width(),
+                            p.height(),
+                        ),
+                        alpha: 0xff,
+                    });
+                }
+            } else if !input.grid_reveal_ready {
+                let (idx, frame) = crate::app::assets::spinner_frame_at(self.render.grid.reveal.phase());
+                let (fw, fh) = (frame.width(), frame.height());
+                let x = grid_x + (available_w as i32 - fw as i32) / 2;
+                // 40% down rather than dead-center, which reads as slightly low on a TV.
+                let area_h = screen_h as i32 - view::home::GRID_TOP_Y;
+                let y = view::home::GRID_TOP_Y + (area_h - fh as i32) * 2 / 5;
                 cmds.push(DrawCmd::Tex {
-                    tile: tile::STATUS,
-                    dst: Rect::new(grid_x + view::home::GRID_PAD, y, p.width(), p.height()),
+                    tile: tile::spinner(idx),
+                    dst: Rect::new(x, y, fw, fh),
                     alpha: 0xff,
                 });
+            } else {
+                self.compose_grid(tiles, ui::render::Size::new(screen_w, screen_h), &mut cmds);
             }
-        }
+            if input.has_status {
+                if let Some(p) = tiles.get(tile::STATUS) {
+                    let line_h = fonts.raster.height(fonts.label) + 6;
+                    let box_h = 2 * line_h as u32 + 2 * STATUS_BG_PAD as u32;
+                    let box_y = screen_h as i32 - box_h as i32;
+                    cmds.push(DrawCmd::Fill {
+                        rect: Rect::new(grid_x, box_y, available_w, box_h),
+                        color: ui::theme::palette().scrim,
+                    });
+                    let y = box_y + (box_h as i32 - p.height() as i32) / 2;
+                    cmds.push(DrawCmd::Tex {
+                        tile: tile::STATUS,
+                        dst: Rect::new(grid_x + view::home::GRID_PAD, y, p.width(), p.height()),
+                        alpha: 0xff,
+                    });
+                }
+            }
 
-        Self::compose_sidebar_focus(&input, screen_h, &mut cmds);
+            Self::compose_sidebar_focus(&input, screen_h, &mut cmds);
+        }
 
         self.compose_modal(tiles, screen_w, screen_h, fonts, &mut cmds);
         // The launch transition: the confirmed card zooms in around its own

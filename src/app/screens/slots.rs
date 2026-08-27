@@ -6,6 +6,7 @@
 //! into the sidebar) are reset by the `open_*` that raises their screen.
 
 use crate::app::state::collections::CollectionsState;
+use crate::app::state::hdrcalibration::HdrCalibrationState;
 use crate::app::state::speedtest::SpeedTestState;
 use crate::app::state::textfield::TextField;
 use crate::app::WakeState;
@@ -23,6 +24,9 @@ pub(crate) struct ScreenSlots {
     pub(crate) row_button: Option<super::rowbuttons::RowButton>,
     /// The sidebar row `Screen::EditHost` is editing, `None` otherwise.
     pub(crate) edit_host_index: Option<usize>,
+    /// The HDR calibration in progress — its step, its scratch volume and the pattern feed on the
+    /// video plane. `None` whenever that screen isn't open, which is also what stops the feed.
+    pub(crate) hdr: Option<HdrCalibrationState>,
     /// The in-flight/finished speed test, `None` when that screen isn't open.
     pub(crate) speed_test: Option<SpeedTestState>,
     /// The host being measured, for the status line.

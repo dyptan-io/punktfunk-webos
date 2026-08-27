@@ -679,6 +679,14 @@ pub const BITRATE_MIN_KBPS: u32 = 10_000;
 pub const BITRATE_MAX_KBPS: u32 = 200_000;
 /// Slider granularity — also the lattice of valid fixed-bitrate values.
 pub const BITRATE_STEP_KBPS: u32 = 5_000;
+/// The Bitrate slider's stops. `BITRATE_AUTOMATIC` is the one value off it — a notch below the
+/// floor, not a stop on the lattice.
+pub const BITRATE: Lattice = Lattice {
+    lo: BITRATE_MIN_KBPS,
+    hi: BITRATE_MAX_KBPS,
+    step: BITRATE_STEP_KBPS,
+};
+
 /// Sentinel one notch below `BITRATE_MIN_KBPS` on the slider: `punktfunk_core::client::NativeClient`
 /// arms its own client-side AIMD bitrate controller (`punktfunk_core::abr`) precisely when it's
 /// asked to connect with `bitrate_kbps == 0` — it reacts to unrecoverable frames, heavy loss,
@@ -686,6 +694,160 @@ pub const BITRATE_STEP_KBPS: u32 = 5_000;
 /// or climbing every ~750ms. A fixed Mbps number, however carefully picked, never adapts to a link
 /// that degrades mid-session — this does.
 pub const BITRATE_AUTOMATIC: u32 = 0;
+
+/// A slider's discrete positions: a closed range walked in fixed steps.
+///
+/// One value type for every slider — the three HDR measurements and Bitrate — so the range, the
+/// stop count, the value at a stop and the snap back onto the lattice all come from the same
+/// numbers. They have to stay inverses of each other, and spelling each one out per slider is
+/// how they stop being.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Lattice {
+    pub lo: u32,
+    pub hi: u32,
+    pub step: u32,
+}
+
+impl Lattice {
+    /// How many positions the slider has.
+    #[must_use]
+    pub fn stops(self) -> usize {
+        ((self.hi - self.lo) / self.step) as usize + 1
+    }
+
+    /// Which position `value` sits at.
+    #[must_use]
+    pub fn index(self, value: u32) -> usize {
+        ((value.clamp(self.lo, self.hi) - self.lo) / self.step) as usize
+    }
+
+    /// The value at `stop`, which is clamped into range first.
+    #[must_use]
+    pub fn value(self, stop: i32) -> u32 {
+        let stop = stop.clamp(0, self.stops() as i32 - 1) as u32;
+        (self.lo + stop * self.step).min(self.hi)
+    }
+
+    /// Where `value` sits along the track, as 0..1.
+    #[must_use]
+    pub fn fraction(self, value: u32) -> f32 {
+        let last = self.stops().saturating_sub(1);
+        if last == 0 {
+            0.0
+        } else {
+            self.index(value) as f32 / last as f32
+        }
+    }
+
+    /// The stop nearest a 0..1 position along the track — the inverse of [`Lattice::fraction`].
+    #[must_use]
+    pub fn stop_at(self, fraction: f32) -> i32 {
+        let last = self.stops().saturating_sub(1) as f32;
+        (fraction.clamp(0.0, 1.0) * last).round() as i32
+    }
+
+    /// Clamps into range, then rounds to the nearest stop.
+    #[must_use]
+    pub fn snap(self, value: u32) -> u32 {
+        let offset = value.clamp(self.lo, self.hi) - self.lo;
+        self.value(((offset + self.step / 2) / self.step) as i32)
+    }
+}
+
+/// Peak-brightness slider, in nits — and, while the calibration screen is up, the mastering
+/// maximum the pattern declares. The ceiling has to sit well above any panel the app runs on, or
+/// the slider ends before the TV starts compressing and the reading cannot be taken: a CX
+/// measures ~790, a G3 with MLA ~1300, a 2025 G5 ~2400.
+pub const HDR_PEAK: Lattice = Lattice {
+    lo: 300,
+    hi: 4_000,
+    step: 10,
+};
+/// Full-field (frame-average) slider, in nits, and the pattern's declared `MaxFALL` while it is
+/// being measured. OLEDs hold ~140-180 once ABL settles; backlit LCDs hold far more, so this too
+/// has to reach past any of them for the flattening point to land inside the slider.
+pub const HDR_FRAME_AVG: Lattice = Lattice {
+    lo: 100,
+    hi: 1_000,
+    step: 10,
+};
+/// Black-floor slider, as 10-bit narrow-range PQ luma codes — 64 (zero light) up to 160
+/// (about 0.4 nits, a poor edge-lit panel).
+///
+/// In codes rather than in nits because PQ is perceptually uniform and nits are not: the first
+/// few codes above black span several decades of luminance, so a slider stepping through nits
+/// would sit on one code for most of its travel while the picture never changed. One step here
+/// is always one visible step.
+pub const HDR_BLACK: Lattice = Lattice {
+    lo: 64,
+    hi: 160,
+    step: 4,
+};
+
+/// The panel's HDR colour volume, as measured by the calibration screen.
+///
+/// These are the three luminances of the CTA-861.3 HDR static-metadata block. They travel to the
+/// TV (so its tone map onto this panel becomes an identity) and to the host in
+/// `Hello::display_hdr`, where punktfunk codes them into the virtual display's EDID — so the game
+/// renders to this volume in the first place and nothing has to remap it later. That single
+/// source-side tone map is what `HGiG` asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HdrDisplay {
+    /// Small-window peak (`MaxCLL`, and the mastering display's maximum).
+    pub peak_nits: u16,
+    /// Sustained full-field maximum (`MaxFALL`).
+    pub frame_avg_nits: u16,
+    /// Black floor, as a 10-bit narrow-range PQ luma code — see [`HDR_BLACK`].
+    pub black_code: u16,
+}
+
+impl HdrDisplay {
+    /// The black floor in the 0.0001 cd/m² units the wire carries, never zero: ST.2086 reads a
+    /// zero there as "unknown", and a self-emissive panel's real floor is better described by the
+    /// smallest luminance the field can express than by no answer at all.
+    #[must_use]
+    pub fn min_luminance_units(self) -> u32 {
+        ((crate::core::pq::pq_nits(self.black_code) * 10_000.0).round() as u32).max(1)
+    }
+
+    /// HDR10 mastering metadata describing this panel.
+    ///
+    /// It goes two places, and both matter. To NDL, where it is the volume the TV tone-maps the
+    /// stream into: give it the panel's real numbers and that map becomes an identity. And to the
+    /// host in `Hello::display_hdr`, which codes it into the virtual display's CTA-861.3 HDR block,
+    /// so the game renders to this volume rather than to a placeholder someone else has to undo.
+    /// One tone map, at the source — which is what `HGiG` asks for.
+    ///
+    /// The defaults are an LG CX's, which is what this client sent to every TV before the
+    /// calibration screen existed.
+    #[must_use]
+    pub fn hdr_meta(self) -> punktfunk_core::quic::HdrMeta {
+        punktfunk_core::quic::HdrMeta {
+            // G, B, R order (ST.2086), 1/50000 chromaticity units — BT.2020 primaries.
+            display_primaries: [[8_500, 39_850], [6_550, 2_300], [35_400, 14_600]],
+            white_point: [15_635, 16_450], // D65
+            max_display_mastering_luminance: u32::from(self.peak_nits) * 10_000,
+            min_display_mastering_luminance: self.min_luminance_units(),
+            max_cll: self.peak_nits,
+            max_fall: self.frame_avg_nits,
+        }
+    }
+}
+
+/// How a session handles HDR: the volume to render into, and whether anything may move it.
+///
+/// One value rather than two correlated fields, resolved from `Settings` before a connect starts:
+/// the decision is the app's, and the pipeline that reads it has no business knowing whether a
+/// user ever walked the calibration screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HdrPolicy {
+    /// The panel volume to advertise and to tone-map into — see [`HdrDisplay::hdr_meta`].
+    pub display: HdrDisplay,
+    /// Whether the host's per-content mastering metadata still applies mid-stream. Off once
+    /// `display` has actually been measured: re-tone-mapping to the content would undo the
+    /// measurement (see `session::pump`).
+    pub follow_content: bool,
+}
 
 /// Stream settings: resolution/framerate/bitrate/HDR/codec, plus the input and diagnostics
 /// toggles the Settings screens expose.
@@ -703,6 +865,19 @@ pub struct Settings {
     /// fixed [`BITRATE_MIN_KBPS`]..=[`BITRATE_MAX_KBPS`], adjusted via the settings slider.
     pub bitrate_kbps: u32,
     pub hdr_enabled: bool,
+    /// The measured panel volume — see [`HdrDisplay`]. The defaults are the values this client
+    /// shipped hardcoded for every TV (an LG CX's), so an uncalibrated set behaves exactly as it
+    /// always has.
+    pub hdr_peak_nits: u16,
+    pub hdr_frame_avg_nits: u16,
+    /// See [`HdrDisplay::black_code`]. The default is the code nearest the 0.0005 nits this
+    /// client used to send.
+    pub hdr_black_code: u16,
+    /// Whether the user has actually run the calibration. It gates one behaviour beyond the
+    /// numbers: a calibrated panel pins its own volume on the decoder and stops applying the
+    /// host's per-content mastering metadata, since re-tone-mapping to the content would undo
+    /// the measurement (see `session::pump`).
+    pub hdr_calibrated: bool,
     /// Preferred session codec — see [`CodecPref`].
     pub codec: CodecPref,
     /// Whether the in-stream stats overlay (resolution/codec, measured fps, drops,
@@ -783,6 +958,10 @@ impl Default for Settings {
             // own client-side AIMD controller does — see [`BITRATE_AUTOMATIC`].
             bitrate_kbps: 0,
             hdr_enabled: true,
+            hdr_peak_nits: 800,
+            hdr_frame_avg_nits: 150,
+            hdr_black_code: 68,
+            hdr_calibrated: false,
             stats_overlay: false,
             codec: CodecPref::Auto,
             audio_channels: 2,
@@ -864,6 +1043,44 @@ impl Settings {
                 caps.max_channels,
             );
             self.audio_channels = caps.max_channels;
+        }
+        // Snapped rather than merely clamped: the sliders move on a lattice, and a value off it
+        // (a hand-edited settings.json, or a range that narrowed between builds) would leave a
+        // thumb sitting between two stops.
+        self.hdr_peak_nits = HDR_PEAK.snap(u32::from(self.hdr_peak_nits)) as u16;
+        self.hdr_frame_avg_nits = HDR_FRAME_AVG.snap(u32::from(self.hdr_frame_avg_nits)) as u16;
+        // A full field can never out-run a small window on any panel; believing otherwise would
+        // advertise a volume no display has.
+        self.hdr_frame_avg_nits = self.hdr_frame_avg_nits.min(self.hdr_peak_nits);
+        self.hdr_black_code = HDR_BLACK.snap(u32::from(self.hdr_black_code)) as u16;
+    }
+
+    /// The panel volume to advertise — see [`HdrDisplay`].
+    #[must_use]
+    pub fn hdr_display(&self) -> HdrDisplay {
+        HdrDisplay {
+            peak_nits: self.hdr_peak_nits,
+            frame_avg_nits: self.hdr_frame_avg_nits,
+            black_code: self.hdr_black_code,
+        }
+    }
+
+    /// The one writer of the stored volume: the three measured fields move together with the
+    /// flag that says where they came from, so a set can never advertise numbers nothing on
+    /// screen would explain.
+    pub fn set_hdr_display(&mut self, display: HdrDisplay, calibrated: bool) {
+        self.hdr_peak_nits = display.peak_nits;
+        self.hdr_frame_avg_nits = display.frame_avg_nits;
+        self.hdr_black_code = display.black_code;
+        self.hdr_calibrated = calibrated;
+    }
+
+    /// The HDR policy a session should run under — see [`HdrPolicy`].
+    #[must_use]
+    pub fn hdr_policy(&self) -> HdrPolicy {
+        HdrPolicy {
+            display: self.hdr_display(),
+            follow_content: !self.hdr_calibrated,
         }
     }
 }

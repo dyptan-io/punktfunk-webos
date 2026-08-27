@@ -108,6 +108,13 @@ impl App {
                     view::collections::remove_subtitle(name, games),
                 )
             }
+            Screen::ResetHdrCalibration => Confirm::new(
+                Some(view::icons::ICON_DELETE),
+                "Clear",
+                palette().error,
+                "Cancel",
+                view::hdrcalibration::RESET_SUBTITLE.to_string(),
+            ),
             Screen::SendLogs => Confirm::new(
                 Some(view::icons::ICON_SEND),
                 "Send",

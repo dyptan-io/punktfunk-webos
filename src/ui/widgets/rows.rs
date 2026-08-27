@@ -292,18 +292,45 @@ pub fn mark_gutter(marked: bool) -> i32 {
     }
 }
 
+/// Where a row's label starts — just past its icon. Shared with [`row_layout_for`] so a
+/// label-less row's control can begin exactly where the text would have.
+pub fn row_label_x(row_rect: Rect) -> i32 {
+    row_rect.x() + ICON_PAD + FOCUS_ROW_ICON_SIZE as i32 + 20
+}
+
+/// The geometry the renderer will use for `row` — the one source of truth for where its control
+/// sits, so a hit test reads exactly the rect that was drawn rather than deriving its own.
+pub fn row_geom(row_rect: Rect, row: &FocusRow) -> RowGeom {
+    row_layout_for(
+        row_rect,
+        row.mark.is_some() || row.mark_reserve,
+        // A label-less row hands the width its label would have taken to the track — the label
+        // lives somewhere else (a card title, say) rather than being blank.
+        row.label.is_empty(),
+        row.value_reserve.max(row.trailing.len()),
+    )
+}
+
 pub fn row_layout(row_rect: Rect, marked: bool) -> RowGeom {
-    let control_right = row_rect.right() - CONTROL_PAD - mark_gutter(marked);
-    let track_w = 220u32.min(row_rect.width() / 3);
+    row_layout_for(row_rect, marked, false, 0)
+}
+
+/// [`row_layout`], with `wide` spanning the slider track from the label's own x to the value
+/// slot rather than giving it a fixed width, and `buttons`
+/// trailing buttons' worth of room kept clear at the right end — so a row's control and value
+/// stop short of its buttons rather than running under them.
+fn row_layout_for(row_rect: Rect, marked: bool, wide: bool, buttons: usize) -> RowGeom {
+    let control_right = row_rect.right() - CONTROL_PAD - mark_gutter(marked) - trailing_width(buttons);
+    let track_left = control_right - SLIDER_VALUE_SLOT_W - SLIDER_TRACK_GAP;
+    let track_w = if wide {
+        (track_left - row_label_x(row_rect)).max(1) as u32
+    } else {
+        220u32.min(row_rect.width() / 3)
+    };
     let cy = row_rect.y() + row_rect.height() as i32 / 2;
     RowGeom {
         control_right,
-        track: Rect::new(
-            control_right - SLIDER_VALUE_SLOT_W - SLIDER_TRACK_GAP - track_w as i32,
-            cy - 5,
-            track_w,
-            10,
-        ),
+        track: Rect::new(track_left - track_w as i32, cy - 5, track_w, 10),
         mark: Rect::new(
             row_rect.right() - CONTROL_PAD - 2 * MARK_DOT_R,
             cy - MARK_DOT_R,
@@ -590,7 +617,7 @@ impl Canvas<'_, '_> {
 
         // Past the row's control, on the right edge — the width `row_layout` took off it.
         let marked = row.mark.is_some() || row.mark_reserve;
-        let geom = row_layout(row_rect, marked);
+        let geom = row_geom(row_rect, row);
         if let Some(color) = row.mark {
             self.painter.fill_rounded_rect(geom.mark, MARK_DOT_R, color);
         }
@@ -620,7 +647,7 @@ impl Canvas<'_, '_> {
         } else {
             self.icon(icon_rect, row.icon, fg)?;
         }
-        let label_x = icon_rect.x() + FOCUS_ROW_ICON_SIZE as i32 + 20;
+        let label_x = row_label_x(row_rect);
         // A caption belongs to the focused row only: unfocused rows keep the label centred
         // (the common case), while a focused row with one centres label + caption as a block.
         let (label_font, value_font, caption_font) = (self.fonts.label, self.fonts.value, self.fonts.caption);
@@ -668,12 +695,11 @@ impl Canvas<'_, '_> {
             // Action rows have no control; `value` is a muted hint only, never interactive.
             RowKind::Action => {
                 if !row.value.is_empty() {
-                    let menu_w = trailing_width(row.value_reserve.max(row.trailing.len()));
                     let value_w = self.fonts.raster.measure(value_font, &row.value).0;
                     self.text(
                         value_font,
                         &row.value,
-                        geom.control_right - menu_w - value_w as i32,
+                        geom.control_right - value_w as i32,
                         value_y,
                         palette().muted,
                     )?;

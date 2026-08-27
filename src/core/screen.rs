@@ -29,6 +29,10 @@ pub enum Screen {
     Diagnostics,
     /// Experimental/unstable toggles (see `app/experimental.rs`).
     Experimental,
+    /// Measuring the panel's HDR volume against synthetic PQ patterns, reached from
+    /// Experimental (see `app/state/hdrcalibration.rs`). Unlike every other list screen it draws
+    /// over live video: the patterns play on the NDL plane underneath it.
+    HdrCalibration,
     /// Pointer/cursor behaviour, grouped off Settings (see `app/cursorsettings.rs`).
     /// Carries the scope of the settings screen that opened it, so the sub-screen edits the
     /// same document its parent does and Back knows where to return.
@@ -44,6 +48,9 @@ pub enum Screen {
     RenameCollection,
     /// "Remove collection?" — its games return to Library (see `app/state/collections.rs`).
     RemoveCollection,
+    /// "Clear HDR calibration?" — puts the panel volume back to the shipped default (see
+    /// `app/state/hdrcalibration.rs`).
+    ResetHdrCalibration,
 }
 
 /// Pairing modal's focused input: PIN row or "Request access" button.

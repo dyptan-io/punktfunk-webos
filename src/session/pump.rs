@@ -12,8 +12,8 @@ use punktfunk_core::packet::{FLAG_SOF, USER_FLAG_RECOVERY_ANCHOR};
 use punktfunk_core::PunktfunkError;
 
 use crate::platform::webos::device::boost_current_thread;
+use crate::services::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
 use crate::session::audio::AudioStage;
-use crate::session::join::{join_with_timeout, SHUTDOWN_JOIN_TIMEOUT};
 use crate::session::priority::{boost_hot_threads, spawn_vendor_decode_thread_renicer};
 use crate::session::stage::{SinkResult, VideoStage, WireFrame};
 use crate::session::StreamStats;
@@ -57,9 +57,10 @@ struct VideoPump {
     client: Arc<NativeClient>,
     stage: VideoStage,
     stats: Arc<StreamStats>,
-    /// Whether the host's per-content HDR metadata is worth draining — false on every session
-    /// where nothing would apply it (see `connect`'s `is_hdr`).
-    is_hdr: bool,
+    /// Whether the host's per-content HDR metadata is worth draining. False on every session
+    /// where nothing would apply it — an SDR or non-HEVC stream, and any session whose panel has
+    /// been calibrated, since that one is pinned to its measured volume (see `pipeline::build`).
+    forward_content_hdr: bool,
     /// Core's cumulative drop count as of the last frame, to edge-detect new drops.
     last_dropped_seen: u64,
     heartbeat: Tick,
@@ -67,13 +68,13 @@ struct VideoPump {
 }
 
 impl VideoPump {
-    fn new(client: Arc<NativeClient>, stage: VideoStage, stats: Arc<StreamStats>, is_hdr: bool) -> Self {
+    fn new(client: Arc<NativeClient>, stage: VideoStage, stats: Arc<StreamStats>, forward_content_hdr: bool) -> Self {
         let last_dropped_seen = client.frames_dropped();
         Self {
             client,
             stage,
             stats,
-            is_hdr,
+            forward_content_hdr,
             last_dropped_seen,
             heartbeat: Tick::new(HEARTBEAT),
             video_log: Tick::new(VIDEO_LOG_INTERVAL),
@@ -218,7 +219,7 @@ impl VideoPump {
 
     /// Hands the decoder any per-content HDR mastering metadata the host has sent.
     fn forward_hdr_meta(&mut self) {
-        if !self.is_hdr {
+        if !self.forward_content_hdr {
             return;
         }
         // Freshly *received* is not the same as changed: the host re-sends unchanged mastering
@@ -251,12 +252,12 @@ pub(super) fn video_pump(
     stage: VideoStage,
     stop: Arc<AtomicBool>,
     stats: Arc<StreamStats>,
-    is_hdr: bool,
+    forward_content_hdr: bool,
 ) {
     client.register_hot_thread();
     boost_hot_threads(&client);
     spawn_vendor_decode_thread_renicer();
-    VideoPump::new(client, stage, stats, is_hdr).run(&stop);
+    VideoPump::new(client, stage, stats, forward_content_hdr).run(&stop);
 }
 
 /// How long an audio drain parks on an empty plane before re-checking `stop`.
