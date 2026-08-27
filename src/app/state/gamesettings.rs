@@ -5,6 +5,7 @@
 use crate::app::menu;
 use crate::app::nav::ScreenKey;
 use crate::app::App;
+use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
 use crate::services::store::{Settings, SettingsOverride};
 
@@ -107,6 +108,39 @@ impl App {
 }
 
 impl App {
+    /// Raises the Reset confirmation over the per-game list, focused on Cancel — the same
+    /// dialog Forget host and Remove collection use (see `app::screens::confirm`), so the
+    /// destructive button is never the one a stray Confirm lands on.
+    pub(crate) fn open_reset_game_settings(&mut self) {
+        if self.settings_ui.game_settings.is_none() {
+            return;
+        }
+        self.nav.enter(Screen::ResetGameSettings, 1);
+    }
+
+    /// Handles one menu event on [`Screen::ResetGameSettings`].
+    pub(crate) fn handle_reset_game_settings_event(&mut self, ev: MenuEvent) {
+        if self.confirm_nav_event(ev) {
+            return;
+        }
+        match ev {
+            MenuEvent::Confirm => {
+                if self.nav.cursor(ScreenKey::ResetGameSettings) == 0 {
+                    self.reset_settings();
+                }
+                self.back_to_game_settings();
+            }
+            MenuEvent::Back | MenuEvent::Secondary => self.back_to_game_settings(),
+            MenuEvent::Up | MenuEvent::Down | MenuEvent::Left | MenuEvent::Right => {}
+        }
+    }
+
+    /// Back to the list the dialog was raised over, cursor untouched — the Reset row is still
+    /// where it was, shown or not.
+    fn back_to_game_settings(&mut self) {
+        self.nav.resume(Screen::Settings(menu::SettingsScope::Game));
+    }
+
     /// Whether `pin_id` carries any settings override on the selected host — what puts the
     /// amber dot in front of its card title, before anything is held.
     pub(crate) fn game_has_overrides(&self, pin_id: &str) -> bool {

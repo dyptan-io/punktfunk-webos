@@ -63,6 +63,8 @@ pub enum ModalFocusKey<'a> {
     RemoveCollectionButton(usize),
     /// Which `Screen::ResetHdrCalibration` button is focused (0 = Clear, 1 = Cancel).
     ResetHdrButton(usize),
+    /// Which `Screen::ResetGameSettings` button is focused (0 = Reset, 1 = Cancel).
+    ResetGameSettingsButton(usize),
     /// (focused row, the row's name, whether it is the one already holding the card, which
     /// trailing button is focused, whether the row is being dragged) — what the focused row
     /// draws, and nothing else: the list behind it is its own tiles.
@@ -161,6 +163,10 @@ pub enum ModalShellKey<'a> {
     RemoveCollection {
         name: &'a str,
         games: usize,
+    },
+    /// The game it asks about — its title is the whole subtitle.
+    ResetGameSettings {
+        game: &'a str,
     },
     /// The shell is title, rule and the card being moved — the rows are their own tiles, so
     /// nothing about the collections themselves belongs here except how many there are (the

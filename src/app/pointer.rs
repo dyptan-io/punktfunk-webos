@@ -217,7 +217,8 @@ impl App {
             | Screen::Wake
             | Screen::SpeedTest
             | Screen::RemoveCollection
-            | Screen::ResetHdrCalibration => {
+            | Screen::ResetHdrCalibration
+            | Screen::ResetGameSettings => {
                 let Some(subtitle) = self.confirm_subtitle() else {
                     return false;
                 };
@@ -602,7 +603,8 @@ impl App {
             | Screen::SpeedTest
             | Screen::SendLogs
             | Screen::RemoveCollection
-            | Screen::ResetHdrCalibration => {}
+            | Screen::ResetHdrCalibration
+            | Screen::ResetGameSettings => {}
             // Nothing clickable but the close button (handled above).
             Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::About => return None,
         }

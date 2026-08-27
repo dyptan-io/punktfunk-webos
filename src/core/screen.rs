@@ -51,6 +51,9 @@ pub enum Screen {
     /// "Clear HDR calibration?" — puts the panel volume back to the shipped default (see
     /// `app/state/hdrcalibration.rs`).
     ResetHdrCalibration,
+    /// "Reset game settings?" — the per-game Reset row's confirmation, raised over
+    /// `Settings(Game)` (see `app/state/gamesettings.rs`).
+    ResetGameSettings,
 }
 
 /// Pairing modal's focused input: PIN row or "Request access" button.

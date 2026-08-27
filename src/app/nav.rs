@@ -33,10 +33,11 @@ pub(crate) enum ScreenKey {
     RenameCollection,
     RemoveCollection,
     ResetHdrCalibration,
+    ResetGameSettings,
 }
 
 impl ScreenKey {
-    pub const COUNT: usize = Self::ResetHdrCalibration as usize + 1;
+    pub const COUNT: usize = Self::ResetGameSettings as usize + 1;
 
     pub const fn of(screen: Screen) -> Self {
         match screen {
@@ -60,6 +61,7 @@ impl ScreenKey {
             Screen::RenameCollection => Self::RenameCollection,
             Screen::RemoveCollection => Self::RemoveCollection,
             Screen::ResetHdrCalibration => Self::ResetHdrCalibration,
+            Screen::ResetGameSettings => Self::ResetGameSettings,
         }
     }
 }
@@ -86,6 +88,7 @@ pub(crate) const fn over_scroll_list(screen: Screen) -> bool {
             | Screen::RenameCollection
             | Screen::RemoveCollection
             | Screen::ResetHdrCalibration
+            | Screen::ResetGameSettings
     )
 }
 

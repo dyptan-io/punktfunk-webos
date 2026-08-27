@@ -24,7 +24,8 @@ pub(crate) const fn is_confirm(screen: Screen) -> bool {
         | Screen::SendLogs
         | Screen::SpeedTest
         | Screen::RemoveCollection
-        | Screen::ResetHdrCalibration => true,
+        | Screen::ResetHdrCalibration
+        | Screen::ResetGameSettings => true,
         Screen::Home
         | Screen::Pairing
         | Screen::Settings(_)
@@ -76,7 +77,8 @@ pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
         | Screen::SendLogs
         | Screen::RenameCollection
         | Screen::RemoveCollection
-        | Screen::ResetHdrCalibration => false,
+        | Screen::ResetHdrCalibration
+        | Screen::ResetGameSettings => false,
     }
 }
 
@@ -109,6 +111,7 @@ pub(crate) const fn is_list_modal(screen: Screen) -> bool {
         | Screen::Collections
         | Screen::RenameCollection
         | Screen::RemoveCollection
-        | Screen::ResetHdrCalibration => false,
+        | Screen::ResetHdrCalibration
+        | Screen::ResetGameSettings => false,
     }
 }

@@ -272,6 +272,11 @@ impl App {
             Screen::RemoveCollection => self
                 .removed_collection()
                 .map(|(name, games)| ModalShellKey::RemoveCollection { name, games }),
+            Screen::ResetGameSettings => self
+                .settings_ui
+                .game_settings
+                .as_ref()
+                .map(|gs| ModalShellKey::ResetGameSettings { game: &gs.title }),
             // `EditHost` joins `AddHost` in having no shell key: its typed-digit
             // display has no separate focus tile to protect, so it just redraws on
             // any `content_dirty` tick.
@@ -383,6 +388,9 @@ impl App {
             )),
             Screen::ResetHdrCalibration => Some(ModalFocusKey::ResetHdrButton(
                 self.nav.cursor(ScreenKey::ResetHdrCalibration),
+            )),
+            Screen::ResetGameSettings => Some(ModalFocusKey::ResetGameSettingsButton(
+                self.nav.cursor(ScreenKey::ResetGameSettings),
             )),
             // None has a single focused widget: the address form is one always-active
             // field, and About is a scrolling document.
@@ -520,7 +528,8 @@ impl App {
                     | Screen::SendLogs
                     | Screen::SpeedTest
                     | Screen::RemoveCollection
-                    | Screen::ResetHdrCalibration => match (self.confirm_of(), self.confirm_focused()) {
+                    | Screen::ResetHdrCalibration
+                    | Screen::ResetGameSettings => match (self.confirm_of(), self.confirm_focused()) {
                         (Some(confirm), Some(i)) => {
                             let rect = Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &confirm.subtitle, i);
                             Some(ui::rasterize(

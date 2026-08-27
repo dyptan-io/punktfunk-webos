@@ -115,6 +115,13 @@ impl App {
                 "Cancel",
                 view::hdrcalibration::RESET_SUBTITLE.to_string(),
             ),
+            Screen::ResetGameSettings => Confirm::new(
+                Some(view::icons::ICON_DELETE),
+                "Reset",
+                palette().error,
+                "Cancel",
+                view::resetgame::subtitle(&self.settings_ui.game_settings.as_ref()?.title),
+            ),
             Screen::SendLogs => Confirm::new(
                 Some(view::icons::ICON_SEND),
                 "Send",

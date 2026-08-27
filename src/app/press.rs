@@ -47,6 +47,7 @@ impl App {
             Screen::RenameCollection => self.handle_name_collection_event(ev, screen_w, screen_h),
             Screen::RemoveCollection => self.handle_remove_collection_event(ev),
             Screen::ResetHdrCalibration => self.handle_reset_hdr_event(ev),
+            Screen::ResetGameSettings => self.handle_reset_game_settings_event(ev),
         }
         None
     }
@@ -100,7 +101,8 @@ impl App {
             | Screen::SpeedTest
             | Screen::SendLogs
             | Screen::RemoveCollection
-            | Screen::ResetHdrCalibration => true,
+            | Screen::ResetHdrCalibration
+            | Screen::ResetGameSettings => true,
             // Rows, not buttons.
             Screen::Settings(_)
             | Screen::AddHost

@@ -66,7 +66,8 @@ impl App {
             | Screen::Collections
             | Screen::RenameCollection
             | Screen::RemoveCollection
-            | Screen::ResetHdrCalibration => 0,
+            | Screen::ResetHdrCalibration
+            | Screen::ResetGameSettings => 0,
         }
     }
 
@@ -137,7 +138,8 @@ impl App {
             | Screen::Collections
             | Screen::RenameCollection
             | Screen::RemoveCollection
-            | Screen::ResetHdrCalibration => Vec::new(),
+            | Screen::ResetHdrCalibration
+            | Screen::ResetGameSettings => Vec::new(),
         }
     }
 

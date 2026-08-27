@@ -218,7 +218,8 @@ impl App {
             | Screen::SendLogs
             | Screen::RenameCollection
             | Screen::RemoveCollection
-            | Screen::ResetHdrCalibration => 1,
+            | Screen::ResetHdrCalibration
+            | Screen::ResetGameSettings => 1,
         }
     }
 
@@ -379,7 +380,8 @@ impl App {
             | Screen::SendLogs
             | Screen::SpeedTest
             | Screen::RemoveCollection
-            | Screen::ResetHdrCalibration => self
+            | Screen::ResetHdrCalibration
+            | Screen::ResetGameSettings => self
                 .confirm_subtitle()
                 .zip(self.confirm_focused())
                 .map(|(subtitle, i)| Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &subtitle, i)),
@@ -523,6 +525,10 @@ impl App {
             }),
             Screen::ResetHdrCalibration => f(&view::confirm::Modal {
                 title: view::hdrcalibration::RESET_TITLE,
+                confirm: confirm.as_ref()?,
+            }),
+            Screen::ResetGameSettings => f(&view::confirm::Modal {
+                title: view::resetgame::TITLE,
                 confirm: confirm.as_ref()?,
             }),
         })
