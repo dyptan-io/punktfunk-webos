@@ -37,38 +37,77 @@ impl RowButton {
     }
 }
 
+/// The focusable controls and right-side geometry a row exposes.
+struct RowButtons {
+    leading: bool,
+    trailing: &'static [&'static str],
+    mark_reserved: bool,
+}
+
+impl RowButtons {
+    const fn trailing(trailing: &'static [&'static str]) -> Self {
+        Self {
+            leading: false,
+            trailing,
+            mark_reserved: false,
+        }
+    }
+
+    const fn with_leading(mut self) -> Self {
+        self.leading = true;
+        self
+    }
+
+    const fn reserve_mark(mut self, reserve: bool) -> Self {
+        self.mark_reserved = reserve;
+        self
+    }
+}
+
 impl App {
-    /// The buttons row `row` carries on whichever row list is open, as
-    /// `(has a leading one, its trailing icons)` — off one of those screens, none.
+    /// The buttons and end geometry row `row` carries on whichever row list is open.
     ///
     /// Derived from the same tables the rows are built from rather than from the rows
     /// themselves: this answers a pointer motion and a Left/Right press, and building the
     /// list to read one row's ends would format every label on the screen per event
     /// (`docs/COLLECTIONS-PLAN.md` §Risks).
-    pub(crate) fn row_buttons(&self, row: usize) -> (bool, &'static [&'static str]) {
+    fn row_buttons(&self, row: usize) -> RowButtons {
         match self.nav.screen {
-            Screen::HostMenu => (
-                false,
+            Screen::HostMenu => RowButtons::trailing(
                 self.host_menu_actions()
                     .get(row)
                     .copied()
                     .map_or(&[][..], host_menu_trailing),
             ),
-            Screen::Experimental => (
-                false,
-                crate::app::menu::EXP_ROWS.get(row).map_or(&[][..], |&r| {
-                    view::experimental::trailing(r, &self.settings_ui.settings)
-                }),
+            Screen::Experimental => crate::app::menu::EXP_ROWS.get(row).map_or_else(
+                || RowButtons::trailing(&[]),
+                |&r| {
+                    RowButtons::trailing(view::experimental::trailing(r, &self.settings_ui.settings)).reserve_mark(
+                        view::experimental::trailing_mark_reserved(r, &self.settings_ui.settings),
+                    )
+                },
             ),
             // One row, one button: the tick that finishes the measurement.
-            Screen::HdrCalibration => (false, view::hdrcalibration::ACTION_ICONS),
+            Screen::HdrCalibration => RowButtons::trailing(view::hdrcalibration::ACTION_ICONS),
             Screen::Collections => self
                 .selected_known_host()
                 .and_then(|host| host.collections().get(row))
                 // Past the last collection is the add row: an action, with no ends.
-                .map_or((false, &[][..]), |c| (true, view::collections::trailing(c.dynamic))),
-            _ => (false, &[]),
+                .map_or_else(
+                    || RowButtons::trailing(&[]),
+                    |c| {
+                        RowButtons::trailing(view::collections::trailing(c.dynamic))
+                            .with_leading()
+                            .reserve_mark(true)
+                    },
+                ),
+            _ => RowButtons::trailing(&[]),
         }
+    }
+
+    /// The icon identifying one trailing action on `row`.
+    pub(crate) fn row_trailing_button(&self, row: usize, index: usize) -> Option<&'static str> {
+        self.row_buttons(row).trailing.get(index).copied()
     }
 
     /// Steps focus along the focused row's buttons, `false` when there is nowhere left to
@@ -77,8 +116,9 @@ impl App {
     /// button lands on the row itself rather than jumping straight to the leading one.
     pub(crate) fn step_row_button(&mut self, forward: bool) -> bool {
         let row = self.nav.cursor(ScreenKey::of(self.nav.screen));
-        let (leading, trailing) = self.row_buttons(row);
-        let trailing = trailing.len();
+        let buttons = self.row_buttons(row);
+        let leading = buttons.leading;
+        let trailing = buttons.trailing.len();
         let next = match (self.screens.row_button, forward) {
             (None, true) if trailing > 0 => Some(RowButton::Trailing(0)),
             (None, false) if leading => Some(RowButton::Leading),
@@ -97,15 +137,14 @@ impl App {
     /// rect. `None` between them, or on a row with none — which reads as the row body,
     /// exactly as a click that misses the ⋯ always has.
     pub(crate) fn row_button_at(&self, row: usize, row_rect: Rect, x: i32, y: i32) -> Option<RowButton> {
-        let (leading, trailing) = self.row_buttons(row);
-        // The collections list always marks one row, so `align_values` keeps the dot's gutter
-        // clear on every row of it and its buttons sit that much further left.
-        let marked = matches!(self.nav.screen, Screen::Collections);
-        if leading && leading_button_rect(row_rect).contains_point((x, y)) {
+        let buttons = self.row_buttons(row);
+        if buttons.leading && leading_button_rect(row_rect).contains_point((x, y)) {
             return Some(RowButton::Leading);
         }
-        (0..trailing.len())
-            .find(|&i| trailing_button_rect(row_rect, trailing.len(), i, marked).contains_point((x, y)))
+        (0..buttons.trailing.len())
+            .find(|&i| {
+                trailing_button_rect(row_rect, buttons.trailing.len(), i, buttons.mark_reserved).contains_point((x, y))
+            })
             .map(RowButton::Trailing)
     }
 }

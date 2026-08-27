@@ -834,21 +834,6 @@ impl HdrDisplay {
     }
 }
 
-/// How a session handles HDR: the volume to render into, and whether anything may move it.
-///
-/// One value rather than two correlated fields, resolved from `Settings` before a connect starts:
-/// the decision is the app's, and the pipeline that reads it has no business knowing whether a
-/// user ever walked the calibration screen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct HdrPolicy {
-    /// The panel volume to advertise and to tone-map into — see [`HdrDisplay::hdr_meta`].
-    pub display: HdrDisplay,
-    /// Whether the host's per-content mastering metadata still applies mid-stream. Off once
-    /// `display` has actually been measured: re-tone-mapping to the content would undo the
-    /// measurement (see `session::pump`).
-    pub follow_content: bool,
-}
-
 /// Stream settings: resolution/framerate/bitrate/HDR/codec, plus the input and diagnostics
 /// toggles the Settings screens expose.
 ///
@@ -1073,15 +1058,6 @@ impl Settings {
         self.hdr_frame_avg_nits = display.frame_avg_nits;
         self.hdr_black_code = display.black_code;
         self.hdr_calibrated = calibrated;
-    }
-
-    /// The HDR policy a session should run under — see [`HdrPolicy`].
-    #[must_use]
-    pub fn hdr_policy(&self) -> HdrPolicy {
-        HdrPolicy {
-            display: self.hdr_display(),
-            follow_content: !self.hdr_calibrated,
-        }
     }
 }
 

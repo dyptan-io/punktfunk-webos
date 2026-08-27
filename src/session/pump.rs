@@ -58,9 +58,8 @@ struct VideoPump {
     stage: VideoStage,
     stats: Arc<StreamStats>,
     /// Whether the host's per-content HDR metadata is worth draining. False on every session
-    /// where nothing would apply it — an SDR or non-HEVC stream, and any session whose panel has
-    /// been calibrated, since that one is pinned to its measured volume (see `pipeline::build`).
-    forward_content_hdr: bool,
+    /// where nothing would apply it: an SDR or non-HEVC stream.
+    is_hdr: bool,
     /// Core's cumulative drop count as of the last frame, to edge-detect new drops.
     last_dropped_seen: u64,
     heartbeat: Tick,
@@ -68,13 +67,13 @@ struct VideoPump {
 }
 
 impl VideoPump {
-    fn new(client: Arc<NativeClient>, stage: VideoStage, stats: Arc<StreamStats>, forward_content_hdr: bool) -> Self {
+    fn new(client: Arc<NativeClient>, stage: VideoStage, stats: Arc<StreamStats>, is_hdr: bool) -> Self {
         let last_dropped_seen = client.frames_dropped();
         Self {
             client,
             stage,
             stats,
-            forward_content_hdr,
+            is_hdr,
             last_dropped_seen,
             heartbeat: Tick::new(HEARTBEAT),
             video_log: Tick::new(VIDEO_LOG_INTERVAL),
@@ -219,13 +218,16 @@ impl VideoPump {
 
     /// Hands the decoder any per-content HDR mastering metadata the host has sent.
     fn forward_hdr_meta(&mut self) {
-        if !self.forward_content_hdr {
+        if !self.is_hdr {
             return;
         }
-        // Freshly *received* is not the same as changed: the host re-sends unchanged mastering
-        // metadata (three identical packets inside 10 ms on a CX), so the on-change filter has to
-        // run against the last value applied. The player does that.
-        let Ok(meta) = self.client.next_hdr_meta(Duration::ZERO) else {
+        // Collapse startup/keyframe repeats to the newest value. Applying an older queued value
+        // first can delay a genuine mastering change by several frames.
+        let mut latest = None;
+        while let Ok(meta) = self.client.next_hdr_meta(Duration::ZERO) {
+            latest = Some(meta);
+        }
+        let Some(meta) = latest else {
             return;
         };
         tracing::info!(
@@ -252,12 +254,12 @@ pub(super) fn video_pump(
     stage: VideoStage,
     stop: Arc<AtomicBool>,
     stats: Arc<StreamStats>,
-    forward_content_hdr: bool,
+    is_hdr: bool,
 ) {
     client.register_hot_thread();
     boost_hot_threads(&client);
     spawn_vendor_decode_thread_renicer();
-    VideoPump::new(client, stage, stats, forward_content_hdr).run(&stop);
+    VideoPump::new(client, stage, stats, is_hdr).run(&stop);
 }
 
 /// How long an audio drain parks on an empty plane before re-checking `stop`.

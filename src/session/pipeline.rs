@@ -49,7 +49,7 @@ impl MediaPipeline {
         stop: &Arc<AtomicBool>,
         stats: &Arc<StreamStats>,
     ) -> Result<(Self, AudioRoutePref, bool)> {
-        let (player, is_hdr) = load_player(client, params.hdr.display.hdr_meta())?;
+        let (player, is_hdr) = load_player(client, params.display_hdr)?;
         // Re-checked against the plane the load actually produced: a rejected audio-enabled load
         // leaves no plane to ride.
         let plane = player.audio_plane();
@@ -60,9 +60,7 @@ impl MediaPipeline {
             player.name(),
             client.audio_channels,
         );
-        let forward_content_hdr = is_hdr && params.hdr.follow_content;
-        let video_thread =
-            spawn_video_thread(client, player, stop, stats, forward_content_hdr, params.direct_playback)?;
+        let video_thread = spawn_video_thread(client, player, stop, stats, is_hdr, params.direct_playback)?;
         // Failing here after the video thread is already up would otherwise detach it.
         let (audio_thread, clock_thread) = match spawn_plane_threads(client, plane, stop, route) {
             Ok(handles) => handles,
@@ -200,7 +198,7 @@ fn spawn_video_thread(
     player: Box<dyn VideoSink>,
     stop: &Arc<AtomicBool>,
     stats: &Arc<StreamStats>,
-    forward_content_hdr: bool,
+    is_hdr: bool,
     direct_playback: bool,
 ) -> Result<std::thread::JoinHandle<()>> {
     let cfg = SinkConfig {
@@ -217,7 +215,7 @@ fn spawn_video_thread(
             // Built here, not on the caller's thread: the sink queries the panel refresh
             // rate through SDL on construction, and that stayed on the video thread before.
             let stage = VideoStage::new(player, stats.clone(), cfg);
-            video_pump(client, stage, stop, stats, forward_content_hdr);
+            video_pump(client, stage, stop, stats, is_hdr);
         })
         .context("spawn video thread")
 }

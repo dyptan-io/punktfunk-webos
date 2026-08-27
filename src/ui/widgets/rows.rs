@@ -207,6 +207,12 @@ impl FocusRow {
         self
     }
 
+    /// Keeps the right-side mark gutter clear without drawing a mark.
+    pub fn reserve_mark_gutter(mut self, reserve: bool) -> Self {
+        self.mark_reserve = reserve;
+        self
+    }
+
     /// [`with_subtext`](Self::with_subtext) for a caption a condition may not produce.
     pub fn with_subtext_opt(mut self, subtext: Option<RowSubtext>) -> Self {
         self.subtext = subtext;

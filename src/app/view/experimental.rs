@@ -45,6 +45,7 @@ pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
     // question anyone opens this row to answer.
     let calibrate = FocusRow::action(icons::ICON_SUN, "Calibrate HDR")
         .with_trailing(trailing(ExpRow::HdrCalibration, settings))
+        .reserve_mark_gutter(trailing_mark_reserved(ExpRow::HdrCalibration, settings))
         .with_subtext(if settings.hdr_calibrated {
             ui::widgets::RowSubtext::hint(format!(
                 "{} nits peak, {} nits full screen",
@@ -86,6 +87,12 @@ pub fn trailing(row: ExpRow, settings: &Settings) -> &'static [&'static str] {
         ExpRow::HdrCalibration if settings.hdr_calibrated => &[icons::ICON_DELETE],
         _ => &[],
     }
+}
+
+/// Whether the row's trailing controls use the mark-dot gutter as their end inset.
+#[must_use]
+pub fn trailing_mark_reserved(row: ExpRow, settings: &Settings) -> bool {
+    row == ExpRow::HdrCalibration && !trailing(row, settings).is_empty()
 }
 
 fn lock_caption(lock: ExpRowLock) -> ui::widgets::RowSubtext {

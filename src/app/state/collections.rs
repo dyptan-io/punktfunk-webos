@@ -143,9 +143,9 @@ impl App {
         if let Some(button) = self.screens.row_button {
             match button {
                 RowButton::Leading => self.start_collection_drag(row),
-                RowButton::Trailing(i) => match self.row_buttons(row).1.get(i) {
-                    Some(&view::icons::ICON_EDIT) => self.open_name_collection(Some(row)),
-                    Some(&view::icons::ICON_DELETE) => self.open_remove_collection(row),
+                RowButton::Trailing(i) => match self.row_trailing_button(row, i) {
+                    Some(view::icons::ICON_EDIT) => self.open_name_collection(Some(row)),
+                    Some(view::icons::ICON_DELETE) => self.open_remove_collection(row),
                     _ => {}
                 },
             }
