@@ -147,7 +147,7 @@ static FRAME_FED: EventSeq = EventSeq::new();
 /// every `play` until the pipeline unloads itself. Latched rather than pulsed: the load is gone,
 /// and there is no later callback that takes it back. Cleared only by [`arm_load`], which is to
 /// say by a NEW load.
-static FATAL: AtomicBool = AtomicBool::new(false);
+static FATAL: EventSeq = EventSeq::new();
 
 /// Records v2 load-state transitions so loads, feeds and the UI reveal can wait on them.
 extern "C" fn on_load_state(state: c_int, num: c_longlong, detail: *const c_char) {
@@ -173,9 +173,11 @@ extern "C" fn on_load_state(state: c_int, num: c_longlong, detail: *const c_char
                 unsafe { CStr::from_ptr(detail) }.to_string_lossy().into_owned()
             };
             if state == STATE_ERROR {
-                // Feeding on produces nothing but a `play` error per frame — see [`fatal`].
-                FATAL.store(true, Ordering::Release);
-                tracing::error!("NDL load state: fatal 0x{state:x} ({state}) num={num} {detail}");
+                // Feeding on produces nothing but a `play` error per frame — see [`fatal`]. Logged
+                // once per load; NDL repeats the state while the pipeline tears itself down.
+                if FATAL.bump_first() {
+                    tracing::error!("NDL load state: fatal 0x{state:x} ({state}) num={num} {detail}");
+                }
             } else {
                 // Unmapped, and not the state that has ever been seen to kill a load. Logged so a
                 // device trace can identify it, but NOT latched: ending a healthy session on a
@@ -194,7 +196,7 @@ fn arm_load() {
     LOAD_COMPLETED.arm();
     PLAYING.arm();
     FRAME_FED.arm();
-    FATAL.store(false, Ordering::Release);
+    FATAL.arm();
 }
 
 /// Whether the current load has reported a fatal state — see [`FATAL`]. The session reads this to
@@ -202,7 +204,7 @@ fn arm_load() {
 /// want opposite responses: the second is a re-anchor, the first cannot be recovered from without
 /// a new load.
 pub fn fatal() -> bool {
-    FATAL.load(Ordering::Acquire)
+    FATAL.fired()
 }
 
 /// `PLAYING` for the current load. Diagnostics only — see [`PLAYING`].

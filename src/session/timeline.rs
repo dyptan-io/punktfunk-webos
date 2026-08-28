@@ -1,9 +1,8 @@
 //! Timeline plumbing for the video pump: the panel-reconciled frame interval, and the
 //! host-PTS → player-clock mapping NDL needs (it has no PTS clock of its own).
 //!
-//! One mapping, [`CadencePacer`], wrapped by [`Pacing`]. The fixed anchor it replaced stamped
-//! from a constant taken at frame 0 and had no rate term at all; see [`CadencePacer`] for why
-//! that shape could not be repaired in place.
+//! One mapping, [`Pacing`]. The fixed anchor it replaced stamped from a constant taken at frame 0
+//! and had no rate term at all; see [`Pacing`] for why that shape could not be repaired in place.
 
 use crate::platform::webos::sdl_webos;
 
@@ -56,7 +55,7 @@ pub fn reconciled_frame_interval_ns(stream_hz: u32) -> u64 {
 /// grows where there is real jitter to cover. The anchor was kept selectable for a while as
 /// `Settings::direct_playback`; on real hardware it stamped ~17% of frames late at 120 Hz against
 /// the loop's ~7%, so it is gone.
-pub struct CadencePacer {
+pub struct Pacing {
     clock: punktfunk_core::phase::CadenceClock,
     /// The source's nominal interval, and the cushion's ceiling (see `CadenceClock::cushion_ns`)
     /// — see [`Self::new`] for why it is not the panel's.
@@ -67,9 +66,13 @@ pub struct CadencePacer {
     last_base_ns: u64,
     /// Exact repeated source stamps are off-cadence, not estimator observations.
     last_host_pts_ns: Option<u64>,
+    /// Frames fed with a stamp already behind the player clock — see [`PacingHealth::late_stamps`].
+    /// Counted around the loop rather than inside it: it is a property of the stamp handed to NDL,
+    /// not of the estimate that produced it.
+    late_stamps: u64,
 }
 
-impl CadencePacer {
+impl Pacing {
     /// `source_interval_ns` is the negotiated STREAM mode's frame interval — the cadence the host
     /// produces — and never the panel's. It is the cushion's ceiling, so a panel period would let a
     /// stream running faster than the panel be held for longer than its own cadence justifies.
@@ -82,6 +85,7 @@ impl CadencePacer {
             source_interval_ns: i64::try_from(source_interval_ns).unwrap_or(i64::MAX),
             last_base_ns: 0,
             last_host_pts_ns: None,
+            late_stamps: 0,
         }
     }
 
@@ -102,6 +106,9 @@ impl CadencePacer {
         // opportunity" — which is what handing NDL a stamp at or behind its clock already means.
         let base = u64::try_from(due).unwrap_or(0).max(self.last_base_ns);
         self.last_base_ns = base;
+        if base <= player_clock_ns {
+            self.late_stamps += 1;
+        }
         base
     }
 
@@ -119,8 +126,15 @@ impl CadencePacer {
         // rewind by muting, which is the failure this whole path exists to avoid.
     }
 
-    fn health(&self) -> punktfunk_core::phase::CadenceHealth {
-        self.clock.health()
+    /// What the mapping has to say for itself — see [`PacingHealth`].
+    pub fn health(&self) -> PacingHealth {
+        let h = self.clock.health();
+        PacingHealth {
+            jitter_ns: h.jitter_ns,
+            cushion_ns: h.cushion_ns,
+            late_stamps: self.late_stamps,
+            reanchors: h.reanchors,
+        }
     }
 }
 
@@ -136,50 +150,6 @@ pub struct PacingHealth {
     pub late_stamps: u64,
     /// Times the mapping gave up tracking and re-anchored.
     pub reanchors: u64,
-}
-
-/// The host-PTS → player-clock mapping this session stamps with: [`CadencePacer`], plus the one
-/// count that describes the stamps rather than the loop.
-pub struct Pacing {
-    pacer: CadencePacer,
-    /// Frames fed with a stamp already behind the player clock — see [`PacingHealth::late_stamps`].
-    /// Counted here rather than inside the loop: it is a property of the stamp handed to NDL, not
-    /// of the estimate that produced it.
-    late_stamps: u64,
-}
-
-impl Pacing {
-    /// `source_interval_ns` is the stream mode's own interval — see [`CadencePacer::new`].
-    pub fn new(source_interval_ns: u64) -> Self {
-        Self {
-            pacer: CadencePacer::new(source_interval_ns),
-            late_stamps: 0,
-        }
-    }
-
-    /// This frame's stamp in the player's clock domain, and the late-stamp bookkeeping with it.
-    pub fn map(&mut self, host_pts_ns: u64, player_clock_ns: u64) -> u64 {
-        let base = self.pacer.map(host_pts_ns, player_clock_ns);
-        if base <= player_clock_ns {
-            self.late_stamps += 1;
-        }
-        base
-    }
-
-    /// Drop the run: the timeline jumped and nothing derived from it holds.
-    pub fn reset(&mut self) {
-        self.pacer.reset();
-    }
-
-    pub fn health(&self) -> PacingHealth {
-        let h = self.pacer.health();
-        PacingHealth {
-            jitter_ns: h.jitter_ns,
-            cushion_ns: h.cushion_ns,
-            late_stamps: self.late_stamps,
-            reanchors: h.reanchors,
-        }
-    }
 }
 
 /// Nanoseconds as milliseconds, for log lines.

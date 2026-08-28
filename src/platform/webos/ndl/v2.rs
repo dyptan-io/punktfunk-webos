@@ -369,8 +369,19 @@ impl NdlVideo {
         // BEFORE `load_instant`, so its ceiling already sits a whole prime ahead, and targeting the
         // raw clock would feed nothing until it caught up — dead exactly at session start. The
         // resulting constant offset from the video timeline costs a metronome nothing.
-        let mut base_ms = self.last_audio_pts_ms.load(Ordering::Relaxed);
-        let mut pts_ms = base_ms;
+        // On the offload route the real stream owns the ceiling, so a fill targets exactly what
+        // [`Self::play_audio`] targets and carries no base of its own: `burst_silence` floors on
+        // the ceiling the stream left, and adding the prime's base on top of that raised it by one
+        // `PLANE_LEAD_MS` per fill episode — recovered audio then floored onto the jump and pinned
+        // to a single stamp for the length of it, the ratchet this path exists to avoid.
+        //
+        // The metronome route is the only feed, so it continues the prime's stamps instead of
+        // restarting from the player clock: the prime runs BEFORE `load_instant`, so its ceiling
+        // already sits a whole prime ahead and targeting the raw clock would feed nothing until the
+        // clock caught up — dead exactly at session start. The constant offset costs a metronome
+        // nothing.
+        let base_ms = if yields_to_real { 0 } else { self.last_audio_pts_ms.load(Ordering::Relaxed) };
+        let mut pts_ms = self.last_audio_pts_ms.load(Ordering::Relaxed);
         let mut filling = false;
         while !stop.load(Ordering::Relaxed) {
             let now_ms = (self.elapsed_ns() / 1_000_000) as i64;
@@ -383,20 +394,13 @@ impl NdlVideo {
                 continue;
             }
             if yields_to_real && !filling {
-                // Target exactly what [`Self::play_audio`] targets, so the handoff back costs
-                // nothing: `burst_silence` floors at the ceiling the real stream left, so the fill
-                // resumes from it without stacking another lead ON TOP. Carrying the prime's base
-                // through here instead raised the ceiling by one `PLANE_LEAD_MS` per fill episode
-                // — and recovered audio then floored onto that jump, pinned to a single stamp for
-                // the length of it, which is the ratchet this path exists to avoid.
-                base_ms = 0;
                 tracing::warn!(
                     "NDL clock plane: no host audio for {REAL_FEED_GRACE_MS}ms — filling silence \
                      to keep the picture paced (host capture is likely dead)"
                 );
                 filling = true;
             }
-            match self.burst_silence(pts_ms, base_ms + now_ms + PRIME_LEAD * PRIME_PACKET_MS) {
+            match self.burst_silence(pts_ms, base_ms + now_ms + PLANE_LEAD_MS) {
                 Ok(fed_to) => pts_ms = fed_to,
                 Err(e) => {
                     // Dead for the session; the picture keeps running unpaced, as it did before
