@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use punktfunk_core::quic;
 
-use crate::core::media::{AudioPlane, NotReady, SessionClock, VideoSink, VideoSinkCaps};
+use crate::core::media::{AudioPlane, NotReady, VideoSink, VideoSinkCaps};
 use crate::session::timeline::{ms, reconciled_frame_interval_ns, Pacing, PacingHealth};
 use crate::session::StreamStats;
 
@@ -107,15 +107,12 @@ pub struct VideoStage {
     sink: Box<dyn VideoSink>,
     /// What this backend can be asked to do — read instead of matching on which backend it is.
     caps: VideoSinkCaps,
-    /// The audio plane this load produced, if any — kept for its depth reading; everything the
-    /// stage publishes to it goes through [`Self::clock`].
+    /// The audio plane this load produced, if any — kept for its depth reading. The stage
+    /// publishes nothing to it: the plane stamps off the player clock on its own.
     audio_plane: Option<std::sync::Arc<dyn AudioPlane>>,
     /// Slice-progressive reassembly state — a pass-through on a backend that doesn't take parts
     /// (see [`AuParts`]).
     parts: AuParts,
-    /// The one host-PTS → sink-clock mapping this session's planes share. The stage owns it
-    /// because the video plane is what derives it, frame by frame.
-    clock: Arc<SessionClock>,
     stats: Arc<StreamStats>,
     cfg: SinkConfig,
     /// The panel's actual drain cadence, reconciled against the stream rate. NDL drains at panel
@@ -166,13 +163,8 @@ impl VideoStage {
         let frame_interval_ns = reconciled_frame_interval_ns(stream_hz);
         let audio_plane = sink.audio_plane();
         let caps = sink.caps();
-        let clock = Arc::new(SessionClock::default());
-        if let Some(plane) = &audio_plane {
-            plane.attach_clock(clock.clone());
-        }
         Self {
             parts: AuParts::default(),
-            clock,
             caps,
             sink,
             audio_plane,
@@ -220,7 +212,6 @@ impl VideoStage {
     fn reset_timeline(&mut self) {
         self.pacing.reset();
         self.au_base_ns = None;
-        self.clock.clear();
     }
 
     /// This frame's stamp in the sink's own clock domain.
@@ -285,8 +276,8 @@ impl VideoStage {
         if self.last_backlog_poll.is_none_or(|t| t.elapsed() >= BACKLOG_POLL) {
             self.last_backlog_poll = Some(Instant::now());
             self.backlog_cached = self.sink.queue_depth().map(u64::from);
-            // A freeze flushes NDL, so a depth polled while held is an emptied buffer, not this
-            // mode's settled lead. Learning from it would clamp the cushion back to the floor for
+            // A freeze stops the pipeline, so a depth polled while held is not this mode's
+            // settled lead. Learning from it would clamp the cushion back to the floor for
             // [`CUSHION_MIN_POLLS`] after every loss event — and at 60Hz one unaccounted frame is
             // 16.6ms, straight back over the ABR's decode-rise threshold. The cached depth itself
             // still updates: A/V sync wants the truth, only the learned cushion is held steady.
@@ -445,19 +436,6 @@ impl VideoStage {
                 // Only a frame NDL actually accepted is on its way to the glass. A failed feed is
                 // followed by a flush and a hold, where the reference would be meaningless.
                 self.publish_video_e2e(submit_realtime_ns, pts_ns, backlog);
-                // Same reason, and it also doubles as the audio plane's start gate. `play_audio` has
-                // no `ensure_loaded` guard of its own, so latching off a REJECTED frame turns the
-                // audio thread loose on a pipeline NDL hasn't loaded yet — which costs the session
-                // its audio outright.
-                // Held back until the anchor's trim has settled: audio stamps ride this offset and
-                // can only move forward, so latching onto a mapping still being pulled earlier
-                // costs lip sync (see `Pacing::ready_for_audio`). The mapping only converges once
-                // per session: telling the pacer it landed on an ACCEPTED frame is what lets a
-                // recovery run re-latch without another window of silence.
-                if self.pacing.ready_for_audio() {
-                    self.clock.latch(base_ns as i64 - pts_ns as i64);
-                    self.pacing.note_audio_latched();
-                }
                 let decode_us = self
                     .cfg
                     .report_decode_latency

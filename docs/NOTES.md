@@ -332,24 +332,32 @@ no error to find on the audio side, so do not go looking for one.
 session**, and does not resync. `NdlVideo::play_audio` and `NdlVideo::burst_silence` are the only
 feed points, both serialised under `lock_ffi` and both flooring at `last_audio_pts_ms` — the floor
 must be read under that guard, or a packet measured against an older ceiling blocks on the lock and
-then hands NDL the stale stamp. For hardware decode the offset is additionally
-**latched, not recomputed per frame**: a receive-backlog flush jumps host PTS forward while the
-player clock does not, and a re-derived offset would drag the audio stamp backwards by the size of
-the jump. `latch_pts_offset` takes only the first value after each `clear_pts_offset` (hold
-resume, pacing off→on edge), and only off a frame NDL **accepted** — `play_audio` has no
-`ensure_loaded` guard of its own, so the latch doubles as the audio thread's start gate.
+then hands NDL the stale stamp.
 
-⚠ **But flooring every packet on that ceiling is itself a mute.** A hold resume re-anchors the
-video plane onto the *current player clock*; when that maps the resumed audio BELOW the ceiling —
-the video plane was running ahead, or the clock plane bursted its `PRIME_LEAD` of silence during
-the gap — `fetch_max` pins every packet to one stamp, audio stops advancing, and nothing lifts it
-off again for the rest of the session. Field case (CX, 2026-08-20, offload on): the startup ABR
-probe at 300 Mbps saturated the airlink, one freeze-until-reanchor hold followed, and audio was
-gone from that point while video recovered normally. The fix is a per-latch `audio_skew_ms`: the
-first real packet after a re-latch shifts the whole stream to one packet above the ceiling and
-advances by its own cadence from there, leaving the floor as a defensive no-op. The drop path
-(`play_audio` with no latched offset) also **logs the gap on the packet that ends it** — silent, it
-cost a session its audio with nothing in the log to find.
+⚠ **The audio plane stamps off the PLAYER clock, not the host's (2026-08-28).** It used to map the
+host capture PTS through a shared `SessionClock` the video plane published, with a per-latch
+`audio_skew_ms` lifting each resumed run above the ceiling. That **ratchets**: a
+freeze-until-reanchor stalls the mapped timeline while packets keep arriving, the resumed run lands
+below the ceiling it already reached, and the only monotonic repair is to add lead — which nothing
+in the session can ever pay back. Measured on a CX: five re-anchors inside four seconds walked the
+plane from 78 ms to 124 ms of lead, and the lip sync it buys is never recovered without a reload.
+
+So audio is stamped `player_clock + PLANE_LEAD_MS` and the host PTS is ignored (`AudioSink::feed`
+takes it and drops it). A wall clock cannot ratchet: it advances at the same rate whatever the host
+PTS does across a freeze, so a resumed run lands where an uninterrupted one would have, and
+`last_audio_pts_ms` is left with nothing to do but absorb reordering. The clock plane targets the
+same figure, so the two feeders share the ceiling without either driving it. `load_confirmed` is
+the plane's start gate, a job the video plane's latch used to do. `mariotaku/ss4s` made the same
+move in `ef0c0ae`, deleting a gap-filling thread it had added in `734e643`.
+
+⚠ **The ratchet was real and was NOT the mute** — see the flush below, which is. Measured after
+this change, under a saturated airlink: 32 re-anchors, `plane_lead` pinned at 37-40 ms, `depth`
+flat, stamps provably monotonic, and audio still died. **Nothing the client hands NDL explains that
+failure.** Do not spend another round on stamp arithmetic.
+
+Removed with the mapping: `SessionClock` (audio was its only reader), `AudioPlane::attach_clock`,
+`audio_skew_ms`, `skew_epoch`, and the audio-latch gate in `session::timeline`
+(`ready_for_audio` / `note_audio_latched` on both `CadencePacer` and `HostPtsAnchor`).
 
 ⚠ **The loss hold must NOT flush, and this is what was muting the Opus plane after a network
 hiccup (2026-08-28, confirmed on device).** `NDL_DirectVideoFlushRenderBuffer` stops the pipeline:
@@ -398,13 +406,10 @@ interval per frame (the stamps must never go backwards) and only inside the firs
 anchor. `pts lead: trimming Xms` at INFO, plus `pts_trim=` on the video heartbeat, is how much
 standing hold the session started with — a number not otherwise observable from the app.
 
-⚠ **The audio plane latches this mapping late, and that is what makes the trim safe.** Audio
-stamps ride the offset the video plane publishes and `play_audio` can only move a stamp FORWARD (a
-rewind mutes the session for good), so a trim taken after audio has latched would land as lip-sync
-error rather than latency saved. `HostPtsAnchor::ready_for_audio` therefore holds
-`latch_pts_offset` for `TRIM_SETTLE_NS` (600 ms) — one measurement window plus slack — and trimming
-stops at the same instant. The audio pump drops its packets through that window and logs the gap;
-`run_clock_plane` paces the picture meanwhile, which it was doing at session start anyway.
+⚠ **The audio plane no longer latches this mapping at all (2026-08-28)** — it stamps off the player
+clock, so there is nothing for the trim to be unsafe against and the gate that used to hold audio
+through the settle window (at the cost of real silence after every recovery) is gone. See § "NDL's
+audio plane".
 
 **2. Slice-progressive feed (on, every NDL v2 session).** Without it the decoder
 sees byte 0 of a frame only once that frame's LAST datagram lands; at 200 Mbps a keyframe is many
