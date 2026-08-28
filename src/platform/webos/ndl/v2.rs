@@ -383,10 +383,13 @@ impl NdlVideo {
                 continue;
             }
             if yields_to_real && !filling {
-                // Rebase onto where the real stream left the ceiling: the start-of-session base
-                // would re-add the prime's whole lead on top of it, and recovered audio then floors
-                // to that jumped ceiling — pinned to one stamp for the length of the jump.
-                base_ms = self.last_audio_pts_ms.load(Ordering::Relaxed) - now_ms;
+                // Target exactly what [`Self::play_audio`] targets, so the handoff back costs
+                // nothing: `burst_silence` floors at the ceiling the real stream left, so the fill
+                // resumes from it without stacking another lead ON TOP. Carrying the prime's base
+                // through here instead raised the ceiling by one `PLANE_LEAD_MS` per fill episode
+                // — and recovered audio then floored onto that jump, pinned to a single stamp for
+                // the length of it, which is the ratchet this path exists to avoid.
+                base_ms = 0;
                 tracing::warn!(
                     "NDL clock plane: no host audio for {REAL_FEED_GRACE_MS}ms — filling silence \
                      to keep the picture paced (host capture is likely dead)"
