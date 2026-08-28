@@ -73,6 +73,10 @@ pub enum SinkResult {
     Held,
     /// Skipped or failed, and the throttle allows asking the host for a keyframe now.
     NeedKeyframe,
+    /// The decoder is gone and no frame will present again on it — see
+    /// [`crate::core::media::VideoSink::is_dead`]. The pump ends the session on this rather than
+    /// re-anchoring, which is the response to lost FRAMES and does nothing for a lost PIPELINE.
+    Dead,
 }
 
 /// Everything the sink needs to know up front.
@@ -383,6 +387,9 @@ impl VideoStage {
     fn feed(&mut self, au: &[u8], pts_ns: u64, flags: FrameFlags) -> SinkResult {
         // Checked before the gate, not inside it: a dead decoder also fails every `flush` the hold
         // path takes, so the hold would spend `HOLD_GIVE_UP` re-deciding this per frame.
+        if self.sink.is_dead() {
+            return SinkResult::Dead;
+        }
         let request_keyframe = match self.gate(&flags) {
             HoldGate::Skip(result) => return result,
             HoldGate::Feed { request_keyframe } => request_keyframe,

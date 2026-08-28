@@ -99,6 +99,13 @@ pub trait VideoSink: Send {
     fn audio_plane(&self) -> Option<Arc<dyn AudioPlane>> {
         None
     }
+
+    /// Whether this decoder has failed in a way no re-anchor can undo, so the stage should stop
+    /// feeding it and the session should end rather than run on a picture that will never return.
+    /// `false` on a backend with no such notion, which is then simply never fatal.
+    fn is_dead(&self) -> bool {
+        false
+    }
 }
 
 /// What an audio sink takes. Declared by the sink; the stage above produces exactly this and

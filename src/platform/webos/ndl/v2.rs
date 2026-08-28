@@ -668,4 +668,8 @@ impl VideoSink for std::sync::Arc<NdlVideo> {
         self.has_audio_plane()
             .then(|| Self::clone(self) as std::sync::Arc<dyn AudioPlane>)
     }
+
+    fn is_dead(&self) -> bool {
+        super::fatal()
+    }
 }

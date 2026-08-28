@@ -269,6 +269,14 @@ What still matters:
 - ⚠ **Use `frame.pts_ns`, never the paced value**, wherever a host-clock comparison is made. Both
   are in scope at the submit site with near-identical names; the paced one has been mapped into
   NDL's player clock by `session::timeline::Pacing`.
+- ⚠ **NDL can fail the whole load asynchronously, and then never recovers.** Seen on a CX: load
+  state `0x12` with `errorCode 600`, after which every `NDL_DirectVideoPlay` returns -1, the clock
+  plane's `NDL_DirectAudioPlay` fails too (so the thread that paces the picture exits for good) and
+  NDL reports `UNLOADCOMPLETED` on its own. There is no reload path in-session, and a re-anchor —
+  the response to lost frames — does nothing for a lost pipeline, so the client spun on failed feeds
+  with a frozen picture and no audio while the QUIC session stayed perfectly healthy. `ndl::fatal()`
+  latches that state, `VideoSink::is_dead` carries it up backend-blind, and the stream loop ends the
+  session and returns to the menu. What PROVOKES the 600 is still unknown.
 - The estimator's unit tests ship in-tree but **cannot run off-device**: `cargo test` links the
   whole binary and `-lNDL_directmedia` exists only in the cross sysroot.
 

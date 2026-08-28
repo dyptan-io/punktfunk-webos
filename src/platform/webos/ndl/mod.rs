@@ -138,6 +138,11 @@ static PLAYING: EventSeq = EventSeq::new();
 /// and a host that delivers its first frame seconds late (new-flow stall, startup capacity
 /// probe) would otherwise show as seconds of black.
 static FRAME_FED: EventSeq = EventSeq::new();
+/// Set by any load state that is neither a transition we asked for nor one we can act on — in the
+/// field, `0x12` with `errorCode 600`, which NDL follows by failing every `play` until the pipeline
+/// unloads itself. Latched rather than pulsed: the load is gone, and there is no later callback
+/// that takes it back. Cleared only by [`arm_load`], which is to say by a NEW load.
+static FATAL: AtomicBool = AtomicBool::new(false);
 
 /// Records v2 load-state transitions so loads, feeds and the UI reveal can wait on them.
 extern "C" fn on_load_state(state: c_int, num: c_longlong, detail: *const c_char) {
@@ -162,7 +167,11 @@ extern "C" fn on_load_state(state: c_int, num: c_longlong, detail: *const c_char
             } else {
                 unsafe { CStr::from_ptr(detail) }.to_string_lossy().into_owned()
             };
-            tracing::warn!("NDL load state: unknown 0x{state:x} ({state}) num={num} {detail}");
+            // Fatal by construction: the states worth acting on are enumerated above, so anything
+            // else is NDL reporting that this load has failed asynchronously. Feeding it further
+            // produces nothing but a `play` error per frame — see [`fatal`].
+            FATAL.store(true, Ordering::Release);
+            tracing::warn!("NDL load state: fatal 0x{state:x} ({state}) num={num} {detail}");
             return;
         }
     };
@@ -175,6 +184,15 @@ fn arm_load() {
     LOAD_COMPLETED.arm();
     PLAYING.arm();
     FRAME_FED.arm();
+    FATAL.store(false, Ordering::Release);
+}
+
+/// Whether the current load has reported a fatal state — see [`FATAL`]. The session reads this to
+/// tell "NDL is gone" from "these frames failed", which are the same thing at the `play` call and
+/// want opposite responses: the second is a re-anchor, the first cannot be recovered from without
+/// a new load.
+pub fn fatal() -> bool {
+    FATAL.load(Ordering::Acquire)
 }
 
 /// `PLAYING` for the current load. Diagnostics only — see [`PLAYING`].

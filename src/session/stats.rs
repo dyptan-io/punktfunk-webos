@@ -26,6 +26,10 @@ pub struct StreamStats {
     /// an audio one — NDL paces the picture on this — and can legitimately be negative, so there
     /// is no sentinel: the overlay prints it only on a route that has a plane.
     pub audio_plane_lead_ms: AtomicI32,
+    /// The decoder failed in a way no re-anchor undoes (`core::media::VideoSink::is_dead`). Read by
+    /// the stream loop, which ends the session on it: the transport is still healthy, so nothing
+    /// else would ever end it, and the user would sit in front of a frozen picture with no audio.
+    pub decoder_dead: AtomicBool,
 }
 
 /// Short display name for a resolved wire codec id (the stats overlay's header).

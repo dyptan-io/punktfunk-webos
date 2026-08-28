@@ -138,6 +138,16 @@ impl VideoPump {
                     tracing::warn!("request_keyframe: {e:#}");
                 }
             }
+            // Nothing above this loop can revive the decoder — the load is gone and the plane
+            // threads have exited with it — so the session ends and the runtime returns to the
+            // menu, where the next launch builds a fresh pipeline.
+            SinkResult::Dead => {
+                // Once, not per frame: the stream loop needs a poll or two to notice, and the
+                // stage answers `Dead` to every delivery in the meantime.
+                if !self.stats.decoder_dead.swap(true, Ordering::Relaxed) {
+                    tracing::error!("decoder failed for good — ending the session");
+                }
+            }
         }
     }
 
