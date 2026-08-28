@@ -899,6 +899,14 @@ pub(super) fn run_inner() -> Result<()> {
                     canvas.present();
                 }
             }
+            // The decoder is gone for this load (`core::media::VideoSink::is_dead`, set by the
+            // pump). The transport is still healthy, so nothing below would ever end the session
+            // and the user would sit in front of a frozen picture — end it here instead.
+            if connected.stats().decoder_dead.load(Ordering::Relaxed) {
+                tracing::error!("decoder failed for good — returning to the menu");
+                menu_toast = Some("Video decoder failed — session ended".to_string());
+                break 'running StreamOutcome::ReturnToMenu;
+            }
             if connected.is_session_ended() {
                 tracing::info!("host ended the session");
                 // `is_session_ended` covers both a graceful host close and a network
