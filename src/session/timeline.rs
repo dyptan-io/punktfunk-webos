@@ -144,9 +144,8 @@ impl CadencePacer {
         let normal = self.frames_this_run >= PACER_AUDIO_LATCH_FRAMES && elapsed_ns >= PACER_AUDIO_LATCH_NS;
         // One genuine sample has anchored the estimate; the second delivery may be a repeat, whose
         // stamp is that same estimate plus the cushion — see [`PACER_AUDIO_DEADLINE_NS`].
-        let deadline = self.frames_this_run >= 1
-            && self.deliveries_this_run >= 2
-            && elapsed_ns >= PACER_AUDIO_DEADLINE_NS;
+        let deadline =
+            self.frames_this_run >= 1 && self.deliveries_this_run >= 2 && elapsed_ns >= PACER_AUDIO_DEADLINE_NS;
         self.converged_normally |= normal;
         self.convergence_ready |= normal || deadline;
         // A due time in the past is a late frame and core's contract is "present at the next
@@ -168,9 +167,11 @@ impl CadencePacer {
         self.converged_normally = false;
         self.convergence_ready = false;
         self.last_host_pts_ns = None;
-        // Cleared with the run, like the anchor's own: NDL has been flushed, so the stamps that
-        // came before it are no longer a floor this run has to clear.
-        self.last_base_ns = 0;
+        // `last_base_ns` deliberately SURVIVES the reset. It used to be cleared here because the
+        // loss hold flushed NDL, which made the previous run's stamps irrelevant — the hold no
+        // longer flushes (`VideoStage::gate`), so the pipeline still holds everything fed before
+        // it and a run restarting from 0 would walk the video stamp backwards. NDL answers a
+        // rewind by muting, which is the failure this whole path exists to avoid.
     }
 
     /// Whether an accepted completed AU may latch this mapping. A repeat may carry it: by the time

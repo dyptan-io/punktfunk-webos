@@ -351,6 +351,29 @@ advances by its own cadence from there, leaving the floor as a defensive no-op. 
 (`play_audio` with no latched offset) also **logs the gap on the packet that ends it** — silent, it
 cost a session its audio with nothing in the log to find.
 
+⚠ **The loss hold must NOT flush, and this is what was muting the Opus plane after a network
+hiccup (2026-08-28, confirmed on device).** `NDL_DirectVideoFlushRenderBuffer` stops the pipeline:
+each flush used to be followed by `NDL load state: PLAYING (0x1a)`, a transition NDL only makes
+from not-playing, and the restart kills the audio plane for the rest of the session. It returns
+success and leaves `depth` and `plane_lead` looking healthy right through the mute, so there is no
+error to find — only a reload recovers. `ss4s` never flushes mid-stream (its only recovery is
+unload+load) and does not have this bug; moonlight-tv#493 is the same failure unfixed, Opus route
+only, PCM immune.
+
+Confirmation (CX, 276 Mb/s of competing download against a 188 Mb/s stream): 16 re-anchors, holds
+up to 2 s, **not one `PLAYING` transition in the whole log**, and audio intact — where the identical
+storm against the flushing build killed it permanently. The decode-error path still flushes, where
+the pipeline has actually errored; loss is a network event and NDL's queue holds good frames the
+hold is about to present anyway.
+
+This required `CadencePacer::reset` to STOP zeroing `last_base_ns`. That clearing was only correct
+*because* of the flush — without one the pipeline still holds everything fed before the hold, and a
+run restarting from 0 walks the video stamp backwards, which is the rewind NDL mutes on.
+
+⚠ This reopens a call an earlier handover had marked a dead end. That verdict rested on in-tree
+records scoped to *before* `LOADCOMPLETED`, and on `Pacing::reset` needing `last_base_ns = 0` —
+which was itself a consequence of the flush, not an independent constraint.
+
 ⚠ The audio-enabled load returns success even on a TV that then plays nothing, so **no runtime
 probe can distinguish the two**. If a model regresses, the `NDL load state:`
 (`LOADCOMPLETED`/`PLAYING`) log says whether the pipeline ever started, and turning Experimental →

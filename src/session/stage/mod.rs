@@ -480,9 +480,16 @@ impl VideoStage {
         if flags.loss && !self.holding() {
             self.begin_hold();
             tracing::warn!("loss (frame {}) — freezing", flags.index);
-            if self.caps.flush {
-                let _ = self.sink.flush();
-            }
+            // NO FLUSH on the loss hold. `NDL_DirectVideoFlushRenderBuffer` stops the pipeline —
+            // every flush here used to be followed by NDL reporting `PLAYING (0x1a)`, a transition
+            // it only makes from not-playing — and the restart kills the Opus audio plane for the
+            // rest of the session. It reports success and leaves `depth`/`plane_lead` healthy
+            // throughout, so nothing client-side sees it; only a reload recovers. `ss4s` never
+            // flushes mid-stream and does not have this bug (docs/NOTES.md § "NDL's audio plane").
+            //
+            // The decode-error path still flushes: there the pipeline has actually errored and
+            // discarding its queue is the documented response. Loss is a network event, and NDL's
+            // queue holds good frames the hold is about to present anyway.
         }
         let Some(started) = self.hold_started else {
             return HoldGate::Feed {
