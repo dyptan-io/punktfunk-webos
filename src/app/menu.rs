@@ -147,9 +147,6 @@ pub enum ExpRow {
     /// this screen. Experimental because two of its three picks are hardware paths that no
     /// runtime probe can verify; locked to the software route where there is no NDL plane.
     AudioProcessing,
-    /// Stamp from the fixed anchor instead of the cadence loop — `Settings::direct_playback`.
-    /// Experimental: trades smoothness back for latency, and what that costs depends on the link.
-    DirectPlayback,
     /// Opens `Screen::HdrCalibration` — measures this panel's HDR volume so the client stops
     /// advertising one TV's numbers to every TV. Experimental because the measurement is by eye
     /// and the patterns run on the video plane outside a session.
@@ -158,12 +155,7 @@ pub enum ExpRow {
 
 /// Order is display order. `AudioProcessing` stays at index 1 so its dropdown's `(Screen, row)`
 /// tile key does not move.
-pub const EXP_ROWS: [ExpRow; 4] = [
-    ExpRow::GameMode,
-    ExpRow::AudioProcessing,
-    ExpRow::DirectPlayback,
-    ExpRow::HdrCalibration,
-];
+pub const EXP_ROWS: [ExpRow; 3] = [ExpRow::GameMode, ExpRow::AudioProcessing, ExpRow::HdrCalibration];
 
 /// Display position of [`ExpRow::AudioProcessing`] — the row a dropdown can hang off, which is
 /// what `DropdownState::row` names.
@@ -243,10 +235,7 @@ pub(crate) fn exp_row_lock(row: ExpRow, settings: &Settings, rooted: Option<bool
         (ExpRow::GameMode, Some(false)) => Some(ExpRowLock::NotRooted),
         (ExpRow::AudioProcessing, _) if audio_routes().len() < 2 => Some(ExpRowLock::SoftwareOnly),
         (ExpRow::HdrCalibration, _) if !settings.hdr_enabled || !video_caps().hdr => Some(ExpRowLock::HdrOff),
-        (ExpRow::GameMode, Some(true))
-        | (ExpRow::AudioProcessing, _)
-        | (ExpRow::DirectPlayback, _)
-        | (ExpRow::HdrCalibration, _) => None,
+        (ExpRow::GameMode, Some(true)) | (ExpRow::AudioProcessing, _) | (ExpRow::HdrCalibration, _) => None,
     }
 }
 

@@ -164,11 +164,6 @@ impl App {
                     menu::apply_audio_route(&mut self.settings_ui.settings, next);
                 }
             }
-            (Some(menu::ExpRow::DirectPlayback), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
-                let from = self.settings_ui.settings.direct_playback;
-                self.settings_ui.settings.direct_playback = !from;
-                self.arm_switch_anim(from);
-            }
             (Some(menu::ExpRow::HdrCalibration), MenuEvent::Confirm)
                 if menu::exp_row_lock(
                     menu::ExpRow::HdrCalibration,

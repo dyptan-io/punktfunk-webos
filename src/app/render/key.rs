@@ -44,7 +44,6 @@ pub enum ModalFocusKey<'a> {
         /// Which of the row's buttons is lit — the Calibrate row's Clear.
         button: Option<RowButton>,
         game_mode: bool,
-        direct_playback: bool,
         audio_route: AudioRoutePref,
         hdr_enabled: bool,
         hdr: Option<HdrDisplay>,
@@ -133,7 +132,6 @@ pub enum ModalShellKey<'a> {
     },
     Experimental {
         game_mode: bool,
-        direct_playback: bool,
         /// Named on the Audio processing row.
         audio_route: AudioRoutePref,
         /// HDR off locks the Calibrate row and rewrites its caption.

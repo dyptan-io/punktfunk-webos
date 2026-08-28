@@ -104,7 +104,6 @@ fn spawn_connect(
                 gamepad_type: settings.gamepad_type,
                 cursor_capture: settings.cursor_capture,
                 audio_route: settings.audio_route,
-                direct_playback: settings.direct_playback,
                 display_hdr: settings.hdr_display().hdr_meta(),
             })
             // Flagged before the handle is joined, so the loading screen can stop waiting

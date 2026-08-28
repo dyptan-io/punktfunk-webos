@@ -31,16 +31,6 @@ pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
         menu::audio_route_label(settings.audio_route),
     )
     .with_subtext_opt(audio_route_hint(settings.audio_route));
-    // What it gives back is one frame at most (the cushion's own ceiling); what it costs is the
-    // judder, so the caption leads with that — see `session::timeline::Pacing`.
-    let direct = FocusRow::toggle(
-        crate::app::view::icons::ICON_MEMORY,
-        "Direct playback",
-        settings.direct_playback,
-    )
-    .with_subtext(ui::widgets::RowSubtext::caution(
-        "Up to one frame less latency, may stutter",
-    ));
     // Named on the row once measured, because "is this TV calibrated, and to what" is the only
     // question anyone opens this row to answer.
     let calibrate = FocusRow::action(icons::ICON_SUN, "Calibrate HDR")
@@ -63,7 +53,6 @@ pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
     vec![
         apply(game_mode, ExpRow::GameMode),
         apply(audio, ExpRow::AudioProcessing),
-        apply(direct, ExpRow::DirectPlayback),
         apply(calibrate, ExpRow::HdrCalibration),
     ]
 }

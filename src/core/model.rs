@@ -912,14 +912,6 @@ pub struct Settings {
     /// since NDL only paces the picture against a fed plane. The routes differ in what RIDES it:
     /// `run_clock_plane`'s silent metronome, or the host's Opus.
     pub audio_route: AudioRoutePref,
-    /// Stamp frames from the fixed anchor instead of playing them out on the host's cadence —
-    /// see `session::timeline::Pacing`. Off by default: the cadence loop holds each frame by a
-    /// cushion sized to the link's *measured* jitter (at most one frame interval, and its 0.5 ms
-    /// floor on a link with nothing wrong), which is what buys a cadence that doesn't beat against
-    /// the panel. On gives that cushion back and takes the judder with it — the ONE gate on every
-    /// latency-adding measure in the video path, which is why it lives on the Experimental screen
-    /// rather than beside Resolution. Takes effect on the next stream.
-    pub direct_playback: bool,
     /// Resolve the Magic Remote's OK button into left click / right click / drag by how long
     /// it's held (see `platform::webos::mouse::RemoteButtons`). Off by default — with it
     /// off, OK stays the plain immediate left click it has always been, since a remote with
@@ -956,7 +948,6 @@ impl Default for Settings {
             cursor_capture: true,
             game_mode: false,
             audio_route: AudioRoutePref::default(),
-            direct_playback: false,
             cursor_gestures: false,
             theme: ThemeChoice::default(),
         }

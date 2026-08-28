@@ -29,9 +29,6 @@ pub struct Connected {
     /// Where this session's audio actually ended up — the preference, resolved against what the
     /// load produced.
     pub audio_route: crate::services::store::AudioRoutePref,
-    /// Whether this session stamps from the fixed anchor (`Settings::direct_playback`). Overlay
-    /// only — the stage was handed the same flag through `SinkConfig`.
-    pub direct_playback: bool,
     /// Whether HDR mastering metadata is being applied this session (negotiated codec is
     /// HEVC *and* the host signalled HDR). Drives which Game picture mode the runtime asks
     /// the TV for — `game` vs `hdrGame` (see `platform::webos::game_mode`).
@@ -86,8 +83,6 @@ pub struct ConnectParams {
     pub gamepad_type: GamepadType,
     pub cursor_capture: bool,
     pub audio_route: crate::services::store::AudioRoutePref,
-    /// `Settings::direct_playback` — see `session::stage::SinkConfig`.
-    pub direct_playback: bool,
     /// The panel volume advertised to the host and used until host metadata arrives.
     pub display_hdr: quic::HdrMeta,
 }
@@ -282,7 +277,6 @@ pub fn connect(params: &ConnectParams) -> Result<Connected> {
         stats,
         pipeline,
         audio_route: route,
-        direct_playback: params.direct_playback,
         hdr: is_hdr,
     })
 }

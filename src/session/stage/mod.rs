@@ -1,7 +1,7 @@
 //! The single place that talks to the video decoder.
 //!
 //! Everything between "an access unit arrived" and "NDL has been fed" lives here: host-PTS
-//! anchoring on the refresh-rate-reconciled frame interval, backpressure metering,
+//! mapping on the refresh-rate-reconciled frame interval, backpressure metering,
 //! freeze-until-reanchor, and keyframe-request throttling. The video pump keeps only the
 //! parts that are wire-shaped — pulling frames, and *how* a keyframe is asked for, which it
 //! answers to [`SinkResult::NeedKeyframe`] with `NativeClient::request_keyframe`.
@@ -87,12 +87,6 @@ pub struct SinkConfig {
     /// Where [`video_e2e_ns`] is published for the audio plane
     /// (`NativeClient::video_e2e_shared`). `0` = nothing on the glass yet.
     pub video_e2e: Arc<AtomicU64>,
-    /// Stamp frames from the fixed anchor rather than the cadence loop
-    /// (`Settings::direct_playback`, Experimental). **The one gate on every latency-adding measure
-    /// on this path**, from the other side: the default pays a jitter-sized cushion of at most one
-    /// frame interval for a cadence that does not beat against the panel, and this gives that back
-    /// at the price of the judder — see `session::timeline::Pacing`.
-    pub direct_playback: bool,
 }
 
 /// Minimum spacing between [`SinkResult::NeedKeyframe`] results: the request travels on its own
@@ -120,8 +114,7 @@ pub struct VideoStage {
     /// that conversion ([`video_e2e_ns`] and [`VideoStage::decode_us`]), so one depth cannot mean two
     /// different latencies.
     frame_interval_ns: u64,
-    /// NDL host-PTS→player-clock mapping — the cadence loop, or the anchor under
-    /// `Settings::direct_playback`. One object, so nothing in this file branches on which.
+    /// NDL host-PTS→player-clock mapping — see `session::timeline::Pacing`.
     pacing: Pacing,
     /// The stamp the access unit currently being fed was given, while it is still open. Every piece
     /// of one AU must carry the SAME timestamp (NDL finds AU boundaries by start code and has no
@@ -177,7 +170,7 @@ impl VideoStage {
             // (`the_cadence_interval_comes_from_the_stream_mode_not_the_panel`): a 120 fps
             // stream on a 60 Hz panel would otherwise license twice the hold the source's own
             // cadence can justify.
-            pacing: Pacing::new(1_000_000_000 / u64::from(stream_hz), cfg.direct_playback),
+            pacing: Pacing::new(1_000_000_000 / u64::from(stream_hz)),
             au_base_ns: None,
             cfg,
             backlog_cached: None,
@@ -217,7 +210,7 @@ impl VideoStage {
     /// This frame's stamp in the sink's own clock domain.
     ///
     /// A sink with a clock has no PTS clock of its own (NDL counts from its load),
-    /// so the host's capture PTS is mapped onto it ([`HostPtsAnchor`]) — which is also what keeps
+    /// so the host's capture PTS is mapped onto it (`session::timeline::Pacing`) — which is also what keeps
     /// video and any audio plane in ONE timeline. A sink without one presents in feed order and
     /// the stamp is discarded at the feed, so the host PTS passes through untouched.
     /// This AU's stamp: computed on the piece that opens it and repeated for the rest — see
@@ -316,11 +309,6 @@ impl VideoStage {
         self.pacing.health()
     }
 
-    /// Which mapping is stamping this session (`paced` / `direct`).
-    pub fn pacing_label(&self) -> &'static str {
-        self.pacing.label()
-    }
-
     /// Audio-plane queue depth in ms, or `None` on a session with no plane — see
     /// `NdlVideo::audio_plane_lead_ms`. Here because it is a *video* symptom: the plane's depth is
     /// what NDL paces the picture on, so it belongs next to the backlog in the video heartbeat.
@@ -393,6 +381,8 @@ impl VideoStage {
     }
 
     fn feed(&mut self, au: &[u8], pts_ns: u64, flags: FrameFlags) -> SinkResult {
+        // Checked before the gate, not inside it: a dead decoder also fails every `flush` the hold
+        // path takes, so the hold would spend `HOLD_GIVE_UP` re-deciding this per frame.
         let request_keyframe = match self.gate(&flags) {
             HoldGate::Skip(result) => return result,
             HoldGate::Feed { request_keyframe } => request_keyframe,
@@ -458,16 +448,17 @@ impl VideoStage {
         if flags.loss && !self.holding() {
             self.begin_hold();
             tracing::warn!("loss (frame {}) — freezing", flags.index);
-            // NO FLUSH on the loss hold. `NDL_DirectVideoFlushRenderBuffer` stops the pipeline —
-            // every flush here used to be followed by NDL reporting `PLAYING (0x1a)`, a transition
-            // it only makes from not-playing — and the restart kills the Opus audio plane for the
-            // rest of the session. It reports success and leaves `depth`/`plane_lead` healthy
-            // throughout, so nothing client-side sees it; only a reload recovers. `ss4s` never
-            // flushes mid-stream and does not have this bug (docs/NOTES.md § "NDL's audio plane").
+            // NO FLUSH on the loss hold — this is the last structural difference from `ss4s`, which
+            // never flushes mid-stream (its only recovery is unload+load) and does not lose its
+            // Opus plane. Every flush here stops the pipeline: each one is followed by NDL
+            // reporting `PLAYING (0x1a)`, a transition it only makes from not-playing. A CX
+            // survived 32 of them in one storm with perfectly monotonic audio stamps at a constant
+            // 40 ms lead and still went permanently silent, so what kills the plane is the restart,
+            // not anything the feed says (see docs/NOTES.md § "NDL's audio plane").
             //
-            // The decode-error path still flushes: there the pipeline has actually errored and
-            // discarding its queue is the documented response. Loss is a network event, and NDL's
-            // queue holds good frames the hold is about to present anyway.
+            // The decode-error path below still flushes: there the pipeline has actually errored
+            // and discarding its queue is the documented response. Loss is a network event — NDL's
+            // queue holds good frames that the hold is about to present anyway.
         }
         let Some(started) = self.hold_started else {
             return HoldGate::Feed {

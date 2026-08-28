@@ -251,7 +251,6 @@ impl App {
             }),
             Screen::Experimental => Some(ModalShellKey::Experimental {
                 game_mode: self.settings_ui.settings.game_mode,
-                direct_playback: self.settings_ui.settings.direct_playback,
                 audio_route: self.settings_ui.settings.audio_route,
                 hdr_enabled: self.settings_ui.settings.hdr_enabled,
                 hdr: self.calibrated_hdr_display(),
@@ -361,7 +360,6 @@ impl App {
                 row: self.nav.cursor(ScreenKey::Experimental),
                 button: self.screens.row_button,
                 game_mode: self.settings_ui.settings.game_mode,
-                direct_playback: self.settings_ui.settings.direct_playback,
                 audio_route: self.settings_ui.settings.audio_route,
                 hdr_enabled: self.settings_ui.settings.hdr_enabled,
                 hdr: self.calibrated_hdr_display(),
