@@ -237,7 +237,7 @@ fn log_handshake(client: &NativeClient, negotiated: &Negotiated) {
     });
     tracing::info!(
         "connected: codec={} (offered=0x{:02x} preferred=0x{:02x}) \
-         compositor={:?} audio_ch={} color={:?} bitrate_kbps={} \
+         compositor={:?} audio_ch={} color={:?} wire_budget_kbps={} \
          decode_latency={} caps=0x{:02x} fp={fp_hex}",
         client.codec,
         negotiated.video_codecs,

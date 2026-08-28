@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use punktfunk_core::client::{AudioPacket, NativeClient};
 use punktfunk_core::packet::{FLAG_SOF, USER_FLAG_RECOVERY_ANCHOR};
+use punktfunk_core::reanchor::DROP_CREDIT_WINDOW;
 use punktfunk_core::PunktfunkError;
 
 use crate::platform::webos::device::boost_current_thread;
@@ -62,6 +63,9 @@ struct VideoPump {
     is_hdr: bool,
     /// Core's cumulative drop count as of the last frame, to edge-detect new drops.
     last_dropped_seen: u64,
+    /// Frame-index gaps pre-cover the reassembler's delayed drop accounting.
+    drop_credit: u64,
+    drop_credit_expiry: Option<Instant>,
     heartbeat: Tick,
     video_log: Tick,
 }
@@ -75,6 +79,8 @@ impl VideoPump {
             stats,
             is_hdr,
             last_dropped_seen,
+            drop_credit: 0,
+            drop_credit_expiry: None,
             heartbeat: Tick::new(HEARTBEAT),
             video_log: Tick::new(VIDEO_LOG_INTERVAL),
         }
@@ -124,6 +130,9 @@ impl VideoPump {
             index: frame.frame_index,
             part: frame.part,
             reanchor: frame.flags & u32::from(FLAG_SOF) != 0 || frame.flags & USER_FLAG_RECOVERY_ANCHOR != 0,
+            // Parts repeat the AU flags. Count a recovery boundary once.
+            recovery_mark: frame.flags & punktfunk_core::packet::USER_FLAG_RECOVERY_POINT != 0
+                && frame.part.is_none_or(|part| part.first),
             loss: self.note_loss(frame),
         };
         match self.stage.submit(&wire) {
@@ -211,10 +220,31 @@ impl VideoPump {
         // bare "was there a gap" bool; `> 0` is the same predicate. Keep the width for the log
         // line — how many frames the hole swallowed is the number worth having when reading a
         // freeze report, not merely that one existed.
-        let gap_width = self.client.note_frame_index(frame.frame_index);
+        // Slice-progressive pieces repeat their AU index. Observe it once, on the first piece.
+        let au_first = frame.part.is_none_or(|part| part.first);
+        let gap_width = if au_first {
+            self.client.note_frame_index(frame.frame_index)
+        } else {
+            0
+        };
         let dropped_now = self.client.frames_dropped();
-        let dropped = dropped_now > self.last_dropped_seen;
+        let dropped_delta = dropped_now.saturating_sub(self.last_dropped_seen);
         self.last_dropped_seen = dropped_now;
+        let now = Instant::now();
+        if self.drop_credit_expiry.is_some_and(|expiry| now >= expiry) {
+            self.drop_credit = 0;
+            self.drop_credit_expiry = None;
+        }
+        if gap_width > 0 {
+            self.drop_credit = self.drop_credit.saturating_add(u64::from(gap_width));
+            self.drop_credit_expiry = Some(now + DROP_CREDIT_WINDOW);
+        }
+        let credited = dropped_delta.min(self.drop_credit);
+        self.drop_credit -= credited;
+        if self.drop_credit == 0 {
+            self.drop_credit_expiry = None;
+        }
+        let dropped = dropped_delta > credited;
         let lost = gap_width > 0 || dropped;
         if lost && !self.stage.holding() {
             // Logged alongside the freeze the sink reports next: a sequence hole and a frame the

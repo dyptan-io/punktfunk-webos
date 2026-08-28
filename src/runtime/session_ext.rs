@@ -126,8 +126,9 @@ impl Connected {
             hdr: client.color.is_hdr(),
             frames_dropped: Some(client.frames_dropped()),
             fec_recovered: Some(client.fec_recovered_shards()),
-            // The encoder's CURRENT target, not the session-start negotiation: on Automatic the
-            // ABR re-targets mid-session. `0` = a host too old to report.
+            // The CURRENT total wire budget, not the session-start negotiation: on Automatic the
+            // ABR re-targets mid-session. Core v0.32 changed this from encoder rate to wire budget;
+            // `0` means a host too old to report.
             target_kbps: match client.current_bitrate_kbps() {
                 0 => client.resolved_bitrate_kbps,
                 live => live,

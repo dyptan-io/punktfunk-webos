@@ -38,8 +38,8 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tracing-appender = "0.2"
-# v0.22.3 is the first release carrying core's `PUNKTFUNK_ABR_PROBE_KBPS` cap, which `main.rs`
-# sets — before it, the startup probe bursts at a fixed 2 Gbps (see docs/NOTES.md).
+# v0.22.3 is the first release carrying core's `PUNKTFUNK_ABR_PROBE_KBPS` override, which
+# `main.rs` sets to the TV-safe target documented in docs/NOTES.md.
 # v0.24.0 brings the ABR sweep (eleven defects: the 20 Mbps pin, throughput measured in media
 # bytes not wire bytes, a decode ceiling that latched at the choke rate) and probe throughput
 # measured over the client's own receive interval — all client-side, so the bump is the fix.
@@ -56,7 +56,9 @@ tracing-appender = "0.2"
 # moved), and puts `#![deny(unsafe_code)]` over the crate that parses every byte off the network.
 # The one source-visible break is `note_frame_index`, which now returns a gap WIDTH — see
 # `session::video_pump`.
-punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", tag = "v0.31.3", features = ["quic"] }
+# v0.32.0 makes bitrate values total wire budgets and adds recovery-point marks. The webOS pump
+# mirrors those semantics while keeping NDL queue depth out of the decoder-pressure signal.
+punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", tag = "v0.32.0", features = ["quic"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # mDNS LAN discovery; direct dep (not via pf-client-core — see session.rs docs).

@@ -7,8 +7,7 @@
 //! answers to [`SinkResult::NeedKeyframe`] with `NativeClient::request_keyframe`.
 //!
 //! Two pieces sit in submodules because they are self-contained and independently testable:
-//! [`metrics`] (the ABR decode figure and the A/V video reference) and [`parts`] (slice-progressive
-//! reassembly).
+//! [`metrics`] (the A/V video reference) and [`parts`] (slice-progressive reassembly).
 
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -23,15 +22,12 @@ use crate::session::StreamStats;
 mod metrics;
 mod parts;
 
-use metrics::{cushion_frames, decode_report_us, video_e2e_ns, CUSHION_MIN_POLLS, STANDING_CUSHION_FRAMES};
+use metrics::video_e2e_ns;
 use parts::{AuParts, PartStep};
 
-/// Freeze duration after which we resume even without a clean re-anchor.
-const HOLD_GIVE_UP: Duration = Duration::from_secs(2);
 /// Feed calls slower than this suggest decoder backpressure rather than network loss.
 const FEED_BACKPRESSURE_WARN: Duration = Duration::from_millis(20);
-/// How often the sink refreshes NDL's render-buffer depth for the decode-latency signal —
-/// three samples per 750 ms ABR report window; see [`VideoStage::decode_us`].
+/// How often the sink refreshes NDL's render-buffer depth for diagnostics and A/V estimation.
 const BACKLOG_POLL: Duration = Duration::from_millis(250);
 /// One delivery off the transport, as the pump sees it — the stage decides what it means.
 pub struct WireFrame<'a> {
@@ -44,6 +40,8 @@ pub struct WireFrame<'a> {
     pub part: Option<punktfunk_core::session::FramePart>,
     /// This frame can restart decoding on its own (IDR, or an LTR recovery anchor).
     pub reanchor: bool,
+    /// One intra-refresh wave boundary. Two after loss prove a clean picture.
+    pub recovery_mark: bool,
     /// Loss was detected at or before this frame — a sequence gap, or a frame the transport
     /// dropped.
     pub loss: bool,
@@ -53,6 +51,7 @@ pub struct WireFrame<'a> {
 #[derive(Clone, Copy)]
 struct FrameFlags {
     reanchor: bool,
+    recovery_mark: bool,
     loss: bool,
     /// Host frame index, for logs only.
     index: u64,
@@ -81,7 +80,7 @@ pub enum SinkResult {
 
 /// Everything the sink needs to know up front.
 pub struct SinkConfig {
-    /// The host's frame cadence. Drives both the frame-interval grid and the backlog→latency fold.
+    /// The host's frame cadence. Drives the frame-interval grid and A/V backlog estimate.
     pub stream_hz: u32,
     /// Whether the host asked for decode-latency reports (its ABR controller).
     pub report_decode_latency: bool,
@@ -114,9 +113,8 @@ pub struct VideoStage {
     stats: Arc<StreamStats>,
     cfg: SinkConfig,
     /// The panel's actual drain cadence, reconciled against the stream rate. NDL drains at panel
-    /// cadence, so this, not the stream rate, is what converts a render-queue depth into time — for BOTH consumers of
-    /// that conversion ([`video_e2e_ns`] and [`VideoStage::decode_us`]), so one depth cannot mean two
-    /// different latencies.
+    /// cadence, so this, not the stream rate, converts render-queue depth into time for
+    /// [`video_e2e_ns`].
     frame_interval_ns: u64,
     /// NDL host-PTS→player-clock mapping — see `session::timeline::Pacing`.
     pacing: Pacing,
@@ -130,11 +128,6 @@ pub struct VideoStage {
     au_base_ns: Option<u64>,
     /// Last polled depth, `None` if that query failed — which must not read as an empty queue.
     backlog_cached: Option<u64>,
-    /// Recent poll depths, newest last — their minimum is the cushion the decode figure excludes
-    /// (see [`STANDING_CUSHION_FRAMES`]). Bounded at [`CUSHION_MIN_POLLS`].
-    backlog_recent: std::collections::VecDeque<u64>,
-    /// Cached [`Self::refresh_cushion`] result — read per presented frame, written per poll.
-    cushion_frames: u64,
     last_backlog_poll: Option<Instant>,
     last_keyframe_request: Option<Instant>,
     /// Submit time accumulated across the pieces of the AU currently being fed, so the overlay's
@@ -148,10 +141,11 @@ pub struct VideoStage {
     parts_fed: u64,
     /// Freeze-until-reanchor: while holding, frames are skipped rather than fed — the
     /// punch-through plane keeps the last good picture. Resumes on IDR / LTR-RFI recovery
-    /// anchor, or after [`HOLD_GIVE_UP`]. `Some` for exactly as long as the hold lasts (see
-    /// [`Self::holding`]), and not reset on cascading gaps so the give-up deadline can't be
-    /// pushed out indefinitely.
+    /// anchor, or two intra-refresh recovery marks. `Some` for exactly as long as the hold lasts
+    /// (see [`Self::holding`]).
     hold_started: Option<Instant>,
+    /// Intra-refresh wave boundaries observed since the latest loss.
+    recovery_marks: u32,
 }
 
 impl VideoStage {
@@ -178,11 +172,10 @@ impl VideoStage {
             au_base_ns: None,
             cfg,
             backlog_cached: None,
-            backlog_recent: std::collections::VecDeque::with_capacity(CUSHION_MIN_POLLS),
-            cushion_frames: STANDING_CUSHION_FRAMES,
             last_backlog_poll: None,
             last_keyframe_request: None,
             hold_started: None,
+            recovery_marks: 0,
             au_feed_us: 0,
             parts_fed: 0,
         }
@@ -241,29 +234,14 @@ impl VideoStage {
     fn begin_hold(&mut self) {
         self.stats.holding.store(true, Ordering::Relaxed);
         self.hold_started.get_or_insert_with(Instant::now);
-    }
-
-    /// The decode figure reported to the host's ABR controller. NDL's `play` is
-    /// decode-AND-present in one opaque call, so `submit_us` (the whole AU's feed time) is
-    /// *submission* time alone — a decoder quietly falling behind buffers frames internally and the
-    /// feed stays fast, which left the controller's decode-rise signal (`abr::DECODE_RISE_US`,
-    /// built precisely for "the decoder saturates before the link does") effectively
-    /// blind on this client. The render-buffer backlog IS that standing decode queue, so
-    /// it's folded in as queue-above-cushion × the drain interval (see [`decode_report_us`]).
-    /// Polled on a cadence rather than every frame — three samples per 750 ms ABR report window is
-    /// plenty, and assuming an NDL query is cheap enough for per-frame use is exactly the mistake
-    /// docs/NOTES.md warns against; between polls the cached depth is reused.
-    fn decode_us(&self, submit_us: u32, backlog: u64) -> u32 {
-        decode_report_us(submit_us, backlog, self.cushion_frames, self.frame_interval_ns)
+        self.recovery_marks = 0;
     }
 
     /// NDL's render-queue depth, refreshed on [`BACKLOG_POLL`]'s cadence and cached between polls.
     /// `None` is a failed query, not an empty queue.
     ///
-    /// Called unconditionally, because it has TWO consumers: the ABR decode figure
-    /// ([`Self::decode_us`]) and the A/V sync loop's video reference ([`video_e2e_ns`]). Polling it
-    /// only when the host asks for decode latency pins the depth at `0` against hosts that never
-    /// do, silently zeroing the queue term in the video reference.
+    /// Called unconditionally for diagnostics and the A/V video reference ([`video_e2e_ns`]).
+    /// It must not depend on whether the host asks for decode latency.
     fn poll_backlog(&mut self) -> Option<u64> {
         // A backend with no queue to read has no depth, and asking costs an FFI call per poll for
         // an answer that is always `None`.
@@ -273,18 +251,6 @@ impl VideoStage {
         if self.last_backlog_poll.is_none_or(|t| t.elapsed() >= BACKLOG_POLL) {
             self.last_backlog_poll = Some(Instant::now());
             self.backlog_cached = self.sink.queue_depth().map(u64::from);
-            // A freeze stops the pipeline, so a depth polled while held is not this mode's
-            // settled lead. Learning from it would clamp the cushion back to the floor for
-            // [`CUSHION_MIN_POLLS`] after every loss event — and at 60Hz one unaccounted frame is
-            // 16.6ms, straight back over the ABR's decode-rise threshold. The cached depth itself
-            // still updates: A/V sync wants the truth, only the learned cushion is held steady.
-            if let Some(depth) = self.backlog_cached.filter(|_| !self.holding()) {
-                if self.backlog_recent.len() == CUSHION_MIN_POLLS {
-                    self.backlog_recent.pop_front();
-                }
-                self.backlog_recent.push_back(depth);
-                self.cushion_frames = cushion_frames(self.backlog_recent.iter().copied());
-            }
         }
         self.backlog_cached
     }
@@ -332,15 +298,12 @@ impl VideoStage {
 
     /// Decoder backlog depth for the heartbeat/overlay, or `None` if NDL can't report one.
     ///
-    /// Polls ([`Self::poll_backlog`]) rather than querying NDL directly, so the depth the log prints
-    /// is the one the decode figure was computed from — a second, unsynchronized reading can
-    /// disagree with it — and every `NDL_DirectVideoGetRenderBufferLength` stays on one cadence.
+    /// Polls ([`Self::poll_backlog`]) rather than querying NDL directly so diagnostics and A/V sync
+    /// share one reading and every `NDL_DirectVideoGetRenderBufferLength` stays on one cadence.
     pub fn poll_backlog_depth(&mut self) -> Option<i32> {
         self.poll_backlog().map(|d| i32::try_from(d).unwrap_or(i32::MAX))
     }
 
-    /// Present one access unit, or decide not to. `pts_ns` is the host's capture-clock
-    /// PTS; the sink maps and paces it into the decoder's own clock domain.
     /// Present one delivery, or decide not to. The stage owns everything past the wire: how the
     /// pieces of an access unit fit together, whether the timeline holds, and what the decoder's
     /// clock domain calls this frame.
@@ -365,6 +328,7 @@ impl VideoStage {
         }
         let flags = FrameFlags {
             reanchor: frame.reanchor,
+            recovery_mark: frame.recovery_mark,
             loss: frame.loss || lost_parts,
             index: u64::from(frame.index),
             partial,
@@ -386,7 +350,7 @@ impl VideoStage {
 
     fn feed(&mut self, au: &[u8], pts_ns: u64, flags: FrameFlags) -> SinkResult {
         // Checked before the gate, not inside it: a dead decoder also fails every `flush` the hold
-        // path takes, so the hold would spend `HOLD_GIVE_UP` re-deciding this per frame.
+        // path takes, so the hold would keep re-deciding this per frame.
         if self.sink.is_dead() {
             return SinkResult::Dead;
         }
@@ -424,8 +388,7 @@ impl VideoStage {
             );
         }
 
-        // A failed query counts as no queue for both consumers below: neither the ABR figure nor the
-        // A/V reference has a better guess, and both already treat 0 as "nothing to add".
+        // A failed query counts as no queue for the A/V estimate; there is no better guess.
         let backlog = self.poll_backlog().unwrap_or(0);
         let (decode_us, failed_keyframe) = match play_result {
             Ok(()) if flags.partial => (None, false),
@@ -433,10 +396,11 @@ impl VideoStage {
                 // Only a frame NDL actually accepted is on its way to the glass. A failed feed is
                 // followed by a flush and a hold, where the reference would be meaningless.
                 self.publish_video_e2e(submit_realtime_ns, pts_ns, backlog);
-                let decode_us = self
-                    .cfg
-                    .report_decode_latency
-                    .then(|| self.decode_us(au_feed_us, backlog));
+                // NDL exposes no decoded-output callback. Its render-buffer depth is presentation
+                // lead, not decoder latency, and feeding it into ABR created false learned caps at
+                // 4K120. `play` duration is the only measured decoder-pressure signal available:
+                // when input backpressures, it rises naturally.
+                let decode_us = self.cfg.report_decode_latency.then_some(au_feed_us);
                 (decode_us, false)
             }
             Err(e) => (None, self.on_play_error(&e, &flags, base_ns)),
@@ -449,12 +413,14 @@ impl VideoStage {
         }
     }
 
-    /// The freeze-until-reanchor gate, run before every feed: opens a hold on fresh loss, keeps
-    /// frames out while one is up, and releases it on a re-anchor or [`HOLD_GIVE_UP`].
+    /// The freeze-until-reanchor gate, run before every feed.
     fn gate(&mut self, flags: &FrameFlags) -> HoldGate {
-        if flags.loss && !self.holding() {
+        if flags.loss {
+            let newly_holding = !self.holding();
             self.begin_hold();
-            tracing::warn!("loss (frame {}) — freezing", flags.index);
+            if newly_holding {
+                tracing::warn!("loss (frame {}) — freezing", flags.index);
+            }
             // NO FLUSH on the loss hold — this is the last structural difference from `ss4s`, which
             // never flushes mid-stream (its only recovery is unload+load) and does not lose its
             // Opus plane. Every flush here stops the pipeline: each one is followed by NDL
@@ -472,9 +438,12 @@ impl VideoStage {
                 request_keyframe: false,
             };
         };
+        if flags.recovery_mark {
+            self.recovery_marks = self.recovery_marks.saturating_add(1);
+        }
         let request_keyframe = self.take_keyframe_slot();
-        let gave_up = started.elapsed() >= HOLD_GIVE_UP;
-        if !flags.reanchor && !gave_up {
+        let recovered = flags.reanchor || self.recovery_marks >= punktfunk_core::reanchor::REANCHOR_MARKS_TO_LIFT;
+        if !recovered {
             return HoldGate::Skip(if request_keyframe {
                 SinkResult::NeedKeyframe
             } else {
@@ -482,16 +451,18 @@ impl VideoStage {
             });
         }
         tracing::info!(
-            "resuming after {:.0}ms (frame {}, reanchor={}, gave_up={gave_up})",
+            "resuming after {:.0}ms (frame {}, reanchor={}, recovery_marks={})",
             started.elapsed().as_secs_f32() * 1000.0,
             flags.index,
             flags.reanchor,
+            self.recovery_marks,
         );
-        // The real timeline just jumped (freeze then reanchor/give-up) — nothing about
+        // The real timeline just jumped (freeze then reanchor) — nothing about
         // the pre-hold accumulator is worth continuing.
         self.reset_timeline();
         self.stats.holding.store(false, Ordering::Relaxed);
         self.hold_started = None;
+        self.recovery_marks = 0;
         HoldGate::Feed { request_keyframe }
     }
 
@@ -516,9 +487,8 @@ impl VideoStage {
         // No hold: freeze-until-reanchor is mid-stream recovery, and at frame 0 there is no
         // last-good picture to freeze on. Worse, holding short-circuits `submit` before `play`,
         // the only caller of the feed-anyway escape, so the hold outlives its own cause — release
-        // then needs the host's reanchor or `HOLD_GIVE_UP`, both evaluated only when a frame
-        // arrives, and a static desktop sends none. Request a keyframe and let the next frame
-        // retry.
+        // then needs the host's reanchor, evaluated only when a frame arrives, and a static desktop
+        // sends none. Request a keyframe and let the next frame retry.
         if e.downcast_ref::<NotReady>().is_none() {
             if self.caps.flush {
                 let _ = self.sink.flush();

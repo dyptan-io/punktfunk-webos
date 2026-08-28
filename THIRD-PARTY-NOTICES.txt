@@ -156,7 +156,7 @@ MANIFEST (crate version — SPDX license — source)
   powerfmt 0.2.0 — MIT OR Apache-2.0 — https://github.com/jhpratt/powerfmt
   ppv-lite86 0.2.21 — MIT OR Apache-2.0 — https://github.com/cryptocorrosion/cryptocorrosion
   proc-macro2 1.0.107 — MIT OR Apache-2.0 — https://github.com/dtolnay/proc-macro2
-  punktfunk-core 0.31.3 — MIT OR Apache-2.0 — https://git.unom.io/unom/punktfunk
+  punktfunk-core 0.32.0 — MIT OR Apache-2.0 — https://git.unom.io/unom/punktfunk
   pxfm 0.1.30 — BSD-3-Clause OR Apache-2.0 — https://github.com/awxkee/pxfm
   quick-error 2.0.1 — MIT/Apache-2.0 — http://github.com/tailhook/quick-error
   quinn 0.11.11 — MIT OR Apache-2.0 — https://github.com/quinn-rs/quinn
@@ -261,7 +261,7 @@ MANIFEST (crate version — SPDX license — source)
 Crates whose package did not embed a license file (SPDX + source only)
 ----------------------------------------------------------------------------
   asn1-rs-impl 0.2.0 — MIT/Apache-2.0 — https://github.com/rusticata/asn1-rs.git
-  punktfunk-core 0.31.3 — MIT OR Apache-2.0 — https://git.unom.io/unom/punktfunk
+  punktfunk-core 0.32.0 — MIT OR Apache-2.0 — https://git.unom.io/unom/punktfunk
   sdl2-sys 0.38.0 — MIT AND Zlib — https://github.com/rust-sdl2/rust-sdl2
 
 ============================================================================

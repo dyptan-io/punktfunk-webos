@@ -548,9 +548,7 @@ Wiring notes worth knowing before editing:
   to the client's panel grid, which *reduces* latency instead of buffering against it, but needs a
   real vblank anchor and NDL is submit-only, so the anchor would have to come off the graphics plane
   with an unknown constant offset to the video plane's latch); an **adaptive `PLANE_LEAD_MS`** on the
-  offload route (the deleted SDL `JitterPolicy` did 25→90 ms under underruns); and **not freezing on
-  a one-frame gap** when LTR/RFI recovery is available, since `HOLD_GIVE_UP` is 2 s of frozen picture
-  per loss event and each hold re-anchors the timeline.
+  offload route (the deleted SDL `JitterPolicy` did 25→90 ms under underruns).
 
 ## ABR startup probe: 2 Gbps, upstream-hardcoded
 
@@ -568,7 +566,13 @@ This was `CAPACITY_PROBE_KBPS` in `punktfunk-core`'s `client/pump/data.rs` — a
 
 **Fixed by capping the burst**: `main.rs`'s `set_abr_env` sets `PUNKTFUNK_ABR_PROBE_KBPS` before anything spawns a thread (`setenv` isn't thread-safe, and core reads it while building its data-plane pump). Same order as the speed test's own cap, still above the airlink ceiling below — measures the link without knocking it over. Knob is core-side; **core v0.22.3 is the first release carrying it**, which is why the pin moved off v0.21.0. An older core ignores the variable.
 
-**300 was still too high on the CX** (2026-08-20): the probe saturated the airlink and opened a freeze-until-reanchor hold seconds into the session — the "Connection issues — recovering" toast — which on the offload path then cost the session its audio (see *NDL's audio plane*). Both knobs are now derived from `core::model::BITRATE_MAX_KBPS` — the settings slider's own ceiling, 200 Mbps, so there is one number to change: `PUNKTFUNK_ABR_MAX_MBPS` clamps the climb ceiling however it is learned (`abr::ceiling_cap_from_env`; the probe MEASURES that ceiling and `set_ceiling` is monotonic, so an over-read is otherwise permanent for the session), and the probe burst matches it — bursting above a ceiling the session can never use only buys loss. Descending below 200 stays core's job; its congestion signals walk the rate to their own 5 Mbps floor and **there is no client-side API to lower a ceiling mid-session**.
+The old 200 Mbps probe target could not prove the client's own 200 Mbps ceiling: core deliberately
+keeps only 70% of measured delivery, making 140 Mbps the theoretical maximum and much less on a
+short burst through the TV's receive path. The target is now 320 Mbps, matching the connection test's
+proven-safe cap. That is high enough to clear core's margin and far below the mode-derived ~1.8 Gbps
+4K120 target. `PUNKTFUNK_ABR_MAX_MBPS` still clamps the learned ceiling to the settings slider's
+200 Mbps maximum. Host/network signals own climbs and descent; NDL contributes only measured feed
+backpressure.
 
 That bump also brought a `connect` signature change — a `name: Option<String>` (label the host's pending-approval list shows) between `launch` and `pin`. All four call sites pass `None`, preserving fingerprint-derived label; sending a real TV name is a separate user-visible change.
 
