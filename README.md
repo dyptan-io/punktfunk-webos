@@ -52,6 +52,8 @@ video decode, and webOS packaging.
 - **DualSense** — adaptive triggers, lightbar, player LEDs, touchpad, gyro and rumble over
   Bluetooth (see the note below).
 - **Hosts** — LAN discovery (mDNS) or add a host by IP; PIN pairing with persisted trust, per-host settings.
+- **Host power** — Wake-on-LAN starts a sleeping host from the TV, and a paired host can be put to
+  sleep or shut down on exit when it grants those rights.
 - **Game mode (rooted TVs)** — optional setting that switches picture and sound to Game mode while
   streaming and restores the previous settings on exit.
 
