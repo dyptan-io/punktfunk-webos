@@ -320,7 +320,7 @@ pub(crate) fn exit_action_label(action: ExitAction) -> &'static str {
     match action {
         ExitAction::None => "None",
         ExitAction::Sleep => "Sleep",
-        ExitAction::Shutdown => "Shutdown",
+        ExitAction::Shutdown => "Shut down",
     }
 }
 

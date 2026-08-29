@@ -95,7 +95,7 @@ fn power_row_label(power: Option<ExitAction>) -> &'static str {
         Some(ExitAction::Sleep) => "Put to sleep",
         // `ExitAction::None` never reaches here: `host_menu_power_row` resolves it to
         // `Shutdown`, because a host that is already up has nothing to wake.
-        Some(ExitAction::None | ExitAction::Shutdown) => "Shutdown",
+        Some(ExitAction::None | ExitAction::Shutdown) => "Shut down",
     }
 }
 

@@ -3,20 +3,35 @@ name: Build
 on:
   push:
     branches: [main]
+    paths: &build_inputs
+      - '*.rs'
+      - '*.toml'
+      - '*.lock'
+      - '*.yml'
+      - 'assets/**'
+      - 'packaging/**'
+      - 'scripts/**'
+      - 'src/**'
   pull_request:
+    paths: *build_inputs
   release:
     types: [published]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  cross-build:
+  package:
     runs-on: ubuntu-24.04-arm
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.sha }}
           fetch-depth: 0
+          filter: blob:none
 
       - name: Install Rust (stable, prebuilt) + cross target
         uses: dtolnay/rust-toolchain@stable
@@ -57,9 +72,10 @@ jobs:
         with:
           name: io.dyptan.punktfunk.webos
           path: dist/*.ipk
+          retention-days: ${{ github.event_name == 'release' && 90 || 7 }}
 
   webosbrew:
-    needs: cross-build
+    needs: package
     permissions:
       contents: write
     uses: ./.github/workflows/webosbrew.yml
