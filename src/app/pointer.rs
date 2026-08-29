@@ -18,6 +18,34 @@ use crate::core::event::MenuEvent;
 use crate::ui;
 use crate::ui::render::Rect;
 
+/// What a hover moved. `any` is whether anything visible changed at all; `row` is whether
+/// the *row* under the pointer changed. Stepping onto a button a row carries (its ⋯, a
+/// collection's drag/rename/remove) leaves the row itself put, and a row that keeps focus
+/// must not replay its focus pop — the same rule the D-pad's `step_row_button` follows, and
+/// the one the sidebar's ⋯ has always had (`set_home_focus` pops only grid cards).
+#[derive(Clone, Copy)]
+struct HoverChange {
+    any: bool,
+    row: bool,
+}
+
+impl HoverChange {
+    const NONE: Self = Self { any: false, row: false };
+
+    /// A hover that either moved the row or moved nothing.
+    const fn row(changed: bool) -> Self {
+        Self {
+            any: changed,
+            row: changed,
+        }
+    }
+
+    /// A hover on a row list, where the row and the button it carries move independently.
+    const fn split(row: bool, button: bool) -> Self {
+        Self { any: row || button, row }
+    }
+}
+
 impl App {
     /// Handed to `SDL_SetTextInputRect` by the render loop. `None` off the text forms, which
     /// are the only screens that take text input at all.
@@ -52,16 +80,17 @@ impl App {
             self.drag_slider(x, screen_w, screen_h, fonts);
             return true;
         }
-        let focus_changed = self.hover_focus_at(x, y, screen_w, screen_h, fonts);
-        // Parity with the D-pad: a hover that moves modal focus replays the focus-pop zoom
-        // (and shows the new row's caption). Home drives its own `focus_anim` instead, so
-        // it's excluded. An open dropdown is excluded too — hover there only moves the
-        // option cursor, so popping the parent row (as the D-pad also declines to) is wrong.
-        if focus_changed && self.settings_ui.dropdown.is_none() && !matches!(self.nav.screen, Screen::Home) {
+        let focus = self.hover_focus_at(x, y, screen_w, screen_h, fonts);
+        // Parity with the D-pad: a hover that moves modal focus to another row replays the
+        // focus-pop zoom (and shows the new row's caption). Home drives its own `focus_anim`
+        // instead, so it's excluded. An open dropdown is excluded too — hover there only
+        // moves the option cursor, so popping the parent row (as the D-pad also declines to)
+        // is wrong.
+        if focus.row && self.settings_ui.dropdown.is_none() && !matches!(self.nav.screen, Screen::Home) {
             self.render.modal.focus_anim = Some(Instant::now());
         }
         let close_changed = self.hover_close_at(x, y, screen_w, screen_h, fonts);
-        focus_changed || close_changed
+        focus.any || close_changed
     }
 
     /// Button index under `(x, y)` for a two-button confirm modal with `subtitle`, or
@@ -98,7 +127,7 @@ impl App {
     /// moved. Hovering empty space (gaps, row padding, the area between rows) leaves
     /// the current selection put rather than clearing it, so a resting pointer never
     /// fights the D-pad.
-    fn hover_focus_at(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> bool {
+    fn hover_focus_at(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> HoverChange {
         // An open dropdown overlays the row list — hover moves its option cursor and
         // nothing behind it. Shared by whichever screen owns the dropdown (Settings or
         // Diagnostics), and uses the same overlay geometry the renderer draws against.
@@ -110,24 +139,24 @@ impl App {
                 .expect("dropdown_option_at yields Some only when one is open");
             let changed = dd.focused != i;
             dd.focused = i;
-            return changed;
+            return HoverChange::row(changed);
         }
         // A dropdown open but not hovered still swallows hover — the row list behind
         // it must not take the selection.
         if self.settings_ui.dropdown.is_some() {
-            return false;
+            return HoverChange::NONE;
         }
         match self.nav.screen {
             // The held card's submenu takes hover whole, like an open dropdown does — the
             // grid behind it must not steal focus out from under an open menu.
             Screen::Home if self.card_menu.is_some() => {
                 let Some(row) = self.card_menu_row_at(x, y, screen_w, fonts) else {
-                    return false;
+                    return HoverChange::NONE;
                 };
                 let menu = self.card_menu.as_mut().expect("guarded by the arm");
                 let changed = menu.focused != row;
                 menu.focus(row);
-                changed
+                HoverChange::row(changed)
             }
             Screen::Home => {
                 // The ⋯ button sits inside its row, so it's tested first — same order
@@ -135,20 +164,20 @@ impl App {
                 if let Some(idx) =
                     view::sidebar::hit_test_menu_button(x, y, self.hosts.entries.len(), self.sidebar_len(), screen_h)
                 {
-                    return self.set_home_focus(HomeFocus::SidebarMenu(idx));
+                    return HoverChange::row(self.set_home_focus(HomeFocus::SidebarMenu(idx)));
                 }
                 if let Some(idx) = view::sidebar::hit_test_row(x, y, self.sidebar_len(), screen_h) {
-                    return self.set_home_focus(HomeFocus::Sidebar(idx));
+                    return HoverChange::row(self.set_home_focus(HomeFocus::Sidebar(idx)));
                 }
                 let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
                 let columns = view::home::grid_columns(available_w);
                 if let Some(idx) = self.hit_test_grid_card(x, y, columns, available_w) {
                     // Padding after a partial pinned row isn't a real card — nothing to land on.
                     if self.is_grid_card(idx, columns) {
-                        return self.set_home_focus(HomeFocus::Grid(idx));
+                        return HoverChange::row(self.set_home_focus(HomeFocus::Grid(idx)));
                     }
                 }
-                false
+                HoverChange::NONE
             }
             // Dropdown case already handled above.
             // The two scrolling lists share one hit test and one cursor lookup.
@@ -156,26 +185,28 @@ impl App {
                 // A held row follows the d-pad, not the pointer: hovering elsewhere must not
                 // drag the cursor out from under it.
                 if self.screens.collections.dragging.is_some() {
-                    return false;
+                    return HoverChange::NONE;
                 }
                 let Some(row) = self.scroll_list_row_at(x, y, screen_w, screen_h) else {
-                    return false;
+                    return HoverChange::NONE;
                 };
                 let button = self.scroll_list_row_button_at(x, y, screen_w, screen_h);
                 let key = ScreenKey::of(screen);
-                let changed = self.nav.cursor(key) != row || self.screens.row_button != button;
+                let row_changed = self.nav.cursor(key) != row;
+                let button_changed = self.screens.row_button != button;
                 self.nav.set_cursor(key, row);
                 self.screens.row_button = button;
-                changed
+                HoverChange::split(row_changed, button_changed)
             }
             Screen::HostMenu => {
                 let Some((i, button)) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts) else {
-                    return false;
+                    return HoverChange::NONE;
                 };
-                let changed = self.nav.cursor(ScreenKey::HostMenu) != i || self.screens.row_button != button;
+                let row_changed = self.nav.cursor(ScreenKey::HostMenu) != i;
+                let button_changed = self.screens.row_button != button;
                 self.nav.set_cursor(ScreenKey::HostMenu, i);
                 self.screens.row_button = button;
-                changed
+                HoverChange::split(row_changed, button_changed)
             }
             // Identical row-list geometry; only which focus field they carry differs.
             Screen::WakeSettings
@@ -184,27 +215,27 @@ impl App {
             | Screen::HdrCalibration
             | Screen::CursorSettings(_) => {
                 let Some((row, button)) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts) else {
-                    return false;
+                    return HoverChange::NONE;
                 };
                 // Same per-screen field table the keyboard path indexes, so hover and
                 // D-pad focus can never name different fields.
                 let Some(focused) = self.list_modal_focused_mut() else {
-                    return false;
+                    return HoverChange::NONE;
                 };
-                let changed = *focused != row;
+                let row_changed = *focused != row;
                 *focused = row;
                 let button_changed = self.screens.row_button != button;
                 self.screens.row_button = button;
-                changed || button_changed
+                HoverChange::split(row_changed, button_changed)
             }
             Screen::Pairing => {
                 let card = view::pairing::card_rect(screen_w, screen_h, fonts);
                 if view::pairing::request_button_rect(card, fonts).contains_point((x, y)) {
                     let changed = self.screens.pairing_focus != PairingFocus::RequestAccess;
                     self.screens.pairing_focus = PairingFocus::RequestAccess;
-                    changed
+                    HoverChange::row(changed)
                 } else {
-                    false
+                    HoverChange::NONE
                 }
             }
             // Two-button confirm modals (Forget/SendLogs/Wake/finished SpeedTest — the same
@@ -220,16 +251,16 @@ impl App {
             | Screen::ResetHdrCalibration
             | Screen::ResetGameSettings => {
                 let Some(subtitle) = self.confirm_subtitle() else {
-                    return false;
+                    return HoverChange::NONE;
                 };
                 let Some(i) = Self::confirm_button_at(screen_w, screen_h, fonts, &subtitle, x, y) else {
-                    return false;
+                    return HoverChange::NONE;
                 };
-                self.set_confirm_focused(i)
+                HoverChange::row(self.set_confirm_focused(i))
             }
             // No positional focus to move: single-card info/entry modals (AddHost,
             // EditHost, About) and Settings with a dropdown open.
-            _ => false,
+            _ => HoverChange::NONE,
         }
     }
 

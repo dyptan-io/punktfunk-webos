@@ -14,7 +14,6 @@ use crate::app::App;
 use crate::core::screen::Screen;
 use crate::ui::render::Rect;
 use crate::ui::widgets::{leading_button_rect, trailing_button_rect};
-use std::time::Instant;
 
 /// Which of a row's buttons the cursor is on. `None` (the absence of one of these) is the
 /// row body — its own action — which is where a list opens and where Confirm means the row.
@@ -129,7 +128,9 @@ impl App {
             _ => return false,
         };
         self.screens.row_button = next;
-        self.render.modal.focus_anim = Some(Instant::now());
+        // No focus pop: the row keeps focus, only which of its controls is lit changes. Popping
+        // it here read as the row losing and regaining focus. Same as the sidebar's ⋯, which
+        // `App::set_home_focus` never pops, and as the hover path (`HoverChange`).
         true
     }
 
