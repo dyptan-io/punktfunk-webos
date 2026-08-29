@@ -58,7 +58,7 @@ tracing-appender = "0.2"
 # `session::video_pump`.
 # v0.32.0 makes bitrate values total wire budgets and adds recovery-point marks. The webOS pump
 # mirrors those semantics while keeping NDL queue depth out of the decoder-pressure signal.
-punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", tag = "v0.32.0", features = ["quic"] }
+punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", tag = "v0.33.0", features = ["quic"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # mDNS LAN discovery; direct dep (not via pf-client-core — see session.rs docs).

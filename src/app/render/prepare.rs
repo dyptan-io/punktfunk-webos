@@ -188,7 +188,11 @@ impl App {
     /// The key never leaves this function, which is what lets it borrow labels straight out of
     /// `App`: only the hash is kept, so a shell that is re-entered with different content
     /// differs by version rather than by a stored clone of every string it draws.
-    fn modal_shell_version(&self, host_menu_actions: &[crate::app::state::hostmenu::HostAction]) -> Option<u64> {
+    fn modal_shell_version(
+        &self,
+        host_menu_actions: &[crate::app::state::hostmenu::HostAction],
+        host_menu_power: Option<crate::services::store::ExitAction>,
+    ) -> Option<u64> {
         // The derived strings the key borrows — bound here so they outlive it, and built only
         // on the screen that actually reads each one.
         let host_menu_title = matches!(self.nav.screen, Screen::HostMenu)
@@ -197,8 +201,8 @@ impl App {
         let host_menu_subtitle = matches!(self.nav.screen, Screen::HostMenu)
             .then(|| self.host_menu_subtitle())
             .unwrap_or_default();
-        let wake_settings_title = matches!(self.nav.screen, Screen::WakeSettings)
-            .then(|| view::wakesettings::title(&self.host_menu_title()))
+        let host_power_title = matches!(self.nav.screen, Screen::HostPower)
+            .then(|| view::hostpower::title(&self.host_menu_title()))
             .unwrap_or_default();
         let speed_test_status = matches!(self.nav.screen, Screen::SpeedTest)
             .then(|| view::speedtest::status(self.screens.speed_test.as_ref(), &self.screens.speed_test_name))
@@ -233,11 +237,17 @@ impl App {
                 name: &host_menu_title,
                 subtitle: &host_menu_subtitle,
                 rows: host_menu_actions.len(),
+                power: host_menu_power,
             }),
-            Screen::WakeSettings => Some(ModalShellKey::WakeSettings {
-                title: &wake_settings_title,
-                auto: self.wake_settings_host().is_some_and(|h| h.wol_auto),
-            }),
+            Screen::HostPower => {
+                let (auto, exit, access) = self.host_power_view();
+                Some(ModalShellKey::HostPower {
+                    title: &host_power_title,
+                    auto,
+                    exit,
+                    access,
+                })
+            }
             Screen::About => Some(ModalShellKey::About),
             // The whole shell is derived from the status sentence, which already encodes
             // the phase and the latest measurement.
@@ -290,7 +300,11 @@ impl App {
     /// widget *and its value*, so a value change invalidates the tile just as a focus move
     /// does. `None` for a screen with no single focused widget. Borrowed like
     /// [`modal_shell_version`](Self::modal_shell_version), and for the same reason.
-    fn modal_focus_version(&self, host_menu_actions: &[crate::app::state::hostmenu::HostAction]) -> Option<u64> {
+    fn modal_focus_version(
+        &self,
+        host_menu_actions: &[crate::app::state::hostmenu::HostAction],
+        host_menu_power: Option<crate::services::store::ExitAction>,
+    ) -> Option<u64> {
         // Borrowed by the key below, so it outlives it.
         let speed_test_label = matches!(self.nav.screen, Screen::SpeedTest)
             .then(|| view::speedtest::apply_label(view::speedtest::recommendation(self.screens.speed_test.as_ref())))
@@ -341,11 +355,18 @@ impl App {
                         action,
                         self.host_menu_paired(),
                         self.screens.row_button,
+                        host_menu_power,
                     )
                 }),
-            Screen::WakeSettings => Some(ModalFocusKey::WakeToggle(
-                self.wake_settings_host().is_some_and(|h| h.wol_auto),
-            )),
+            Screen::HostPower => {
+                let (auto, exit, access) = self.host_power_view();
+                Some(ModalFocusKey::HostPowerRow {
+                    row: self.nav.cursor(ScreenKey::HostPower),
+                    auto,
+                    exit,
+                    access,
+                })
+            }
             // Only once there are buttons to focus — while measuring there is nothing
             // on the card but text.
             Screen::SpeedTest => view::speedtest::finished(self.screens.speed_test.as_ref())
@@ -433,11 +454,17 @@ impl App {
         // `ModalShellKey`'s docs). `AddHost` has no `ModalShellKey` variant
         // (no split focus tile to protect) and just redraws on any
         // `content_dirty` tick, same as every modal did before this split.
-        // Built once for both version fns rather than per call.
-        let host_menu_actions = matches!(self.nav.screen, Screen::HostMenu)
-            .then(|| self.host_menu_actions())
-            .unwrap_or_default();
-        let shell_version = self.modal_shell_version(&host_menu_actions);
+        // Built once for both version fns rather than per call. The power row goes with them:
+        // the actions table, the shell key and the focus key all read it, and each lookup is a
+        // scan of the known-host list.
+        let on_host_menu = matches!(self.nav.screen, Screen::HostMenu);
+        let host_menu_power = on_host_menu.then(|| self.host_menu_power_row()).flatten();
+        let host_menu_actions = if on_host_menu {
+            self.host_menu_actions_with(host_menu_power)
+        } else {
+            crate::app::state::hostmenu::HostActions::default()
+        };
+        let shell_version = self.modal_shell_version(&host_menu_actions, host_menu_power);
         let modal_stale = match shell_version {
             Some(_) => !tiles.contains(tile::MODAL) || self.render.modal.shell_version != shell_version,
             None => content_dirty || !tiles.contains(tile::MODAL),
@@ -476,7 +503,7 @@ impl App {
         // (`ModalFocusKey`'s docs) — `None` for screens with no such widget
         // (Home, AddHost) or when Wake has nothing to focus (no MAC on record,
         // see `handle_wake_event`'s matching guard).
-        if let Some(version) = self.modal_focus_version(&host_menu_actions) {
+        if let Some(version) = self.modal_focus_version(&host_menu_actions, host_menu_power) {
             // Also stale on every tick of an in-flight `switch_anim`: the knob's
             // position depends on elapsed time, not on the key, which doesn't
             // change mid-flip.
@@ -573,7 +600,7 @@ impl App {
                     // rows the screen lists. Only Diagnostics and Experimental can have a
                     // dropdown open, and only the host menu has a ⋯ to light.
                     Screen::HostMenu
-                    | Screen::WakeSettings
+                    | Screen::HostPower
                     | Screen::Diagnostics
                     | Screen::Experimental
                     | Screen::HdrCalibration
@@ -634,7 +661,7 @@ impl App {
             let options = self.dropdown_options(dd.row);
             // The overlay hangs inside whichever viewport its list is drawn in.
             let content_w = match self.nav.screen {
-                Screen::Diagnostics | Screen::Experimental => {
+                Screen::Diagnostics | Screen::Experimental | Screen::HostPower => {
                     self.modal_list_content(screen_w, screen_h, fonts).width()
                 }
                 _ => view::settings::layout(self.settings_scope(), screen_w, screen_h)

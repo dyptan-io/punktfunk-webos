@@ -10,10 +10,13 @@
 //! Every key here is hashed the moment it is built and then dropped — nothing stores one (see
 //! `App::modal_shell_version`). The borrowed `&str` fields say so in the type: a key that could
 //! outlive the state it describes would have to own a copy of every label, once per frame.
+use crate::app::menu::PowerAccess;
 use crate::app::screens::rowbuttons::RowButton;
 use crate::app::state::hdrcalibration::HdrStep;
 use crate::app::state::hostmenu::HostAction;
-use crate::core::model::{AudioRoutePref, GamepadType, HdrDisplay, LogLevelOverride, Settings, SettingsOverride};
+use crate::core::model::{
+    AudioRoutePref, ExitAction, GamepadType, HdrDisplay, LogLevelOverride, Settings, SettingsOverride,
+};
 
 /// Focused widget in the open modal. Each variant carries its content,
 /// so value changes (not just focus moves) invalidate the tile.
@@ -24,7 +27,12 @@ pub enum ModalFocusKey<'a> {
     /// The override rides along because it decides which rows wear a "use global" button —
     /// a change there moves no value in `Settings` at all.
     SettingsRow(usize, Settings, SettingsOverride, Option<GamepadType>),
-    WakeToggle(bool),
+    HostPowerRow {
+        row: usize,
+        auto: bool,
+        exit: ExitAction,
+        access: PowerAccess,
+    },
     WakeButton(usize),
     PairingDigit(usize, u8),
     PairingButton,
@@ -34,7 +42,7 @@ pub enum ModalFocusKey<'a> {
     /// (focused row, its action, the host's pairing state, which trailing button is focused).
     /// The action and the pairing state are what the row's label is derived from, so they
     /// stand in for it — see `app::state::hostmenu::host_menu_row`.
-    MenuRow(usize, HostAction, bool, Option<RowButton>),
+    MenuRow(usize, HostAction, bool, Option<RowButton>, Option<ExitAction>),
     /// (focused row, log level, stats-overlay on, show-logs on) — any change invalidates the tile.
     DiagnosticsRow(usize, LogLevelOverride, bool, bool),
     /// The focused row plus everything its label, caption and control are derived from — the
@@ -116,10 +124,17 @@ pub enum ModalShellKey<'a> {
         name: &'a str,
         subtitle: &'a str,
         rows: usize,
+        /// What the power row currently says — it changes with the host coming up or going
+        /// down, which moves no value the other fields here would notice.
+        power: Option<ExitAction>,
     },
-    WakeSettings {
+    HostPower {
         title: &'a str,
         auto: bool,
+        exit: ExitAction,
+        /// Rides along because it decides both the exit row's caption and whether it is greyed
+        /// — the probe landing changes the card without moving any stored value.
+        access: PowerAccess,
     },
     About,
     SpeedTest {

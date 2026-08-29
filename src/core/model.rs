@@ -31,8 +31,11 @@ pub struct KnownHost {
     pub mgmt_port: Option<u16>,
     /// Wake-on-LAN MACs learned from mDNS; empty if never advertised.
     pub mac: Vec<String>,
-    /// Auto-wake on unreachable (per-host, off by default; lives in Wake settings).
+    /// Auto-wake on unreachable (per-host, off by default; lives in Host power settings).
     pub wol_auto: bool,
+    /// What to do to this host when the app exits (per-host, off by default; sits under
+    /// `wol_auto` in Host power settings — the two are the same switch pointing opposite ways).
+    pub exit_action: ExitAction,
     /// Per-game state for this host, keyed by `GameEntry::id` (or [`DESKTOP_PIN_ID`]) — pins
     /// and settings overrides together, so one prune drops both when a game leaves the library.
     /// A `BTreeMap` so the file's key order is stable and diffable.
@@ -47,6 +50,34 @@ pub struct KnownHost {
     /// keep a game in at most one collection and Library unremovable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) collections: Option<Vec<Collection>>,
+}
+
+/// What the app does to a host on its way out — the second half of that host's power settings.
+///
+/// Maps onto punktfunk's host actions (`POST /api/v1/actions/{id}`, host-side from core
+/// 0.33.0), which need the pairing's Host power grant. Defaults to [`Self::None`]: a client
+/// that quietly powered a machine down would be worse than one that never offered to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExitAction {
+    #[default]
+    None,
+    Sleep,
+    Shutdown,
+}
+
+impl ExitAction {
+    /// Every value, in the order the dropdown lists them.
+    pub const ALL: [Self; 3] = [Self::None, Self::Sleep, Self::Shutdown];
+
+    /// The host action id to invoke, or `None` when there is nothing to do.
+    pub fn action_id(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Sleep => Some("power.sleep"),
+            Self::Shutdown => Some("power.shutdown"),
+        }
+    }
 }
 
 /// One grid section: a named, ordered set of game ids. Exactly one per host is
@@ -488,6 +519,7 @@ pub fn upsert_known_host(hosts: &mut Vec<KnownHost>, mut new: KnownHost) {
     new.games.clone_from(&existing.games);
     new.collections.clone_from(&existing.collections);
     new.wol_auto = existing.wol_auto;
+    new.exit_action = existing.exit_action;
     *existing = new;
 }
 

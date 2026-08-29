@@ -148,6 +148,13 @@ impl ConfirmDialog {
         self.focus.is_some()
     }
 
+    /// Opens (or reopens) with `focus` focused, under a subtitle chosen at open time — what
+    /// Quit does depends on the selected host, which is not known when the dialog is built.
+    pub(super) fn open_with(&mut self, focus: usize, subtitle: &'static str) {
+        self.subtitle = subtitle;
+        self.open(focus);
+    }
+
     /// Opens (or reopens) with `focus` focused.
     pub(super) fn open(&mut self, focus: usize) {
         self.focus = Some(focus);
@@ -453,11 +460,6 @@ pub(super) enum EventAction {
     Launch,
 }
 
-/// Hold-to-pin arbitration (see `CARD_HOLD`). `MenuEvent` has no press/release
-/// notion, so the gesture works off raw SDL events: OK down on a pinnable Home
-/// card starts the hold and is swallowed, and the launch can only ever come
-/// from the release. `Some` means the event was the gesture's and goes no
-/// further.
 /// Starts a hold on the focused grid card, if the focus is on one. Both the pointer press
 /// and the OK press arm through here so the two gestures can never disagree about what a
 /// hold is; `screen_w` is the full screen width, the sidebar taken off inside.
@@ -474,6 +476,11 @@ fn arm_card_hold(input: &mut UiInput, app: &App, screen_w: u32) -> bool {
     true
 }
 
+/// Hold-to-pin arbitration (see `CARD_HOLD`). `MenuEvent` has no press/release
+/// notion, so the gesture works off raw SDL events: OK down on a pinnable Home
+/// card starts the hold and is swallowed, and the launch can only ever come
+/// from the release. `Some` means the event was the gesture's and goes no
+/// further.
 fn card_hold_gate(
     app: &mut App,
     event: &sdl2::event::Event,
@@ -660,7 +667,7 @@ pub(super) fn handle_ui_event(
             Screen::Settings(_)
             | Screen::Collections
             | Screen::HostMenu
-            | Screen::WakeSettings
+            | Screen::HostPower
             | Screen::Diagnostics
             | Screen::Experimental
             | Screen::CursorSettings(_)

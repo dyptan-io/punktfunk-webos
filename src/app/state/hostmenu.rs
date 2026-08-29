@@ -9,6 +9,7 @@ use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
+use crate::services::store::ExitAction;
 use crate::ui::widgets::FocusRow;
 
 /// Host action (enum instead of bare index so conditional rows don't silently shift indices).
@@ -17,7 +18,9 @@ pub(crate) enum HostAction {
     Connect,
     Pair,
     SpeedTest,
-    Wake,
+    /// The power row — wake, or this host's own exit behaviour applied on demand. Which one
+    /// it is right now is [`App::host_menu_power_row`].
+    Power,
     Edit,
     Forget,
 }
@@ -62,7 +65,7 @@ impl std::ops::Deref for HostActions {
 /// One action's row. Split from [`App::host_menu_actions`] so the geometry path can have the
 /// list's shape without its labels — every label here is an owned `String` in the `FocusRow`.
 /// `paired` is the host's pairing state: the only thing a label varies on.
-fn host_menu_row(action: HostAction, paired: bool) -> FocusRow {
+fn host_menu_row(action: HostAction, paired: bool, power: Option<ExitAction>) -> FocusRow {
     use crate::app::view::icons;
     match action {
         HostAction::Connect if paired => FocusRow::action(icons::ICON_TV, "Connect"),
@@ -71,12 +74,28 @@ fn host_menu_row(action: HostAction, paired: bool) -> FocusRow {
         HostAction::Connect => FocusRow::action_with_value(icons::ICON_TV, "Connect", "pairs first"),
         HostAction::Pair => FocusRow::action(icons::ICON_LOCK, "Pair with PIN…"),
         HostAction::SpeedTest => FocusRow::action(icons::ICON_SIGNAL, "Test network speed…"),
-        // The one row with a trailing button: Confirm wakes now, the ⋯ holds the per-host
-        // wake settings (`Screen::WakeSettings`). Same affordance and the same
-        // Right-to-reach-it gesture as a sidebar host row's.
-        HostAction::Wake => FocusRow::action(icons::ICON_POWER, "Wake host").with_trailing(host_menu_trailing(action)),
+        // The one row with a trailing button: Confirm acts now, the ⋯ holds this host's
+        // power settings (`Screen::HostPower`). Same affordance and the same
+        // Right-to-reach-it gesture as a sidebar host row's. Plain, never `danger()`: red is
+        // this menu's colour for destroying saved state (Forget host), and powering a machine
+        // off destroys nothing here.
+        HostAction::Power => {
+            FocusRow::action(icons::ICON_POWER, power_row_label(power)).with_trailing(host_menu_trailing(action))
+        }
         HostAction::Edit => FocusRow::action(icons::ICON_EDIT, "Edit address…"),
         HostAction::Forget => FocusRow::action(icons::ICON_DELETE, "Forget host").danger(),
+    }
+}
+
+/// What the power row is called, given what it currently does — `None` being a host that is
+/// down, which can only be woken.
+fn power_row_label(power: Option<ExitAction>) -> &'static str {
+    match power {
+        None => "Wake host",
+        Some(ExitAction::Sleep) => "Put to sleep",
+        // `ExitAction::None` never reaches here: `host_menu_power_row` resolves it to
+        // `Shutdown`, because a host that is already up has nothing to wake.
+        Some(ExitAction::None | ExitAction::Shutdown) => "Shutdown",
     }
 }
 
@@ -85,7 +104,7 @@ fn host_menu_row(action: HostAction, paired: bool) -> FocusRow {
 /// steppable on it cannot disagree.
 pub(crate) fn host_menu_trailing(action: HostAction) -> &'static [&'static str] {
     match action {
-        HostAction::Wake => std::slice::from_ref(&crate::ui::theme::icons().overflow),
+        HostAction::Power => std::slice::from_ref(&crate::ui::theme::icons().overflow),
         _ => &[],
     }
 }
@@ -94,32 +113,80 @@ impl App {
     /// The action rows, as the view paints them.
     pub(crate) fn host_menu_rows(&self) -> Vec<FocusRow> {
         let paired = self.host_menu_paired();
-        self.host_menu_actions()
+        let power = self.host_menu_power_row();
+        self.host_menu_actions_with(power)
             .iter()
-            .map(|&a| host_menu_row(a, paired))
+            .map(|&a| host_menu_row(a, paired, power))
             .collect()
+    }
+
+    /// The sidebar entry the host menu (and everything reached from it) is acting on. The one
+    /// `host_menu_index` lookup — half a dozen call sites had spelled it out.
+    pub(crate) fn host_menu_entry(&self) -> Option<&HostEntry> {
+        self.screens.host_menu_index.and_then(|i| self.hosts.entries.get(i))
     }
 
     /// Whether the menu's host is paired — what half the actions are conditional on, and
     /// the one thing a row label varies on.
     pub(crate) fn host_menu_paired(&self) -> bool {
-        self.screens
-            .host_menu_index
-            .and_then(|i| self.hosts.entries.get(i))
-            .is_some_and(HostEntry::is_paired)
+        self.host_menu_entry().is_some_and(HostEntry::is_paired)
+    }
+
+    /// What the power row currently offers: `None` to wake a host that is down, or the power
+    /// action to send to one that is up.
+    ///
+    /// A host that is up has nothing to wake, so the row always offers a way to put it back
+    /// down. Which way follows that host's own exit behaviour, with `None` reading as Shut
+    /// down — the button has to mean *something*, and shutdown is what "no preference" gets
+    /// on the way out of a session too.
+    ///
+    /// Reads the ambient reachability record (`App::entry_online`) rather than probing: nobody
+    /// is waiting on this, and the row it picks is the one the same record already put a dot
+    /// next to in the sidebar. A host whose reachability is still unknown counts as down — the
+    /// wake row is the safe wrong answer, because waking a host that is already up costs a
+    /// magic packet, while shutting one down that we only assumed was up does not undo.
+    pub(crate) fn host_menu_power_row(&self) -> Option<ExitAction> {
+        self.screens.host_menu_power
+    }
+
+    /// Derives what [`host_menu_power_row`](Self::host_menu_power_row) latches.
+    fn resolve_power_row(&self) -> Option<ExitAction> {
+        let entry = self.host_menu_entry()?;
+        if self.entry_online(entry) != Some(true) {
+            return None;
+        }
+        Some(match self.known_host(entry.host(), entry.port())?.exit_action {
+            ExitAction::Sleep => ExitAction::Sleep,
+            ExitAction::None | ExitAction::Shutdown => ExitAction::Shutdown,
+        })
     }
 
     /// Opens host menu for sidebar row `idx` (⋯ button, pointer, or Right key).
     pub(crate) fn open_host_menu(&mut self, idx: usize) {
         self.screens.host_menu_index = Some(idx);
         self.screens.row_button = None;
+        self.latch_host_menu_power();
         self.nav.enter(Screen::HostMenu, 0);
+    }
+
+    /// Re-resolves the power row and stores it. Called on every entry to the host menu — the
+    /// sidebar opening it, and Back out of this host's power settings, where the exit
+    /// behaviour the row names may just have been changed.
+    pub(crate) fn latch_host_menu_power(&mut self) {
+        self.screens.host_menu_power = self.resolve_power_row();
     }
 
     /// The actions offered; conditional on host state (saved/discovered, has MAC).
     pub(crate) fn host_menu_actions(&self) -> HostActions {
+        self.host_menu_actions_with(self.host_menu_power_row())
+    }
+
+    /// [`host_menu_actions`](Self::host_menu_actions) with the power row already resolved —
+    /// what the callers that also need the labels use, so the reachability lookup behind it is
+    /// paid once per pass rather than once per table.
+    pub(crate) fn host_menu_actions_with(&self, power: Option<ExitAction>) -> HostActions {
         let mut actions = HostActions::default();
-        let Some(entry) = self.screens.host_menu_index.and_then(|i| self.hosts.entries.get(i)) else {
+        let Some(entry) = self.host_menu_entry() else {
             return actions;
         };
         let saved = matches!(entry, HostEntry::Known(_));
@@ -132,8 +199,10 @@ impl App {
         if paired {
             actions.push(HostAction::SpeedTest);
         }
-        if paired && !entry.mac().is_empty() {
-            actions.push(HostAction::Wake);
+        // A MAC is what the wake half needs; the power half needs only the management lane, so
+        // a host with no MAC still gets the row once it is up.
+        if paired && (!entry.mac().is_empty() || power.is_some()) {
+            actions.push(HostAction::Power);
         }
         if saved {
             actions.push(HostAction::Edit);
@@ -144,24 +213,18 @@ impl App {
 
     /// The host's name — the menu's title.
     pub(crate) fn host_menu_title(&self) -> String {
-        self.screens
-            .host_menu_index
-            .and_then(|i| self.hosts.entries.get(i))
+        self.host_menu_entry()
             .map_or_else(String::new, |e| e.name().to_string())
     }
 
     /// `address:port` and the pairing state — the menu's subtitle.
     pub(crate) fn host_menu_subtitle(&self) -> String {
-        self.screens
-            .host_menu_index
-            .and_then(|i| self.hosts.entries.get(i))
-            .map_or_else(String::new, |e| {
-                let paired = if e.is_paired() { "paired" } else { "not paired" };
-                format!("{}:{} · {paired}", e.host(), e.port())
-            })
+        self.host_menu_entry().map_or_else(String::new, |e| {
+            let paired = if e.is_paired() { "paired" } else { "not paired" };
+            format!("{}:{} · {paired}", e.host(), e.port())
+        })
     }
 
-    /// Handles host menu events.
     pub(crate) fn handle_host_menu_event(&mut self, ev: MenuEvent) {
         if self.list_nav_event(ev) {
             return;
@@ -170,7 +233,7 @@ impl App {
             // Right/Left move onto and off the focused row's ⋯, mirroring the sidebar's
             // `HomeFocus::SidebarMenu`; on a row without one they do nothing.
             MenuEvent::Right | MenuEvent::Left if self.step_row_button(ev == MenuEvent::Right) => {}
-            MenuEvent::Confirm if self.screens.row_button.is_some() => self.open_wake_settings(),
+            MenuEvent::Confirm if self.screens.row_button.is_some() => self.open_host_power(),
             MenuEvent::Confirm => self.confirm_host_menu_row(),
             MenuEvent::Back => {
                 self.screens.host_menu_index = None;
@@ -178,6 +241,27 @@ impl App {
             }
             MenuEvent::Up | MenuEvent::Down | MenuEvent::Left | MenuEvent::Right | MenuEvent::Secondary => {}
         }
+    }
+
+    /// The power row's action: a magic packet on a host that is down, or this host's own exit
+    /// behaviour applied on demand to one that is up. Both close the menu and report progress
+    /// on the Home status line, because both take longer than a frame.
+    fn confirm_power_row(&mut self, idx: usize) {
+        // The latched value, so the press does what the row the user was looking at said.
+        let power = self.host_menu_power_row();
+        let Some(entry) = self.hosts.entries.get(idx) else {
+            return;
+        };
+        let (host, port) = (entry.host().to_string(), entry.port());
+        let mac = entry.mac().to_vec();
+        let name = entry.name().to_string();
+        self.screens.host_menu_index = None;
+        self.nav.screen = Screen::Home;
+        let Some(action) = power else {
+            self.start_wake(host, port, mac, format!("Waking {name}…"));
+            return;
+        };
+        self.start_power_action(&host, port, action, &name);
     }
 
     /// Runs focused row's action; every arm navigates away or closes menu.
@@ -202,17 +286,7 @@ impl App {
                 self.open_pairing(idx);
             }
             HostAction::SpeedTest => self.open_speed_test(idx),
-            HostAction::Wake => {
-                let Some(entry) = self.hosts.entries.get(idx) else {
-                    return;
-                };
-                let (host, port) = (entry.host().to_string(), entry.port());
-                let mac = entry.mac().to_vec();
-                let name = entry.name().to_string();
-                self.screens.host_menu_index = None;
-                self.nav.screen = Screen::Home;
-                self.start_wake(host, port, mac, format!("Waking {name}…"));
-            }
+            HostAction::Power => self.confirm_power_row(idx),
             HostAction::Edit => self.open_edit_host(idx),
             HostAction::Forget => self.open_forget_host(idx),
         }

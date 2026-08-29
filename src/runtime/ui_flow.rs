@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::render::ctx::RenderCtx;
+use crate::services::store::ExitAction;
 use crate::ui::render::Size;
 
 /// Uploads one rasterized spinner frame as `tile::spinner(idx)`'s texture.
@@ -53,7 +54,7 @@ pub(super) fn run_ui_flow(
     fonts: &crate::ui::text::Fonts,
     initial_status: Option<String>,
     initial_toast: Option<String>,
-) -> Result<Option<ConnectOutcome>> {
+) -> Result<UiOutcome> {
     // Target period for this loop's render ticks, animating or not. Each active
     // (render) iteration used to sleep a flat 16ms *on top of* whatever the tick's own
     // work cost, so its real period was `work + 16ms` rather than 16ms — at a spinner
@@ -164,7 +165,7 @@ pub(super) fn run_ui_flow(
         let frame_start = Instant::now();
         if QUIT_REQUESTED.load(Ordering::Relaxed) {
             tracing::warn!("SIGTERM/SIGINT received during UI");
-            return Ok(None);
+            return Ok(quit(&app));
         }
         // Raw scancode poll (not SDL2 event); edge-detected like streaming loop.
         let yellow_down =
@@ -185,14 +186,14 @@ pub(super) fn run_ui_flow(
         // opens the dialog instead. Menu loop only; stream is unaffected.
         if exit_gesture_fired(&mut exit_held) {
             tracing::info!("EXIT gesture — quitting app");
-            return Ok(None);
+            return Ok(quit(&app));
         }
         // Controller quit shortcut: held long enough on Home,
         // then forgotten so it fires once per hold rather than repeatedly while held.
         if !quit_dialog.is_open() && matches!(app.nav.screen, Screen::Home) && chord.held_for(EXIT_HOLD) {
             tracing::info!("quit shortcut held — opening quit dialog");
             chord.clear();
-            quit_dialog.open(1);
+            quit_dialog.open_with(1, quit_subtitle(&app));
             dirty = true;
         }
         dirty |= app.drain_jobs();
@@ -276,7 +277,7 @@ pub(super) fn run_ui_flow(
             if app.launch_anim.is_some() {
                 if matches!(event, Event::Quit { .. }) {
                     tracing::info!("quit during launch");
-                    return Ok(None);
+                    return Ok(quit(&app));
                 }
                 continue;
             }
@@ -285,7 +286,7 @@ pub(super) fn run_ui_flow(
             match event {
                 Event::Quit { .. } => {
                     tracing::info!("quit during UI");
-                    return Ok(None);
+                    return Ok(quit(&app));
                 }
                 Event::ControllerDeviceAdded { which, .. } => {
                     if controller.is_none() {
@@ -325,7 +326,7 @@ pub(super) fn run_ui_flow(
                 match quit_dialog.handle_event(&event, display_mode.w as u32, display_mode.h as u32, fonts) {
                     Some(ConfirmAction::Confirmed) => {
                         tracing::info!("quit confirmed from menu");
-                        return Ok(None);
+                        return Ok(quit(&app));
                     }
                     Some(_) => dirty = true,
                     None => {}
@@ -341,7 +342,7 @@ pub(super) fn run_ui_flow(
                     if crate::platform::webos::input::menu_event_for_key(*k) == Some(MenuEvent::Back))
             {
                 tracing::info!("Back tap on Home sidebar — opening quit dialog");
-                quit_dialog.open(1);
+                quit_dialog.open_with(1, quit_subtitle(&app));
                 dirty = true;
                 continue;
             }
@@ -531,10 +532,31 @@ pub(super) fn run_ui_flow(
     if text_input_active {
         text_input.stop();
     }
-    Ok(connect_handle.map(|(handle, settings, gamepad_auto)| ConnectOutcome {
-        handle,
-        settings,
-        gamepad_auto,
-        first_frame_deadline: app.render.hero.first_frame_deadline(),
-    }))
+    Ok(match connect_handle {
+        Some((handle, settings, gamepad_auto)) => UiOutcome::Launch(ConnectOutcome {
+            handle,
+            settings,
+            gamepad_auto,
+            first_frame_deadline: app.render.hero.first_frame_deadline(),
+            // Carried into the stream so a Quit from there honours it too — that path never
+            // comes back through this loop.
+            exit_plan: app.exit_plan(),
+        }),
+        None => quit(&app),
+    })
+}
+
+/// What the quit dialog says Quit will do, which is whatever the exit action would actually
+/// send — `None` (and so the plain wording) for a host that is unreachable or has no behaviour
+/// set, because that is exactly when nothing is sent.
+fn quit_subtitle(app: &App) -> &'static str {
+    let action = app.exit_plan().map_or(ExitAction::None, |plan| plan.action);
+    crate::core::errors::quit_subtitle(action)
+}
+
+/// The tail every way of quitting out of the menu shares: hand the selected host's exit action
+/// up, unfired. Nothing runs it here — `run_inner` owns the one place it may, which is past
+/// every session teardown.
+fn quit(app: &App) -> UiOutcome {
+    UiOutcome::Quit(app.exit_plan())
 }

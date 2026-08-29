@@ -34,6 +34,14 @@ struct ConnectOutcome {
     /// that connects and then decodes nothing costs [`crate::app::hero::FIRST_FRAME_WAIT`] once
     /// rather than once per screen. `None` when the loading screen never got that far.
     first_frame_deadline: Option<Instant>,
+    /// What to do to this host when the app exits, captured in the menu because a Quit out of
+    /// the stream never returns there.
+    ///
+    /// Carried unfired all the way to `run_inner`'s single exit: the host refuses a cert-lane
+    /// power action while a session is live, so this may only run once every teardown path has
+    /// been through. Firing it where it is *decided* rather than where that is guaranteed is
+    /// what the one exit site exists to prevent.
+    exit_plan: Option<crate::services::power::ExitPlan>,
 }
 
 /// Resolves a `GamepadType::Auto` preference against the attached controller, for this
@@ -252,6 +260,18 @@ pub fn run() -> Result<()> {
             Err(e)
         }
     }
+}
+
+/// How one pass through the menu ended.
+///
+/// `Option<ConnectOutcome>` used to say this, with `None` meaning "quit" — but the quit case
+/// now carries something, and a sentinel that carries a payload wants a name.
+enum UiOutcome {
+    /// A launch was committed; the stream loop takes it from here.
+    Launch(ConnectOutcome),
+    /// The user (or the OS) asked to close the app, carrying the selected host's exit action
+    /// UNFIRED — see [`ConnectOutcome::exit_plan`] for why nothing runs it here.
+    Quit(Option<crate::services::power::ExitPlan>),
 }
 
 enum StreamOutcome {

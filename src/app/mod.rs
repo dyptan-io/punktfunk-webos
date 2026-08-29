@@ -293,7 +293,7 @@ impl App {
         app
     }
 
-    /// Name of the host whichever host-scoped modal (Forget, Wake settings) is acting on.
+    /// Name of the host whichever host-scoped modal (Forget, Host power settings) is acting on.
     pub(crate) fn host_menu_host_name(&self) -> Option<&str> {
         self.screens
             .host_menu_index
@@ -497,6 +497,9 @@ impl App {
         // `KnownHost` only have `host`; both hold the same kind of value (network address).
         let polled = self.jobs.discovery.as_mut().map(Discovery::poll).unwrap_or_default();
         for found in polled {
+            // An announce is the host saying it is up, on its own initiative — the cheapest
+            // liveness evidence there is, and previously the one the dot ignored.
+            changed |= self.note_reachable(&found.addr, found.port, true);
             #[allow(clippy::suspicious_operation_groupings)]
             if let Some(w) = &self.screens.wake {
                 if found.addr == w.host && found.port == w.port {
@@ -747,6 +750,51 @@ impl App {
     pub(crate) fn selected_known_host(&self) -> Option<&KnownHost> {
         let (host, port) = self.library.selected_host.as_ref()?;
         self.known_host(host, *port)
+    }
+
+    /// What to do to the selected host on the way out, or `None` when it is set to "None",
+    /// has never been paired (the management lane needs this device's cert on its list), or
+    /// no host is selected at all.
+    ///
+    /// Built while `App` is alive so the exit paths can fire it after it is gone — see
+    /// [`services::power::ExitPlan`](crate::services::power::ExitPlan).
+    pub(crate) fn exit_plan(&self) -> Option<crate::services::power::ExitPlan> {
+        // The SELECTED host and only it — the one the sidebar highlights as active, via the
+        // same `library.selected_host` that `sidebar_index_of_selected_host` reads. Every
+        // other known host is left alone whatever its own `exit_action` says: the setting is
+        // per host, but quitting only ever ends the session you are in.
+        let known = self.selected_known_host()?;
+        // Only a host that answered its last check. Asking one that is already down or gone
+        // means waiting out `budget::EXIT_ACTION` on a connection that cannot complete, and
+        // the whole point of that budget being 200 ms is that it is never spent guessing.
+        // Unknown counts as down, same as everywhere else reachability is read.
+        if self.known_host_online(known) != Some(true) {
+            tracing::debug!("exit action skipped: {} was not reachable", known.host);
+            return None;
+        }
+        self.power_plan(known, known.exit_action)
+    }
+
+    /// The management-lane target for one power action on `known`, or `None` when there is
+    /// nothing to send: no action ([`ExitAction::None`]), or no pairing to send it under.
+    ///
+    /// The one place the mgmt-port default and the pin-is-required rule are stated — the exit
+    /// path, the host menu's power row and the permission probe all build their target here.
+    pub(crate) fn power_plan(
+        &self,
+        known: &KnownHost,
+        action: crate::services::store::ExitAction,
+    ) -> Option<crate::services::power::ExitPlan> {
+        action.action_id()?;
+        Some(crate::services::power::ExitPlan {
+            addr: known.host.clone(),
+            mgmt_port: known.mgmt_port.unwrap_or(crate::services::library::DEFAULT_MGMT_PORT),
+            identity: self.identity.clone(),
+            // Required, not merely pinned-if-known: an unpaired host would refuse the invoke
+            // anyway, and a power action is the last request to send to an unverified peer.
+            pin: Some(known.fingerprint?),
+            action,
+        })
     }
 
     /// Which of the selected host's collections holds `pin_id`, or `None` for Library.

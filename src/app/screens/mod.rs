@@ -33,7 +33,7 @@ pub(crate) const fn is_confirm(screen: Screen) -> bool {
         | Screen::HostMenu
         | Screen::EditHost
         | Screen::About
-        | Screen::WakeSettings
+        | Screen::HostPower
         | Screen::Diagnostics
         | Screen::Experimental
         | Screen::HdrCalibration
@@ -69,7 +69,7 @@ pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
         // About scrolls, but wrapped text rather than rows.
         | Screen::About
         | Screen::SpeedTest
-        | Screen::WakeSettings
+        | Screen::HostPower
         | Screen::Diagnostics
         | Screen::Experimental
         | Screen::HdrCalibration
@@ -89,7 +89,7 @@ pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
 pub(crate) const fn is_list_modal(screen: Screen) -> bool {
     match screen {
         Screen::HostMenu
-        | Screen::WakeSettings
+        | Screen::HostPower
         | Screen::Diagnostics
         | Screen::Experimental
         // A list modal like any other, even though it draws over the video plane rather than

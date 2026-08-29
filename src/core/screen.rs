@@ -24,7 +24,7 @@ pub enum Screen {
     EditHost,
     About,
     SpeedTest,
-    WakeSettings,
+    HostPower,
     /// Log level debug aid (see `app/diagnostics.rs`).
     Diagnostics,
     /// Experimental/unstable toggles (see `app/experimental.rs`).

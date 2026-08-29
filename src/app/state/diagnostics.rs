@@ -19,26 +19,12 @@ impl App {
     /// by `self.nav.screen`, see `dropdown_overlay_tile`'s docs); the rest are plain
     /// Left/Right/Confirm toggles. Back saves and returns to Settings.
     pub(crate) fn handle_diagnostics_event(&mut self, ev: MenuEvent) {
-        if let Some(dd) = self.settings_ui.dropdown.as_mut() {
-            let len = menu::LOG_LEVEL_OPTIONS.len();
-            match ev {
-                MenuEvent::Up | MenuEvent::Down => {
-                    crate::ui::widgets::list_nav(&mut dd.focused, len, menu::nav_dir(ev));
-                }
-                MenuEvent::Confirm => {
-                    let choice = dd.focused;
-                    self.settings_ui.dropdown_fade.close((menu::DIAG_ROW_LOG_LEVEL, choice));
-                    self.settings_ui.dropdown = None;
-                    self.set_log_level(menu::LOG_LEVEL_OPTIONS[choice]);
-                }
-                MenuEvent::Back => {
-                    self.settings_ui
-                        .dropdown_fade
-                        .close((menu::DIAG_ROW_LOG_LEVEL, dd.focused));
-                    self.settings_ui.dropdown = None;
-                }
-                MenuEvent::Left | MenuEvent::Right | MenuEvent::Secondary => {}
-            }
+        if self.dropdown_event(
+            ev,
+            menu::DIAG_ROW_LOG_LEVEL,
+            menu::LOG_LEVEL_OPTIONS.len(),
+            |app, choice| app.set_log_level(menu::LOG_LEVEL_OPTIONS[choice]),
+        ) {
             return;
         }
         if self.list_nav_event(ev) {

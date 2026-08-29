@@ -1,6 +1,6 @@
 //! The "host unreachable — wake it?" flow's logic: the Wake-on-LAN prompt, its retry/probe
 //! timers, and its send-side plumbing. The per-host auto-send setting the prompt obeys
-//! lives in `app::state::wakesettings`. Rendering lives in `app::view::wake`.
+//! lives in `app::state::hostpower`. Rendering lives in `app::view::wake`.
 use crate::app::{App, Screen, WakeState};
 use crate::core::event::MenuEvent;
 use crate::services::store::KnownHost;
@@ -12,8 +12,12 @@ impl App {
     pub(crate) fn start_wake(&mut self, host: String, port: u16, mac: Vec<String>, reason: String) {
         let known = self.hosts.known.iter().find(|h| h.host == host && h.port == port);
         let name = known.map_or_else(|| host.clone(), |h| h.name.clone());
-        // WHY: without a MAC, don't auto-send — show interactive explanation instead.
-        let auto = known.is_some_and(|h| h.wol_auto) && !mac.is_empty();
+        // WHY: without a MAC, don't auto-send — show interactive explanation instead. A host
+        // the user just powered down never auto-sends either, whatever `wol_auto` says: it is
+        // unreachable *because they asked for that*, and waking it would undo the press.
+        let auto = known.is_some_and(|h| h.wol_auto)
+            && !mac.is_empty()
+            && self.hosts.powered_down.as_ref() != Some(&(host.clone(), port));
         let mut wake = WakeState {
             host,
             port,
@@ -64,29 +68,37 @@ impl App {
     /// silent auto-send after that, and probes reachability every `WAKE_PROBE_INTERVAL`.
     /// Runs whether modal is showing or not; `drain_discovery` can also end wake.
     pub fn tick_wake(&mut self) -> bool {
-        let Some(wake) = &mut self.screens.wake else {
+        if self.screens.wake.is_none() {
             return false;
-        };
+        }
         let now = Instant::now();
         let mut changed = false;
         let mut new_status = None;
 
-        if let Some(rx) = &wake.probe_rx {
-            if let Ok(loaded) = rx.try_recv() {
-                wake.probe_rx = None;
-                changed = true;
-                if loaded.result.is_ok() {
-                    let (host, port) = (wake.host.clone(), wake.port);
-                    let mgmt_port = self
-                        .hosts
-                        .known
-                        .iter()
-                        .find(|h| h.host == host && h.port == port)
-                        .and_then(|h| h.mgmt_port);
-                    self.wake_succeeded(host, port, mgmt_port, "reachability probe");
-                    return true;
-                }
-                wake.last_probe = Some(now);
+        // Taken out of the `wake` borrow before it is used: recording the result touches the
+        // rest of `self`, and this is the same "the API answered" evidence `drain_games` folds
+        // in — the wake flow just happens to be the one asking.
+        let probed = self.screens.wake.as_mut().and_then(|w| {
+            let loaded = w.probe_rx.as_ref()?.try_recv().ok()?;
+            w.probe_rx = None;
+            Some(loaded)
+        });
+        if let Some(loaded) = probed {
+            changed = true;
+            self.note_api_result(&loaded.host, loaded.port, &loaded.result);
+            if loaded.result.is_ok() {
+                let (host, port) = (loaded.host, loaded.port);
+                let mgmt_port = self
+                    .hosts
+                    .known
+                    .iter()
+                    .find(|h| h.host == host && h.port == port)
+                    .and_then(|h| h.mgmt_port);
+                self.wake_succeeded(host, port, mgmt_port, "reachability probe");
+                return true;
+            }
+            if let Some(w) = self.screens.wake.as_mut() {
+                w.last_probe = Some(now);
             }
         }
         let Some(wake) = &mut self.screens.wake else {

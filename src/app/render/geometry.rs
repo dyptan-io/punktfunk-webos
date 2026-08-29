@@ -210,7 +210,7 @@ impl App {
             | Screen::HostMenu
             | Screen::EditHost
             | Screen::SpeedTest
-            | Screen::WakeSettings
+            | Screen::HostPower
             | Screen::Diagnostics
             | Screen::Experimental
             | Screen::HdrCalibration
@@ -398,7 +398,7 @@ impl App {
             // Every plain list modal: one geometry, measured off the `ModalScreen`
             // the painter draws, indexed by that screen's own focus cursor.
             Screen::HostMenu
-            | Screen::WakeSettings
+            | Screen::HostPower
             | Screen::Diagnostics
             | Screen::Experimental
             | Screen::HdrCalibration
@@ -432,10 +432,6 @@ impl App {
         Some(ui::widgets::focus_row_rect(content, self.list_modal_focused()?))
     }
 
-    /// Calls `f` with the open modal as a [`ui::ModalScreen`], built from the state it
-    /// shows. `None` on Home, and on a screen whose payload isn't set yet (Wake before its
-    /// host is known).
-    ///
     /// Calls `f` with the open modal's *geometry* — [`ui::ModalMetrics`], the half of a modal
     /// screen that says where its card and rows are without saying what is written on them.
     ///
@@ -493,10 +489,15 @@ impl App {
                 subtitle: self.host_menu_subtitle(),
                 rows: self.host_menu_rows(),
             }),
-            Screen::WakeSettings => f(&view::wakesettings::Modal {
-                host_name: self.host_menu_host_name().unwrap_or_default(),
-                auto_send: self.wake_settings_host().is_some_and(|h| h.wol_auto),
-            }),
+            Screen::HostPower => {
+                let (auto_send, exit_action, access) = self.host_power_view();
+                f(&view::hostpower::Modal {
+                    host_name: self.host_menu_host_name().unwrap_or_default(),
+                    auto_send,
+                    exit_action,
+                    access,
+                })
+            }
             Screen::About => f(&view::about::Modal),
             Screen::SpeedTest => f(&view::speedtest::Modal {
                 state: self.screens.speed_test.as_ref(),

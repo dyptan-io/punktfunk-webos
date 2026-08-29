@@ -127,13 +127,10 @@ pub(super) fn run_inner() -> Result<()> {
     // bottom status line — shown on the Home screen right after re-entering the menu.
     let mut menu_toast: Option<String> = None;
 
-    loop {
-        let Some(ConnectOutcome {
-            handle: connect_thread,
-            settings,
-            gamepad_auto,
-            first_frame_deadline,
-        }) = run_ui_flow(
+    // The loop's value is the exit action owed on the way out — see the single fire site
+    // below it, which is the only reason this is a `break`-with-value rather than a `return`.
+    let exit_plan = 'menu: loop {
+        let ui = run_ui_flow(
             &mut canvas,
             &mut compositor,
             &texture_creator,
@@ -145,10 +142,18 @@ pub(super) fn run_inner() -> Result<()> {
             &fonts,
             menu_status.take(),
             menu_toast.take(),
-        )?
-        else {
-            tracing::info!("punktfunk-webos exiting cleanly");
-            return Ok(());
+        )?;
+        // A `let ... else` can't bind out of its own else arm, and the quit case is exactly
+        // where the value is.
+        let ConnectOutcome {
+            handle: connect_thread,
+            settings,
+            gamepad_auto,
+            first_frame_deadline,
+            exit_plan,
+        } = match ui {
+            UiOutcome::Launch(outcome) => outcome,
+            UiOutcome::Quit(plan) => break 'menu plan,
         };
         tracing::debug!("settings: {settings:?}");
 
@@ -239,9 +244,7 @@ pub(super) fn run_inner() -> Result<()> {
             Vec::new()
         };
 
-        // DualSense HID feedback (adaptive triggers, lightbar), started only for an actual
-        // DualSense — anything else never emits these events. Not found (USB pad, no
-        // `luna-send-pub`) isn't an error: logged once, feature just stays off.
+        // See `open_ds_feedback`.
         let mut ds_feedback = open_ds_feedback(settings.gamepad_type);
         // The pad kind the host currently builds for pad 0: the handshake default until a
         // controller plugged in mid-stream declares another one.
@@ -955,11 +958,17 @@ pub(super) fn run_inner() -> Result<()> {
         cursor.set_captured(false);
         cursor.flush(canvas.window());
         match outcome {
-            StreamOutcome::Quit => {
-                tracing::info!("punktfunk-webos exiting cleanly");
-                return Ok(());
-            }
+            StreamOutcome::Quit => break 'menu exit_plan,
             StreamOutcome::ReturnToMenu => continue,
         }
+    };
+    // The one place the app acts on a host's exit behaviour. Every way out of the loop above
+    // has already torn down whatever session it had, which is the ordering this action needs:
+    // the host refuses a cert-lane power action while a session is live. Blocking, because the
+    // process is ending — a request abandoned mid-flight does nothing.
+    if let Some(plan) = exit_plan {
+        plan.run();
     }
+    tracing::info!("punktfunk-webos exiting cleanly");
+    Ok(())
 }

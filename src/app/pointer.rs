@@ -209,7 +209,7 @@ impl App {
                 HoverChange::split(row_changed, button_changed)
             }
             // Identical row-list geometry; only which focus field they carry differs.
-            Screen::WakeSettings
+            Screen::HostPower
             | Screen::Diagnostics
             | Screen::Experimental
             | Screen::HdrCalibration
@@ -288,7 +288,7 @@ impl App {
             // dropdown stays attached to its row while the list is still settling.
             Screen::Settings(_) => self.scroll_list_content_scroll(screen_w, screen_h),
             // Neither list modal scrolls, so 0.
-            Screen::Diagnostics | Screen::Experimental => {
+            Screen::Diagnostics | Screen::Experimental | Screen::HostPower => {
                 Some((self.modal_list_geometry(screen_w, screen_h, fonts)?.1, 0))
             }
             _ => None,
@@ -607,7 +607,7 @@ impl App {
                 self.screens.row_button = button;
             }
             // Identical row-list geometry; only which focus field they carry differs.
-            Screen::WakeSettings | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
+            Screen::HostPower | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
                 let (row, button) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts)?;
                 *self.list_modal_focused_mut()? = row;
                 self.screens.row_button = button;

@@ -65,6 +65,13 @@ pub(crate) struct HostsState {
     pub(crate) reachable: std::collections::HashMap<(String, u16), bool>,
     /// When the last reachability sweep ran, so `tick_reachability` can pace itself.
     pub(crate) reach_last: Option<std::time::Instant>,
+    /// The host the user has just told to sleep or shut down, if any. While it is set, that
+    /// host is left alone: no auto-wake, no library reload — putting a machine down and then
+    /// having the client immediately magic-packet it back up is a loop, not a feature.
+    ///
+    /// Cleared the moment the user picks that host again, which is the explicit "I want it
+    /// back" this waits for. Not persisted: a relaunch is that same intent.
+    pub(crate) powered_down: Option<(String, u16)>,
     /// Whether this TV is webosbrew-rooted — `None` until `App::start_root_probe` answers.
     pub(crate) rooted: Option<bool>,
 }

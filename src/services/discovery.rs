@@ -17,17 +17,27 @@ pub struct DiscoveredHost {
 
 /// IPv4 address and short instance name from a resolved record. IPv4 only (same as other
 /// clients).
+///
+/// The resolved set is a union of every responder's answer, so a host on a VPN or overlay
+/// network contributes addresses we may not be able to route. Ranking is
+/// `punktfunk_core::discovery`'s, shared with the desktop and Android clients: picking
+/// arbitrarily out of the set re-rolled the dial address on every re-announce.
 fn addr_and_name(info: &mdns_sd::ResolvedService) -> Option<(String, String)> {
-    let Some(addr) = info
-        .get_addresses_v4()
-        .iter()
-        .next()
-        .map(std::string::ToString::to_string)
-    else {
+    let candidates: Vec<std::net::Ipv4Addr> = info.get_addresses_v4().iter().copied().collect();
+    // Advisory TXT: the host names which address its advert is for. Absent on older hosts,
+    // where the ranking's remaining rungs still settle the tie.
+    let declared = info
+        .get_properties()
+        .get_property_val_str("addr")
+        .and_then(|v| v.parse().ok());
+    let Some(addr) = punktfunk_core::discovery::pick_host_addr(&candidates, declared) else {
         tracing::warn!("mdns: resolved {} with no IPv4 address, skipping", info.get_fullname());
         return None;
     };
-    Some((addr, info.get_fullname().split('.').next().unwrap_or("?").to_string()))
+    Some((
+        addr.to_string(),
+        info.get_fullname().split('.').next().unwrap_or("?").to_string(),
+    ))
 }
 
 /// Turns a resolved record into a host, or `None` if it isn't usable (no IPv4).

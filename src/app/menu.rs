@@ -6,7 +6,7 @@ use crate::core::caps::video_caps;
 use crate::core::event::MenuEvent;
 use crate::core::model::{BITRATE, BITRATE_AUTOMATIC, BITRATE_MIN_KBPS};
 use crate::services::store::{
-    AudioRoutePref, CodecPref, GamepadType, LogLevelOverride, OverrideField, Settings, SettingsOverride,
+    AudioRoutePref, CodecPref, ExitAction, GamepadType, LogLevelOverride, OverrideField, Settings, SettingsOverride,
 };
 use crate::ui::focus::Dir;
 use crate::ui::widgets::{FocusRow, RowSubtext};
@@ -267,6 +267,80 @@ pub(crate) fn apply_audio_route(settings: &mut Settings, choice_index: usize) {
     };
     settings.audio_route = route;
     settings.clamp_to_caps();
+}
+
+/// What is known about this pairing's power rights on the host menu's host — the screen state
+/// behind the exit-behaviour row, and the one predicate that both greys it and rejects a
+/// keypress on it (same contract as [`ExpRowLock`]).
+///
+/// Owned here rather than in `services::power` because two of the four cases are local facts
+/// the host is never asked about, and because the captions that render them are the app's.
+/// Only [`Self::Rights`] carries a host answer; everything else is a reason we don't have one,
+/// which matters because a refused pairing needs widening on the host while an unreachable one
+/// may simply be asleep — the same locked row for opposite reasons.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum PowerAccess {
+    /// No pairing with this host, so there is no access mask to carry a power grant.
+    NotPaired,
+    /// The probe hasn't answered yet.
+    Unknown,
+    /// The host never answered — asleep or off the network.
+    Unreachable,
+    /// The host answered, but has no power actions at all: it predates the route (a 404), so
+    /// there is no grant to widen and nothing to say about permissions.
+    Unsupported,
+    /// What the host says this pairing may invoke. Empty means it answered and offers nothing.
+    Rights(crate::services::power::PowerRights),
+}
+
+impl PowerAccess {
+    /// Whether the row is usable at all — the host answered and offers something.
+    pub(crate) fn unlocked(self) -> bool {
+        matches!(self, Self::Rights(r) if r.any())
+    }
+
+    /// Whether one pick would actually be accepted. Unknown-yet and unreachable say yes: the
+    /// row is locked in those states anyway, and claiming a stored pick is impossible on no
+    /// evidence would be worse than saying nothing.
+    pub(crate) fn allows(self, action: ExitAction) -> bool {
+        match self {
+            Self::Rights(r) => r.allows(action),
+            Self::NotPaired | Self::Unknown | Self::Unreachable | Self::Unsupported => true,
+        }
+    }
+}
+
+/// Host power row indices. The dropdown hangs off `POWER_ROW_EXIT`, which is what
+/// `DropdownState::row` names and what keys its overlay tile.
+pub const POWER_ROW_AUTO: usize = 0;
+pub const POWER_ROW_EXIT: usize = 1;
+pub const POWER_ROW_COUNT: usize = 2;
+
+pub(crate) fn exit_action_label(action: ExitAction) -> &'static str {
+    match action {
+        ExitAction::None => "None",
+        ExitAction::Sleep => "Sleep",
+        ExitAction::Shutdown => "Shutdown",
+    }
+}
+
+/// What each pick actually does to the machine. Spelled out per value because the labels name
+/// a power state and not its cost: one of these ends the host's uptime.
+pub(crate) fn exit_action_caption(action: ExitAction) -> &'static str {
+    match action {
+        ExitAction::None => "The host keeps running after you leave",
+        ExitAction::Sleep => "Suspend the host — Wake-on-LAN brings it back",
+        ExitAction::Shutdown => "Power the host off completely",
+    }
+}
+
+/// Dropdown labels for the Wake screen's exit-behaviour row.
+pub(crate) fn exit_action_options() -> Vec<Label> {
+    ExitAction::ALL.iter().map(|&a| exit_action_label(a).into()).collect()
+}
+
+pub(crate) fn exit_action_current_index(action: ExitAction) -> usize {
+    ExitAction::ALL.iter().position(|&a| a == action).unwrap_or(0)
 }
 
 /// `detected` is the attached pad per `gamepad::detect_type` — `None` with nothing attached

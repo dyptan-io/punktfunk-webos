@@ -98,23 +98,9 @@ impl App {
     /// screens' by `self.nav.screen`, see `dropdown_overlay_tile`'s docs). Back saves and
     /// returns to Settings.
     pub(crate) fn handle_experimental_event(&mut self, ev: MenuEvent) {
-        if let Some(dd) = self.settings_ui.dropdown.as_mut() {
-            let len = menu::audio_routes().len();
-            match ev {
-                MenuEvent::Up | MenuEvent::Down => {
-                    crate::ui::widgets::list_nav(&mut dd.focused, len, menu::nav_dir(ev));
-                }
-                MenuEvent::Confirm => {
-                    let choice = dd.focused;
-                    self.close_audio_route_dropdown(choice);
-                    menu::apply_audio_route(&mut self.settings_ui.settings, choice);
-                }
-                MenuEvent::Back => {
-                    let focused = dd.focused;
-                    self.close_audio_route_dropdown(focused);
-                }
-                MenuEvent::Left | MenuEvent::Right | MenuEvent::Secondary => {}
-            }
+        if self.dropdown_event(ev, menu::EXP_ROW_AUDIO, menu::audio_routes().len(), |app, choice| {
+            menu::apply_audio_route(&mut app.settings_ui.settings, choice);
+        }) {
             return;
         }
         if self.list_nav_event(ev) {
@@ -192,12 +178,5 @@ impl App {
             .settings
             .hdr_calibrated
             .then(|| self.settings_ui.settings.hdr_display())
-    }
-
-    /// Runs the close fade against the row the dropdown hung off and drops it — the tail both
-    /// the pick and the dismissal share.
-    fn close_audio_route_dropdown(&mut self, focused: usize) {
-        self.settings_ui.dropdown_fade.close((menu::EXP_ROW_AUDIO, focused));
-        self.settings_ui.dropdown = None;
     }
 }

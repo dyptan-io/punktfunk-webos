@@ -1,4 +1,4 @@
-//! The plain list modals: Host menu, Wake settings, Diagnostics, Experimental, Cursor.
+//! The plain list modals: Host menu, Host power, Diagnostics, Experimental, Cursor.
 //!
 //! Each is a card holding one `FocusRow` per line, focused by row index. Their handlers all
 //! opened the same way — count the rows, move the cursor, arm the focus pop, return — and
@@ -22,7 +22,10 @@ impl App {
     pub(crate) fn list_modal_rows(&self) -> Option<Vec<FocusRow>> {
         Some(match self.nav.screen {
             Screen::HostMenu => self.host_menu_rows(),
-            Screen::WakeSettings => view::wakesettings::rows(self.wake_settings_host().is_some_and(|h| h.wol_auto)),
+            Screen::HostPower => {
+                let (auto_send, exit_action, access) = self.host_power_view();
+                view::hostpower::rows(auto_send, exit_action, access)
+            }
             Screen::Diagnostics => view::diagnostics::rows(&self.settings_ui.settings),
             Screen::Experimental => view::experimental::rows(&self.settings_ui.settings, self.hosts.rooted),
             Screen::HdrCalibration => {
@@ -43,7 +46,7 @@ impl App {
     pub(crate) fn list_modal_row_count(&self) -> usize {
         match self.nav.screen {
             Screen::HostMenu => self.host_menu_actions().len(),
-            Screen::WakeSettings => view::wakesettings::ROW_COUNT,
+            Screen::HostPower => view::hostpower::ROW_COUNT,
             Screen::Diagnostics => crate::app::menu::DIAGNOSTICS_ROW_COUNT,
             Screen::Experimental => crate::app::menu::EXP_ROWS.len(),
             Screen::HdrCalibration => view::hdrcalibration::ROW_COUNT,
@@ -97,6 +100,48 @@ impl App {
         false
     }
 
+    /// The dropdown half of a list screen's event handling: navigates the open picker, commits
+    /// a pick, or dismisses it — reporting whether there was one to spend the event on. Every
+    /// handler that can open a dropdown starts here, the same way they all start with
+    /// [`list_nav_event`](Self::list_nav_event).
+    ///
+    /// `row` is the row it hangs off (its `(Screen, row)` tile key), `len` how many options it
+    /// lists, and `apply` what a pick means — the only three things the three screens differ by.
+    pub(crate) fn dropdown_event(
+        &mut self,
+        ev: MenuEvent,
+        row: usize,
+        len: usize,
+        apply: impl FnOnce(&mut Self, usize),
+    ) -> bool {
+        let Some(dd) = self.settings_ui.dropdown.as_mut() else {
+            return false;
+        };
+        match ev {
+            MenuEvent::Up | MenuEvent::Down => {
+                crate::ui::widgets::list_nav(&mut dd.focused, len, crate::app::menu::nav_dir(ev));
+            }
+            MenuEvent::Confirm => {
+                let choice = dd.focused;
+                self.close_dropdown(row, choice);
+                apply(self, choice);
+            }
+            MenuEvent::Back => {
+                let focused = dd.focused;
+                self.close_dropdown(row, focused);
+            }
+            MenuEvent::Left | MenuEvent::Right | MenuEvent::Secondary => {}
+        }
+        true
+    }
+
+    /// Runs the close fade against the row the dropdown hung off and drops it — the tail both
+    /// a pick and a dismissal share.
+    pub(crate) fn close_dropdown(&mut self, row: usize, focused: usize) {
+        self.settings_ui.dropdown_fade.close((row, focused));
+        self.settings_ui.dropdown = None;
+    }
+
     /// Starts the focused row's switch slide from the value it is leaving, so the knob slides
     /// rather than snapping — the shared tail of every toggle row on every list screen.
     pub(crate) fn arm_switch_anim(&mut self, from: bool) {
@@ -116,6 +161,7 @@ impl App {
         match self.nav.screen {
             Screen::Diagnostics => crate::app::menu::log_level_dropdown_options(),
             Screen::Experimental => crate::app::menu::audio_route_options(),
+            Screen::HostPower => crate::app::menu::exit_action_options(),
             Screen::Settings(set) => crate::app::menu::settings_logical_row(set, display_row)
                 .map_or_else(Vec::new, |row| {
                     crate::app::menu::dropdown_options(row, self.settings_target(), self.detected_gamepad_type)
@@ -131,7 +177,6 @@ impl App {
             | Screen::EditHost
             | Screen::About
             | Screen::SpeedTest
-            | Screen::WakeSettings
             | Screen::HdrCalibration
             | Screen::CursorSettings(_)
             | Screen::SendLogs
@@ -150,6 +195,7 @@ impl App {
         match self.nav.screen {
             Screen::Diagnostics => crate::app::menu::LOG_LEVEL_OPTIONS.len(),
             Screen::Experimental => crate::app::menu::audio_routes().len(),
+            Screen::HostPower => crate::services::store::ExitAction::ALL.len(),
             Screen::Settings(set) => crate::app::menu::settings_logical_row(set, display_row).map_or(0, |row| {
                 crate::app::menu::dropdown_option_count(row, self.settings_target())
             }),

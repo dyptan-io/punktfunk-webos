@@ -15,6 +15,15 @@ pub(crate) struct Reachability {
     pub(crate) online: bool,
 }
 
+/// Whether a management-API failure means the host never answered. Every other error is a
+/// reply — `NotPaired` is a 401/403, `Http` carries a status, and `PinMismatch` is a
+/// certificate the host presented — so only the transport ones count as the host being down.
+/// Same split `handle_library_error` makes when it decides whether Wake-on-LAN would help.
+pub(crate) fn api_error_is_offline(e: &crate::services::library::LibraryError) -> bool {
+    use crate::services::library::LibraryError;
+    matches!(e, LibraryError::Unreachable(_))
+}
+
 impl App {
     /// Kick off reachability sweep if one is due and none is in flight.
     pub(crate) fn tick_reachability(&mut self) {
@@ -24,16 +33,19 @@ impl App {
         if self.hosts.reach_last.is_some_and(|t| t.elapsed() < REACH_INTERVAL) {
             return;
         }
-        self.hosts.reach_last = Some(Instant::now());
         let targets: Vec<(String, u16)> = self
             .hosts
             .entries
             .iter()
             .map(|e| (e.host().to_string(), e.port()))
             .collect();
+        // Stamped only once there is something to sweep: an empty first tick (the host list
+        // still coming in over mDNS) used to arm the interval anyway, so the first real sweep
+        // was `REACH_INTERVAL` away instead of immediate.
         if targets.is_empty() {
             return;
         }
+        self.hosts.reach_last = Some(Instant::now());
         let (tx, rx) = std::sync::mpsc::channel();
         self.jobs.reach = Some(rx);
         // One thread for the whole sweep, probing sequentially: the host count here is a
@@ -50,20 +62,46 @@ impl App {
         });
     }
 
+    /// The one place `hosts.reachable` is written.
+    ///
+    /// The sweep is the *fallback* source of this, not the only one: a library listing, a wake
+    /// probe, an mDNS announce and the host-power probe each prove a host answered (or didn't)
+    /// long before the next round comes due. Every one of them reports here, so the sidebar dot
+    /// and the host menu's power row never sit behind evidence the app already has.
+    ///
+    /// Reports whether the recorded state actually moved, which is what a caller folds into its
+    /// own "redraw owed".
+    pub(crate) fn note_reachable(&mut self, host: &str, port: u16, online: bool) -> bool {
+        let key = (host.to_string(), port);
+        if self.hosts.reachable.get(&key) == Some(&online) {
+            return false;
+        }
+        self.hosts.reachable.insert(key, online);
+        self.render.sidebar_dirty = true;
+        true
+    }
+
+    /// Records a management-API outcome as reachability.
+    pub(crate) fn note_api_result<T>(
+        &mut self,
+        host: &str,
+        port: u16,
+        result: &Result<T, crate::services::library::LibraryError>,
+    ) -> bool {
+        let online = result.as_ref().err().is_none_or(|e| !api_error_is_offline(e));
+        self.note_reachable(host, port, online)
+    }
+
     /// Drain finished probes. Returns true if sidebar changed.
     pub(crate) fn drain_reachability(&mut self) -> bool {
         let Some(rx) = &self.jobs.reach else { return false };
-        let mut changed = false;
+        // Collected before any are applied: `note_reachable` takes `&mut self`, which the
+        // receiver borrow above rules out.
+        let mut results = Vec::new();
         let mut finished = false;
         loop {
             match rx.try_recv() {
-                Ok(r) => {
-                    let key = (r.host, r.port);
-                    if self.hosts.reachable.get(&key) != Some(&r.online) {
-                        self.hosts.reachable.insert(key, r.online);
-                        changed = true;
-                    }
-                }
+                Ok(r) => results.push(r),
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     finished = true;
@@ -74,8 +112,9 @@ impl App {
         if finished {
             self.jobs.reach = None;
         }
-        if changed {
-            self.render.sidebar_dirty = true;
+        let mut changed = false;
+        for r in results {
+            changed |= self.note_reachable(&r.host, r.port, r.online);
         }
         changed
     }
@@ -88,12 +127,17 @@ impl App {
             .copied()
     }
 
+    /// Last known reachability of a saved host, by record rather than by sidebar entry —
+    /// the exit path has the `KnownHost` and no entry to go with it.
+    pub(crate) fn known_host_online(&self, known: &crate::services::store::KnownHost) -> Option<bool> {
+        self.hosts.reachable.get(&(known.host.clone(), known.port)).copied()
+    }
+
     /// All reachability states, index-aligned with entries.
     pub(crate) fn reachability_list(&self) -> Vec<Option<bool>> {
         self.hosts.entries.iter().map(|e| self.entry_online(e)).collect()
     }
 
-    /// Initialize empty reachability map.
     pub(crate) fn new_reachability() -> HashMap<(String, u16), bool> {
         HashMap::new()
     }

@@ -7,6 +7,7 @@ pub mod join;
 pub mod library;
 pub mod paths;
 pub mod pinned_tls;
+pub mod power;
 pub mod recents;
 pub mod store;
 pub mod wol;

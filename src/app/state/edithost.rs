@@ -64,6 +64,7 @@ impl App {
                 mgmt_port: old.mgmt_port,
                 mac: old.mac.clone(),
                 wol_auto: old.wol_auto,
+                exit_action: old.exit_action,
                 games: old.games.clone(),
                 collections: old.collections.clone(),
             },

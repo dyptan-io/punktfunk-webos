@@ -42,7 +42,7 @@ impl std::fmt::Display for LibraryError {
 }
 
 /// `https://addr:port`, IPv6 literals bracketed.
-fn base_url(addr: &str, mgmt_port: u16) -> String {
+pub(crate) fn base_url(addr: &str, mgmt_port: u16) -> String {
     if addr.contains(':') {
         format!("https://[{addr}]:{mgmt_port}")
     } else {
@@ -53,6 +53,16 @@ fn base_url(addr: &str, mgmt_port: u16) -> String {
 /// Builds mTLS `ureq::Agent` reusable across requests (avoids repeated TLS handshakes).
 /// Exposed for art.rs to build once outside its per-game loop.
 pub fn agent(identity: &(String, String), pin: Option<[u8; 32]>) -> Result<ureq::Agent, LibraryError> {
+    agent_within(identity, pin, crate::services::budget::REQUEST)
+}
+
+/// [`agent`] with an explicit whole-request budget, for the one caller that cannot wait the
+/// default: the exit action, which the process blocks on while quitting.
+pub fn agent_within(
+    identity: &(String, String),
+    pin: Option<[u8; 32]>,
+    budget: std::time::Duration,
+) -> Result<ureq::Agent, LibraryError> {
     use rustls::pki_types::pem::PemObject;
     let bad = |what: &str, e: &dyn std::fmt::Display| LibraryError::Unreachable(format!("{what}: {e}"));
     // aws-lc-rs, matching punktfunk-core's QUIC for consistent crypto — the invariant this
@@ -78,21 +88,26 @@ pub fn agent(identity: &(String, String), pin: Option<[u8; 32]>) -> Result<ureq:
     // (with `PinVerify` installed) goes through `services::pinned_tls` instead.
     let connector = TcpConnector::default().chain(PinnedTlsConnector::new(Arc::new(cfg)));
     let config = ureq::Agent::config_builder()
-        .timeout_connect(Some(crate::services::budget::HANDSHAKE))
-        .timeout_global(Some(crate::services::budget::REQUEST))
+        // Connect is capped by the whole budget too: a 5 s connect inside a 200 ms request is
+        // just a slower way to hit the same wall.
+        .timeout_connect(Some(budget.min(crate::services::budget::HANDSHAKE)))
+        .timeout_global(Some(budget))
         .build();
     Ok(ureq::Agent::with_parts(config, connector, DefaultResolver::default()))
 }
 
-/// Fetch the host's library (errors pre-classified for UI: 401/403→NotPaired, etc).
-pub(crate) fn fetch_games(
+/// One JSON GET on the management lane, errors pre-classified for the UI (401/403→NotPaired,
+/// a pin mismatch→PinMismatch, everything else by status). Every mgmt read goes through here,
+/// so the classification and the "couldn't read/parse" wording are stated once.
+pub(crate) fn get_json<T: serde::de::DeserializeOwned>(
     addr: &str,
     mgmt_port: u16,
     identity: &(String, String),
     pin: Option<[u8; 32]>,
-) -> Result<Vec<GameEntry>, LibraryError> {
+    path: &str,
+) -> Result<T, LibraryError> {
     let agent = agent(identity, pin)?;
-    let url = format!("{}/api/v1/library", base_url(addr, mgmt_port));
+    let url = format!("{}{path}", base_url(addr, mgmt_port));
     let body = match agent.get(url.as_str()).call() {
         Ok(mut resp) => resp
             .body_mut()
@@ -101,6 +116,16 @@ pub(crate) fn fetch_games(
         Err(e) => return Err(classify(e)),
     };
     serde_json::from_str(&body).map_err(|e| LibraryError::Unreachable(format!("bad JSON: {e}")))
+}
+
+/// Fetch the host's library.
+pub(crate) fn fetch_games(
+    addr: &str,
+    mgmt_port: u16,
+    identity: &(String, String),
+    pin: Option<[u8; 32]>,
+) -> Result<Vec<GameEntry>, LibraryError> {
+    get_json(addr, mgmt_port, identity, pin, "/api/v1/library")
 }
 
 /// One `fetch_games` result with `host/port/mgmt_port` (so `drain_games` can start art loading).
@@ -170,7 +195,7 @@ fn fetch_external_art(url: &str) -> Result<Vec<u8>, LibraryError> {
     }
 }
 
-fn classify(e: ureq::Error) -> LibraryError {
+pub(crate) fn classify(e: ureq::Error) -> LibraryError {
     match e {
         ureq::Error::StatusCode(401 | 403) => LibraryError::NotPaired,
         ureq::Error::StatusCode(code) => LibraryError::Http(code),

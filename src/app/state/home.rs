@@ -406,6 +406,11 @@ impl App {
 
     /// Selects host and kicks off async library fetch; avoids blocking the UI thread (used to freeze input).
     pub(crate) fn select_host(&mut self, host: String, port: u16, mgmt_port: Option<u16>) {
+        // Picking a host is the "I want it back" that lifts a manual power-down — including
+        // the auto-wake suppression, so the fetch below may legitimately wake it again.
+        if self.hosts.powered_down.as_ref() == Some(&(host.clone(), port)) {
+            self.hosts.powered_down = None;
+        }
         self.library.selected_host = Some((host.clone(), port));
         self.persist();
         let name = self
@@ -462,6 +467,9 @@ impl App {
             mgmt_port,
             result,
         } = loaded;
+        // The listing is the freshest word on whether this host is up, and it lands minutes
+        // before the ambient sweep would ask again.
+        self.note_api_result(&host, port, &result);
         match result {
             Ok(games) => {
                 tracing::info!("library: {} games from {host}:{mgmt_port}", games.len());

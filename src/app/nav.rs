@@ -3,7 +3,7 @@
 //! The cursors used to be nine `usize` fields on `App` — one per screen that has a focusable
 //! list — plus four `match self.screen` tables mapping the current screen onto the right one.
 //! Every table had to name the same field as the other three; one of them already didn't (see
-//! `WakeSettings` in `docs/APP-REWORK-PLAN.md` §1, P3). Here the mapping is the array index,
+//! `HostPower` in `docs/APP-REWORK-PLAN.md` §1, P3). Here the mapping is the array index,
 //! so there is nothing left to keep in step.
 use crate::app::screens::is_scroll_list;
 use crate::core::screen::Screen;
@@ -23,7 +23,7 @@ pub(crate) enum ScreenKey {
     EditHost,
     About,
     SpeedTest,
-    WakeSettings,
+    HostPower,
     Diagnostics,
     Experimental,
     HdrCalibration,
@@ -51,7 +51,7 @@ impl ScreenKey {
             Screen::EditHost => Self::EditHost,
             Screen::About => Self::About,
             Screen::SpeedTest => Self::SpeedTest,
-            Screen::WakeSettings => Self::WakeSettings,
+            Screen::HostPower => Self::HostPower,
             Screen::Diagnostics => Self::Diagnostics,
             Screen::Experimental => Self::Experimental,
             Screen::HdrCalibration => Self::HdrCalibration,
@@ -94,7 +94,7 @@ pub(crate) const fn over_scroll_list(screen: Screen) -> bool {
 
 /// The current screen, the one before it, and one focus cursor per screen.
 ///
-/// A cursor survives leaving its screen on purpose: a nested menu (host menu → wake settings →
+/// A cursor survives leaving its screen on purpose: a nested menu (host menu → host power settings →
 /// Back) has to come back to the row it was opened from. What resets a cursor is
 /// [`enter`](Self::enter), which every `open_*` goes through.
 pub(crate) struct Nav {

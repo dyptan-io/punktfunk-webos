@@ -7,6 +7,7 @@
 
 use crate::app::state::collections::CollectionsState;
 use crate::app::state::hdrcalibration::HdrCalibrationState;
+use crate::app::state::hostpower::ProbeFailure;
 use crate::app::state::speedtest::SpeedTestState;
 use crate::app::state::textfield::TextField;
 use crate::app::WakeState;
@@ -22,6 +23,16 @@ pub(crate) struct ScreenSlots {
     /// carry them (the host menu's ⋯, a collection's rename/remove), because focus is only
     /// ever on one row of one list at a time. Cleared by any vertical move.
     pub(crate) row_button: Option<super::rowbuttons::RowButton>,
+    /// What the host menu's power row does, latched when that menu opens rather than derived
+    /// per frame.
+    ///
+    /// Latched because it is read at two different times — once to draw the row, once when
+    /// Confirm lands on it — and it is derived from reachability, which `note_reachable` can
+    /// flip between them off an mDNS announce. Deriving it twice let a row drawn "Wake host"
+    /// shut the machine down instead. Going stale is the safe direction: a host that comes up
+    /// while the menu is open still offers Wake, and a magic packet to a running host is
+    /// nothing.
+    pub(crate) host_menu_power: Option<crate::services::store::ExitAction>,
     /// The sidebar row `Screen::EditHost` is editing, `None` otherwise.
     pub(crate) edit_host_index: Option<usize>,
     /// The HDR calibration in progress — its step, its scratch volume and the pattern feed on the
@@ -34,6 +45,12 @@ pub(crate) struct ScreenSlots {
     pub(crate) add_host: TextField,
     /// The card `Screen::Collections` is moving, and its title — see [`CollectionsState`].
     pub(crate) collections: CollectionsState,
+    /// What the host said about this pairing's power rights, `None` while the probe is still
+    /// out (or before the screen that asks has ever been opened). Never persisted — a grant
+    /// can be revoked on the host between visits, exactly like the root probe's verdict.
+    /// `Err` distinguishes a host too old for the actions route (`Unsupported`) from one that
+    /// never answered — the captions for the two send the reader to different places.
+    pub(crate) power_rights: Option<Result<crate::services::power::PowerRights, ProbeFailure>>,
     /// The active "host unreachable — wake it?" prompt/wait, if any — see `WakeState`.
     pub(crate) wake: Option<WakeState>,
     /// PIN entry: 4 digits, each 0-9, edited one at a time.

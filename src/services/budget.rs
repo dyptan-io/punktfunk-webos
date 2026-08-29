@@ -18,6 +18,14 @@ pub const HOST_WAIT: Duration = Duration::from_secs(185);
 /// allowed to be wrong about a sluggish host rather than hold the sweep open.
 pub const PROBE: Duration = Duration::from_secs(2);
 
+/// The exit action's whole budget — connect, mTLS handshake and POST together.
+///
+/// Brutally short because the user is watching the app close and nothing on screen is waiting
+/// for the answer: a host that cannot be told inside this stays up, which is the same outcome
+/// as not asking. Affordable only because the exit action is now skipped entirely unless the
+/// host answered its last reachability check, so this is a warm LAN peer or nothing.
+pub const EXIT_ACTION: Duration = Duration::from_millis(200);
+
 /// One host request that should already have an answer: a library listing, a `/launch`, a
 /// `/serverinfo`. Not a wait for the host to become ready — that is [`HOST_WAIT`], spent by re-trying
 /// requests with this budget rather than by stretching one of them.

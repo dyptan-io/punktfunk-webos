@@ -13,7 +13,9 @@ use crate::app::state::{reach::Reachability, sendlogs::SendLogsMsg, speedtest::S
 use crate::app::PairingOutcome;
 use crate::services::art::ArtLoader;
 use crate::services::discovery::Discovery;
-use crate::services::library::GamesLoaded;
+use crate::services::library::{GamesLoaded, LibraryError};
+use crate::services::power::PowerRights;
+use crate::services::store::ExitAction;
 
 #[derive(Default)]
 pub(crate) struct Jobs {
@@ -30,11 +32,34 @@ pub(crate) struct Jobs {
     pub(crate) send_logs: Option<Receiver<SendLogsMsg>>,
     /// Answers [`App::start_root_probe`].
     pub(crate) rooted: Option<Receiver<bool>>,
+    /// Answers [`App::start_power_probe`] — whether this pairing may drive the host's power.
+    pub(crate) power_access: Option<PowerProbeJob>,
+    /// Answers the host menu's power row — a sleep/shutdown the user asked for by hand.
+    pub(crate) power_action: Option<PowerActionJob>,
     /// Whether the Experimental screen still owes its root probe. The probe forks
     /// `luna-send-pub` and wakes the Homebrew Channel's service, and on this hardware that
     /// costs enough CPU to drop frames out of whatever is animating — so it is held until the
     /// modal it belongs to has finished opening rather than started on the open frame.
     pub(crate) root_probe_owed: bool,
+}
+
+/// One rights probe in flight. The target rides along for the same reason
+/// [`PowerActionJob`]'s does: the answer may land after the screen that asked has moved to
+/// another host, and the reachability it implies belongs to the host that was asked.
+pub(crate) struct PowerProbeJob {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) rx: Receiver<Result<PowerRights, LibraryError>>,
+}
+
+/// One hand-invoked power action in flight. The target and the action id ride along because
+/// only the host's reply is on the channel, while the menu that started it is already closed —
+/// so neither the sentence that reports it nor the reachability it implies can be looked up.
+pub(crate) struct PowerActionJob {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) action: ExitAction,
+    pub(crate) rx: Receiver<Result<(), LibraryError>>,
 }
 
 impl Jobs {
@@ -64,6 +89,8 @@ impl crate::app::App {
         dirty |= self.drain_games();
         dirty |= self.drain_pairing();
         dirty |= self.drain_rooted();
+        dirty |= self.drain_power_access();
+        dirty |= self.drain_power_action();
         dirty |= self.drain_speed_test();
         dirty |= self.drain_send_logs();
         self.tick_reachability();
