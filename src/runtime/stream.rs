@@ -176,13 +176,13 @@ pub(super) fn run_inner() -> Result<()> {
         // Bounded — a host that never sends must not leave a stale menu frame up.
         let reveal_wait = Instant::now();
         let deadline = reveal_deadline(first_frame_deadline);
-        while !crate::platform::webos::ndl::presenting() && Instant::now() < deadline {
+        while !crate::platform::webos::ndl::presented() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(4));
         }
         tracing::info!(
-            "NDL reveal after {:?} (presenting={} playing={})",
+            "NDL reveal after {:?} (presented={} playing={})",
             reveal_wait.elapsed(),
-            crate::platform::webos::ndl::presenting(),
+            crate::platform::webos::ndl::presented(),
             crate::platform::webos::ndl::playing(),
         );
 

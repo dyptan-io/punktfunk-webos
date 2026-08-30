@@ -35,18 +35,37 @@ impl App {
         changed
     }
 
+    /// Whether this frame composes only what belongs *over* the video plane: no sidebar, no
+    /// grid, no status block, no full-screen scrim. Two ways in — a screen that draws over a
+    /// running stream (`screens::over_video`), and the launch backdrop dissolving into the
+    /// picture it was covering (`app::hero`).
+    ///
+    /// Deliberately not [`Self::video_underlay`]: a calibration pattern that has not started
+    /// presenting yet still owns the screen, and composing the menu back in behind its card
+    /// for those seconds — undimmed, since `compose_modal` skips the scrim over video — is a
+    /// flash of the whole home screen that then vanishes when the first frame lands.
+    pub(crate) fn over_video_layers(&self) -> bool {
+        self.render.hero.dissolving() || crate::app::screens::over_video(self.nav.screen)
+    }
+
+    /// Whether the video plane is what the user is looking at this frame, with the graphics
+    /// plane an overlay on top of it — i.e. whether the frame is punched through to it.
+    ///
+    /// [`Self::over_video_layers`] and a plane actually carrying a picture: clearing
+    /// transparent with nothing behind it is a black screen, so the pattern's feed has to be
+    /// presenting before the hole is opened.
+    pub(crate) fn video_underlay(&self) -> bool {
+        self.render.hero.dissolving()
+            || (crate::app::screens::over_video(self.nav.screen) && self.hdr_pattern_presenting())
+    }
+
     /// What the frame is cleared to before the draw list runs.
     ///
-    /// Transparent while a screen is drawing over the video plane and that plane is actually
-    /// presenting (see `screens::over_video`): NDL is an *underlay*, and the menu's opaque
+    /// Transparent over the video plane: NDL is an *underlay*, and the menu's opaque
     /// background is what normally hides it. Clearing transparent instead leaves the graphics
-    /// plane carrying only the card, with the picture showing through everywhere else.
+    /// plane carrying only what is drawn over the picture.
     pub(crate) fn frame_clear_color(&self) -> crate::ui::render::Color {
-        // The launch's hero dissolves into the picture behind it (`app::hero`), so the plane
-        // has to be uncovered for the whole dissolve rather than at the hand-off.
-        if self.render.hero.dissolving()
-            || (crate::app::screens::over_video(self.nav.screen) && self.hdr_pattern_presenting())
-        {
+        if self.video_underlay() {
             crate::ui::render::Color::RGBA(0, 0, 0, 0)
         } else {
             crate::ui::theme::palette().bg

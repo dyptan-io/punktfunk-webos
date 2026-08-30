@@ -130,7 +130,6 @@ impl EventSeq {
     fn count(&self) -> u64 {
         self.seq.load(Ordering::SeqCst)
     }
-
 }
 
 static LOAD_COMPLETED: EventSeq = EventSeq::new();

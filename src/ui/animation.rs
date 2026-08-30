@@ -196,11 +196,14 @@ impl Wave {
         self.span.mul_f32(progress.clamp(0.0, 1.0))
     }
 
-    /// That element's 0..=1 progress at `now`, for a wave that started at `start`.
-    pub fn frac(self, start: Option<Instant>, progress: f32, now: Instant) -> f32 {
-        anim_frac_smooth_at(start.map(|t| t + self.delay(progress)), self.fade, now)
+    /// That element's 0..=1 progress, `elapsed` seconds into the wave. Seconds rather than
+    /// two `Instant`s because the callers evaluate one wave at many points of a frame (a
+    /// mask's texels, a window of cards): plain `f32` throughout, no `Duration` arithmetic
+    /// per point.
+    pub fn frac_secs(self, elapsed: f32, progress: f32) -> f32 {
+        let started = elapsed - self.span.as_secs_f32() * progress.clamp(0.0, 1.0);
+        smoothstep((started / self.fade.as_secs_f32()).clamp(0.0, 1.0))
     }
-
 }
 
 /// Scales `base` by `1.0 + growth * frac` around its own center — the GPU

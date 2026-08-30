@@ -13,6 +13,7 @@ use crate::app::grid::{GridLayout, CARD_BUILD_BUDGET, CARD_BUILD_BURST, CARD_KEE
 use crate::app::library::Library;
 use crate::app::render::ctx::RenderCtx;
 use crate::app::render::tile;
+use crate::app::spinner::PageReady;
 use crate::app::state::cardmenu::CardMenuRow;
 use crate::app::{view, App, HomeFocus, Screen, GRID_REVEAL_WAVE};
 use crate::ui;
@@ -84,6 +85,9 @@ impl App {
             first_visible_row - CARD_PREFETCH_ROWS,
             first_visible_row + visible_rows + CARD_PREFETCH_ROWS,
         );
+        // What the reveal waits for and what its wave sweeps: the cards actually on screen,
+        // without the prefetch rows above and below them.
+        let page_window = window(first_visible_row, first_visible_row + visible_rows);
         let keep_window = window(
             first_visible_row - CARD_KEEP_ROWS,
             first_visible_row + visible_rows + CARD_KEEP_ROWS,
@@ -96,12 +100,12 @@ impl App {
         // and these all mutate `self.render` while reading it. Rebuilding is a slice reborrow
         // and an integer copy, so there is nothing to hoist.
         self.evict_cards_outside(keep_window, columns, ctx.tiles);
-        let pending = self.build_card_window(build_window.clone(), columns, card_w, card_h, ctx)?;
+        let pending = self.build_card_window(build_window, columns, card_w, card_h, ctx)?;
         self.prepare_focused_card_tiles(columns, card_w, card_h, pending, ctx)?;
         // Order against the reveal below doesn't matter: both only ensure tiles and record what
         // they rebuilt.
         self.prepare_grid_shared_tiles(card_w, card_h, ctx)?;
-        self.advance_grid_reveal(build_window, columns, ctx);
+        self.advance_grid_reveal(page_window, columns, ctx);
         Ok(())
     }
 
@@ -269,6 +273,8 @@ impl App {
             };
             let tile_id = self.render.grid.card_ids.id(&id);
             tiles.put(tile_id, cache::static_version(), tile);
+            // Past the reveal, a card entering the window is one card arriving on a settled
+            // grid — the wave is for the page the spinner was covering.
             if self.render.grid.reveal.is_revealed() {
                 self.render.grid.arm_card_pop(&id, Instant::now());
             }
@@ -491,60 +497,65 @@ impl App {
         Ok(())
     }
 
-    /// Advances the loading spinner, and pops the whole grid in at once on the frame the window
-    /// is finally complete.
-    fn advance_grid_reveal(
-        &mut self,
-        build_window: std::ops::Range<usize>,
-        columns: usize,
-        ctx: &mut RenderCtx<'_>,
-    ) {
+    /// Advances the loading spinner, and sweeps the whole page in on one wave the frame it is
+    /// finally complete.
+    fn advance_grid_reveal(&mut self, page_window: std::ops::Range<usize>, columns: usize, ctx: &mut RenderCtx<'_>) {
         let RenderCtx { tiles, updated, .. } = ctx;
         let layout = self.library.layout(columns);
-        if !self.render.grid.reveal.is_revealed() {
-            // Rechecks the whole window rather than trusting `!pending`, since a card built
-            // earlier can still be waiting behind a re-dirtied sibling; requires `art_ready`
-            // too so a placeholder built this tick can't count as revealed.
-            let window_ready = || {
-                // Cloned rather than consumed: the reveal below sweeps the same indices.
-                build_window.clone().all(|idx| {
-                    layout.pin_id_at(&self.library.games, idx).is_none_or(|id| {
-                        self.render.grid.card_ids.get(id).is_some_and(|t| tiles.contains(t))
-                            && art_ready(&self.library, layout, idx)
-                    })
-                })
-            };
-            let next_frame = self.render.grid.reveal.advance(
-                self.library_fetch_in_flight() || self.wake_wait_in_flight(),
-                window_ready,
-            );
-            match next_frame {
-                Some(idx) => updated.push(tile::spinner(idx)),
-                // Everything built behind the spinner becomes visible in this one frame. One
-                // clock each, offset along the grid's diagonal, so the screen fades in as a
-                // wave running from the top-left corner rather than as N separate pops.
-                // Cards resident but outside the window are off screen: no arrival to show,
-                // and by the time a scroll reaches them the wave is long over.
-                None if self.render.grid.reveal.is_revealed() => {
-                    let now = Instant::now();
-                    // Normalized over the window being revealed, so the sweep takes the wave's
-                    // span whatever the column count and however many rows were built.
-                    let last_step = build_window
-                        .clone()
-                        .last()
-                        .map_or(1, |idx| layout.diagonal_step(idx))
-                        .max(1) as f32;
-                    // Split borrow: the layout reads `library`, the arming writes `render`.
-                    let grid = &mut self.render.grid;
-                    for idx in build_window {
-                        if let Some(id) = layout.pin_id_at(&self.library.games, idx) {
-                            let delay = GRID_REVEAL_WAVE.delay(layout.diagonal_step(idx) as f32 / last_step);
-                            grid.arm_reveal_wave(id, now, delay);
-                        }
+        if self.render.grid.reveal.is_revealed() {
+            return;
+        }
+        // Rechecks the whole page rather than trusting `!pending`, since a card built earlier
+        // can still be waiting behind a re-dirtied sibling. Tiles and art are answered
+        // separately: art that never arrives is what the spinner's cap exists for, where a
+        // card with no tile yet is simply not ready to be revealed (see `PageReady`).
+        let page_ready = || {
+            let mut art_pending = false;
+            for idx in page_window.clone() {
+                let Some(id) = layout.pin_id_at(&self.library.games, idx) else {
+                    continue;
+                };
+                if !self.render.grid.card_ids.get(id).is_some_and(|t| tiles.contains(t)) {
+                    return PageReady::Building;
+                }
+                art_pending |= !art_ready(&self.library, layout, idx);
+            }
+            if art_pending {
+                PageReady::Tiles
+            } else {
+                PageReady::All
+            }
+        };
+        let next_frame = self.render.grid.reveal.advance(
+            self.library_fetch_in_flight() || self.wake_wait_in_flight(),
+            page_ready,
+        );
+        match next_frame {
+            Some(idx) => updated.push(tile::spinner(idx)),
+            // Everything built behind the spinner becomes visible in this one frame. One clock
+            // each, offset along the grid's diagonal, so the page fades in as a wave running
+            // from the top-left corner rather than as N separate pops. Cards outside the page
+            // are off screen: no arrival to show, and by the time a scroll reaches them the
+            // wave is long over.
+            None if self.render.grid.reveal.is_revealed() => {
+                let now = Instant::now();
+                // Normalized over the page, so the sweep takes the wave's span whatever the
+                // column count and however many rows fit on screen.
+                let last_step = page_window
+                    .clone()
+                    .last()
+                    .map_or(1, |idx| layout.diagonal_step(idx))
+                    .max(1) as f32;
+                // Split borrow: the layout reads `library`, the arming writes `render`.
+                let grid = &mut self.render.grid;
+                for idx in page_window {
+                    if let Some(id) = layout.pin_id_at(&self.library.games, idx) {
+                        let delay = GRID_REVEAL_WAVE.delay(layout.diagonal_step(idx) as f32 / last_step);
+                        grid.arm_reveal_wave(id, now, delay);
                     }
                 }
-                None => {}
             }
+            None => {}
         }
     }
 

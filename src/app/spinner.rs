@@ -6,8 +6,22 @@
 //! [`GridReveal::restart`]).
 use std::time::{Duration, Instant};
 
-/// Loading spinner timeout: failed fetches never become ready, so cap the wait.
+/// Loading spinner timeout: cover art that never arrives (a failed fetch) would hold the
+/// spinner forever, so cap the wait on it. Only on the art — see [`PageReady`].
 const SPINNER_MAX_WAIT: Duration = Duration::from_millis(900);
+
+/// How far the grid's first page has got: what the spinner is waiting for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageReady {
+    /// A card on the page has no tile yet. Never revealed in this state, cap or no cap: the
+    /// wave exists to open cards that are already built, and one arriving after it has passed
+    /// pops in over a screen that has finished animating.
+    Building,
+    /// Every card on the page is rasterized, but some are still placeholders waiting on art.
+    Tiles,
+    /// Nothing outstanding.
+    All,
+}
 
 /// Whether the grid's initial build for the current library has finished, and the spinner shown
 /// until it has.
@@ -68,19 +82,27 @@ impl GridReveal {
     }
 
     /// Advances the spinner one frame while the grid is still building, and reveals it once
-    /// `window_ready` says every card in the visible window has landed — or once the build has
-    /// outrun [`SPINNER_MAX_WAIT`].
+    /// `page` says the first page is complete — or, past [`SPINNER_MAX_WAIT`], once that page
+    /// is at least rasterized.
+    ///
+    /// The page, not the whole prefetch window: the wave reveals what is on screen, and the
+    /// rows below it have no arrival to show.
     ///
     /// `fetch_in_flight` covers the network round trip before there is anything to build: the
-    /// window check would find nothing outstanding and reveal an empty grid, and the deadline
+    /// page check would find nothing outstanding and reveal an empty grid, and the deadline
     /// must not be running either.
     ///
     /// Returns the spinner frame to upload, if it changed this tick.
-    pub fn advance(&mut self, fetch_in_flight: bool, window_ready: impl FnOnce() -> bool) -> Option<usize> {
+    pub fn advance(&mut self, fetch_in_flight: bool, page: impl FnOnce() -> PageReady) -> Option<usize> {
         let since = *self.since.get_or_insert_with(Instant::now);
         if !fetch_in_flight {
             let build_since = *self.build_since.get_or_insert_with(Instant::now);
-            if window_ready() || build_since.elapsed() >= SPINNER_MAX_WAIT {
+            let ready = match page() {
+                PageReady::All => true,
+                PageReady::Tiles => build_since.elapsed() >= SPINNER_MAX_WAIT,
+                PageReady::Building => false,
+            };
+            if ready {
                 self.reveal();
                 return None;
             }

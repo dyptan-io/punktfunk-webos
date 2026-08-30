@@ -875,24 +875,17 @@ impl App {
         screen_h: u32,
         fonts: &ui::text::Fonts,
     ) -> ui::render::DrawList {
-        // The hero dissolving into live video is the whole frame: the menu, the launch card
-        // and the black it faded to are all behind the picture the wave is uncovering, and
-        // the graphics plane is cleared transparent under it (`App::frame_clear_color`).
-        if self.render.hero.dissolving() {
-            let mut cmds = Vec::new();
-            self.compose_hero(screen_w, screen_h, &mut cmds);
-            return cmds;
-        }
         let input = self.render_input();
         let mut cmds = Vec::new();
         let grid_x = ui::widgets::SIDEBAR_W as i32;
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
 
-        // A screen that draws over the video plane composes nothing behind its own card: the
-        // sidebar, the grid and the status block are graphics that would cover the very thing
-        // the user is looking at (see `screens::over_video`).
-        if !screens::over_video(self.nav.screen) {
+        // Over the video plane nothing composes behind the card: the sidebar, the grid and the
+        // status block are graphics that would cover the very thing the user is looking at.
+        // The launch backdrop's dissolve is the same case — the menu it faded from is behind
+        // the picture the wave is uncovering (see `App::over_video_layers`).
+        if !self.over_video_layers() {
             cmds.push(DrawCmd::Tex {
                 tile: tile::SIDEBAR,
                 dst: Rect::new(0, 0, ui::widgets::SIDEBAR_W, screen_h),
@@ -954,23 +947,28 @@ impl App {
         // ratio never changes) while a black scrim blends in over it, both driven
         // by the same clock — the card keeps zooming for the whole fade.
         if let (Some(t), Some(idx)) = (self.launch_anim, self.launch_anim_idx) {
-            let f = ui::animation::anim_frac(Some(t), hero::LAUNCH_FADE);
-            let layout = self.library.layout(columns);
-            let base = view::home::scrolled_card_rect(idx, grid_x, available_w, layout, self.render.grid.scroll);
-            if let Some(card) = self
-                .pin_id_at_grid_idx(idx, columns)
-                .and_then(|pin_id| self.render.grid.card_ids.get(pin_id))
-            {
-                cmds.push(DrawCmd::Tex {
-                    tile: card,
-                    dst: ui::animation::zoom_rect(base, f, LAUNCH_GROWTH),
-                    alpha: 0xff,
+            // Both of these are the fade *to* the loading screen. Once the backdrop is
+            // dissolving off it again there is live video behind them, which a zooming card
+            // and a full-screen black would cover back up.
+            if !self.over_video_layers() {
+                let f = ui::animation::anim_frac(Some(t), hero::LAUNCH_FADE);
+                let layout = self.library.layout(columns);
+                let base = view::home::scrolled_card_rect(idx, grid_x, available_w, layout, self.render.grid.scroll);
+                if let Some(card) = self
+                    .pin_id_at_grid_idx(idx, columns)
+                    .and_then(|pin_id| self.render.grid.card_ids.get(pin_id))
+                {
+                    cmds.push(DrawCmd::Tex {
+                        tile: card,
+                        dst: ui::animation::zoom_rect(base, f, LAUNCH_GROWTH),
+                        alpha: 0xff,
+                    });
+                }
+                cmds.push(DrawCmd::Fill {
+                    rect: Rect::new(0, 0, screen_w, screen_h),
+                    color: crate::ui::render::Color::RGBA(0, 0, 0, (255.0 * f) as u8),
                 });
             }
-            cmds.push(DrawCmd::Fill {
-                rect: Rect::new(0, 0, screen_w, screen_h),
-                color: crate::ui::render::Color::RGBA(0, 0, 0, (255.0 * f) as u8),
-            });
             // With wide art for this game, the loading screen is that art instead of the
             // bare black: it fades in over the scrim above (so a hero arriving mid-
             // handshake still eases in rather than snapping), then drifts slowly left to
