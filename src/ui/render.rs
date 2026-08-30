@@ -128,6 +128,35 @@ impl Color {
             a: self.a,
         }
     }
+
+    /// `self` composited over `below` — source-over, straight alpha. Two constant layers
+    /// compose to one, so a surface built by stacking fills can be flattened into the single
+    /// fill that draws it.
+    #[must_use]
+    pub fn over(self, below: Self) -> Self {
+        let (sa, ba) = (f32::from(self.a) / 255.0, f32::from(below.a) / 255.0);
+        let a = sa + ba * (1.0 - sa);
+        if a <= 0.0 {
+            return Self::RGBA(0, 0, 0, 0);
+        }
+        let c = |s: u8, b: u8| ((f32::from(s) * sa + f32::from(b) * ba * (1.0 - sa)) / a) as u8;
+        Self {
+            r: c(self.r, below.r),
+            g: c(self.g, below.g),
+            b: c(self.b, below.b),
+            a: (a * 255.0) as u8,
+        }
+    }
+
+    /// `self` with its alpha scaled by `f` — a fill riding a fade, without the caller
+    /// unpacking the colour to reach one channel.
+    #[must_use]
+    pub fn with_alpha_scaled(self, f: f32) -> Self {
+        Self {
+            a: (f32::from(self.a) * f.clamp(0.0, 1.0)) as u8,
+            ..self
+        }
+    }
 }
 
 /// One cached tile's identity: an opaque number the *app* assigns.

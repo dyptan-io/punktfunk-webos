@@ -41,7 +41,8 @@ impl App {
         // Kept on the `sidebar_dirty` flag rather than a content version: the strip is
         // built from every entry plus its reachability, and hashing all of that once a
         // frame would cost more than the flag the event side already maintains.
-        if self.render.sidebar_dirty || !tiles.contains(tile::SIDEBAR) {
+        let styled_at = ui::theme::epoch();
+        if self.render.sidebar_dirty || self.render.sidebar_styled_at != styled_at || !tiles.contains(tile::SIDEBAR) {
             let selected = self.sidebar_index_of_selected_host();
             let entries = &self.hosts.entries;
             let reach = self.reachability_list();
@@ -73,6 +74,7 @@ impl App {
                 },
             )?;
             self.render.sidebar_dirty = false;
+            self.render.sidebar_styled_at = styled_at;
             tiles.remove(tile::FOCUS_ROW); // row content may have changed under it
             updated.push(tile::SIDEBAR);
         }

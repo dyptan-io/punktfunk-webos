@@ -1,7 +1,7 @@
 //! Reusable transient toast notifications for the streaming overlay: a short message that
 //! appears for a fixed hold then fades out. Styled like the stats overlay panel (same glass
-//! background/radius, see [`render_notification_tile`]); the fade reuses the app-wide
-//! [`anim_frac`] easing so it matches the modals' curve. One slot — a new [`Notification::show`]
+//! background/radius, see [`render_notification_tile`]); the hold and fade are
+//! [`hold_alpha`]'s, shared with the menu's status line. One slot — a new [`Notification::show`]
 //! replaces whatever is on screen.
 
 use crate::ui::prelude::*;
@@ -23,7 +23,7 @@ impl Notification {
         Self { active: None }
     }
 
-    /// Show `text` from now: full opacity for [`HOLD`], then an [`OVERLAY_FADE`] fade.
+    /// Show `text` from now: full opacity for [`HOLD`], then an [`OVERLAY_FADE`] fade out.
     pub fn show(&mut self, text: impl Into<String>) {
         self.active = Some((text.into(), Instant::now()));
     }
@@ -31,18 +31,12 @@ impl Notification {
     /// `(text, alpha)` to draw this tick, or `None` once fully faded. Clears the slot on
     /// expiry, so a return flipping to `None` marks the on→off edge for the caller.
     pub fn frame(&mut self) -> Option<(String, f32)> {
-        let shown = self.active.as_ref()?.1;
-        let elapsed = shown.elapsed();
-        if elapsed >= HOLD + OVERLAY_FADE {
+        let (text, shown) = self.active.as_ref()?;
+        let Some(alpha) = hold_alpha(*shown, HOLD, OVERLAY_FADE) else {
             self.active = None;
             return None;
-        }
-        let alpha = if elapsed < HOLD {
-            1.0
-        } else {
-            (1.0 - anim_frac(Some(shown + HOLD), OVERLAY_FADE)).clamp(0.0, 1.0)
         };
-        Some((self.active.as_ref()?.0.clone(), alpha))
+        Some((text.clone(), alpha))
     }
 }
 

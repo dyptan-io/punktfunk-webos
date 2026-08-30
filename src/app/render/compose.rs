@@ -11,7 +11,8 @@ use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
 use crate::app::screens;
 use crate::app::{
-    hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, LAUNCH_GROWTH, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD, SCROLL_INDICATOR_TILE_W, STATUS_BG_PAD,
+    hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, LAUNCH_GROWTH, SCROLL_INDICATOR_TILE_W,
+    STATUS_BG_PAD,
 };
 use crate::ui;
 use crate::ui::cache::TileStore;
@@ -39,7 +40,7 @@ impl App {
             home_focus: self.home_focus,
             entries: &self.hosts.entries,
             host_selected: self.library.selected_host.is_some(),
-            has_status: self.home_status.is_some(),
+            status_alpha: self.home_status_alpha(),
             grid_reveal_ready: self.render.grid.reveal.is_revealed(),
             press: self.press_dip(Screen::Home),
         }
@@ -111,19 +112,20 @@ impl App {
         // before a frost pane.
         if !matches!(screen, Screen::Home) {
             let region = self.render.modal.tile_region.offset(0, ui::animation::modal_rise(m));
-            self.push_frost(cmds, region, (255.0 * m) as u8);
+            Self::push_frost(cmds, region, ui::widgets::MODAL_RADIUS, (255.0 * m) as u8);
         }
         if let Some((alpha, prev)) = closing {
-            self.push_frost(
+            Self::push_frost(
                 cmds,
                 prev.region.offset(0, ui::animation::modal_rise(alpha)),
+                ui::widgets::MODAL_RADIUS,
                 (255.0 * alpha) as u8,
             );
         }
         if scrim > 0.0 {
             cmds.push(DrawCmd::Fill {
                 rect: Rect::new(0, 0, screen_w, screen_h),
-                color: crate::ui::render::Color::RGBA(0, 0, 0, (f32::from(ui::theme::palette().scrim.a) * scrim) as u8),
+                color: ui::theme::palette().scrim.with_alpha_scaled(scrim),
             });
         }
         if !matches!(screen, Screen::Home) {
@@ -170,7 +172,7 @@ impl App {
     /// Menu only. The in-stream dialogs never reach here (`main.rs` composes those), which is
     /// what keeps the frost off a frame whose video lives on a hardware plane the blur cannot
     /// see anyway.
-    fn push_frost(&self, cmds: &mut Vec<DrawCmd>, tile_region: Rect, alpha: u8) {
+    fn push_frost(cmds: &mut Vec<DrawCmd>, tile_region: Rect, radius: i32, alpha: u8) {
         if alpha == 0 {
             return;
         }
@@ -180,13 +182,48 @@ impl App {
         cmds.push(DrawCmd::Frost(Box::new(ui::render::FrostPane::whole(
             tile_region,
             ui::render::FrostMask {
-                radius: ui::widgets::MODAL_RADIUS,
+                radius,
                 corners: ui::render::Corners::All,
             },
             glass.blur,
             alpha,
             Some(ui::theme::palette().panel),
         ))));
+    }
+
+    /// A whole glass surface where nothing bakes its tint into a tile: the modal's pane, its
+    /// scrim and its `glass_fill` in one call, so a surface that claims to be the same
+    /// material as a modal card is made of the same three things rather than of a comment
+    /// saying so.
+    ///
+    /// The two fills are constants, so they flatten to the one the fade then scales.
+    fn push_glass_surface(cmds: &mut Vec<DrawCmd>, rect: Rect, radius: i32, alpha: f32) {
+        Self::push_frost(cmds, rect, radius, (255.0 * alpha) as u8);
+        cmds.push(DrawCmd::Fill {
+            rect,
+            color: ui::theme::glass_fill()
+                .over(ui::theme::palette().scrim)
+                .with_alpha_scaled(alpha),
+        });
+    }
+
+    /// The nav column: its frosted pane and the translucent strip over it.
+    ///
+    /// Composed *after* the grid, not before it as an opaque strip was. A pane fixes the
+    /// frame's blur source at the point it appears, so a sidebar pane pushed first would
+    /// hand the focused card's strip, the status band and the modal a backdrop holding
+    /// nothing but the clear. The column and the grid never overlap, so the order between
+    /// them is free — what it costs is the strip's own pixels in a modal's blur, which the
+    /// modal covers with a scrim anyway.
+    fn compose_sidebar(cmds: &mut Vec<DrawCmd>, screen_h: u32) {
+        let strip = Rect::new(0, 0, ui::widgets::SIDEBAR_W, screen_h);
+        // Square: three of the column's edges are the display's own.
+        Self::push_frost(cmds, strip, 0, 0xff);
+        cmds.push(DrawCmd::Tex {
+            tile: tile::SIDEBAR,
+            dst: strip,
+            alpha: 0xff,
+        });
     }
 
     /// A panel's drop shadow, as nine stretched draws from one small atlas
@@ -365,22 +402,12 @@ impl App {
                 alpha: dd_alpha,
             });
         }
-        // Whichever modal is scrollable, its indicator — full opacity for
-        // `SCROLL_INDICATOR_HOLD`, then a linear fade over `SCROLL_INDICATOR_FADE`
-        // (names kept from when only Settings had one; every scrollable modal now
-        // shares the same timing and the same `self.render.scroll.shown_at` clock, since
-        // only one is ever open at a time).
+        // Whichever modal is scrollable, its indicator (names kept from when only Settings
+        // had one; every scrollable modal now shares the same timing and the same
+        // `self.render.scroll.shown_at` clock, since only one is ever open at a time).
         if let Some((total, visible, card, content)) = scroll_geom {
             if total > visible {
-                let scroll_alpha = self.render.scroll.shown_at.map_or(0.0, |t| {
-                    let elapsed = t.elapsed();
-                    if elapsed < SCROLL_INDICATOR_HOLD {
-                        1.0
-                    } else {
-                        let fading = (elapsed - SCROLL_INDICATOR_HOLD).as_secs_f32();
-                        1.0 - (fading / SCROLL_INDICATOR_FADE.as_secs_f32()).clamp(0.0, 1.0)
-                    }
-                });
+                let scroll_alpha = self.scroll_indicator_alpha().unwrap_or(0.0);
                 if scroll_alpha > 0.0 {
                     // Sits nearer the card's edge than the content's, so it doesn't
                     // overlap a Settings row's dropdown pill/slider/switch. The `26`
@@ -886,12 +913,6 @@ impl App {
         // The launch backdrop's dissolve is the same case — the menu it faded from is behind
         // the picture the wave is uncovering (see `App::over_video_layers`).
         if !self.over_video_layers() {
-            cmds.push(DrawCmd::Tex {
-                tile: tile::SIDEBAR,
-                dst: Rect::new(0, 0, ui::widgets::SIDEBAR_W, screen_h),
-                alpha: 0xff,
-            });
-
             if !input.host_selected {
                 if let Some(p) = tiles.get(tile::NO_HOST) {
                     cmds.push(DrawCmd::Tex {
@@ -920,24 +941,26 @@ impl App {
             } else {
                 self.compose_grid(tiles, ui::render::Size::new(screen_w, screen_h), &mut cmds);
             }
-            if input.has_status {
+            if let Some(alpha) = input.status_alpha {
                 if let Some(p) = tiles.get(tile::STATUS) {
                     let line_h = fonts.raster.height(fonts.label) + 6;
                     let box_h = 2 * line_h as u32 + 2 * STATUS_BG_PAD as u32;
                     let box_y = screen_h as i32 - box_h as i32;
-                    cmds.push(DrawCmd::Fill {
-                        rect: Rect::new(grid_x, box_y, available_w, box_h),
-                        color: ui::theme::palette().scrim,
-                    });
+                    let a = (255.0 * alpha) as u8;
+                    let block = Rect::new(grid_x, box_y, available_w, box_h);
+                    // Square-cornered: the band is a full-width cut across the bottom edge,
+                    // not a card.
+                    Self::push_glass_surface(&mut cmds, block, 0, alpha);
                     let y = box_y + (box_h as i32 - p.height() as i32) / 2;
                     cmds.push(DrawCmd::Tex {
                         tile: tile::STATUS,
                         dst: Rect::new(grid_x + view::home::GRID_PAD, y, p.width(), p.height()),
-                        alpha: 0xff,
+                        alpha: a,
                     });
                 }
             }
 
+            Self::compose_sidebar(&mut cmds, screen_h);
             Self::compose_sidebar_focus(&input, screen_h, &mut cmds);
         }
 
