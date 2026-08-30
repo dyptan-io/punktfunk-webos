@@ -145,10 +145,32 @@ pub fn anim_frac_smooth(anim: Option<Instant>, dur: Duration) -> f32 {
 }
 
 fn frac(anim: Option<Instant>, dur: Duration, curve: impl Fn(f32) -> f32) -> f32 {
+    // The clock is read only when there is an animation to measure — most calls, on most
+    // frames, are the `None` arm.
     match anim {
-        Some(t) => curve((t.elapsed().as_secs_f32() / dur.as_secs_f32()).min(1.0)),
+        Some(_) => frac_at(anim, dur, Instant::now(), curve),
         None => 1.0,
     }
+}
+
+/// [`frac`] against a clock the caller already read. Per-element loops (the grid's visible
+/// cards) take one `Instant::now()` for the frame rather than one per element per curve.
+fn frac_at(anim: Option<Instant>, dur: Duration, now: Instant, curve: impl Fn(f32) -> f32) -> f32 {
+    match anim {
+        // Saturating: a clock armed in the future (the reveal wave's stagger) has not started.
+        Some(t) => curve((now.saturating_duration_since(t).as_secs_f32() / dur.as_secs_f32()).min(1.0)),
+        None => 1.0,
+    }
+}
+
+/// [`anim_frac`] on a caller-held clock. See [`frac_at`].
+pub fn anim_frac_at(anim: Option<Instant>, dur: Duration, now: Instant) -> f32 {
+    frac_at(anim, dur, now, ease)
+}
+
+/// [`anim_frac_smooth`] on a caller-held clock. See [`frac_at`].
+pub fn anim_frac_smooth_at(anim: Option<Instant>, dur: Duration, now: Instant) -> f32 {
+    frac_at(anim, dur, now, smoothstep)
 }
 
 /// Scales `base` by `1.0 + growth * frac` around its own center — the GPU

@@ -146,16 +146,98 @@ pub struct CardIds {
     next: u32,
 }
 
-/// What one resident card holds: its tile, and when its zoom-in started.
+/// What one resident card holds: its tile, and the arrival it is playing.
 ///
-/// The pop clock lives here rather than in a second map keyed by the same string, because
+/// The entrance lives here rather than in a second map keyed by the same string, because
 /// `compose_grid` asks for both for every visible card on every frame — two hashes of one
 /// game id, where the card is resident or neither answer exists.
 #[derive(Clone, Copy)]
 pub struct CardSlot {
     pub id: TileId,
-    /// `None` for a card that is not animating; see `App::card_pop_frac`.
-    pub pop: Option<std::time::Instant>,
+    /// `None` for a card that is not animating.
+    pub pop: Option<Entrance>,
+}
+
+/// [`Entrance::progress`] for a slot that may not be animating: `(1.0, 0.0)` — full size,
+/// no scale to apply — when it is not.
+pub fn entrance_progress(entrance: Option<Entrance>, now: std::time::Instant) -> (f32, f32) {
+    entrance.map_or((1.0, 0.0), |e| e.progress(now))
+}
+
+/// A card arriving on screen: when it started, and which of the two arrivals it is.
+///
+/// Kind and clock together on the slot, rather than a grid-wide "a reveal is running" flag:
+/// a card built by a scroll while the reveal is still sweeping gets its own pop either way,
+/// and a global mode would compose it on the reveal's curve.
+#[derive(Clone, Copy)]
+pub struct Entrance {
+    pub start: std::time::Instant,
+    pub kind: EntranceKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EntranceKind {
+    /// A card built into a grid already on screen: a short scale-up.
+    Pop,
+    /// The post-spinner reveal: a longer fade with no scale at all, staggered along the
+    /// grid's diagonal so the screen arrives as one sweep rather than as N separate pops.
+    Reveal,
+}
+
+impl Entrance {
+    pub fn pop(start: std::time::Instant) -> Self {
+        Self {
+            start,
+            kind: EntranceKind::Pop,
+        }
+    }
+
+    pub fn reveal(start: std::time::Instant) -> Self {
+        Self {
+            start,
+            kind: EntranceKind::Reveal,
+        }
+    }
+
+    /// How far this arrival has got at `now`, and the shrink its pop-in rides. Off a clock
+    /// the caller already read, rather than one `Instant::now()` per card per curve.
+    ///
+    /// The two arrivals differ only in curve, duration and shrink; smoothstep over the
+    /// reveal's longer fade because on a cubic ease-out a fade is near-opaque a sixth of the
+    /// way through, which lands as the pop it is meant to replace.
+    pub fn progress(self, now: std::time::Instant) -> (f32, f32) {
+        let clock = Some(self.start);
+        let dur = self.kind.duration();
+        let frac = match self.kind {
+            EntranceKind::Pop => crate::ui::animation::anim_frac_at(clock, dur, now),
+            EntranceKind::Reveal => crate::ui::animation::anim_frac_smooth_at(clock, dur, now),
+        };
+        (frac, self.kind.shrink())
+    }
+
+    /// When this arrival is over — what the redraw loop's deadline has to cover.
+    pub fn end(self) -> std::time::Instant {
+        self.start + self.kind.duration()
+    }
+}
+
+impl EntranceKind {
+    pub fn duration(self) -> std::time::Duration {
+        match self {
+            Self::Pop => crate::app::CARD_POP,
+            Self::Reveal => crate::app::CARD_REVEAL_FADE,
+        }
+    }
+
+    /// How far the card is scaled down at the start of this arrival. The reveal is a flat
+    /// cross-fade: a diagonal of cards each scaling on its own clock reads as noise, where
+    /// the same diagonal fading reads as one diffused sweep.
+    pub fn shrink(self) -> f32 {
+        match self {
+            Self::Pop => crate::app::CARD_POP_SHRINK,
+            Self::Reveal => 0.0,
+        }
+    }
 }
 
 /// Hand-written rather than derived: a derived `Default` would start `next` at 0, handing the
@@ -196,24 +278,24 @@ impl CardIds {
         self.slots.get(pin_id).copied()
     }
 
-    /// Starts `pin_id`'s zoom at `at`, reporting whether it took — a card with no slot is
-    /// not on screen, and gets its clock from [`id`](Self::id) when it is built.
-    pub fn arm_pop(&mut self, pin_id: &str, at: std::time::Instant) -> bool {
+    /// Starts `pin_id`'s arrival, reporting whether it took — a card with no slot is not on
+    /// screen, and gets its clock from [`id`](Self::id) when it is built.
+    pub fn arm(&mut self, pin_id: &str, entrance: Entrance) -> bool {
         match self.slots.get_mut(pin_id) {
             Some(slot) => {
-                slot.pop = Some(at);
+                slot.pop = Some(entrance);
                 true
             }
             None => false,
         }
     }
 
-    /// [`arm_pop`](Self::arm_pop) for a card that may already be popping — the reveal, which
-    /// must not restart a zoom already under way.
-    pub fn arm_pop_if_idle(&mut self, pin_id: &str, at: std::time::Instant) -> bool {
+    /// [`arm`](Self::arm) for a card that may already be arriving — the reveal, which must
+    /// not restart an arrival already under way.
+    pub fn arm_if_idle(&mut self, pin_id: &str, entrance: Entrance) -> bool {
         match self.slots.get_mut(pin_id) {
             Some(slot) if slot.pop.is_none() => {
-                slot.pop = Some(at);
+                slot.pop = Some(entrance);
                 true
             }
             _ => false,
@@ -233,11 +315,6 @@ impl CardIds {
         self.slots.clear();
         self.free.extend(ids.iter().copied());
         ids
-    }
-
-    /// Every pin id with a slot.
-    pub fn pin_ids(&self) -> impl Iterator<Item = &str> {
-        self.slots.keys().map(String::as_str)
     }
 
     /// Every resident card, as `(pin id, tile)` — what the eviction pass walks, so it can

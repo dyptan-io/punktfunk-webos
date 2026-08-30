@@ -45,6 +45,12 @@ pub(crate) const CARD_GROWTH: f32 = 0.045;
 pub(crate) const LAUNCH_GROWTH: f32 = 3.5;
 pub(crate) const CARD_POP: Duration = Duration::from_millis(300);
 pub(crate) const CARD_POP_SHRINK: f32 = 0.14;
+/// The grid's first appearance after the spinner: one long, scale-free fade per card, so the
+/// whole screen reads as one surface arriving rather than a field of individually popping tiles.
+pub(crate) const CARD_REVEAL_FADE: Duration = Duration::from_millis(420);
+/// How much later each diagonal step (one column right, one row down) starts its fade — the
+/// wave that sweeps the reveal from the top-left corner to the bottom-right one.
+pub(crate) const CARD_REVEAL_WAVE_STEP: Duration = Duration::from_millis(38);
 pub(crate) const SCROLL_INDICATOR_HOLD: Duration = Duration::from_millis(700);
 pub(crate) const SCROLL_INDICATOR_FADE: Duration = Duration::from_millis(350);
 pub(crate) const SCROLL_INDICATOR_LIFETIME: Duration =

@@ -4,14 +4,14 @@
 //! focus pop and every fade is a texture-copy parameter here, never a re-raster (see
 //! `platform::webos::compositor`). Split out of `app/mod.rs` alongside `prepare`.
 use std::ops::Range;
+use std::time::Instant;
 
 use crate::app::grid::GridLayout;
 use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
 use crate::app::screens;
 use crate::app::{
-    hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, CARD_POP, CARD_POP_SHRINK, LAUNCH_GROWTH,
-    SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD, SCROLL_INDICATOR_TILE_W, STATUS_BG_PAD,
+    hero, render_input, view, App, HomeFocus, Screen, CARD_GROWTH, LAUNCH_GROWTH, SCROLL_INDICATOR_FADE, SCROLL_INDICATOR_HOLD, SCROLL_INDICATOR_TILE_W, STATUS_BG_PAD,
 };
 use crate::ui;
 use crate::ui::cache::TileStore;
@@ -520,6 +520,8 @@ impl App {
         // and nothing else. A scale on the card's own alpha rather than a `Fill` over it — a
         // fill is a square rect and would square off the card's rounded corners.
         let unfixed = self.reordering_slots(layout);
+        // One clock read for the whole grid pass — every card's arrival is measured against it.
+        let now = Instant::now();
         let dimmed = 1.0 - f32::from(ui::theme::palette().scrim.a) / 255.0;
         for idx in visible {
             if Some(idx) == focused {
@@ -535,22 +537,27 @@ impl App {
                 continue; // not rasterized yet — outside the build window
             };
             let card = slot.id;
-            // A card that just landed is still zooming up to full size.
-            let pop = ui::animation::anim_frac(slot.pop, CARD_POP);
+            // A card that just landed is still fading (reveal) or zooming (later build) in.
+            let (pop, shrink) = tile::entrance_progress(slot.pop, now);
             let dim = if unfixed.as_ref().is_some_and(|s| s.contains(&idx)) {
                 dimmed
             } else {
                 1.0
             };
             let alpha = (255.0 * pop * dim) as u8;
+            // A fully transparent card — one the reveal wave has not reached — is two
+            // full-size blits and two alpha-mod changes that draw nothing.
+            if alpha == 0 {
+                continue;
+            }
             cmds.push(DrawCmd::Tex {
                 tile: tile::CARD_SHADOW,
-                dst: ui::animation::pop_in_rect(r.inflate(pad), pop, CARD_POP_SHRINK),
+                dst: ui::animation::pop_in_rect(r.inflate(pad), pop, shrink),
                 alpha,
             });
             cmds.push(DrawCmd::Tex {
                 tile: card,
-                dst: ui::animation::pop_in_rect(r, pop, CARD_POP_SHRINK),
+                dst: ui::animation::pop_in_rect(r, pop, shrink),
                 alpha,
             });
         }
@@ -585,7 +592,7 @@ impl App {
                 // an in-collection swap with nowhere to go is what does (see
                 // `App::swap_card_in_collection`).
                 let r = self.press_dip(Screen::Home).rect(card_rect(idx));
-                self.compose_focused_card(tiles, cmds, pin_id, r, pad);
+                self.compose_focused_card(tiles, cmds, pin_id, r, pad, now);
             }
         }
     }
@@ -605,7 +612,15 @@ impl App {
     /// focus pop and title strip (or the submenu panel a hold grew out of it), plus the pin
     /// badge. `r` is its unscaled rect — everything here scales about the card's own centre, so
     /// the pops can't fight over position.
-    fn compose_focused_card(&self, tiles: &TileStore, cmds: &mut Vec<DrawCmd>, pin_id: &str, r: Rect, pad: i32) {
+    fn compose_focused_card(
+        &self,
+        tiles: &TileStore,
+        cmds: &mut Vec<DrawCmd>,
+        pin_id: &str,
+        r: Rect,
+        pad: i32,
+        now: Instant,
+    ) {
         // The focus pop: the GPU scales the (unfocused) card tile up
         // around its center as the pop progresses, with the shared glow
         // tile fading in behind it at the same scale.
@@ -614,8 +629,8 @@ impl App {
             return; // not rasterized yet
         };
         let card = slot.id;
-        let pop = ui::animation::anim_frac(slot.pop, CARD_POP);
-        let popped = |base: Rect| ui::animation::pop_in_rect(base, pop, CARD_POP_SHRINK);
+        let (pop, shrink) = tile::entrance_progress(slot.pop, now);
+        let popped = |base: Rect| ui::animation::pop_in_rect(base, pop, shrink);
         // The card's total scale, for anything composited on top of it that has to
         // fold in the same transform about the card's centre rather than its own.
         // Shared with the pointer path (`card_menu_rows_rect`), so a click can't land

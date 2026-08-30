@@ -187,6 +187,13 @@ impl<'a> GridLayout<'a> {
         self.row_offset_at(idx / self.columns)
     }
 
+    /// How many diagonal steps grid slot `idx` is from the top-left corner — the stagger the
+    /// reveal wave sweeps the screen on. Here rather than at the call site because the row and
+    /// column of a slot are this type's arithmetic, clamped column count included.
+    pub(crate) fn diagonal_step(&self, idx: usize) -> usize {
+        idx / self.columns + idx % self.columns
+    }
+
     /// What the sections add to the grid's total height — the offset its last row carries.
     pub(crate) fn total_extra(&self) -> i32 {
         self.placed().last().map_or(0, |p| p.y_offset)
@@ -258,30 +265,40 @@ pub(crate) struct GridScratch {
 }
 
 impl GridState {
-    /// Starts (or restarts) `pin_id`'s zoom at `at`. A card with no tile is not on screen
-    /// and has no pop to show; it gets its clock when `prepare_grid` builds it.
+    /// Starts (or restarts) `pin_id`'s pop at `at`. A card with no tile is not on screen
+    /// and has no arrival to show; it gets its clock when `prepare_grid` builds it.
     pub fn arm_card_pop(&mut self, pin_id: &str, at: Instant) {
-        if self.card_ids.arm_pop(pin_id, at) {
-            self.extend_pop_deadline(at);
+        self.arm_entrance(pin_id, tile::Entrance::pop(at), false);
+    }
+
+    /// Arms `pin_id`'s share of the reveal wave: a fade starting `delay` after `at`, which
+    /// the clock spends at zero progress (a future `Instant` reports no elapsed time). Never
+    /// restarts an arrival already under way.
+    pub fn arm_reveal_wave(&mut self, pin_id: &str, at: Instant, delay: Duration) {
+        self.arm_entrance(pin_id, tile::Entrance::reveal(at + delay), true);
+    }
+
+    fn arm_entrance(&mut self, pin_id: &str, entrance: tile::Entrance, if_idle: bool) {
+        let armed = if if_idle {
+            self.card_ids.arm_if_idle(pin_id, entrance)
+        } else {
+            self.card_ids.arm(pin_id, entrance)
+        };
+        if armed {
+            self.extend_pop_deadline(entrance.end());
         }
     }
 
-    /// [`arm_card_pop`](Self::arm_card_pop) for a card that may already be popping — a
-    /// reveal, which must not restart a zoom already under way.
-    pub fn arm_card_pop_if_idle(&mut self, pin_id: &str, at: Instant) {
-        if self.card_ids.arm_pop_if_idle(pin_id, at) {
-            self.extend_pop_deadline(at);
-        }
-    }
-
-    fn extend_pop_deadline(&mut self, at: Instant) {
-        let end = at + crate::app::CARD_POP;
+    /// Raises the redraw deadline to `end`. Never lowered: a deadline that is merely late
+    /// costs one extra frame of the redraw loop, where an early one would freeze an arrival
+    /// mid-way.
+    fn extend_pop_deadline(&mut self, end: Instant) {
         if self.card_pop_until.is_none_or(|until| until < end) {
             self.card_pop_until = Some(end);
         }
     }
 
-    /// Whether any card is still zooming in.
+    /// Whether any card is still arriving.
     pub fn card_pops_running(&self) -> bool {
         self.card_pop_until.is_some_and(|until| Instant::now() < until)
     }

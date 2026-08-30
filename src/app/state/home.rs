@@ -322,13 +322,11 @@ impl App {
             .and_then(|(h, p)| self.hosts.known.iter().position(|k| k.host == *h && k.port == *p))
     }
 
-    /// Eased 0..=1 progress of pin id `id`'s zoom-in (see `tile::CardSlot::pop`)
+    /// Eased 0..=1 progress of pin id `id`'s arrival (see `tile::CardSlot::pop`)
     /// — 1.0, full size, for anything not animating.
     pub(crate) fn card_pop_frac(&self, id: &str) -> f32 {
-        ui::animation::anim_frac(
-            self.render.grid.card_ids.slot(id).and_then(|slot| slot.pop),
-            crate::app::CARD_POP,
-        )
+        let slot = self.render.grid.card_ids.slot(id).and_then(|slot| slot.pop);
+        crate::app::render::tile::entrance_progress(slot, std::time::Instant::now()).0
     }
 
     /// The largest useful `grid_scroll` for the current library/layout — 0 when

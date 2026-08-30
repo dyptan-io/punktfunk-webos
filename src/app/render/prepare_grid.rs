@@ -14,7 +14,7 @@ use crate::app::library::Library;
 use crate::app::render::ctx::RenderCtx;
 use crate::app::render::tile;
 use crate::app::state::cardmenu::CardMenuRow;
-use crate::app::{view, App, HomeFocus, Screen};
+use crate::app::{view, App, HomeFocus, Screen, CARD_REVEAL_WAVE_STEP};
 use crate::ui;
 use crate::ui::cache;
 
@@ -495,7 +495,7 @@ impl App {
     /// is finally complete.
     fn advance_grid_reveal(
         &mut self,
-        mut build_window: std::ops::Range<usize>,
+        build_window: std::ops::Range<usize>,
         columns: usize,
         ctx: &mut RenderCtx<'_>,
     ) {
@@ -506,7 +506,8 @@ impl App {
             // earlier can still be waiting behind a re-dirtied sibling; requires `art_ready`
             // too so a placeholder built this tick can't count as revealed.
             let window_ready = || {
-                build_window.all(|idx| {
+                // Cloned rather than consumed: the reveal below sweeps the same indices.
+                build_window.clone().all(|idx| {
                     layout.pin_id_at(&self.library.games, idx).is_none_or(|id| {
                         self.render.grid.card_ids.get(id).is_some_and(|t| tiles.contains(t))
                             && art_ready(&self.library, layout, idx)
@@ -519,13 +520,20 @@ impl App {
             );
             match next_frame {
                 Some(idx) => updated.push(tile::spinner(idx)),
-                // Everything built behind the spinner becomes visible in this one frame, so
-                // it all zooms in off a single clock.
+                // Everything built behind the spinner becomes visible in this one frame. One
+                // clock each, offset along the grid's diagonal, so the screen fades in as a
+                // wave running from the top-left corner rather than as N separate pops.
+                // Cards resident but outside the window are off screen: no arrival to show,
+                // and by the time a scroll reaches them the wave is long over.
                 None if self.render.grid.reveal.is_revealed() => {
                     let now = Instant::now();
-                    let ids: Vec<String> = self.render.grid.card_ids.pin_ids().map(str::to_string).collect();
-                    for id in ids {
-                        self.render.grid.arm_card_pop_if_idle(&id, now);
+                    // Split borrow: the layout reads `library`, the arming writes `render`.
+                    let grid = &mut self.render.grid;
+                    for idx in build_window {
+                        if let Some(id) = layout.pin_id_at(&self.library.games, idx) {
+                            let delay = CARD_REVEAL_WAVE_STEP * layout.diagonal_step(idx) as u32;
+                            grid.arm_reveal_wave(id, now, delay);
+                        }
                     }
                 }
                 None => {}
