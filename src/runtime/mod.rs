@@ -107,7 +107,7 @@ fn spawn_connect(
                 launch,
                 // A pinned host is reachable now or off, so a long budget would only hold the
                 // black launch scrim. Waiting on an operator is the pairing flow's job.
-                timeout: crate::services::budget::HANDSHAKE,
+                timeout: crate::services::budget::PROBE,
                 codec: settings.codec,
                 gamepad_type: settings.gamepad_type,
                 cursor_capture: settings.cursor_capture,

@@ -153,11 +153,18 @@ impl App {
         let mgmt_port = known
             .and_then(|h| h.mgmt_port)
             .unwrap_or(crate::services::library::DEFAULT_MGMT_PORT);
-        crate::services::library::load_games_async(host.to_string(), port, mgmt_port, identity.clone(), fingerprint)
+        crate::services::library::load_games_async(
+            host.to_string(),
+            port,
+            mgmt_port,
+            identity.clone(),
+            fingerprint,
+            crate::services::budget::PROBE,
+        )
     }
 
     /// Handles Wake modal events: direction moves between "Wake"/"Cancel" buttons.
-    /// Confirm sends or cancels. Back dismisses the modal (keeps wake running in bg).
+    /// Confirm sends and closes the modal, or cancels. Back dismisses it (wake runs on in bg).
     pub fn handle_wake_event(&mut self, ev: MenuEvent) {
         let Some(wake) = self.screens.wake.as_mut() else { return };
         // WHY: no MAC = no send/automate possible. Every event but Back is no-op.
@@ -165,7 +172,7 @@ impl App {
             return;
         }
         if ev == MenuEvent::Back {
-            self.dismiss_wake();
+            self.close_wake(false);
             return;
         }
         match ev {
@@ -173,22 +180,31 @@ impl App {
                 wake.focused = usize::from(wake.focused == 0);
                 self.render.modal.focus_anim = Some(Instant::now());
             }
-            MenuEvent::Confirm if wake.focused == 0 => Self::send_wake(wake),
-            MenuEvent::Confirm => {
-                self.dismiss_wake();
+            MenuEvent::Confirm if wake.focused == 0 => {
+                Self::send_wake(wake);
+                // Hand the wait to the grid's spinner; `tick_wake` re-pops the modal if the
+                // host is still down after `WAKE_RETRY_INTERVAL`. A packet that never went
+                // out keeps the modal up, since it carries the error text.
+                if wake.sent {
+                    self.close_wake(true);
+                    self.render.grid.reveal.restart();
+                }
             }
+            MenuEvent::Confirm => self.close_wake(false),
             MenuEvent::Back | MenuEvent::Secondary => {}
         }
     }
 
     /// Closes Wake modal. Sent wakes keep running in background (timers bring host back).
     /// Unsent wakes drop entirely, leaving error text behind.
-    fn dismiss_wake(&mut self) {
+    ///
+    /// `keep_waiting` sets `silent` so `tick_wake` may re-pop the prompt (pressing "Wake host"),
+    /// vs clearing it so it never comes back on its own (dismissing).
+    fn close_wake(&mut self, keep_waiting: bool) {
         self.nav.screen = Screen::Home;
         let status = match self.screens.wake.as_mut() {
             Some(wake) if wake.sent => {
-                // WHY: set silent=false so tick_wake won't re-pop the prompt after user dismisses.
-                wake.silent = false;
+                wake.silent = keep_waiting;
                 Some(Self::wake_home_status(wake))
             }
             _ => self.screens.wake.take().map(|w| w.reason),

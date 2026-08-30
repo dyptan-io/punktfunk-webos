@@ -110,7 +110,6 @@ pub enum ModalShellKey<'a> {
     Wake {
         name: &'a str,
         mac_empty: bool,
-        sent: bool,
     },
     Pairing {
         digits: [u8; 4],

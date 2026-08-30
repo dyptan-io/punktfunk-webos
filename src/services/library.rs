@@ -90,23 +90,25 @@ pub fn agent_within(
     let config = ureq::Agent::config_builder()
         // Connect is capped by the whole budget too: a 5 s connect inside a 200 ms request is
         // just a slower way to hit the same wall.
-        .timeout_connect(Some(budget.min(crate::services::budget::HANDSHAKE)))
+        .timeout_connect(Some(budget.min(crate::services::budget::PROBE)))
         .timeout_global(Some(budget))
         .build();
     Ok(ureq::Agent::with_parts(config, connector, DefaultResolver::default()))
 }
 
-/// One JSON GET on the management lane, errors pre-classified for the UI (401/403→NotPaired,
-/// a pin mismatch→PinMismatch, everything else by status). Every mgmt read goes through here,
-/// so the classification and the "couldn't read/parse" wording are stated once.
+/// One JSON GET on the management lane under an explicit whole-request `budget`, errors
+/// pre-classified for the UI (401/403→NotPaired, a pin mismatch→PinMismatch, everything else
+/// by status). Every mgmt read goes through here, so the classification and the "couldn't
+/// read/parse" wording are stated once.
 pub(crate) fn get_json<T: serde::de::DeserializeOwned>(
     addr: &str,
     mgmt_port: u16,
     identity: &(String, String),
     pin: Option<[u8; 32]>,
     path: &str,
+    budget: std::time::Duration,
 ) -> Result<T, LibraryError> {
-    let agent = agent(identity, pin)?;
+    let agent = agent_within(identity, pin, budget)?;
     let url = format!("{}{path}", base_url(addr, mgmt_port));
     let body = match agent.get(url.as_str()).call() {
         Ok(mut resp) => resp
@@ -124,8 +126,9 @@ pub(crate) fn fetch_games(
     mgmt_port: u16,
     identity: &(String, String),
     pin: Option<[u8; 32]>,
+    budget: std::time::Duration,
 ) -> Result<Vec<GameEntry>, LibraryError> {
-    get_json(addr, mgmt_port, identity, pin, "/api/v1/library")
+    get_json(addr, mgmt_port, identity, pin, "/api/v1/library", budget)
 }
 
 /// One `fetch_games` result with `host/port/mgmt_port` (so `drain_games` can start art loading).
@@ -136,20 +139,21 @@ pub struct GamesLoaded {
     pub result: Result<Vec<GameEntry>, LibraryError>,
 }
 
-/// Spawns background thread to run `fetch_games` (avoids UI freeze from network blocking).
-/// Safe to switch hosts before finish: receiver drop causes thread's send to fail.
+/// Spawns background thread to run `fetch_games` under `budget` (avoids UI freeze from network
+/// blocking). Safe to switch hosts before finish: receiver drop causes thread's send to fail.
 pub fn load_games_async(
     host: String,
     port: u16,
     mgmt_port: u16,
     identity: (String, String),
     fingerprint: Option<[u8; 32]>,
+    budget: std::time::Duration,
 ) -> std::sync::mpsc::Receiver<GamesLoaded> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("punktfunk-webos-library".into())
         .spawn(move || {
-            let result = fetch_games(&host, mgmt_port, &identity, fingerprint);
+            let result = fetch_games(&host, mgmt_port, &identity, fingerprint, budget);
             let _ = tx.send(GamesLoaded {
                 host,
                 port,

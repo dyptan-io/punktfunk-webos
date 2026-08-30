@@ -94,7 +94,15 @@ fn fetch_actions(
     identity: &(String, String),
     pin: Option<[u8; 32]>,
 ) -> Result<Vec<ActionInfo>, LibraryError> {
-    get_json::<ActionList>(addr, mgmt_port, identity, pin, "/api/v1/actions").map(|l| l.actions)
+    get_json::<ActionList>(
+        addr,
+        mgmt_port,
+        identity,
+        pin,
+        "/api/v1/actions",
+        crate::services::budget::REQUEST,
+    )
+    .map(|l| l.actions)
 }
 
 /// Invokes one action by id, blocking. `Ok(())` means the host accepted it (202) — not that it

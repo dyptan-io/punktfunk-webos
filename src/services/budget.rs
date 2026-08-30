@@ -2,21 +2,16 @@
 //! two different things depending on which screen is in front of it.
 use std::time::Duration;
 
-/// One handshake attempt against a host we already trust: it is either reachable now or it is off,
-/// and a long wait on a black launch scrim buys nothing. Also the per-request TCP connect budget.
-pub const HANDSHAKE: Duration = Duration::from_secs(5);
+/// One reach attempt against a host — a handshake, the reachability dot, the wake flow's
+/// "is it back yet?" probe — all asking "is it up *now*". On a LAN an up host answers well
+/// inside this; an off one fails fast. Also the per-request TCP connect budget.
+pub const PROBE: Duration = Duration::from_secs(3);
 
 /// A host that answered but isn't ready to stream yet: an unpinned connection waiting on the
 /// host's operator to approve this client, and a PIN handshake waiting on someone to walk to
 /// their PC. A shorter budget sent the user
 /// back to the menu with "couldn't connect" against a host that was merely still starting.
 pub const HOST_WAIT: Duration = Duration::from_secs(185);
-
-/// The ambient reachability dot's per-host budget. Short on purpose: an
-/// unreachable host on a LAN fails fast (no route / refused), and one slow enough to miss this is
-/// not meaningfully "available". Not [`HANDSHAKE`] — nobody is waiting on this answer, so it is
-/// allowed to be wrong about a sluggish host rather than hold the sweep open.
-pub const PROBE: Duration = Duration::from_secs(2);
 
 /// The exit action's whole budget — connect, mTLS handshake and POST together.
 ///
@@ -29,9 +24,9 @@ pub const EXIT_ACTION: Duration = Duration::from_millis(200);
 /// One host request that should already have an answer: a library listing, a `/launch`, a
 /// `/serverinfo`. Not a wait for the host to become ready — that is [`HOST_WAIT`], spent by re-trying
 /// requests with this budget rather than by stretching one of them.
-pub const REQUEST: Duration = Duration::from_secs(10);
+pub const REQUEST: Duration = PROBE.saturating_mul(3);
 
-/// Connect budget for the speed test's throwaway session. Longer than [`HANDSHAKE`] because the
+/// Connect budget for the speed test's throwaway session. Longer than [`PROBE`] because the
 /// host brings up a real encode session for it, and the user opened this screen expecting to wait —
 /// but not [`HOST_WAIT`]: a host that needs minutes here has already answered the question.
 pub const SPEED_TEST: Duration = Duration::from_secs(20);

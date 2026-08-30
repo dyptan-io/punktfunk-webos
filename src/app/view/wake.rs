@@ -26,12 +26,11 @@ pub(crate) fn card_rect(screen_w: u32, screen_h: u32, wake: &WakeState, fonts: &
     }
 }
 
-/// Title varies: with a MAC it's an action ("Wake this host?"), without it it's state.
+/// Title varies: with a MAC it's an action ("Wake this host?"), without it it's state. The
+/// prompt never turns into a progress line — pressing Wake closes the modal instead.
 pub(crate) fn title(wake: &WakeState) -> &'static str {
     if wake.mac.is_empty() {
         "Host unreachable"
-    } else if wake.sent {
-        "Waking host…"
     } else {
         "Wake this host?"
     }
@@ -45,8 +44,6 @@ pub(crate) fn status_text(wake: &WakeState) -> String {
              can't be woken from here. It will reconnect automatically once it's back online.",
             wake.name
         )
-    } else if wake.sent {
-        format!("Wake signal sent to {}. Waiting for it to come back online…", wake.name)
     } else {
         format!("{} isn't responding. It may be powered off or asleep.", wake.name)
     }

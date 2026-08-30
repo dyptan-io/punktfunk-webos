@@ -72,7 +72,8 @@ jobs:
         with:
           name: io.dyptan.punktfunk.webos
           path: dist/*.ipk
-          retention-days: ${{ github.event_name == 'release' && 90 || 7 }}
+          # Job hand-off only; release runs get the durable copy attached to the release.
+          retention-days: 7
 
   webosbrew:
     needs: package

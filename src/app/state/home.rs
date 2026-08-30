@@ -421,8 +421,9 @@ impl App {
             .map_or_else(|| host.clone(), |h| h.name.clone());
         // Picking a host is the user's own action, so its progress replaces whatever the last
         // launch left on screen. The reload `App::new` starts is not this — it runs before
-        // `home_status_sticky` is ever set.
-        self.set_home_status(Some(format!("Loading library from {name}…")), false);
+        // `home_status_sticky` is ever set. The line waits out `LIBRARY_STATUS_DELAY` (`tick_animations`
+        // puts it up); the grid's spinner already says "working" in the meantime.
+        self.set_home_status_delayed(format!("Loading library from {name}…"));
         self.library.clear();
         // Dropping the loader stops its worker (its request channel closes), so a host
         // switch abandons in-flight fetches for the previous library.
@@ -446,6 +447,7 @@ impl App {
             mgmt_port,
             identity,
             fingerprint,
+            crate::services::budget::REQUEST,
         ));
     }
 
@@ -454,6 +456,13 @@ impl App {
     /// loading spinner running forever behind the Wake dialog.
     pub(crate) fn library_fetch_in_flight(&self) -> bool {
         self.jobs.games.is_some()
+    }
+
+    /// Whether a sent wake is being waited on with no modal up — the user pressed "Wake host"
+    /// (or `wol_auto` sent silently), so the grid keeps its spinner turning until the host
+    /// answers or `tick_wake` re-pops the dialog.
+    pub(crate) fn wake_wait_in_flight(&self) -> bool {
+        self.nav.screen != crate::app::Screen::Wake && self.screens.wake.as_ref().is_some_and(|w| w.sent && w.silent)
     }
 
     /// Drains `select_host`'s library fetch; switching hosts aborts old fetches safely.

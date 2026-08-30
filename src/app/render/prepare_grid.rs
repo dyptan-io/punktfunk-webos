@@ -513,11 +513,10 @@ impl App {
                     })
                 })
             };
-            let next_frame = self
-                .render
-                .grid
-                .reveal
-                .advance(self.library_fetch_in_flight(), window_ready);
+            let next_frame = self.render.grid.reveal.advance(
+                self.library_fetch_in_flight() || self.wake_wait_in_flight(),
+                window_ready,
+            );
             match next_frame {
                 Some(idx) => updated.push(tile::spinner(idx)),
                 // Everything built behind the spinner becomes visible in this one frame, so

@@ -219,7 +219,6 @@ impl App {
             Screen::Wake => self.screens.wake.as_ref().map(|w| ModalShellKey::Wake {
                 name: &w.name,
                 mac_empty: w.mac.is_empty(),
-                sent: w.sent,
             }),
             Screen::Pairing => Some(ModalShellKey::Pairing {
                 digits: self.screens.pin_digits,

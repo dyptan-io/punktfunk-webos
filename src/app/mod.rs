@@ -53,6 +53,10 @@ pub(crate) const SCROLL_INDICATOR_LIFETIME: Duration =
 /// ambient (a load result, a wake report, a launch error) and none of them stay true
 /// forever, so the grid gets its bottom edge back instead of keeping stale text.
 pub(crate) const HOME_STATUS_LIFETIME: Duration = Duration::from_secs(15);
+
+/// How long a library fetch may run before its progress line is worth putting up — avoids
+/// flashing "Loading library…" for one frame on a fast fetch.
+pub(crate) const LIBRARY_STATUS_DELAY: Duration = Duration::from_secs(1);
 /// Wider than track for rounded caps not to clip.
 const SCROLL_INDICATOR_TILE_W: u32 = 10;
 
@@ -126,6 +130,9 @@ pub struct App {
     /// When the current status line went up, so `tick_animations` can expire it after
     /// `HOME_STATUS_LIFETIME`. Stamped by `set_home_status`, which every writer goes through.
     home_status_shown_at: Option<Instant>,
+    /// A status line waiting out [`LIBRARY_STATUS_DELAY`], see
+    /// [`set_home_status_delayed`](Self::set_home_status_delayed).
+    library_status_due: Option<(Instant, String)>,
     pub(crate) launch_ready: Option<ConnectTarget>,
     pub(crate) launch_anim: Option<Instant>,
     pub(crate) launch_anim_idx: Option<usize>,
@@ -191,10 +198,21 @@ impl App {
         self.keyboard_shown = shown;
     }
 
+    /// A Home status line shown only if the fetch is still running [`LIBRARY_STATUS_DELAY`]
+    /// later (`tick_animations` puts it up).
+    pub(crate) fn set_home_status_delayed(&mut self, line: String) {
+        self.set_home_status(None, false);
+        self.library_status_due = Some((Instant::now(), line));
+    }
+
     /// The Home status line. `sticky` marks a line that must survive the library reload a
     /// fresh menu entry starts — that reload clears the status on success, which otherwise
     /// wiped a launch error a second after the user landed back on the grid.
+    ///
+    /// Also drops any line still waiting out [`LIBRARY_STATUS_DELAY`] so it can't land on top
+    /// of a newer one.
     pub(crate) fn set_home_status(&mut self, status: Option<String>, sticky: bool) {
+        self.library_status_due = None;
         self.home_status_shown_at = status.is_some().then(Instant::now);
         self.home_status = status;
         self.home_status_sticky = sticky;
@@ -255,6 +273,7 @@ impl App {
             home_status_sticky: false,
             toast: None,
             home_status_shown_at: None,
+            library_status_due: None,
             launch_ready: None,
             launch_anim: None,
             launch_anim_idx: None,
@@ -557,7 +576,7 @@ impl App {
         // have run for minutes with no modal up, the bar's job is to report that the
         // host came back, not just that a fetch started.
         if let Some(name) = name {
-            self.set_home_status(Some(format!("{name} is back online — loading its library…")), false);
+            self.set_home_status_delayed(format!("{name} is back online — loading its library…"));
         }
     }
 
@@ -701,6 +720,17 @@ impl App {
         // Only the expiring frame reports `animating` — the idle branch's `wait_for_event`
         // still times out at `TICK_BUDGET`, so this runs on schedule without holding the
         // SoC at 60Hz for the whole 15s.
+        if let Some((_, line)) = self
+            .library_status_due
+            .take_if(|(t, _)| t.elapsed() >= LIBRARY_STATUS_DELAY)
+        {
+            // A fetch that already landed needs no line — and must not overwrite whatever
+            // `drain_games` put up instead. Only a line that actually goes up is a redraw.
+            if self.library_fetch_in_flight() {
+                self.set_home_status(Some(line), false);
+                animating = true;
+            }
+        }
         if self
             .home_status_shown_at
             .is_some_and(|t| t.elapsed() >= HOME_STATUS_LIFETIME)
