@@ -161,6 +161,17 @@ pub enum DrawCmd {
         dst: RectF,
         alpha: u8,
     },
+    /// Subtracts `tile`'s alpha from what is already drawn, per pixel: `dst *= 1 - srcA` for
+    /// colour and alpha alike, so a fully opaque mask pixel leaves the target transparent.
+    ///
+    /// The one command that removes rather than adds. It is how a still dissolves into the
+    /// video plane underneath the graphics plane: alpha-mod is per *blit*, so shaping a fade
+    /// with it means splitting the image into pieces and showing their edges, where a mask
+    /// stretched over the whole image is a continuous gradient.
+    Erase {
+        tile: TileId,
+        dst: Rect,
+    },
     Fill {
         rect: Rect,
         color: Color,

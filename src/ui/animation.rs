@@ -173,6 +173,36 @@ pub fn anim_frac_smooth_at(anim: Option<Instant>, dur: Duration, now: Instant) -
     frac_at(anim, dur, now, smoothstep)
 }
 
+/// A staggered fade across a surface: one curve, started up to `span` later depending on how
+/// far along the sweep the element sits. Whoever owns the surface decides what `progress`
+/// means — a card's diagonal position in the grid, a texel's position in an image — and the
+/// motion is the same either way, which is the point: the library's cards arrive on one of
+/// these and the launch backdrop leaves on one, in the same direction.
+///
+/// Smoothstep rather than the cubic ease-out the pops use: over a long fade `1-(1-t)³` is
+/// near-opaque a sixth of the way through, which lands as a pop.
+#[derive(Clone, Copy)]
+pub struct Wave {
+    /// How much later the far end of the sweep starts than the near end.
+    pub span: Duration,
+    /// One element's own fade, once its turn comes.
+    pub fade: Duration,
+}
+
+impl Wave {
+    /// How long the element at `progress` (0 at the corner the wave starts from, 1 at the
+    /// opposite one) waits before its own fade begins.
+    pub fn delay(self, progress: f32) -> Duration {
+        self.span.mul_f32(progress.clamp(0.0, 1.0))
+    }
+
+    /// That element's 0..=1 progress at `now`, for a wave that started at `start`.
+    pub fn frac(self, start: Option<Instant>, progress: f32, now: Instant) -> f32 {
+        anim_frac_smooth_at(start.map(|t| t + self.delay(progress)), self.fade, now)
+    }
+
+}
+
 /// Scales `base` by `1.0 + growth * frac` around its own center — the GPU
 /// zoom-in technique behind every focus-pop in the app. The source tile is
 /// rasterized once, at its literal size; only this destination rect changes

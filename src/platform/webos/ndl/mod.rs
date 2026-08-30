@@ -130,6 +130,7 @@ impl EventSeq {
     fn count(&self) -> u64 {
         self.seq.load(Ordering::SeqCst)
     }
+
 }
 
 static LOAD_COMPLETED: EventSeq = EventSeq::new();
@@ -148,6 +149,9 @@ static FRAME_FED: EventSeq = EventSeq::new();
 /// and there is no later callback that takes it back. Cleared only by [`arm_load`], which is to
 /// say by a NEW load.
 static FATAL: EventSeq = EventSeq::new();
+/// When the armed load's first frame was accepted — [`FRAME_FED`]'s clock, for the holds that
+/// are measured from the picture rather than from the load.
+static FIRST_FRAME_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// Records v2 load-state transitions so loads, feeds and the UI reveal can wait on them.
 extern "C" fn on_load_state(state: c_int, num: c_longlong, detail: *const c_char) {
@@ -193,6 +197,7 @@ extern "C" fn on_load_state(state: c_int, num: c_longlong, detail: *const c_char
 /// Takes the counters as the baseline for the load about to be issued. Call immediately before
 /// every load, and after an unload so [`playing`] stops reporting a dead one.
 fn arm_load() {
+    *FIRST_FRAME_AT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     LOAD_COMPLETED.arm();
     PLAYING.arm();
     FRAME_FED.arm();
@@ -212,16 +217,42 @@ pub fn playing() -> bool {
     PLAYING.fired()
 }
 
-/// Whether a frame of the current load has reached the decoder: the plane has a picture and is
-/// safe to uncover. Both NDL generations report through this, so `runtime`'s reveal gate is
-/// generation-blind.
+/// Whether a frame of the current load has reached the decoder: the plane is safe to uncover.
+/// Both NDL generations report through this, so `runtime`'s reveal gate is generation-blind.
 pub fn presenting() -> bool {
     FRAME_FED.fired()
 }
 
+/// How long past its first accepted frame a load has a picture on the panel.
+///
+/// NDL reports no first-*present* event on either generation — v2 has load states only
+/// (`PLAYING` lands before anything is fed) and v1's frame callback is a pipeline-alive echo.
+/// What it does have is a standing present cushion: `DirectMedia` presents an access unit at
+/// its PTS, a couple of frames behind the feed (see `docs/NOTES.md` on present lead). So the
+/// first accepted frame is decode-queued, not visible, and anything crossfading to live video
+/// on [`presenting`] alone crossfades into black. Measured from that first frame, so it holds
+/// the *pipeline* only — waiting for the host's first delivery has its own budget
+/// (`app::hero::FIRST_FRAME_WAIT`).
+const FIRST_PICTURE_HOLD: Duration = Duration::from_millis(250);
+
+/// Whether the panel should be *showing* the current load, not just holding its first frame —
+/// what a crossfade from a still to live video has to wait for. See [`FIRST_PICTURE_HOLD`].
+pub fn presented() -> bool {
+    first_frame_at().is_some_and(|t| t.elapsed() >= FIRST_PICTURE_HOLD)
+}
+
+/// When the armed load's first frame was accepted, if one has been.
+fn first_frame_at() -> Option<Instant> {
+    *FIRST_FRAME_AT.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Records the first frame of the armed load (see [`arm_load`]); `true` if it was the first.
 fn mark_frame_fed() -> bool {
-    FRAME_FED.bump_first()
+    let first = FRAME_FED.bump_first();
+    if first {
+        *FIRST_FRAME_AT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
+    }
+    first
 }
 
 /// [`mark_frame_fed`] plus the log line both generations emit; `since` is the handle's load

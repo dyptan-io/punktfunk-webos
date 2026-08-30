@@ -86,6 +86,10 @@ pub const MODAL_SHADOW: TileId = TileId(29);
 /// have held a baked shadow.
 pub const PANEL_SHADOW: TileId = TileId(30);
 
+/// The dissolve mask the launch's hero leaves behind: a small alpha ramp stretched over the
+/// screen, which `DrawCmd::Erase` subtracts from what is already drawn.
+pub const HERO_MASK: TileId = TileId(31);
+
 /// First id of the row band — one slot per on-screen row of whichever scrolling list is open
 /// (see [`list_row`]). Fixed rather than interned: the lists are short, their rows are
 /// addressed by position, and only one is up at a time.
@@ -210,6 +214,7 @@ impl Entrance {
         let dur = self.kind.duration();
         let frac = match self.kind {
             EntranceKind::Pop => crate::ui::animation::anim_frac_at(clock, dur, now),
+            // The wave's own curve — its stagger is already baked into `start`.
             EntranceKind::Reveal => crate::ui::animation::anim_frac_smooth_at(clock, dur, now),
         };
         (frac, self.kind.shrink())
@@ -225,7 +230,7 @@ impl EntranceKind {
     pub fn duration(self) -> std::time::Duration {
         match self {
             Self::Pop => crate::app::CARD_POP,
-            Self::Reveal => crate::app::CARD_REVEAL_FADE,
+            Self::Reveal => crate::app::GRID_REVEAL_WAVE.fade,
         }
     }
 

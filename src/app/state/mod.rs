@@ -42,7 +42,11 @@ impl App {
     /// background is what normally hides it. Clearing transparent instead leaves the graphics
     /// plane carrying only the card, with the picture showing through everywhere else.
     pub(crate) fn frame_clear_color(&self) -> crate::ui::render::Color {
-        if crate::app::screens::over_video(self.nav.screen) && self.hdr_pattern_presenting() {
+        // The launch's hero dissolves into the picture behind it (`app::hero`), so the plane
+        // has to be uncovered for the whole dissolve rather than at the hand-off.
+        if self.render.hero.dissolving()
+            || (crate::app::screens::over_video(self.nav.screen) && self.hdr_pattern_presenting())
+        {
             crate::ui::render::Color::RGBA(0, 0, 0, 0)
         } else {
             crate::ui::theme::palette().bg

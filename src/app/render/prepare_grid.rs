@@ -14,7 +14,7 @@ use crate::app::library::Library;
 use crate::app::render::ctx::RenderCtx;
 use crate::app::render::tile;
 use crate::app::state::cardmenu::CardMenuRow;
-use crate::app::{view, App, HomeFocus, Screen, CARD_REVEAL_WAVE_STEP};
+use crate::app::{view, App, HomeFocus, Screen, GRID_REVEAL_WAVE};
 use crate::ui;
 use crate::ui::cache;
 
@@ -527,11 +527,18 @@ impl App {
                 // and by the time a scroll reaches them the wave is long over.
                 None if self.render.grid.reveal.is_revealed() => {
                     let now = Instant::now();
+                    // Normalized over the window being revealed, so the sweep takes the wave's
+                    // span whatever the column count and however many rows were built.
+                    let last_step = build_window
+                        .clone()
+                        .last()
+                        .map_or(1, |idx| layout.diagonal_step(idx))
+                        .max(1) as f32;
                     // Split borrow: the layout reads `library`, the arming writes `render`.
                     let grid = &mut self.render.grid;
                     for idx in build_window {
                         if let Some(id) = layout.pin_id_at(&self.library.games, idx) {
-                            let delay = CARD_REVEAL_WAVE_STEP * layout.diagonal_step(idx) as u32;
+                            let delay = GRID_REVEAL_WAVE.delay(layout.diagonal_step(idx) as f32 / last_step);
                             grid.arm_reveal_wave(id, now, delay);
                         }
                     }

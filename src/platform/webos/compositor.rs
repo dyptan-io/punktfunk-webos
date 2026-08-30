@@ -18,6 +18,28 @@ use crate::ui::render::{Color, Corners, DrawCmd, FrostMask, FrostPane, Rect, Til
 use crate::ui::theme::Glass;
 use crate::ui::Painter;
 
+/// Logged once per process: a renderer without custom blend modes cannot punch a hole in the
+/// graphics plane, and repeating that per frame would bury the log.
+static BLEND_WARNED: std::sync::Once = std::sync::Once::new();
+
+/// The blend behind [`DrawCmd::Erase`]: `dst = dst * (1 - srcA)`, colour and alpha alike, so a
+/// mask subtracts what is already drawn instead of painting over it. Composed per call — it is
+/// a pure function of its six arguments, and SDL hands back a packed value rather than
+/// allocating anything.
+fn erase_blend() -> sdl2::sys::SDL_BlendMode {
+    use sdl2::sys::{SDL_BlendFactor::*, SDL_BlendOperation::*};
+    unsafe {
+        sdl2::sys::SDL_ComposeCustomBlendMode(
+            SDL_BLENDFACTOR_ZERO,
+            SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+            SDL_BLENDOPERATION_ADD,
+            SDL_BLENDFACTOR_ZERO,
+            SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+            SDL_BLENDOPERATION_ADD,
+        )
+    }
+}
+
 fn to_sdl_rect(r: Rect) -> sdl2::rect::Rect {
     sdl2::rect::Rect::new(r.x(), r.y(), r.width(), r.height())
 }
@@ -728,6 +750,7 @@ impl Compositor {
                 }
                 // Through the bits: the fractional destination is the whole point of this variant,
                 // so rounding it here would let a sub-pixel pan reuse a stale capture.
+                DrawCmd::Erase { tile, dst } => (5u8, tile, gen(tile), rect_key(*dst)).hash(&mut h),
                 DrawCmd::TexF { tile, dst, alpha } => (
                     2u8,
                     tile,
@@ -831,6 +854,28 @@ impl Compositor {
                     canvas
                         .copy(tex, Some(to_sdl_rect(*src)), Some(to_sdl_rect(*dst)))
                         .map_err(|e| anyhow::anyhow!("copy cropped {tile:?}: {e}"))?;
+                }
+                DrawCmd::Erase { tile, dst } => {
+                    let Some(tex) = self.faded_tile(tile, 0xff) else {
+                        continue;
+                    };
+                    // Restored right after: every other command on this texture — and every
+                    // other texture — composites normally.
+                    let raw = tex.raw();
+                    let restore = unsafe { sdl2::sys::SDL_SetTextureBlendMode(raw, erase_blend()) } == 0;
+                    canvas
+                        .copy(tex, None, Some(to_sdl_rect(*dst)))
+                        .map_err(|e| anyhow::anyhow!("erase {tile:?}: {e}"))?;
+                    if restore {
+                        unsafe { sdl2::sys::SDL_SetTextureBlendMode(raw, sdl2::sys::SDL_BlendMode::SDL_BLENDMODE_BLEND) };
+                    } else {
+                        // No custom blend on this renderer: the mask blends normally instead,
+                        // so the dissolve fades to the mask's own black rather than to the
+                        // plane. Same shape, no punch-through.
+                        BLEND_WARNED.call_once(|| {
+                            tracing::warn!("SDL custom blend unsupported — hero dissolve falls back to fading to black");
+                        });
+                    }
                 }
                 DrawCmd::TexF { tile, dst, alpha } => {
                     let Some(tex) = self.faded_tile(tile, *alpha) else {

@@ -252,7 +252,10 @@ pub(super) fn run_ui_flow(
                 Some((h, _, _)) if !h.is_finished() => Connect::Pending,
                 _ => Connect::Done,
             };
-            let presenting = crate::platform::webos::ndl::presenting();
+            // `presented`, not `presenting`: the hero's exit crossfades into the video plane,
+            // and a frame merely accepted by NDL is still behind its present cushion — fading
+            // out on that lands the dissolve on black (see `ndl::FIRST_PICTURE_FRAMES`).
+            let presenting = crate::platform::webos::ndl::presented();
             if app.render.hero.handover_ready(t.elapsed(), connect, presenting) {
                 // Where the launch actually takes — not `confirm_grid_card`, which also fires
                 // for one that bounces into the Wake dialog or fails to pair. A failed launch
@@ -461,6 +464,20 @@ pub(super) fn run_ui_flow(
             } else if let Some(pm) = tiles.get(id) {
                 compositor.upload(texture_creator, id, pm, id == tile::SIDEBAR)?;
             }
+        }
+        // The launch backdrop's dissolve: its mask is the one texture that changes every frame
+        // it is up, so it is uploaded here rather than through the tile store (which caches by
+        // content) — a few KB, for the second or so the wave runs.
+        if app.render.hero.dissolving() {
+            let (mw, mh, px) = app.render.hero.dissolve_mask(Instant::now());
+            compositor.upload_raw(
+                texture_creator,
+                tile::HERO_MASK,
+                mw,
+                mh,
+                sdl2::pixels::PixelFormatEnum::ABGR8888,
+                px,
+            )?;
         }
         let mut cmds = app.draw_list(&tiles, display_mode.w as u32, display_mode.h as u32, fonts);
         // Appended into the same single draw list/present as the rest of the

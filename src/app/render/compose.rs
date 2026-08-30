@@ -875,6 +875,14 @@ impl App {
         screen_h: u32,
         fonts: &ui::text::Fonts,
     ) -> ui::render::DrawList {
+        // The hero dissolving into live video is the whole frame: the menu, the launch card
+        // and the black it faded to are all behind the picture the wave is uncovering, and
+        // the graphics plane is cleared transparent under it (`App::frame_clear_color`).
+        if self.render.hero.dissolving() {
+            let mut cmds = Vec::new();
+            self.compose_hero(screen_w, screen_h, &mut cmds);
+            return cmds;
+        }
         let input = self.render_input();
         let mut cmds = Vec::new();
         let grid_x = ui::widgets::SIDEBAR_W as i32;
@@ -978,7 +986,14 @@ impl App {
     /// rather than from a lit image.
     fn compose_hero(&self, screen_w: u32, screen_h: u32, cmds: &mut ui::render::DrawList) {
         let Some(hero) = self.render.hero.visible() else { return };
-        let f = self.render.hero.opacity();
+        // Leaving over live video, the wave in the mask below is the fade — the image itself
+        // holds whatever it faded in to, so the two are not fighting over one alpha.
+        let dissolving = self.render.hero.dissolving();
+        let f = if dissolving {
+            self.render.hero.fade_in()
+        } else {
+            self.render.hero.opacity()
+        };
         cmds.push(DrawCmd::TexF {
             tile: tile::HERO,
             dst: hero::hero_pan_dst(
@@ -990,9 +1005,25 @@ impl App {
             ),
             alpha: (255.0 * f) as u8,
         });
+        // Two motions at once on the way out: the scrim deepens to black over the whole
+        // image while the wave takes it away piece by piece.
+        let scrim = if dissolving {
+            self.render.hero.exit_scrim()
+        } else {
+            hero::HERO_SCRIM_ALPHA * f
+        };
         cmds.push(DrawCmd::Fill {
             rect: Rect::new(0, 0, screen_w, screen_h),
-            color: crate::ui::render::Color::RGBA(0, 0, 0, (hero::HERO_SCRIM_ALPHA * f) as u8),
+            color: crate::ui::render::Color::RGBA(0, 0, 0, scrim as u8),
         });
+        if dissolving {
+            // Both of the above taken away again, per pixel, as the wave passes: the scrim
+            // goes with the art it was dimming, and what is left is the picture on the video
+            // plane behind the graphics plane.
+            cmds.push(DrawCmd::Erase {
+                tile: tile::HERO_MASK,
+                dst: Rect::new(0, 0, screen_w, screen_h),
+            });
+        }
     }
 }
