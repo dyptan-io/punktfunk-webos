@@ -15,8 +15,9 @@ pub struct RenderInput<'a> {
     pub entries: &'a [HostEntry],
     /// A host is selected (grid has content rather than the "no host" hint).
     pub host_selected: bool,
-    /// `home_status` is set (the bottom status block is drawn).
-    pub has_status: bool,
+    /// The bottom status block's opacity, or `None` where no line is up (see
+    /// `App::home_status_alpha`).
+    pub status_alpha: Option<f32>,
     /// The grid's cards are built and revealed (past the load spinner).
     pub grid_reveal_ready: bool,
     /// The focused row's press dip (see `App::press`) — the sidebar's rows are buttons.

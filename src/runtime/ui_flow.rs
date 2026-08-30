@@ -459,7 +459,10 @@ pub(super) fn run_ui_flow(
                     )?;
                 }
             } else if let Some(pm) = tiles.get(id) {
-                compositor.upload(texture_creator, id, pm, id == tile::SIDEBAR)?;
+                // The sidebar strip is the one tile that covers everything under it — and
+                // only where the look's panels are opaque (`ui::theme::panels_opaque`).
+                let opaque = id == tile::SIDEBAR && crate::ui::theme::panels_opaque();
+                compositor.upload(texture_creator, id, pm, opaque)?;
             }
         }
         let mut cmds = app.draw_list(&tiles, display_mode.w as u32, display_mode.h as u32, fonts);

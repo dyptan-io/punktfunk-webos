@@ -33,6 +33,10 @@ pub(crate) struct RenderState {
     pub(crate) hover_close: bool,
     pub(crate) sidebar_gen: u64,
     pub(crate) sidebar_dirty: bool,
+    /// The theme epoch the sidebar strip was baked in. Its own field because the strip is
+    /// versioned by `sidebar_gen` rather than by `cache::version`, so the epoch that stales
+    /// every other tile passes it by — and its fill is one of the things a look changes.
+    pub(crate) sidebar_styled_at: u64,
     /// Tiles whose GPU texture this frame released — drained by the render loop, which does
     /// the actual `drop_tile`. Nothing to do with the style: a Theme pick stales tiles through
     /// `ui::theme::epoch` folded into every cache version, not through this list.
@@ -55,6 +59,7 @@ impl Default for RenderState {
             hover_close: false,
             sidebar_gen: 0,
             sidebar_dirty: true,
+            sidebar_styled_at: crate::ui::theme::epoch(),
             evicted_tiles: Vec::new(),
             modal: modal::ModalState::default(),
             // Hand-written, not derived: `GridState`'s own `Default` starts the tile-id counter

@@ -47,9 +47,8 @@ pub(crate) const CARD_POP: Duration = Duration::from_millis(300);
 pub(crate) const CARD_POP_SHRINK: f32 = 0.14;
 pub(crate) const SCROLL_INDICATOR_HOLD: Duration = Duration::from_millis(700);
 pub(crate) const SCROLL_INDICATOR_FADE: Duration = Duration::from_millis(350);
-pub(crate) const SCROLL_INDICATOR_LIFETIME: Duration =
-    Duration::from_millis(SCROLL_INDICATOR_HOLD.as_millis() as u64 + SCROLL_INDICATOR_FADE.as_millis() as u64);
-/// How long a Home status line stays up before it clears itself. Every line here is
+/// How long a Home status line stays up at full opacity before it fades out. The fade
+/// itself is [`OVERLAY_FADE`], the same curve the toast notification leaves on. Every line here is
 /// ambient (a load result, a wake report, a launch error) and none of them stay true
 /// forever, so the grid gets its bottom edge back instead of keeping stale text.
 pub(crate) const HOME_STATUS_LIFETIME: Duration = Duration::from_secs(15);
@@ -216,6 +215,26 @@ impl App {
         self.home_status_shown_at = status.is_some().then(Instant::now);
         self.home_status = status;
         self.home_status_sticky = sticky;
+    }
+
+    /// The open modal's scroll indicator this frame, on the same hold-then-fade as every
+    /// other self-expiring overlay. `None` once it is spent.
+    pub(crate) fn scroll_indicator_alpha(&self) -> Option<f32> {
+        ui::fade::hold_alpha(
+            self.render.scroll.shown_at?,
+            SCROLL_INDICATOR_HOLD,
+            SCROLL_INDICATOR_FADE,
+        )
+    }
+
+    /// The status line's opacity this frame, or `None` once it is spent — the toast's clock
+    /// ([`ui::fade::hold_alpha`]), so the two transient lines leave the screen the same way.
+    pub(crate) fn home_status_alpha(&self) -> Option<f32> {
+        ui::fade::hold_alpha(
+            self.home_status_shown_at?,
+            HOME_STATUS_LIFETIME,
+            crate::ui::fade::OVERLAY_FADE,
+        )
     }
 
     /// Queues a transient toast. Replaces any still waiting — a second action before the loop
@@ -731,15 +750,15 @@ impl App {
                 animating = true;
             }
         }
-        if self
-            .home_status_shown_at
-            .is_some_and(|t| t.elapsed() >= HOME_STATUS_LIFETIME)
-        {
-            self.set_home_status(None, false);
+        // Every frame of the fade out is a redraw; the frame after it is the clear.
+        if self.home_status_shown_at.is_some_and(|t| t.elapsed() >= HOME_STATUS_LIFETIME) {
+            if self.home_status_alpha().is_none() {
+                self.set_home_status(None, false);
+            }
             animating = true;
         }
-        if let Some(t) = self.render.scroll.shown_at {
-            if t.elapsed() >= SCROLL_INDICATOR_LIFETIME {
+        if self.render.scroll.shown_at.is_some() {
+            if self.scroll_indicator_alpha().is_none() {
                 self.render.scroll.shown_at = None;
             }
             animating = true;

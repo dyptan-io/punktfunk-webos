@@ -12,6 +12,23 @@ use std::time::{Duration, Instant};
 /// the same.
 pub const OVERLAY_FADE: Duration = Duration::from_millis(400);
 
+/// A self-expiring overlay's opacity: opaque until `hold` has passed since `shown`, then a
+/// `fade`-long fade out, and `None` once it is spent — the caller's cue to drop whatever it
+/// was showing.
+///
+/// One curve for everything that puts itself away (the toast, the Home status line, a
+/// modal's scroll indicator), for the same reason the modals share [`ModalFade`]: three
+/// copies of this shape had already drifted into two different curves, one of them linear
+/// for no stated reason.
+pub fn hold_alpha(shown: Instant, hold: Duration, fade: Duration) -> Option<f32> {
+    if shown.elapsed() >= hold + fade {
+        return None;
+    }
+    // `Instant::elapsed` saturates at zero, so the fade's clock reads as unstarted — and the
+    // alpha as a flat 1.0 — for the whole hold.
+    Some(1.0 - anim_frac(Some(shown + hold), fade))
+}
+
 /// Modal open. Short: the card is the response to a keypress, and delay there reads as
 /// a slow TV, not as an animation.
 pub const MODAL_FADE: Duration = Duration::from_millis(75);

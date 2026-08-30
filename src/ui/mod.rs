@@ -40,7 +40,6 @@ pub use widget::{rasterize, rasterize_into, StatefulWidget, TileWidget, Widget};
 /// text cache, the layout solver and two neighbouring widgets in the same function; making
 /// each of those a qualified path buys nothing inside the library that draws them all.
 pub(crate) mod prelude {
-    pub(crate) use crate::ui::animation::*;
     pub(crate) use crate::ui::fade::*;
     pub(crate) use crate::ui::focus::Dir;
     pub(crate) use crate::ui::layout::*;
