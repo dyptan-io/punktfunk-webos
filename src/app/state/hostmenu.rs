@@ -72,8 +72,8 @@ fn host_menu_row(action: HostAction, paired: bool, power: Option<ExitAction>) ->
         // The hint goes in the value column like every other Action row's, rather than
         // being parenthesised into the label.
         HostAction::Connect => FocusRow::action_with_value(icons::ICON_TV, "Connect", "pairs first"),
-        HostAction::Pair => FocusRow::action(icons::ICON_LOCK, "Pair with PIN…"),
-        HostAction::SpeedTest => FocusRow::action(icons::ICON_SIGNAL, "Test network speed…"),
+        HostAction::Pair => FocusRow::action(icons::ICON_LOCK, "Pair with PIN"),
+        HostAction::SpeedTest => FocusRow::action(icons::ICON_SIGNAL, "Test network speed"),
         // The one row with a trailing button: Confirm acts now, the ⋯ holds this host's
         // power settings (`Screen::HostPower`). Same affordance and the same
         // Right-to-reach-it gesture as a sidebar host row's. Plain, never `danger()`: red is
@@ -82,7 +82,7 @@ fn host_menu_row(action: HostAction, paired: bool, power: Option<ExitAction>) ->
         HostAction::Power => {
             FocusRow::action(icons::ICON_POWER, power_row_label(power)).with_trailing(host_menu_trailing(action))
         }
-        HostAction::Edit => FocusRow::action(icons::ICON_EDIT, "Edit address…"),
+        HostAction::Edit => FocusRow::action(icons::ICON_EDIT, "Edit address"),
         HostAction::Forget => FocusRow::action(icons::ICON_DELETE, "Forget host").danger(),
     }
 }
