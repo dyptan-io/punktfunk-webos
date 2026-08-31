@@ -99,10 +99,8 @@ pub struct HostRowState {
 /// `selected_index` highlights the active/connected host; `online` is index-aligned with
 /// `entries`.
 ///
-/// The strip takes `glass_fill` and is left translucent: a glass look carries across the
-/// whole menu rather than stopping at the nav column, and the frosted pane the compose path
-/// pushes under it (`compose_sidebar`) is what the tint then sits on. No lit edge against
-/// the grid — a rule there reads as a seam.
+/// Opaque on every theme, glass included — no lit edge against the grid, a rule there
+/// reads as a seam.
 pub fn draw(
     c: &mut Canvas,
     entries: &[HostEntry],
@@ -113,7 +111,7 @@ pub fn draw(
     let screen_h = c.screen_h;
     c.painter.fill_rect(
         Rect::new(0, 0, ui::widgets::SIDEBAR_W, screen_h),
-        ui::theme::glass_fill(),
+        ui::theme::palette().panel,
     );
     // Logo is 1:1 (no runtime scaling); bundled at exact display size.
     if let Some(logo) = crate::app::assets::logo_pixmap() {

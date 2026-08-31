@@ -448,9 +448,8 @@ pub(super) fn run_ui_flow(
                     )?;
                 }
             } else if let Some(pm) = tiles.get(id) {
-                // The sidebar strip is the one tile that covers everything under it — and
-                // only where the look's panels are opaque (`ui::theme::panels_opaque`).
-                let opaque = id == tile::SIDEBAR && crate::ui::theme::panels_opaque();
+                // The sidebar strip is the one tile that covers everything under it.
+                let opaque = id == tile::SIDEBAR;
                 compositor.upload(texture_creator, id, pm, opaque)?;
             }
         }

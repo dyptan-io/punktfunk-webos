@@ -176,14 +176,11 @@ impl App {
         });
     }
 
-    /// Nav column: pane and strip. Composed after grid (pane order matters for blur backdrop).
+    /// Nav column strip — opaque on every theme, so no frost pane under it.
     fn compose_sidebar(cmds: &mut Vec<DrawCmd>, screen_h: u32) {
-        let strip = Rect::new(0, 0, ui::widgets::SIDEBAR_W, screen_h);
-        // Square: three of the column's edges are the display's own.
-        Self::push_frost(cmds, strip, 0, 0xff);
         cmds.push(DrawCmd::Tex {
             tile: tile::SIDEBAR,
-            dst: strip,
+            dst: Rect::new(0, 0, ui::widgets::SIDEBAR_W, screen_h),
             alpha: 0xff,
         });
     }

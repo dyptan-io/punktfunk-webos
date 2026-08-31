@@ -204,9 +204,3 @@ pub fn epoch() -> u64 {
 pub fn glass_fill() -> Color {
     glass().map_or(palette().panel, |g| g.panel)
 }
-
-/// Whether a panel filled with [`glass_fill`] covers what is under it — which is also what
-/// decides whether such a tile can be uploaded as an opaque texture.
-pub fn panels_opaque() -> bool {
-    glass_fill().a == 0xff
-}
