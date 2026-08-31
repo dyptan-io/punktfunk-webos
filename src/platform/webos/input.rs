@@ -100,6 +100,7 @@ impl StickMenuNav {
 /// [`WEBOS_RED_KEYCODE`].
 pub const WEBOS_GREEN_SCANCODE: i32 = 487;
 pub const WEBOS_YELLOW_SCANCODE: i32 = 488;
+pub const WEBOS_BLUE_SCANCODE: i32 = 489;
 
 /// webOS Home key (`SDL_SCANCODE_WEBOS_HOME = 384`). Polled to re-open the launcher once
 /// `KEYS_HOME` capture stops the OS doing it. A USB keyboard's Super key is Home-class and

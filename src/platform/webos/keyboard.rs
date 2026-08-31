@@ -249,6 +249,79 @@ pub fn key_event(scancode: Scancode, pressed: bool) -> Option<InputEvent> {
     Some(raw_key_event(vk_code(scancode)?, pressed))
 }
 
+/// `VK_SHIFT` — generic, not sided, since the host only cares that some shift is down while the
+/// bracketed key press lands.
+const VK_SHIFT: u32 = 0x10;
+
+/// US-QWERTY `char` -> `(Scancode, needs_shift)`, for everything that isn't a letter (letters
+/// are their own case below). Unshifted/shifted pairs share one arm so the two can't drift
+/// apart the way two separate tables could.
+fn char_scancode(c: char) -> Option<(Scancode, bool)> {
+    Some(match c {
+        '0' | ')' => (Scancode::Num0, c == ')'),
+        '1' | '!' => (Scancode::Num1, c == '!'),
+        '2' | '@' => (Scancode::Num2, c == '@'),
+        '3' | '#' => (Scancode::Num3, c == '#'),
+        '4' | '$' => (Scancode::Num4, c == '$'),
+        '5' | '%' => (Scancode::Num5, c == '%'),
+        '6' | '^' => (Scancode::Num6, c == '^'),
+        '7' | '&' => (Scancode::Num7, c == '&'),
+        '8' | '*' => (Scancode::Num8, c == '*'),
+        '9' | '(' => (Scancode::Num9, c == '('),
+        ' ' => (Scancode::Space, false),
+        ';' | ':' => (Scancode::Semicolon, c == ':'),
+        '=' | '+' => (Scancode::Equals, c == '+'),
+        ',' | '<' => (Scancode::Comma, c == '<'),
+        '-' | '_' => (Scancode::Minus, c == '_'),
+        '.' | '>' => (Scancode::Period, c == '>'),
+        '/' | '?' => (Scancode::Slash, c == '?'),
+        '`' | '~' => (Scancode::Grave, c == '~'),
+        '[' | '{' => (Scancode::LeftBracket, c == '{'),
+        '\\' | '|' => (Scancode::Backslash, c == '|'),
+        ']' | '}' => (Scancode::RightBracket, c == '}'),
+        '\'' | '"' => (Scancode::Apostrophe, c == '"'),
+        _ => return None,
+    })
+}
+
+/// US-QWERTY `char` -> `(vk_code, needs_shift)`, off the same `vk_code` table a real scancode
+/// forwards through — one VK table, not a second one hand-copied by `char` instead of
+/// `Scancode`. Only the printable set an on-screen keyboard commits as text; Enter/Backspace/
+/// arrows etc. arrive as ordinary scancode `KeyDown`/`KeyUp` (see the module doc on
+/// `runtime::input::text_input_screen`), not through this path.
+fn char_vk(c: char) -> Option<(u32, bool)> {
+    match c {
+        // ASCII and VK agree on A-Z by construction (both are `0x41..=0x5A`), so this skips
+        // `vk_code`/`Scancode` entirely rather than a coincidence worth hiding behind them.
+        'a'..='z' => return Some((c.to_ascii_uppercase() as u32, false)),
+        'A'..='Z' => return Some((c as u32, true)),
+        _ => {}
+    }
+    let (sc, shift) = char_scancode(c)?;
+    Some((vk_code(sc)?, shift))
+}
+
+/// Turns one `Event::TextInput`'s committed string (from the webOS on-screen keyboard) into the
+/// key down/up sequence a real keyboard typing it would have produced, shift bracketed around
+/// characters that need it. Characters with no US-QWERTY key (emoji, non-Latin scripts the OSK
+/// may still commit) are silently dropped — there's no VK for them to forward.
+pub fn text_key_events(text: &str) -> Vec<InputEvent> {
+    // 4 events/char covers the shifted case (shift down, key down, key up, shift up); the
+    // common unshifted case just leaves the extra capacity unused.
+    let mut events = Vec::with_capacity(text.len() * 4);
+    for (vk, shift) in text.chars().filter_map(char_vk) {
+        if shift {
+            events.push(raw_key_event(VK_SHIFT, true));
+        }
+        events.push(raw_key_event(vk, true));
+        events.push(raw_key_event(vk, false));
+        if shift {
+            events.push(raw_key_event(VK_SHIFT, false));
+        }
+    }
+    events
+}
+
 /// Same wire event from an already-mapped VK — for [`super::evdev`], whose keys come
 /// off evdev and never pass through an SDL scancode.
 pub fn raw_key_event(code: u32, pressed: bool) -> InputEvent {

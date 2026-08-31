@@ -105,12 +105,11 @@ pub(super) fn run_ui_flow(
     let mut input = UiInput::default();
     // Owned handle (it just clones the video subsystem's refcount), so taking it
     // here doesn't hold a borrow on `canvas` for the rest of the loop.
-    let text_input = canvas.window().subsystem().text_input();
+    let mut text_input = TextInputController::new(canvas.window().subsystem().text_input());
     tracing::info!(
         "on-screen keyboard support: {}",
         text_input.has_screen_keyboard_support()
     );
-    let mut text_input_active = false;
     // Redraw-on-change: outside a running animation (which the tick below asks
     // `App` about separately), pixels only ever change in reaction to an SDL
     // event or a discovery/art/library background result — anything else is a
@@ -355,30 +354,18 @@ pub(super) fn run_ui_flow(
             }
         }
         // Track actual keyboard state (user can dismiss while field focused; moves card).
-        let keyboard_shown = text_input.is_screen_keyboard_shown(canvas.window());
+        let keyboard_shown = text_input.is_shown(canvas.window());
         if keyboard_shown != app.keyboard_shown {
             app.set_keyboard_shown(keyboard_shown);
             dirty = true;
             tracing::debug!("on-screen keyboard shown: {keyboard_shown}");
         }
-        // Toggle text input (edge-triggered; SDL doesn't tolerate repeated calls).
+        // Toggle text input off screen state — a no-op unless it actually changed.
         let wants_text = text_input_screen(app.nav.screen);
-        if wants_text != text_input_active {
-            text_input_active = wants_text;
-            if wants_text {
-                if let Some(r) = app.address_field_rect(display_mode.w as u32, display_mode.h as u32, fonts) {
-                    text_input.set_rect(sdl2::rect::Rect::new(r.x(), r.y(), r.width(), r.height()));
-                }
-                text_input.start();
-            } else {
-                text_input.stop();
-            }
-            // Log both; separate SDL callbacks — some drivers implement only one.
-            tracing::debug!(
-                "text input requested: {wants_text} (keyboard shown: {})",
-                text_input.is_screen_keyboard_shown(canvas.window())
-            );
-        }
+        let rect = app
+            .address_field_rect(display_mode.w as u32, display_mode.h as u32, fonts)
+            .map(|r| sdl2::rect::Rect::new(r.x(), r.y(), r.width(), r.height()));
+        text_input.set_active(wants_text, rect);
         // Five reasons to render: dirty, animations running, tiles pending,
         // spinner animating, or log overlay due for refresh (~2Hz).
         // 16ms sleep when none holds keeps SoC idle.
@@ -549,9 +536,7 @@ pub(super) fn run_ui_flow(
             std::thread::sleep(TICK_BUDGET - elapsed);
         }
     }
-    if text_input_active {
-        text_input.stop();
-    }
+    text_input.stop();
     Ok(match connect_handle {
         Some((handle, settings, gamepad_auto)) => UiOutcome::Launch(ConnectOutcome {
             handle,

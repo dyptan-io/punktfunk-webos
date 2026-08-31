@@ -375,13 +375,88 @@ impl ConfirmDialog {
     }
 }
 
-/// Rising-edge detect on a raw webOS scancode (polled since these sit outside
-/// rust-sdl2's `Scancode` enum). `prev` carries the last-frame state across calls.
-fn scancode_rising_edge(scancode: i32, prev: &mut bool) -> bool {
-    let down = crate::platform::webos::input::webos_scancode_down(scancode);
+/// Edge-trigger bookkeeping shared by every scancode/keycode poll in both loops: `down` (with
+/// whatever gating — a dialog owning input, say — the caller wants folded in already) becomes
+/// `fired` exactly once per physical press, `prev` carrying state across calls. Split from
+/// [`scancode_rising_edge`] so a caller that needs to gate `down` on something besides the raw
+/// key state (the streaming loop's colour buttons, skipped while its disconnect dialog is open)
+/// isn't left re-deriving this bookkeeping itself.
+pub(super) fn rising_edge(down: bool, prev: &mut bool) -> bool {
     let fired = down && !*prev;
     *prev = down;
     fired
+}
+
+/// Rising-edge detect on a raw webOS scancode (polled since these sit outside
+/// rust-sdl2's `Scancode` enum). `prev` carries the last-frame state across calls.
+fn scancode_rising_edge(scancode: i32, prev: &mut bool) -> bool {
+    rising_edge(crate::platform::webos::input::webos_scancode_down(scancode), prev)
+}
+
+/// Wraps webOS's on-screen keyboard (`SDL_StartTextInput`/`Stop`/`SetTextInputRect`, driving
+/// `zwp_text_input_v3` — see `text_input_screen`'s doc) for the two loops that raise it:
+/// `run_ui_flow` declaratively, from which screen is open, and `stream` from a button press
+/// with no equivalent "wants text" screen state to read. One place for the SDL toggle-semantics
+/// workaround `raise` needs, instead of two copies free to drift apart.
+pub(super) struct TextInputController {
+    util: sdl2::keyboard::TextInputUtil,
+    /// This app's own belief about whether it last asked for text input — not necessarily
+    /// what the compositor is showing right now; webOS's IME can dismiss the panel (Back)
+    /// without this app hearing about it. Only [`Self::set_active`] treats this as trustworthy
+    /// (it owns every off transition); [`Self::raise`] deliberately never reads it.
+    active: bool,
+}
+
+impl TextInputController {
+    pub(super) fn new(util: sdl2::keyboard::TextInputUtil) -> Self {
+        Self { util, active: false }
+    }
+
+    pub(super) fn has_screen_keyboard_support(&self) -> bool {
+        self.util.has_screen_keyboard_support()
+    }
+
+    pub(super) fn is_shown(&self, window: &sdl2::video::Window) -> bool {
+        self.util.is_screen_keyboard_shown(window)
+    }
+
+    /// Declarative form (`run_ui_flow`'s): active exactly while `want` is true, a no-op unless
+    /// `want` changed since the last call. `rect`, when given, anchors the panel to a text
+    /// field on the way up — `run_ui_flow` skips it when the field itself isn't on screen yet.
+    pub(super) fn set_active(&mut self, want: bool, rect: Option<sdl2::rect::Rect>) {
+        if want == self.active {
+            return;
+        }
+        self.active = want;
+        if want {
+            if let Some(r) = rect {
+                self.util.set_rect(r);
+            }
+            self.util.start();
+        } else {
+            self.util.stop();
+        }
+        tracing::debug!("text input requested: {want}");
+    }
+
+    /// Button-triggered form (`stream`'s): unconditionally (re)raises the panel at `rect`,
+    /// regardless of what this app currently believes. SDL's own idea of text input stays
+    /// "started" from the first raise onward for the whole loop, even across a Back dismissal
+    /// this app never hears about — so a bare `start()` on a later press is a no-op against
+    /// state SDL already considers unchanged, and the panel never re-shows. `stop()`
+    /// immediately before it forces a real disable→enable transition every single press.
+    pub(super) fn raise(&mut self, rect: sdl2::rect::Rect) {
+        self.util.set_rect(rect);
+        self.util.stop();
+        self.util.start();
+        self.active = true;
+    }
+
+    /// Cleanup at loop exit — harmless if already stopped.
+    pub(super) fn stop(&mut self) {
+        self.util.stop();
+        self.active = false;
+    }
 }
 
 /// The webOS EXIT gesture (a held Back, delivered as `WEBOS_EXIT_SCANCODE`).

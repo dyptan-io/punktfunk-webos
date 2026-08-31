@@ -1,8 +1,8 @@
 use super::*;
 use crate::platform::webos::device;
 use crate::platform::webos::input::{
-    webos_scancode_down as key_down, WEBOS_EXIT_SCANCODE, WEBOS_GREEN_SCANCODE, WEBOS_HOME_SCANCODE,
-    WEBOS_YELLOW_SCANCODE,
+    webos_scancode_down as key_down, WEBOS_BLUE_SCANCODE, WEBOS_EXIT_SCANCODE, WEBOS_GREEN_SCANCODE,
+    WEBOS_HOME_SCANCODE, WEBOS_YELLOW_SCANCODE,
 };
 
 /// How long the finished launch frame is held waiting for the first frame to reach the decoder
@@ -289,6 +289,12 @@ pub(super) fn run_inner() -> Result<()> {
         let mut green_held = key_down(WEBOS_GREEN_SCANCODE);
         let mut yellow_held = key_down(WEBOS_YELLOW_SCANCODE);
         let mut home_held = key_down(WEBOS_HOME_SCANCODE);
+        let mut blue_held = key_down(WEBOS_BLUE_SCANCODE);
+        // On-screen keyboard, raised by Blue mid-stream — there's no text field to declare
+        // "wants text" during a stream, so this drives `TextInputController` by button instead
+        // of by screen the way `run_ui_flow` does. Hiding is Back's job (webOS's IME dismisses
+        // on it).
+        let mut text_input = TextInputController::new(canvas.window().subsystem().text_input());
         // Transient toasts. `overlay_was_active` catches the fade-out edge so the canvas gets
         // wiped once; `stats_dst`/`log_dst` recomposite each frame at their own slower cadence.
         let mut notif = crate::ui::widgets::Notification::new();
@@ -442,6 +448,13 @@ pub(super) fn run_inner() -> Result<()> {
                             connected.send_input(&ev);
                         }
                     }
+                    // Committed text off the on-screen keyboard (Blue toggles it — see above);
+                    // it has no scancode of its own, only the string the IME composed.
+                    Event::TextInput { text, .. } => {
+                        for ev in keyboard::text_key_events(&text) {
+                            connected.send_input(&ev);
+                        }
+                    }
                     // Magic Remote Red — the right button (see `RemoteButtons::red`). Like Back
                     // it carries only a keycode (see `WEBOS_RED_KEYCODE`); `repeat: false` so the
                     // OS's auto-repeat while it's held doesn't restate the press.
@@ -591,13 +604,13 @@ pub(super) fn run_inner() -> Result<()> {
             if home_key_fired(&mut home_held) {
                 crate::platform::webos::luna::launch_home();
             }
-            // Green button: stats-overlay toggle, edge-detected via raw scancode poll (the
-            // safe SDL2 event API can't see this key). Skipped while the dialog owns input.
-            let green_down = !disconnect.is_open()
-                && crate::platform::webos::input::webos_scancode_down(
-                    crate::platform::webos::input::WEBOS_GREEN_SCANCODE,
-                );
-            if green_down && !green_held {
+            // Colour buttons: edge-detected via raw scancode poll (the safe SDL2 event API
+            // can't see these keys), skipped while the dialog owns input. `rising_edge` is the
+            // one place that bookkeeping lives — see its doc for why it's not
+            // `scancode_rising_edge` directly.
+            let dialog_open = disconnect.is_open();
+            // Green: stats-overlay toggle.
+            if rising_edge(!dialog_open && key_down(WEBOS_GREEN_SCANCODE), &mut green_held) {
                 stats_enabled = !stats_enabled;
                 overlay_last = None; // force an immediate redraw
                 if stats_enabled {
@@ -606,14 +619,9 @@ pub(super) fn run_inner() -> Result<()> {
                     stats_fade.close(());
                 }
             }
-            green_held = green_down;
-            // Yellow button: log-tail overlay Off -> Live -> Frozen -> Off, same edge-detect
-            // as Green above; also handled in `run_ui_flow` for non-streaming screens.
-            let yellow_down = !disconnect.is_open()
-                && crate::platform::webos::input::webos_scancode_down(
-                    crate::platform::webos::input::WEBOS_YELLOW_SCANCODE,
-                );
-            if yellow_down && !yellow_held {
+            // Yellow: log-tail overlay Off -> Live -> Frozen -> Off; also handled in
+            // `run_ui_flow` for non-streaming screens.
+            if rising_edge(!dialog_open && key_down(WEBOS_YELLOW_SCANCODE), &mut yellow_held) {
                 let was_on = log_overlay_state() != LogOverlayState::Off;
                 cycle_log_overlay();
                 let now_on = log_overlay_state() != LogOverlayState::Off;
@@ -624,7 +632,23 @@ pub(super) fn run_inner() -> Result<()> {
                     log_fade.close(());
                 }
             }
-            yellow_held = yellow_down;
+            // Blue: raises the on-screen keyboard, so a game needing text (chat, a search box)
+            // doesn't require dropping back to the menu. Hiding is Back's job — webOS's IME
+            // dismisses on it, and `TextInputController::raise` never reads this app's own
+            // "active" belief, so there's no stuck-closed state Blue could get stuck reading.
+            if rising_edge(!dialog_open && key_down(WEBOS_BLUE_SCANCODE), &mut blue_held) {
+                // webOS's IME won't raise the panel off an `enable()` with no rectangle set
+                // yet — `run_ui_flow` always sets one first for the same reason. There's no
+                // text field to anchor to mid-stream, so a fixed strip near the bottom does.
+                let w = 400i32.min(display_mode.w);
+                text_input.raise(sdl2::rect::Rect::new(
+                    (display_mode.w - w) / 2,
+                    display_mode.h - 120,
+                    w as u32,
+                    60,
+                ));
+                tracing::debug!("on-screen keyboard requested");
+            }
             // Connection-issue toast: fires on the rising edge of a freeze-until-reanchor hold
             // (dropped/gapped frames — see `session::pump`), which is the same "network
             // trouble" signal the stats overlay's "Beat" line reads, just edge-triggered here so
@@ -928,6 +952,8 @@ pub(super) fn run_inner() -> Result<()> {
             // added latency near zero; the wakeup rate is noise even on this SoC.
             std::thread::sleep(Duration::from_millis(2));
         };
+        // Harmless if Back already dismissed it, or it was never raised this stream.
+        text_input.stop();
 
         // Trigger resistance is firmware state that outlives the session — hand the pad back
         // first or a game that ended with R2 stiff leaves it stiff on the TV home screen.
