@@ -15,16 +15,12 @@ use crate::app::render::ctx::RenderCtx;
 use crate::app::render::tile;
 use crate::app::spinner::PageReady;
 use crate::app::state::cardmenu::CardMenuRow;
-use crate::app::{view, App, HomeFocus, Screen, GRID_REVEAL_WAVE};
+use crate::app::{view, App, HomeFocus, Screen};
 use crate::ui;
 use crate::ui::cache;
 
-/// Whether nothing more can arrive for this card: the cover is already in `library.art`, or the
-/// game never had one to fetch (no `library.art` entry either way). "Desktop" and the padding
-/// after a partial pinned row have no `games` entry and are always ready.
-///
-/// A free function rather than a closure so both the build pass and the reveal check can use it
-/// while `&mut self` is live elsewhere in the same frame.
+/// Nothing more can arrive for this card (cover in library.art or game has none).
+/// Free function so build pass and reveal check can use it while &mut self is live elsewhere.
 fn art_ready(library: &Library, layout: GridLayout, idx: usize) -> bool {
     layout.card_at(&library.games, idx).is_none_or(|game| {
         library.art.contains_key(&game.id) || (game.art.portrait.is_none() && game.art.header.is_none())
@@ -40,27 +36,19 @@ impl App {
             && self.render.grid.cards_dirty.is_empty()
     }
 
-    /// The card grid. Everything below the window arithmetic here is O(visible): the windows are
-    /// index ranges, and every pass iterates one of them rather than the library.
+    /// Grid rasterization. Everything below is O(visible) via index ranges, not library scans.
     pub(super) fn prepare_grid(&mut self, ctx: &mut RenderCtx<'_>) -> Result<()> {
         let (screen_w, screen_h) = (ctx.screen.w, ctx.screen.h);
-        // The same three numbers `advance_frame` sized `self.render.grid.card_size` from — the
-        // grid's whole geometry follows from the width it has to fill.
+        // Grid geometry from width (same three numbers as advance_frame).
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let columns = view::home::grid_columns(available_w);
         let (card_w, card_h) = view::home::grid_card_size(available_w, columns);
-        // Reset before the branch: it is only ever set inside it, and a stale `true` left
-        // behind by a host that has since been deselected would spin the render loop at
-        // full rate forever.
+        // Reset before branch (set only inside, stale true = full-rate render loop).
         self.render.grid.tiles_pending = false;
         if self.library.selected_host.is_none() {
             return self.prepare_no_host_tile(ctx);
         }
-        // Nothing behind an open modal can come into view: the grid neither scrolls nor
-        // moves focus while a modal owns input, so the whole windowed pass — the one cost
-        // here that scales with the window — is skipped unless a card was actually
-        // invalidated. The grid still composites under the modal's scrim from the tiles it
-        // already holds.
+        // Modal open: grid neither scrolls/focuses, so skip windowed pass unless invalidated.
         if self.grid_window_frozen() {
             return Ok(());
         }
@@ -93,30 +81,19 @@ impl App {
             first_visible_row + visible_rows + CARD_KEEP_ROWS,
         );
 
-        // Held by value, not re-derived per index — and, unlike the `App`
-        // helpers, it maps indices without borrowing all of `self`, so the art
-        // lookups below can sit next to `&mut self.jobs.art`.
-        // Rebuilt inside each helper rather than hoisted: a `GridLayout` borrows the library,
-        // and these all mutate `self.render` while reading it. Rebuilding is a slice reborrow
-        // and an integer copy, so there is nothing to hoist.
+        // Layout by value (maps indices without borrowing self). Rebuilt per helper.
         self.evict_cards_outside(keep_window, columns, ctx.tiles);
         let pending = self.build_card_window(build_window, columns, card_w, card_h, ctx)?;
         self.prepare_focused_card_tiles(columns, card_w, card_h, pending, ctx)?;
-        // Order against the reveal below doesn't matter: both only ensure tiles and record what
-        // they rebuilt.
         self.prepare_grid_shared_tiles(card_w, card_h, ctx)?;
         self.advance_grid_reveal(page_window, columns, ctx);
         Ok(())
     }
 
-    /// Drops the card tiles that can no longer be right — the whole set on a library or host
-    /// change, otherwise just the ones a pin toggle or an arriving cover invalidated.
+    /// Drop stale card tiles (whole set on library/host change, else just invalidated ones).
     fn release_stale_cards(&mut self, tiles: &mut ui::cache::TileStore) {
-        // A fresh library load is the only rebuild that also re-arms the spinner.
         if self.render.grid.dirty {
-            // Every existing texture is stale (different games, different host) —
-            // drop them rather than leaving them to be overwritten one by one,
-            // which would strand the tail of a longer previous library.
+            // Fresh library: drop all textures (stale), re-arm spinner (avoid stranding tail).
             for id in self.render.grid.card_ids.release_all() {
                 tiles.remove(id);
                 self.render.evicted_tiles.push(id);
@@ -124,36 +101,26 @@ impl App {
             self.render.grid.card_pop_until = None;
             self.render.grid.dirty = false;
             self.render.grid.cards_dirty.clear();
-            // Scrolling or re-pinning a card must not hide the already-visible
-            // grid behind the spinner again.
             self.render.grid.reveal.restart();
         } else {
+            // Texture stale only; slot/arrival stays. Release→build would re-pop on reveal.
             for id in std::mem::take(&mut self.render.grid.cards_dirty) {
-                if let Some(t) = self.render.grid.card_ids.release(&id) {
+                if let Some(t) = self.render.grid.card_ids.get(&id) {
                     tiles.remove(t);
                 }
             }
         }
     }
 
-    /// Frees every resident card outside the keep window, with its cover.
+    /// Free cards outside keep window (+ covers). Evict first, before new ones built.
     fn evict_cards_outside(
         &mut self,
         keep_window: std::ops::Range<usize>,
         columns: usize,
         tiles: &mut ui::cache::TileStore,
     ) {
-        // Evict first, so a long scroll frees textures in the same frame it needs new
-        // ones rather than a frame later.
-        //
-        // Driven off what is resident (`CardIds`) against the keep window, not off a scan
-        // of the whole library: the resident set is bounded by the window, so this costs
-        // the window twice over however large the library gets.
-        //
-        // By tile id rather than by pin id: the ids are `Copy` integers, so the keep set
-        // is a sorted window-sized vector and the test is a binary search — where a
-        // `HashSet<&str>` re-hashed every resident card's id string every frame. Both
-        // lists are `GridState` scratch, cleared and refilled rather than allocated.
+        // Off resident set (windowed), not whole library (no scaling with library size).
+        // By tile id: sorted vector + binary search vs HashSet re-hash every frame.
         let mut keep = std::mem::take(&mut self.render.grid.scratch.keep);
         keep.clear();
         let layout = self.library.layout(columns);
@@ -176,16 +143,13 @@ impl App {
         self.render.grid.scratch.keep = keep;
         for id in dropped.drain(..) {
             if let Some(t) = self.render.grid.card_ids.release(&id) {
-                // Kept for the cards built below: a scroll frees and needs the same
-                // card-sized pixmap in the same frame (see `GridState::free_cards`).
+                // Pixmap recycled for cards built this frame (avoids realloc on scroll).
                 if let Some(painter) = tiles.take(t) {
                     self.render.grid.free_cards.push(painter);
                 }
                 self.render.evicted_tiles.push(t);
             }
-            // Drop the decoded cover too — it is several times the size of the tile it
-            // feeds. Re-requested from the disk cache on scroll back. (Nothing to drop for
-            // the pinned "Desktop" entry, which has no art at all.)
+            // Drop decoded cover (several×tile size). Re-request from disk cache on scroll back.
             self.library.art.remove(&id);
             if let Some(loader) = &mut self.jobs.art {
                 loader.forget(&id);
@@ -194,9 +158,8 @@ impl App {
         self.render.grid.scratch.dropped = dropped;
     }
 
-    /// Rasterizes the cards in the build window, newest-needed first and on a time budget.
-    /// Returns whether it ran out of budget with work left — the caller holds off anything
-    /// that should wait for a settled grid.
+    /// Rasterize cards in build window (art-ready first, on time budget).
+    /// Returns true if budget ran out (caller defers settled-grid work).
     fn build_card_window(
         &mut self,
         build_window: std::ops::Range<usize>,
@@ -212,23 +175,19 @@ impl App {
             updated,
             ..
         } = ctx;
-        // Art-ready cards build first — building one before its cover arrives just
-        // burns a second budget slot re-dirtying it once the cover shows up. Two lists
-        // rather than one sorted one, and indices rather than ids: a candidate past the
-        // budget is never built, so nothing should be copied on its behalf.
+        // Art-ready first (avoid re-dirty when cover lands). Two lists, not sorted (indices).
+
         let mut ready = std::mem::take(&mut self.render.grid.scratch.ready);
         let mut waiting = std::mem::take(&mut self.render.grid.scratch.waiting);
         ready.clear();
         waiting.clear();
         let layout = self.library.layout(columns);
         for idx in build_window {
-            // Nothing to build or fetch art for in the padding after a partial
-            // pinned row.
+            // Nothing in padding after partial pinned row.
             let Some(id) = layout.pin_id_at(&self.library.games, idx) else {
                 continue;
             };
-            // Ask for this card's cover as it enters the window, not for the whole
-            // library at once (see `art::ArtLoader`).
+            // Request cover as it enters window (not whole library at once).
             if let (Some(loader), Some(game)) = (&mut self.jobs.art, layout.card_at(&self.library.games, idx)) {
                 loader.request(game);
             }
@@ -246,8 +205,7 @@ impl App {
         let budget_from = Instant::now();
         let mut built = 0usize;
         for idx in ready.iter().copied().chain(waiting.iter().copied()) {
-            // Counted on cards actually rasterized, not on candidates seen: the budget is
-            // a time budget, and skipping a padding slot costs none of it.
+            // Budget counted on rasterized cards, not candidates (padding costs nothing).
             if built >= CARD_BUILD_BURST || (built > 0 && budget_from.elapsed() >= CARD_BUILD_BUDGET) {
                 pending = true;
                 break;
@@ -271,18 +229,16 @@ impl App {
                     fonts,
                 )?
             };
-            let tile_id = self.render.grid.card_ids.id(&id);
+            // Existing slot: texture/arrival untouched (art refresh). New: gets slot here.
+            let (tile_id, is_new) = self.render.grid.card_ids.id_new(&id);
             tiles.put(tile_id, cache::static_version(), tile);
-            // Past the reveal, a card entering the window is one card arriving on a settled
-            // grid — the wave is for the page the spinner was covering.
-            if self.render.grid.reveal.is_revealed() {
+            // New card on settled grid: one arrival. Art refresh: no arrival (swap in place).
+            if is_new && self.render.grid.reveal.is_revealed() {
                 self.render.grid.arm_card_pop(&id, Instant::now());
             }
             updated.push(tile_id);
         }
-        // Anything still here evicted without a card being built in its place, so it is
-        // surplus rather than churn — held past the frame it would just be a cache of
-        // pixmaps nothing asked for.
+        // Anything left in free_cards was evicted with no replacement (surplus pixmaps).
         self.render.grid.free_cards.clear();
         self.render.grid.scratch.ready = ready;
         self.render.grid.scratch.waiting = waiting;
@@ -290,8 +246,7 @@ impl App {
         Ok(pending)
     }
 
-    /// The tiles that exist only for the focused card: its hero prefetch, its title strip and
-    /// the submenu panel a hold raises over it.
+    /// Focused card tiles: hero prefetch, title strip, submenu panel.
     fn prepare_focused_card_tiles(
         &mut self,
         columns: usize,
@@ -307,13 +262,7 @@ impl App {
             updated,
             ..
         } = ctx;
-        // Prefetch the focused card's hero, so the connecting screen has one ready the
-        // moment OK is pressed. Deduped in the loader, and the fetched bytes are
-        // disk-cached, so hovering back over a card costs no round trip.
-        //
-        // Only once the visible window has settled: the loader serves hero requests
-        // ahead of card art, so queueing one mid-scroll would put the cards the user is
-        // actually looking at behind a full-screen fetch and decode.
+        // Prefetch focused card's hero (ready on OK press). Only when window settled.
         if self.render.grid.reveal.is_revealed() && !pending {
             if let HomeFocus::Grid(focus_idx) = self.home_focus {
                 if let Some(game) = self.library.layout(columns).card_at(&self.library.games, focus_idx) {
@@ -325,11 +274,7 @@ impl App {
             }
         }
 
-        // The focused card's title strip: its own tile, so the wipe in `draw_list` is
-        // a moving source/destination rect rather than a re-rasterize per animation
-        // frame. Tint and title only — the blur under it is the compositor's (see
-        // `Canvas::poster_frost_panel`), so the card's art is in neither the tile nor
-        // its key, and finished art no longer rebuilds the strip.
+        // Focused card title strip (own tile for moving wipe, not re-raster per frame).
         if let HomeFocus::Grid(idx) = self.home_focus {
             if let Some(pin_id) = self.library.pin_id_at(idx, columns) {
                 let (title, _) = self.grid_card_content(idx, columns);
@@ -526,36 +471,16 @@ impl App {
                 PageReady::All
             }
         };
-        let next_frame = self.render.grid.reveal.advance(
-            self.library_fetch_in_flight() || self.wake_wait_in_flight(),
-            page_ready,
-        );
-        match next_frame {
-            Some(idx) => updated.push(tile::spinner(idx)),
-            // Everything built behind the spinner becomes visible in this one frame. One clock
-            // each, offset along the grid's diagonal, so the page fades in as a wave running
-            // from the top-left corner rather than as N separate pops. Cards outside the page
-            // are off screen: no arrival to show, and by the time a scroll reaches them the
-            // wave is long over.
-            None if self.render.grid.reveal.is_revealed() => {
-                let now = Instant::now();
-                // Normalized over the page, so the sweep takes the wave's span whatever the
-                // column count and however many rows fit on screen.
-                let last_step = page_window
-                    .clone()
-                    .last()
-                    .map_or(1, |idx| layout.diagonal_step(idx))
-                    .max(1) as f32;
-                // Split borrow: the layout reads `library`, the arming writes `render`.
-                let grid = &mut self.render.grid;
-                for idx in page_window {
-                    if let Some(id) = layout.pin_id_at(&self.library.games, idx) {
-                        let delay = GRID_REVEAL_WAVE.delay(layout.diagonal_step(idx) as f32 / last_step);
-                        grid.arm_reveal_wave(id, now, delay);
-                    }
-                }
-            }
-            None => {}
+        // Everything built behind the spinner becomes visible in this one frame: `reveal()`
+        // (inside `advance`) starts the dissolve that uncovers it — one mask, not an
+        // entrance per card (see `spinner::GridReveal::dissolve_mask`).
+        if let Some(idx) = self
+            .render
+            .grid
+            .reveal
+            .advance(self.library_fetch_in_flight() || self.wake_wait_in_flight(), page_ready)
+        {
+            updated.push(tile::spinner(idx));
         }
     }
 

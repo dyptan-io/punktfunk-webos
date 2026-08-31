@@ -65,39 +65,25 @@ pub(super) fn run_ui_flow(
     const TICK_BUDGET: Duration = Duration::from_millis(16);
     canvas.window_mut().show();
     let mut app = App::new(identity.clone());
-    // `ControllerDeviceAdded` fires once per connect, not per menu entry, so re-poll here
-    // or the Controller row stays stale after the first menu.
+    // Re-poll pad type (ControllerDeviceAdded fires once per connect, not per menu entry).
     app.set_gamepad_type(gamepad::detect_type(game_controller));
-    // The GPU tile cache is the render loop's, not App's — App holds only screen state
-    // Recreated per menu entry, same as `app`.
+    // GPU tile cache (render loop's, not App's). Recreated per menu entry.
     let mut tiles = crate::ui::cache::TileStore::new();
-    // Upload every spinner frame's GPU texture now, once, rather than letting each
-    // frame's first appearance create it lazily inside the render loop. The upload
-    // creates a *new* static texture (allocation, not just a pixel copy) the first
-    // time a `tile::spinner(idx)` is seen — done inline during the animation
-    // that meant the first spin cycle stalled once per unique frame, right when the
-    // spinner is supposed to look smooth. `clear_all` (stream handoff) drops these
-    // along with everything else, so this needs redoing on every re-entry here.
+    // Upload spinner frames upfront (avoids lazy allocation stall during first spin cycle).
     for idx in 0..crate::ui::spinner::FRAMES {
         upload_spinner(compositor, texture_creator, idx)?;
     }
-    // E.g. "the last connect attempt failed, and here's why" — shown on the
-    // Home screen the user just got dropped back onto (see `run_inner`'s
-    // connect-error path).
+    // Status from last connect attempt (sticky so reload progress doesn't erase it).
     if initial_status.is_some() {
-        // Set after `App::new`, which has already kicked off the library reload for the
-        // restored host — sticky so that reload's own progress line doesn't erase it.
         app.set_home_status(initial_status, true);
     }
-    // Same toast widget as the streaming loop's (`ui::widgets::Notification`);
-    // shown once, right as the Home screen re-appears.
+    // Toast widget (same as stream loop). Shown once as Home re-appears.
     let mut notif = crate::ui::widgets::Notification::new();
     let mut toast = super::toast::Toast::default();
     if let Some(msg) = initial_toast {
         notif.show(msg);
     }
-    // Rasterized-text cache (see `ui::text::TextCache` docs) — created once here and
-    // threaded down through every render call for the rest of this UI-flow's
+    // Rasterized-text cache (created once, threaded through every render call).
     // lifetime so repeat draws of the same (font, text, color) reuse an
     // already-rasterized+premultiplied `Pixmap` instead of re-rasterizing
     // freetype glyphs on every ~60fps tick.
@@ -476,6 +462,18 @@ pub(super) fn run_ui_flow(
             compositor.upload_raw(
                 texture_creator,
                 tile::HERO_MASK,
+                mw,
+                mh,
+                sdl2::pixels::PixelFormatEnum::ABGR8888,
+                px,
+            )?;
+        }
+        // The grid's own reveal dissolve — same reasoning as the hero mask above.
+        if app.render.grid.reveal.dissolving() {
+            let (mw, mh, px) = app.render.grid.reveal.dissolve_mask(frame_start);
+            compositor.upload_raw(
+                texture_creator,
+                tile::GRID_REVEAL_MASK,
                 mw,
                 mh,
                 sdl2::pixels::PixelFormatEnum::ABGR8888,

@@ -4,36 +4,21 @@ use std::time::{Duration, Instant};
 /// How long a focused widget takes to pop to its zoomed size.
 pub const FOCUS_POP: Duration = Duration::from_millis(140);
 
-/// The grid card's focus animation: how long the zoom, the glow bloom and the title
-/// strip's wipe take. One duration for all three so they land together — and the clock
-/// driving them (`App::focus_anim`) is cleared on it, so nothing may outlast it.
+/// Grid card focus animation (zoom, glow, title wipe). One duration so all land together.
 pub const CARD_FOCUS_POP: Duration = Duration::from_millis(160);
 
-/// How long a held card's submenu panel takes to climb the card. Named separately from
-/// [`CARD_FOCUS_POP`] (which it currently matches) because it answers a different question:
-/// the panel covers several times the title strip's travel, so if the rise ever needs its
-/// own timing this is the knob. Eased at both ends ([`anim_frac_smooth`]) so the long travel
-/// reads as one motion.
+/// Held card's submenu panel rise time. Named separately because it covers several times
+/// the title strip's travel; eased at both ends for one motion (not instant start).
 pub const CARD_MENU_RISE: Duration = CARD_FOCUS_POP;
 
-/// Fraction of the remaining distance one 16ms tick covers — the constant this ease was
-/// written with, kept as the unit [`ease_scroll`] expresses its rate in.
+/// Per-16ms-tick scroll distance fraction. Unit for `ease_scroll` rate.
 const SCROLL_STEP_PER_TICK: f64 = 0.35;
-
-/// The tick length [`SCROLL_STEP_PER_TICK`] is quoted at.
 pub const SCROLL_STEP_TICK: Duration = Duration::from_millis(16);
-
-/// A frame long enough that the scroll should resume rather than teleport: the app was
-/// stalled (or idle between animations), and covering the whole gap at once reads as a jump.
+/// Max frame dt before teleporting (app stalled; gap→whole distance reads as jump).
 const SCROLL_MAX_DT: Duration = Duration::from_millis(64);
 
-/// Advances an eased scroll by `dt`: cover ~35% of the remaining distance per 16ms, snapping
-/// when close so it terminates. Returns whether anything moved. Shared by the card grid and
-/// the scrolling modals' viewports so both lists feel identical.
-///
-/// Rate, not step-per-call: stepping a fixed fraction per *tick* made scroll speed a function
-/// of the achieved frame rate, so a frame that overran its budget slowed the motion itself
-/// rather than only its smoothness — and pinned the loop's tick budget in place.
+/// Ease scroll: cover ~35% per 16ms, snap when close. Returns true if moved.
+/// Rate-based (not step-per-tick) so overruns only smooth, not speed.
 pub fn ease_scroll(current: &mut i32, target: i32, dt: Duration) -> bool {
     let d = target - *current;
     if d == 0 {
@@ -56,30 +41,26 @@ pub fn ease_scroll(current: &mut i32, target: i32, dt: Duration) -> bool {
 /// How long a pressed button takes to spring back out of its dip.
 pub const PRESS_POP: Duration = Duration::from_millis(120);
 
-/// How far a pressed widget sinks, in px.
+/// Press drop distance (px).
 const PRESS_DROP: f32 = 5.0;
-
-/// How far a focused widget's tile grows while focused — the pop every composited focus
-/// tile rides (see [`focus_tile_rect`]).
+/// Focused widget tile growth (pop every focus tile rides).
 pub const FOCUS_GROWTH: f32 = 0.02;
-
-/// A button being pushed in. Same animation wherever a button lives, so only the clock
-/// belongs to its owner (`App`'s focused widget, the in-stream `ConfirmDialog`).
+/// Button press-in animation (same everywhere; clock owned by App/ConfirmDialog).
 #[derive(Default, Clone, Copy)]
 pub struct Press(Option<Instant>);
 
 impl Press {
-    /// Starts the dip. Purely visual — the action runs the moment the press arrives.
+    /// Start dip (visual only; action runs immediately).
     pub fn arm(&mut self) {
         self.0 = Some(Instant::now());
     }
 
-    /// Whether a dip is in flight — frames are owed while it is.
+    /// Dip in flight (frames owed while true).
     pub fn armed(self) -> bool {
         self.0.is_some()
     }
 
-    /// Whether an armed dip has played all the way out.
+    /// Armed dip played all the way out.
     pub fn landed(self) -> bool {
         self.0.is_some_and(|t| t.elapsed() >= PRESS_POP)
     }
@@ -89,64 +70,48 @@ impl Press {
         self.0.take().is_some()
     }
 
-    /// `base` pushed down by however far this press has got.
-    ///
-    /// A translation, not a scale: the tile blits 1:1, so its label and icon never
-    /// resample, and it reads the same on a narrow button as on a full-width row.
+    /// Base rect pushed down by press progress. Translation not scale (no resample).
     pub fn rect(self, base: Rect) -> Rect {
         base.offset(0, (PRESS_DROP * (1.0 - anim_frac(self.0, PRESS_POP))) as i32)
     }
 }
 
-/// Where a composited focus tile is drawn: the focus pop's zoom with any press dip on
-/// top. Every focus tile goes through this, so the two motions always compose alike.
+/// Focus tile position: focus pop zoom with press dip on top (every tile goes through this).
 pub fn focus_tile_rect(base: Rect, focus_anim: Option<Instant>, press: Press) -> Rect {
     press.rect(zoom_rect(base, anim_frac(focus_anim, FOCUS_POP), FOCUS_GROWTH))
 }
 
-/// How far a modal card slides down as it fades out (and up as it fades in), in px.
+/// Modal card slide distance (px).
 const MODAL_RISE: f32 = 26.0;
-
-/// How far a modal layer is still offset at fade progress `p` — the rise the entering card,
-/// the closing snapshot and the card's own frost pane all ride. Shared so the `App`'s
-/// `Screen` modals and the runtime-side confirm dialogs (which have no `App`) travel the
-/// same distance on the same curve.
+/// Modal layer offset at fade progress p (all modals/dialogs share for consistency).
 pub fn modal_rise(p: f32) -> i32 {
     ((1.0 - p) * MODAL_RISE) as i32
 }
 
-/// Cubic ease-out function.
+/// Cubic ease-out.
 pub fn ease(f: f32) -> f32 {
     1.0 - (1.0 - f).powi(3)
 }
-
-/// Eased at both ends, unlike [`ease`]'s instant start.
+/// Eased at both ends (not instant start like ease).
 pub fn smoothstep(f: f32) -> f32 {
     f * f * (3.0 - 2.0 * f)
 }
 
-/// Eased progress 0..=1 of animation; 1.0 when done/absent.
+/// Animation progress 0..=1; 1.0 when done/absent.
 pub fn anim_frac(anim: Option<Instant>, dur: Duration) -> f32 {
     frac(anim, dur, ease)
 }
-
-/// [`anim_frac`] on a cubic ease-*in* — the exact time-mirror of [`ease`]. Fade-ins use
-/// this so they read like the fade-outs (`1 - ease(p)`) played backwards; on ease-out a
-/// fade-in is already near-opaque a sixth of the way through, so it lands as a pop.
+/// Animation progress on cubic ease-in (mirror of ease; fade-in reads like backwards fade-out).
 pub fn anim_frac_in(anim: Option<Instant>, dur: Duration) -> f32 {
     frac(anim, dur, |f| f.powi(3))
 }
-
-/// [`anim_frac`] on [`smoothstep`]. For the grid card's focus pop: a cubic ease-out puts
-/// most of the scale change in the first frames, which at card size reads as a snap
-/// followed by a drift rather than one motion.
+/// Animation progress on smoothstep (grid card focus: avoids snap-then-drift look).
 pub fn anim_frac_smooth(anim: Option<Instant>, dur: Duration) -> f32 {
     frac(anim, dur, smoothstep)
 }
 
 fn frac(anim: Option<Instant>, dur: Duration, curve: impl Fn(f32) -> f32) -> f32 {
-    // The clock is read only when there is an animation to measure — most calls, on most
-    // frames, are the `None` arm.
+    // Clock read only when animating (most calls are None arm).
     match anim {
         Some(_) => frac_at(anim, dur, Instant::now(), curve),
         None => 1.0,
@@ -168,41 +133,66 @@ pub fn anim_frac_at(anim: Option<Instant>, dur: Duration, now: Instant) -> f32 {
     frac_at(anim, dur, now, ease)
 }
 
-/// [`anim_frac_smooth`] on a caller-held clock. See [`frac_at`].
-pub fn anim_frac_smooth_at(anim: Option<Instant>, dur: Duration, now: Instant) -> f32 {
-    frac_at(anim, dur, now, smoothstep)
-}
-
 /// A staggered fade across a surface: one curve, started up to `span` later depending on how
-/// far along the sweep the element sits. Whoever owns the surface decides what `progress`
-/// means — a card's diagonal position in the grid, a texel's position in an image — and the
-/// motion is the same either way, which is the point: the library's cards arrive on one of
-/// these and the launch backdrop leaves on one, in the same direction.
+/// far along the sweep a given point sits. Whoever owns the surface decides what `progress`
+/// means — a texel's position in an image — and the motion is the same either way, which is
+/// the point: the launch backdrop's exit and the grid's reveal both evaluate one of these over
+/// a small dissolve-mask texture, in the same direction.
 ///
-/// Smoothstep rather than the cubic ease-out the pops use: over a long fade `1-(1-t)³` is
+/// Smoothstep rather than the cubic ease-out a pop uses: over a long fade `1-(1-t)³` is
 /// near-opaque a sixth of the way through, which lands as a pop.
 #[derive(Clone, Copy)]
 pub struct Wave {
     /// How much later the far end of the sweep starts than the near end.
     pub span: Duration,
-    /// One element's own fade, once its turn comes.
+    /// One point's own fade, once its turn comes.
     pub fade: Duration,
 }
 
 impl Wave {
-    /// How long the element at `progress` (0 at the corner the wave starts from, 1 at the
-    /// opposite one) waits before its own fade begins.
-    pub fn delay(self, progress: f32) -> Duration {
-        self.span.mul_f32(progress.clamp(0.0, 1.0))
-    }
-
-    /// That element's 0..=1 progress, `elapsed` seconds into the wave. Seconds rather than
+    /// That point's 0..=1 progress, `elapsed` seconds into the wave. Seconds rather than
     /// two `Instant`s because the callers evaluate one wave at many points of a frame (a
     /// mask's texels, a window of cards): plain `f32` throughout, no `Duration` arithmetic
     /// per point.
     pub fn frac_secs(self, elapsed: f32, progress: f32) -> f32 {
         let started = elapsed - self.span.as_secs_f32() * progress.clamp(0.0, 1.0);
         smoothstep((started / self.fade.as_secs_f32()).clamp(0.0, 1.0))
+    }
+}
+
+/// Shared resolution for every diagonal dissolve mask (the launch backdrop's, the grid's):
+/// tiny, since each is stretched over its own target and bilinear filtering turns it into a
+/// continuous gradient.
+pub const MASK_W: u32 = 64;
+pub const MASK_H: u32 = 36;
+
+/// Fills `buf` (resized to `MASK_W`x`MASK_H` RGBA8 if needed) with `wave`'s diagonal ramp,
+/// `elapsed` seconds in: `rgb` in every texel's colour, `alpha_at(wave's 0..=1 frac at that
+/// texel)` in its alpha. The wave runs on `(x + y)`, sweeping from the top-left corner.
+///
+/// Evaluated once per *diagonal* rather than once per texel — the frac is a function of
+/// `x + y` alone, so a row of the mask is `MASK_W + MASK_H - 1` of them, not their product.
+/// The buffer is kept across frames by its caller and only overwritten here, since this runs
+/// every frame of a dissolve.
+pub fn diagonal_mask(buf: &mut Vec<u8>, rgb: [u8; 3], wave: Wave, elapsed: f32, alpha_at: impl Fn(f32) -> f32) {
+    let px = (MASK_W * MASK_H) as usize * 4;
+    if buf.len() != px {
+        buf.clear();
+        buf.resize(px, 0);
+    }
+    let last = (MASK_W + MASK_H - 2) as f32;
+    let mut diagonal = [0u8; (MASK_W + MASK_H - 1) as usize];
+    for (d, a) in diagonal.iter_mut().enumerate() {
+        *a = (255.0 * alpha_at(wave.frac_secs(elapsed, d as f32 / last))) as u8;
+    }
+    for y in 0..MASK_H {
+        for x in 0..MASK_W {
+            let i = ((y * MASK_W + x) * 4) as usize;
+            buf[i] = rgb[0];
+            buf[i + 1] = rgb[1];
+            buf[i + 2] = rgb[2];
+            buf[i + 3] = diagonal[(x + y) as usize];
+        }
     }
 }
 

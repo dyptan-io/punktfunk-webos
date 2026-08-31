@@ -18,11 +18,8 @@ use crate::ui;
 use crate::ui::cache::TileStore;
 use crate::ui::render::{DrawCmd, Rect};
 
-/// How tall each step of an edge fade's alpha ramp is. Every step is one `TexCropped` with its
-/// own alpha, and SDL cannot batch across an alpha-mod change, so this divides `SCROLL_FADE_H`
-/// (92px) into the command count each band costs *per frame it is on screen*: 8 gives ~12 steps
-/// a band, ~32 alpha apart. Fine enough to read as a gradient at TV distance, half the commands
-/// of the 4 it started at. Drop it back if banding shows on the panel.
+/// Height of each fade ramp step. SDL can't batch across alpha changes, so this divides
+/// `SCROLL_FADE_H` into draw commands: 8→~12 steps/band, ~32 alpha apart. Drop if banding shows.
 const FADE_STEP: u32 = 8;
 
 /// A scrolling viewport's two edge fade bands, top then bottom, each present only while there
@@ -46,9 +43,7 @@ impl App {
         }
     }
 
-    /// Modal family compose: the fade-in scrim + shell, scrollable content crop with
-    /// its edge fades, the dropdown overlay, the focused-widget zoom, and the scroll
-    /// indicator — all driven by the modal fade clock. Extracted from `draw_list`.
+    /// Compose open modal: fade scrim+shell, content crop with fades, dropdown, focus zoom, scroll indicator.
     fn compose_modal(
         &self,
         tiles: &TileStore,
@@ -80,36 +75,22 @@ impl App {
         } else {
             self.render.modal.fade.open_alpha()
         };
-        // `m` is what a cross-fade's leaving card is drawn as the inverse of (see `ModalFade`).
+        // m is cross-fade's leaving card inverse (see ModalFade).
         let closing = self
             .render
             .modal
             .prev
             .zip(self.render.modal.fade.closing_frame_against(m))
             .map(|(prev, (alpha, _))| (alpha, prev));
-        // The backdrop belongs to "a modal is up", not to either card: re-fading it
-        // mid-step would brighten the whole screen and read as a blink. It only fades when
-        // the modal layer itself appears or disappears.
+        // Backdrop is "modal up", not per-card; only fades when modal layer appears/disappears.
         let scrim = if closing.is_some() && !matches!(screen, Screen::Home) {
             1.0
         } else {
             m.max(closing.map_or(0.0, |(alpha, _)| alpha))
         };
-        // Every frost pane of this layer, *before* the scrim — the one ordering rule the
-        // whole effect rests on.
-        //
-        // The compositor captures its blur source once per frame, at the frame's first
-        // `DrawCmd::Frost`. So whatever precedes that pane is baked into every pane's blur and
-        // whatever follows it is not. With the scrim emitted first, a modal opened from the
-        // sidebar (no focused card, so its own pane is the first) blurred a *dimmed* screen,
-        // while the same modal opened from a card (whose title strip pushed the first pane
-        // already) blurred an undimmed one — the same code, two different-looking modals.
-        //
-        // Emitted under the scrim instead, every pane is a blur of the same undimmed backdrop
-        // and the scrim fill dims all of them equally on its way past. A uniform black
-        // composite commutes with a blur, so this is also the look the sidebar case always
-        // had. The invariant to keep: nothing that tints the whole screen may be pushed
-        // before a frost pane.
+        // Frost panes before scrim (compositor captures blur at first Frost; ordering matters
+        // to avoid two-phase blur of dimmed screen when opening from sidebar vs card).
+        // Invariant: nothing tinting whole screen before a frost pane.
         if !matches!(screen, Screen::Home) {
             let region = self.render.modal.tile_region.offset(0, ui::animation::modal_rise(m));
             Self::push_frost(cmds, region, ui::widgets::MODAL_RADIUS, (255.0 * m) as u8);
@@ -164,14 +145,7 @@ impl App {
         }
     }
 
-    /// The frosted-glass pane under a modal card: the compositor blurs what this frame has
-    /// already drawn and masks it to the card's own rounded shape, so the translucent
-    /// `Glass::panel` fill in the tile above lands on blurred backdrop rather than on a sharp
-    /// one. `tile_region` is the card exactly, so the pane is the card's own rounded shape.
-    ///
-    /// Menu only. The in-stream dialogs never reach here (`main.rs` composes those), which is
-    /// what keeps the frost off a frame whose video lives on a hardware plane the blur cannot
-    /// see anyway.
+    /// Frosted pane under modal card (blur masked to rounded shape). Menu only, not in-stream.
     fn push_frost(cmds: &mut Vec<DrawCmd>, tile_region: Rect, radius: i32, alpha: u8) {
         if alpha == 0 {
             return;
@@ -191,12 +165,7 @@ impl App {
         ))));
     }
 
-    /// A whole glass surface where nothing bakes its tint into a tile: the modal's pane, its
-    /// scrim and its `glass_fill` in one call, so a surface that claims to be the same
-    /// material as a modal card is made of the same three things rather than of a comment
-    /// saying so.
-    ///
-    /// The two fills are constants, so they flatten to the one the fade then scales.
+    /// Whole glass surface: pane+scrim+fill (one call, materials match card, not comments).
     fn push_glass_surface(cmds: &mut Vec<DrawCmd>, rect: Rect, radius: i32, alpha: f32) {
         Self::push_frost(cmds, rect, radius, (255.0 * alpha) as u8);
         cmds.push(DrawCmd::Fill {
@@ -207,14 +176,7 @@ impl App {
         });
     }
 
-    /// The nav column: its frosted pane and the translucent strip over it.
-    ///
-    /// Composed *after* the grid, not before it as an opaque strip was. A pane fixes the
-    /// frame's blur source at the point it appears, so a sidebar pane pushed first would
-    /// hand the focused card's strip, the status band and the modal a backdrop holding
-    /// nothing but the clear. The column and the grid never overlap, so the order between
-    /// them is free — what it costs is the strip's own pixels in a modal's blur, which the
-    /// modal covers with a scrim anyway.
+    /// Nav column: pane and strip. Composed after grid (pane order matters for blur backdrop).
     fn compose_sidebar(cmds: &mut Vec<DrawCmd>, screen_h: u32) {
         let strip = Rect::new(0, 0, ui::widgets::SIDEBAR_W, screen_h);
         // Square: three of the column's edges are the display's own.
@@ -226,18 +188,8 @@ impl App {
         });
     }
 
-    /// A panel's drop shadow, as nine stretched draws from one small atlas
-    /// ([`tile::MODAL_SHADOW`], [`tile::PANEL_SHADOW`]) instead of a panel-sized CPU blit
-    /// baked into the panel's own tile.
-    ///
-    /// The shadow is a blurred rounded rect, so it is exactly nine-sliceable: the corner
-    /// slices carry everything whose alpha varies and the centre is two flat pixels stretched
-    /// across the card's middle — the same interior the baked blit painted, which the card's
-    /// `0xc0` glass lets through. Measured on a 1190x924 card, that blit was 205ms of a 260ms
-    /// shell raster and it was paid on every open; these nine `copy` calls are the GPU's.
-    ///
-    /// Pushed immediately under its panel so the ordering a baked shadow had is kept: over
-    /// this layer's frost pane and its scrim, under the panel's own tile.
+    /// Panel drop shadow: nine stretched atlas draws instead of panel-sized CPU blit.
+    /// Nine-sliceable (corners carry alpha variance, centre is flat). GPU not CPU.
     fn push_shadow(cmds: &mut Vec<DrawCmd>, tile: ui::render::TileId, radius: i32, panel: Rect, alpha: u8) {
         ui::render::push_nine_slice(
             cmds,
@@ -249,9 +201,7 @@ impl App {
         );
     }
 
-    /// The open modal itself: its card, its scrollable content, an open dropdown and the
-    /// focused widget composited on top. `m` is the modal layer's own fade/rise progress —
-    /// everything here rides it rather than animating separately.
+    /// Open modal card, content, dropdown, focus widget. m is modal fade/rise (rides everything).
     fn compose_modal_card(
         &self,
         tiles: &TileStore,
@@ -261,14 +211,9 @@ impl App {
         m: f32,
         cmds: &mut Vec<DrawCmd>,
     ) {
-        // Paired as one argument to stay inside clippy's `too_many_arguments` limit.
         let (screen_w, screen_h) = (size.w, size.h);
         let dy = ui::animation::modal_rise(m);
-        // The tile now covers only the card region (see `prepare_modal`), so it
-        // composites there rather than full-screen. Opening plays the same motion
-        // `compose_modal`'s closing snapshot uses below, in reverse — fade + rise, no
-        // scale.
-        // Its frost pane went in ahead of the scrim (see `compose_modal`), at this same rect.
+        // Tile covers card region only; opening plays fade+rise (reverse of closing snapshot).
         let modal_base = self.render.modal.tile_region.offset(0, dy);
         Self::push_shadow(
             cmds,
@@ -621,6 +566,20 @@ impl App {
                 let r = self.press_dip(Screen::Home).rect(card_rect(idx));
                 self.compose_focused_card(tiles, cmds, pin_id, r, pad, now);
             }
+        }
+        // The reveal's dissolve: every card above is already fully built and drawn opaque —
+        // covered here by a background-coloured mask whose own alpha falls away as the wave
+        // passes, so the page uncovers as one surface instead of each card fading in on its
+        // own clock (see `spinner::GridReveal::dissolve_mask` for why this is a fading cover
+        // rather than the launch backdrop's erase-based technique).
+        if self.render.grid.reveal.dissolving() {
+            let cover_h = screen_h.saturating_sub(view::home::GRID_TOP_Y as u32);
+            let cover = Rect::new(grid_x, view::home::GRID_TOP_Y, available_w, cover_h);
+            cmds.push(DrawCmd::Tex {
+                tile: tile::GRID_REVEAL_MASK,
+                dst: cover,
+                alpha: 0xff,
+            });
         }
     }
 
