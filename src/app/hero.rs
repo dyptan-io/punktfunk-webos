@@ -54,12 +54,6 @@ pub const HERO_DISSOLVE_WAVE: ui::animation::Wave = ui::animation::Wave {
     fade: Duration::from_millis(HERO_FADE.as_millis() as u64 * 3 / 5),
 };
 
-/// The dissolve mask's resolution. Tiny on purpose: it is stretched over the whole screen and
-/// bilinear filtering turns it into a continuous gradient, so the wave costs one small buffer
-/// per frame rather than a draw call per piece of the image.
-pub const HERO_MASK_W: u32 = 64;
-pub const HERO_MASK_H: u32 = 36;
-
 /// How much the hero is darkened once fully faded in, so it reads as a backdrop
 /// rather than as content.
 pub const HERO_SCRIM_ALPHA: f32 = 70.0;
@@ -94,54 +88,41 @@ pub fn hero_pan_dst(img_w: u32, img_h: u32, screen_w: u32, screen_h: u32, elapse
     }
 }
 
-/// How far the launch's connect has got, as the loading screen can see it.
+/// Launch connect progress as the loading screen sees it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Connect {
-    /// Still running.
     Pending,
-    /// Finished with a session; whether it is decoding yet is `presenting`.
     Done,
-    /// Finished with an error, which the menu behind the hero is about to show.
     Failed,
 }
 
 #[derive(Default)]
 pub(crate) struct Hero {
-    /// The decoded image and the game id it belongs to. Several MB, and only one can ever
-    /// be on screen, so a newer one simply replaces it.
+    /// Decoded image and its game id (one on-screen, newer replaces).
     image: Option<(String, HeroImage)>,
-    /// Last id asked for (the focused card), so an image that arrives after focus has
-    /// moved on can be recognised as no longer useful.
+    /// Last requested id (focused card); recognize late arrivals as stale.
     wanted: Option<String>,
-    /// Id whose hero belongs on the connecting screen. `None` for Desktop.
+    /// Id for connecting screen hero (`None` for Desktop).
     target: Option<String>,
-    /// Whether this launch's hero is still in flight: the loading screen waits a moment for art on
-    /// its way, but must not delay a launch with nothing to wait for.
+    /// Whether launch hero is in-flight (wait for art in-hand, not nothing).
     expected: bool,
-    /// Id currently uploaded as `TileId::Hero`. Uploaded only once a launch starts —
-    /// browsing must not put a multi-MB texture on the GPU.
+    /// Id currently uploaded as `TileId::Hero` (only after launch starts).
     uploaded: Option<String>,
-    /// When the uploaded image started fading in. Its own clock, not the launch fade's: a
-    /// hero can land mid-handshake, and then it fades in from there.
+    /// When uploaded image started fading in (own clock, can land mid-handshake).
     since: Option<Instant>,
-    /// When it started fading back out, i.e. when the stream became ready.
+    /// When fade-out started (stream became ready).
     fade_out: Option<Instant>,
-    /// [`Self::dissolve_mask`]'s buffer, kept across the frames of one dissolve.
+    /// Buffer for `dissolve_mask`.
     mask: Vec<u8>,
-    /// Whether that fade-out began with a picture on the video plane behind it. Only then is
-    /// the exit a dissolve into live video; a failed connect (or a first frame that never
-    /// came) has nothing to dissolve into and leaves over the menu as it always did.
+    /// Whether fade-out started with video behind it (dissolve vs menu).
     over_video: bool,
-    /// When the wait for a decoded frame runs out, set the moment the connect finishes so the
-    /// budget is bounded from there rather than from the launch. Handed to `runtime::stream`,
-    /// whose reveal waits on the same signal and must not start the clock over.
+    /// Deadline for first decoded frame (shared with stream reveal).
     first_frame_deadline: Option<Instant>,
 }
 
 impl Hero {
-    /// Notes whose hero is worth keeping — the focused card, whose art is prefetched.
+    /// Note focused card to prefetch. Called per tile-prep, no-op case allocates nothing.
     pub(crate) fn want(&mut self, game_id: &str) {
-        // Called per tile-prep pass, so the usual no-op case allocates nothing.
         if self.wanted.as_deref() != Some(game_id) {
             self.wanted = Some(game_id.to_string());
         }
@@ -154,15 +135,12 @@ impl Hero {
         self.expected = false;
     }
 
-    /// Says this launch's hero is still being fetched, so the hand-off gives it a moment to
-    /// land. A game with none, or one whose hero is already in hand, must not spend that moment.
+    /// Signal hero still fetching (hand-off waits for art in-hand, not nothing).
     pub(crate) fn await_art(&mut self) {
         self.expected = true;
     }
 
-    /// Takes a freshly decoded image, and reports whether it was kept. A `false` means the
-    /// caller should let the loader forget it, so focusing that card again re-requests it
-    /// (from the disk cache by then) rather than never asking a second time.
+    /// Accept decoded image; false means caller should drop it (re-request on re-focus from cache).
     pub(crate) fn accept(&mut self, game_id: String, image: HeroImage) -> bool {
         let useful =
             self.wanted.as_deref() == Some(game_id.as_str()) || self.target.as_deref() == Some(game_id.as_str());
@@ -240,8 +218,7 @@ impl Hero {
     /// Seconds into the exit at `now`, or `None` if it has not started — the one reading of
     /// that clock, for the two curves that run off it (this fade and the dissolve's wave).
     fn exit_secs(&self, now: Instant) -> Option<f32> {
-        self.fade_out
-            .map(|t| now.saturating_duration_since(t).as_secs_f32())
+        self.fade_out.map(|t| now.saturating_duration_since(t).as_secs_f32())
     }
 
     /// Whether the exit is a dissolve into live video: the graphics plane is cleared
@@ -263,33 +240,13 @@ impl Hero {
     }
 
     /// This frame's dissolve mask: one byte of alpha per texel of a black
-    /// [`HERO_MASK_W`]x[`HERO_MASK_H`] image, in RGBA order.
-    ///
-    /// The wave runs on `(x + y)`, so it sweeps the diagonal from the top-left corner — the
-    /// direction the grid's cards arrive on — and every texel is on its own delayed
-    /// smoothstep. Evaluated once per *diagonal* rather than once per texel: the value is a
-    /// function of `x + y` alone, so a row of the image is 23 of them rather than 2304.
-    ///
-    /// The buffer is kept across frames and only its alpha bytes are written — the colour is
-    /// black for the life of the dissolve, and this runs every frame of it.
+    /// [`ui::animation::MASK_W`]x[`ui::animation::MASK_H`] image, in RGBA order — the colour
+    /// is black for the life of the dissolve, so only the ramp itself varies frame to frame.
+    /// See [`ui::animation::diagonal_mask`] for the shared texel loop.
     pub(crate) fn dissolve_mask(&mut self, now: Instant) -> (u32, u32, &[u8]) {
-        let px = (HERO_MASK_W * HERO_MASK_H) as usize * 4;
-        if self.mask.len() != px {
-            self.mask.clear();
-            self.mask.resize(px, 0);
-        }
         let elapsed = self.exit_secs(now).unwrap_or(f32::MAX);
-        let last = (HERO_MASK_W + HERO_MASK_H - 2) as f32;
-        let mut diagonal = [0u8; (HERO_MASK_W + HERO_MASK_H - 1) as usize];
-        for (d, a) in diagonal.iter_mut().enumerate() {
-            *a = (HERO_DISSOLVE_WAVE.frac_secs(elapsed, d as f32 / last) * 255.0) as u8;
-        }
-        for y in 0..HERO_MASK_H {
-            for x in 0..HERO_MASK_W {
-                self.mask[((y * HERO_MASK_W + x) * 4 + 3) as usize] = diagonal[(x + y) as usize];
-            }
-        }
-        (HERO_MASK_W, HERO_MASK_H, &self.mask)
+        ui::animation::diagonal_mask(&mut self.mask, [0, 0, 0], HERO_DISSOLVE_WAVE, elapsed, |frac| frac);
+        (ui::animation::MASK_W, ui::animation::MASK_H, &self.mask)
     }
 
     /// Whether an uploaded hero is on screen as the connecting backdrop. `since` is only ever

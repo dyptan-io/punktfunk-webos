@@ -13,6 +13,14 @@ pub const WEBOS_BACK_KEYCODE: i32 = 2_097_155;
 /// [`WEBOS_BACK_KEYCODE`], which behaves identically.
 pub const WEBOS_RED_KEYCODE: i32 = 2_097_169;
 
+/// Magic Remote Blue button keycode. Confirmed on-device: every physical press carries this
+/// keycode with `scancode: None`, but `SDL_SCANCODE_WEBOS_BLUE = 489`'s bit in the
+/// keyboard-state array is unreliable on the *first* press of a session — polling it (as Green
+/// and Yellow are) silently missed the first Blue press every time, with only the second press
+/// onward landing in the array. The keycode itself was solid on every press, logged, so — same
+/// as Red — this is matched as a keycode rather than polled as a scancode.
+pub const WEBOS_BLUE_KEYCODE: i32 = 2_097_172;
+
 /// Sleeps until an SDL event arrives or `timeout` elapses, whichever comes first.
 ///
 /// A null event pointer is what makes this usable from the menu loop: SDL then waits on the
@@ -96,11 +104,11 @@ impl StickMenuNav {
 
 /// webOS Magic Remote scancodes — outside rust-sdl2's enum, needs raw polling.
 /// `SDL_SCANCODE_WEBOS_{RED,GREEN,YELLOW,BLUE} = 486..489` in `webosbrew/SDL-webOS`'s `SDL_scancode.h`.
-/// Red has no usable scancode here — it arrives as a bare keycode instead, see
-/// [`WEBOS_RED_KEYCODE`].
+/// Red and Blue have no *reliable* scancode here — Red never sets one at all, and Blue's bit
+/// misses the first press of a session — so both arrive as bare keycodes instead, see
+/// [`WEBOS_RED_KEYCODE`]/[`WEBOS_BLUE_KEYCODE`].
 pub const WEBOS_GREEN_SCANCODE: i32 = 487;
 pub const WEBOS_YELLOW_SCANCODE: i32 = 488;
-pub const WEBOS_BLUE_SCANCODE: i32 = 489;
 
 /// webOS Home key (`SDL_SCANCODE_WEBOS_HOME = 384`). Polled to re-open the launcher once
 /// `KEYS_HOME` capture stops the OS doing it. A USB keyboard's Super key is Home-class and

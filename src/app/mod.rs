@@ -106,69 +106,39 @@ pub struct DropdownState {
 }
 
 pub struct App {
-    /// Which screen is up, which was before it, and where the cursor sits on each — see
-    /// [`nav::Nav`].
     pub(crate) nav: nav::Nav,
-    /// Every background job in flight — see [`jobs::Jobs`].
     pub(crate) jobs: jobs::Jobs,
-    /// The selected host's games, art and grid sections — see [`library::Library`].
     pub(crate) library: library::Library,
-    /// Every host the menu knows about — see [`hosts::HostsState`].
     pub(crate) hosts: hosts::HostsState,
-    /// The settings document and the UI editing it — see [`settingsui::SettingsUi`].
     pub(crate) settings_ui: settingsui::SettingsUi,
-    /// Per-screen payloads — see [`screens::slots::ScreenSlots`].
     pub(crate) screens: screens::slots::ScreenSlots,
-    /// Tiles, clocks, scroll windows and dirty flags — see [`render::state::RenderState`].
     pub(crate) render: render::state::RenderState,
     pub(crate) home_focus: HomeFocus,
     pub(crate) home_status: Option<String>,
-    /// Whether `home_status` is the reason the last launch bounced back to the menu, and so must
-    /// survive the library reload a fresh menu entry starts — that reload clears the status on
-    /// success, which wiped the error a second after the user landed back on the grid. Anything
-    /// the user's own actions produce replaces it as usual.
+    /// Must survive library reload (cleared on success, else error disappears after 1s).
     pub(crate) home_status_sticky: bool,
-    /// A one-shot toast the state machine wants shown, waiting for the loop that owns the
-    /// [`Notification`](crate::ui::widgets::Notification) to pick it up (`take_toast`). An
-    /// outbox rather than a call, since `App` has no handle on the overlay: this is the same
-    /// arrangement `launch_ready` uses for a launch.
+    /// One-shot toast, outbox since App has no overlay handle.
     pub(crate) toast: Option<String>,
-    /// When the current status line went up, so `tick_animations` can expire it after
-    /// `HOME_STATUS_LIFETIME`. Stamped by `set_home_status`, which every writer goes through.
     home_status_shown_at: Option<Instant>,
-    /// A status line waiting out [`LIBRARY_STATUS_DELAY`], see
-    /// [`set_home_status_delayed`](Self::set_home_status_delayed).
+    /// Status line waiting out `LIBRARY_STATUS_DELAY`.
     library_status_due: Option<(Instant, String)>,
     pub(crate) launch_ready: Option<ConnectTarget>,
     pub(crate) launch_anim: Option<Instant>,
     pub(crate) launch_anim_idx: Option<usize>,
-    /// The submenu raised over a held grid card's title strip (where the card lives, plus
-    /// its per-game settings). `None` when no card is held open.
+    /// Submenu over held card's title strip.
     pub(crate) card_menu: Option<state::cardmenu::CardMenu>,
-    /// Whether the card submenu's introduction (`state::cardmenu::INTRO_HINT`) is still owed —
-    /// set on the first launch of a build that stamped a new version into the document, spent
-    /// on the status line as soon as a library has actually landed to hold the cards it talks
-    /// about.
+    /// Intro hint owed on first launch after version bump.
     pub(crate) intro_hint_owed: bool,
-    /// When each host last launched each game — what orders the Library section (see
-    /// [`services::recents`](crate::services::recents)). Loaded once at startup; a cache, so
-    /// nothing here fails.
+    /// Per-host launch history (orders Library section). Cached at startup.
     pub(crate) recents: crate::services::recents::Recents,
-    /// Persists settings off UI thread to avoid blocking.
+    /// Off-thread settings persist.
     pub(crate) state_writer: store::StateWriter,
-    /// The attached pad's type per `gamepad::detect_type`, refreshed on hotplug in
-    /// `runtime::ui_flow`. `None` with no pad attached or an unrecognized one. Only meaningful
-    /// when `settings.gamepad_type` is `Auto` — an explicit pick doesn't need this to know what
-    /// it's driving, but the Controller row's `DualSense` caption does (see `settings_rows`).
+    /// Detected pad type (meaningful only if `gamepad_type` is Auto).
     pub(crate) detected_gamepad_type: Option<store::GamepadType>,
-    /// Whether webOS's on-screen keyboard is currently up, polled from
-    /// `SDL_IsScreenKeyboardShown` each tick by `main.rs` — it moves the address form out
-    /// from under the panel (see `App::keyboard_modal_card`).
+    /// webOS on-screen keyboard up (moves address form from under panel).
     pub(crate) keyboard_shown: bool,
     pub(crate) identity: (String, String),
-    /// When `tick_animations` last ran, so the eased scroll can advance by real elapsed time
-    /// instead of by a frame count (see `ui::animation::ease_scroll`). Every other animation
-    /// here is already clocked off its own `Instant`.
+    /// Last tick time (for real-time scroll easing, not frame-count based).
     last_tick: Option<Instant>,
 }
 
@@ -204,19 +174,13 @@ impl App {
         self.keyboard_shown = shown;
     }
 
-    /// A Home status line shown only if the fetch is still running [`LIBRARY_STATUS_DELAY`]
-    /// later (`tick_animations` puts it up).
+    /// Show status line only if fetch still running after `LIBRARY_STATUS_DELAY`.
     pub(crate) fn set_home_status_delayed(&mut self, line: String) {
         self.set_home_status(None, false);
         self.library_status_due = Some((Instant::now(), line));
     }
 
-    /// The Home status line. `sticky` marks a line that must survive the library reload a
-    /// fresh menu entry starts — that reload clears the status on success, which otherwise
-    /// wiped a launch error a second after the user landed back on the grid.
-    ///
-    /// Also drops any line still waiting out [`LIBRARY_STATUS_DELAY`] so it can't land on top
-    /// of a newer one.
+    /// Set Home status (sticky survives reload, cleared on success). Drops delayed line.
     pub(crate) fn set_home_status(&mut self, status: Option<String>, sticky: bool) {
         self.library_status_due = None;
         self.home_status_shown_at = status.is_some().then(Instant::now);
@@ -224,8 +188,7 @@ impl App {
         self.home_status_sticky = sticky;
     }
 
-    /// The open modal's scroll indicator this frame, on the same hold-then-fade as every
-    /// other self-expiring overlay. `None` once it is spent.
+    /// Open modal's scroll indicator (hold-then-fade like all self-expiring overlays).
     pub(crate) fn scroll_indicator_alpha(&self) -> Option<f32> {
         ui::fade::hold_alpha(
             self.render.scroll.shown_at?,
@@ -234,8 +197,7 @@ impl App {
         )
     }
 
-    /// The status line's opacity this frame, or `None` once it is spent — the toast's clock
-    /// ([`ui::fade::hold_alpha`]), so the two transient lines leave the screen the same way.
+    /// Status line opacity (same clock as toast, so lines leave screen identically).
     pub(crate) fn home_status_alpha(&self) -> Option<f32> {
         ui::fade::hold_alpha(
             self.home_status_shown_at?,
@@ -244,13 +206,12 @@ impl App {
         )
     }
 
-    /// Queues a transient toast. Replaces any still waiting — a second action before the loop
-    /// has ticked means the first is already stale.
+    /// Queue transient toast (replaces waiting ones; second action before tick = first stale).
     pub(crate) fn toast(&mut self, message: impl Into<String>) {
         self.toast = Some(message.into());
     }
 
-    /// Takes whatever [`toast`](Self::toast) queued, for the loop to hand its overlay.
+    /// Take queued toast for loop's overlay.
     pub fn take_toast(&mut self) -> Option<String> {
         self.toast.take()
     }
@@ -758,7 +719,10 @@ impl App {
             }
         }
         // Every frame of the fade out is a redraw; the frame after it is the clear.
-        if self.home_status_shown_at.is_some_and(|t| t.elapsed() >= HOME_STATUS_LIFETIME) {
+        if self
+            .home_status_shown_at
+            .is_some_and(|t| t.elapsed() >= HOME_STATUS_LIFETIME)
+        {
             if self.home_status_alpha().is_none() {
                 self.set_home_status(None, false);
             }
@@ -777,7 +741,7 @@ impl App {
         if self.card_menu.as_mut().is_some_and(state::cardmenu::CardMenu::tick) {
             animating = true;
         }
-        if self.render.grid.card_pops_running() {
+        if self.render.grid.card_pops_running() || self.render.grid.reveal.dissolving() {
             animating = true;
         }
         animating

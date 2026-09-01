@@ -375,12 +375,7 @@ impl ConfirmDialog {
     }
 }
 
-/// Edge-trigger bookkeeping shared by every scancode/keycode poll in both loops: `down` (with
-/// whatever gating — a dialog owning input, say — the caller wants folded in already) becomes
-/// `fired` exactly once per physical press, `prev` carrying state across calls. Split from
-/// [`scancode_rising_edge`] so a caller that needs to gate `down` on something besides the raw
-/// key state (the streaming loop's colour buttons, skipped while its disconnect dialog is open)
-/// isn't left re-deriving this bookkeeping itself.
+/// Fires once when `down` changes from false to true.
 pub(super) fn rising_edge(down: bool, prev: &mut bool) -> bool {
     let fired = down && !*prev;
     *prev = down;
@@ -393,17 +388,10 @@ fn scancode_rising_edge(scancode: i32, prev: &mut bool) -> bool {
     rising_edge(crate::platform::webos::input::webos_scancode_down(scancode), prev)
 }
 
-/// Wraps webOS's on-screen keyboard (`SDL_StartTextInput`/`Stop`/`SetTextInputRect`, driving
-/// `zwp_text_input_v3` — see `text_input_screen`'s doc) for the two loops that raise it:
-/// `run_ui_flow` declaratively, from which screen is open, and `stream` from a button press
-/// with no equivalent "wants text" screen state to read. One place for the SDL toggle-semantics
-/// workaround `raise` needs, instead of two copies free to drift apart.
+/// Controls the webOS on-screen keyboard for UI and streaming loops.
 pub(super) struct TextInputController {
     util: sdl2::keyboard::TextInputUtil,
-    /// This app's own belief about whether it last asked for text input — not necessarily
-    /// what the compositor is showing right now; webOS's IME can dismiss the panel (Back)
-    /// without this app hearing about it. Only [`Self::set_active`] treats this as trustworthy
-    /// (it owns every off transition); [`Self::raise`] deliberately never reads it.
+    /// Last requested SDL state. The compositor may dismiss the panel independently.
     active: bool,
 }
 
@@ -420,9 +408,7 @@ impl TextInputController {
         self.util.is_screen_keyboard_shown(window)
     }
 
-    /// Declarative form (`run_ui_flow`'s): active exactly while `want` is true, a no-op unless
-    /// `want` changed since the last call. `rect`, when given, anchors the panel to a text
-    /// field on the way up — `run_ui_flow` skips it when the field itself isn't on screen yet.
+    /// Matches text input state to the active UI screen.
     pub(super) fn set_active(&mut self, want: bool, rect: Option<sdl2::rect::Rect>) {
         if want == self.active {
             return;
@@ -439,20 +425,16 @@ impl TextInputController {
         tracing::debug!("text input requested: {want}");
     }
 
-    /// Button-triggered form (`stream`'s): unconditionally (re)raises the panel at `rect`,
-    /// regardless of what this app currently believes. SDL's own idea of text input stays
-    /// "started" from the first raise onward for the whole loop, even across a Back dismissal
-    /// this app never hears about — so a bare `start()` on a later press is a no-op against
-    /// state SDL already considers unchanged, and the panel never re-shows. `stop()`
-    /// immediately before it forces a real disable→enable transition every single press.
+    /// Raises the panel unconditionally, even if `active` already says it's up — the stream
+    /// loop never polls `is_shown`, so `active` can't tell a still-open panel from one Back
+    /// silently dismissed underneath it. Closing it again is the TV's job — Back dismisses it
+    /// through webOS's own IME, and this app never calls `stop()` in response to that.
     pub(super) fn raise(&mut self, rect: sdl2::rect::Rect) {
-        self.util.set_rect(rect);
-        self.util.stop();
-        self.util.start();
-        self.active = true;
+        self.active = false;
+        self.set_active(true, Some(rect));
     }
 
-    /// Cleanup at loop exit — harmless if already stopped.
+    /// Stops text input at loop exit.
     pub(super) fn stop(&mut self) {
         self.util.stop();
         self.active = false;

@@ -65,39 +65,25 @@ pub(super) fn run_ui_flow(
     const TICK_BUDGET: Duration = Duration::from_millis(16);
     canvas.window_mut().show();
     let mut app = App::new(identity.clone());
-    // `ControllerDeviceAdded` fires once per connect, not per menu entry, so re-poll here
-    // or the Controller row stays stale after the first menu.
+    // Re-poll pad type (ControllerDeviceAdded fires once per connect, not per menu entry).
     app.set_gamepad_type(gamepad::detect_type(game_controller));
-    // The GPU tile cache is the render loop's, not App's — App holds only screen state
-    // Recreated per menu entry, same as `app`.
+    // GPU tile cache (render loop's, not App's). Recreated per menu entry.
     let mut tiles = crate::ui::cache::TileStore::new();
-    // Upload every spinner frame's GPU texture now, once, rather than letting each
-    // frame's first appearance create it lazily inside the render loop. The upload
-    // creates a *new* static texture (allocation, not just a pixel copy) the first
-    // time a `tile::spinner(idx)` is seen — done inline during the animation
-    // that meant the first spin cycle stalled once per unique frame, right when the
-    // spinner is supposed to look smooth. `clear_all` (stream handoff) drops these
-    // along with everything else, so this needs redoing on every re-entry here.
+    // Upload spinner frames upfront (avoids lazy allocation stall during first spin cycle).
     for idx in 0..crate::ui::spinner::FRAMES {
         upload_spinner(compositor, texture_creator, idx)?;
     }
-    // E.g. "the last connect attempt failed, and here's why" — shown on the
-    // Home screen the user just got dropped back onto (see `run_inner`'s
-    // connect-error path).
+    // Status from last connect attempt (sticky so reload progress doesn't erase it).
     if initial_status.is_some() {
-        // Set after `App::new`, which has already kicked off the library reload for the
-        // restored host — sticky so that reload's own progress line doesn't erase it.
         app.set_home_status(initial_status, true);
     }
-    // Same toast widget as the streaming loop's (`ui::widgets::Notification`);
-    // shown once, right as the Home screen re-appears.
+    // Toast widget (same as stream loop). Shown once as Home re-appears.
     let mut notif = crate::ui::widgets::Notification::new();
     let mut toast = super::toast::Toast::default();
     if let Some(msg) = initial_toast {
         notif.show(msg);
     }
-    // Rasterized-text cache (see `ui::text::TextCache` docs) — created once here and
-    // threaded down through every render call for the rest of this UI-flow's
+    // Rasterized-text cache (created once, threaded through every render call).
     // lifetime so repeat draws of the same (font, text, color) reuse an
     // already-rasterized+premultiplied `Pixmap` instead of re-rasterizing
     // freetype glyphs on every ~60fps tick.
@@ -353,19 +339,23 @@ pub(super) fn run_ui_flow(
                 EventAction::Launch => break 'ui,
             }
         }
-        // Track actual keyboard state (user can dismiss while field focused; moves card).
-        let keyboard_shown = text_input.is_shown(canvas.window());
-        if keyboard_shown != app.keyboard_shown {
-            app.set_keyboard_shown(keyboard_shown);
-            dirty = true;
-            tracing::debug!("on-screen keyboard shown: {keyboard_shown}");
-        }
         // Toggle text input off screen state — a no-op unless it actually changed.
         let wants_text = text_input_screen(app.nav.screen);
-        let rect = app
-            .address_field_rect(display_mode.w as u32, display_mode.h as u32, fonts)
-            .map(|r| sdl2::rect::Rect::new(r.x(), r.y(), r.width(), r.height()));
-        text_input.set_active(wants_text, rect);
+        // Track actual keyboard state (user can dismiss while field focused; moves card).
+        // Only worth polling while a text screen is up or the panel is still closing.
+        if wants_text || app.keyboard_shown {
+            let keyboard_shown = text_input.is_shown(canvas.window());
+            if keyboard_shown != app.keyboard_shown {
+                app.set_keyboard_shown(keyboard_shown);
+                dirty = true;
+                tracing::debug!("on-screen keyboard shown: {keyboard_shown}");
+            }
+        }
+        let rect = wants_text.then(|| {
+            app.address_field_rect(display_mode.w as u32, display_mode.h as u32, fonts)
+                .map(|r| sdl2::rect::Rect::new(r.x(), r.y(), r.width(), r.height()))
+        });
+        text_input.set_active(wants_text, rect.flatten());
         // Five reasons to render: dirty, animations running, tiles pending,
         // spinner animating, or log overlay due for refresh (~2Hz).
         // 16ms sleep when none holds keeps SoC idle.
@@ -449,9 +439,8 @@ pub(super) fn run_ui_flow(
                     )?;
                 }
             } else if let Some(pm) = tiles.get(id) {
-                // The sidebar strip is the one tile that covers everything under it — and
-                // only where the look's panels are opaque (`ui::theme::panels_opaque`).
-                let opaque = id == tile::SIDEBAR && crate::ui::theme::panels_opaque();
+                // The sidebar strip is the one tile that covers everything under it.
+                let opaque = id == tile::SIDEBAR;
                 compositor.upload(texture_creator, id, pm, opaque)?;
             }
         }
@@ -463,6 +452,18 @@ pub(super) fn run_ui_flow(
             compositor.upload_raw(
                 texture_creator,
                 tile::HERO_MASK,
+                mw,
+                mh,
+                sdl2::pixels::PixelFormatEnum::ABGR8888,
+                px,
+            )?;
+        }
+        // The grid's own reveal dissolve — same reasoning as the hero mask above.
+        if app.render.grid.reveal.dissolving() {
+            let (mw, mh, px) = app.render.grid.reveal.dissolve_mask(frame_start);
+            compositor.upload_raw(
+                texture_creator,
+                tile::GRID_REVEAL_MASK,
                 mw,
                 mh,
                 sdl2::pixels::PixelFormatEnum::ABGR8888,

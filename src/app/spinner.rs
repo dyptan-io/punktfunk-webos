@@ -1,5 +1,6 @@
 //! The grid's loading spinner: whether the grid has revealed yet, and the two clocks that
-//! decide it.
+//! decide it. Also the dissolve that follows: the same mask-and-erase technique as the
+//! launch backdrop's exit (`app::hero`), run over the card grid instead.
 //!
 //! Split out of `App` because the four fields are only ever moved together and the reasons they
 //! are *two* clocks rather than one are subtle enough to be worth a home of their own (see
@@ -10,14 +11,12 @@ use std::time::{Duration, Instant};
 /// spinner forever, so cap the wait on it. Only on the art — see [`PageReady`].
 const SPINNER_MAX_WAIT: Duration = Duration::from_millis(900);
 
-/// How far the grid's first page has got: what the spinner is waiting for.
+/// Grid first-page readiness (what spinner waits for).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PageReady {
-    /// A card on the page has no tile yet. Never revealed in this state, cap or no cap: the
-    /// wave exists to open cards that are already built, and one arriving after it has passed
-    /// pops in over a screen that has finished animating.
+    /// Card has no tile; never revealed (wave opens built cards; late arrivals pop after).
     Building,
-    /// Every card on the page is rasterized, but some are still placeholders waiting on art.
+    /// All tiles rasterized, some waiting on art.
     Tiles,
     /// Nothing outstanding.
     All,
@@ -33,13 +32,14 @@ pub(crate) struct GridReveal {
     revealed: bool,
     /// The spinner frame currently uploaded, so an unchanged phase re-uploads nothing.
     frame: Option<usize>,
-    /// Feeds the spinner's rotation phase. Runs from the *fetch*, continuously, so the rotation
-    /// does not jump when the games land mid-spin.
+    /// Spinner rotation phase clock (runs from fetch; no jump when games land mid-spin).
     since: Option<Instant>,
-    /// What [`SPINNER_MAX_WAIT`] is measured against, armed on the first frame the grid has a
-    /// library to build from. Separate from `since` precisely because it must not run during the
-    /// fetch — the deadline must not expire on time the build never got.
+    /// Build deadline (separate from since; must not run during fetch).
     build_since: Option<Instant>,
+    /// Grid revealed clock; dissolve clock (None once wave done).
+    dissolve_since: Option<Instant>,
+    /// Buffer for `dissolve_mask`.
+    mask: Vec<u8>,
 }
 
 impl GridReveal {
@@ -60,39 +60,57 @@ impl GridReveal {
         self.since.map_or(0.0, |s| s.elapsed().as_secs_f32())
     }
 
-    /// Reveals the grid and stands the spinner down, clocks and all.
+    /// Reveal grid, stand down spinner, start dissolve (cards already built).
     pub fn reveal(&mut self) {
-        *self = Self::revealed();
+        let mask = std::mem::take(&mut self.mask);
+        *self = Self {
+            revealed: true,
+            dissolve_since: Some(Instant::now()),
+            mask,
+            ..Self::default()
+        };
     }
 
-    /// Stands the spinner back up for a fresh library.
-    ///
-    /// The build deadline always restarts — this rebuild *is* the build it times. The rotation
-    /// only restarts if the spinner was not already turning: a landing fetch triggers this on the
-    /// handover from waiting to building, and starting the phase over there reads as the spinner
-    /// visibly jumping.
+    /// Stand spinner back up for fresh library. Build deadline always restarts.
+    /// Rotation restarts only if not already spinning (avoids visible jump on fetch land).
     pub fn restart(&mut self) {
         let was_spinning = !self.revealed;
         self.revealed = false;
         self.build_since = None;
+        self.dissolve_since = None;
         if !was_spinning {
             self.since = None;
             self.frame = None;
         }
     }
 
-    /// Advances the spinner one frame while the grid is still building, and reveals it once
-    /// `page` says the first page is complete — or, past [`SPINNER_MAX_WAIT`], once that page
-    /// is at least rasterized.
-    ///
-    /// The page, not the whole prefetch window: the wave reveals what is on screen, and the
-    /// rows below it have no arrival to show.
-    ///
-    /// `fetch_in_flight` covers the network round trip before there is anything to build: the
-    /// page check would find nothing outstanding and reveal an empty grid, and the deadline
-    /// must not be running either.
-    ///
-    /// Returns the spinner frame to upload, if it changed this tick.
+    /// Reveal dissolve still running (gates mask upload and grid cover draw).
+    pub fn dissolving(&self) -> bool {
+        self.dissolve_since
+            .is_some_and(|t| t.elapsed() < crate::app::GRID_REVEAL_WAVE.span + crate::app::GRID_REVEAL_WAVE.fade)
+    }
+
+    /// Dissolve mask: background alpha falling opaque→zero as wave passes (cover, not erase).
+    /// Unlike hero backdrop (erases to uncover video), grid composites as ordinary alpha texture
+    /// because it has nothing to fall back to (cards are only content).
+    pub fn dissolve_mask(&mut self, now: Instant) -> (u32, u32, &[u8]) {
+        let bg = crate::ui::theme::palette().bg;
+        let elapsed = self
+            .dissolve_since
+            .map_or(f32::MAX, |t| now.saturating_duration_since(t).as_secs_f32());
+        crate::ui::animation::diagonal_mask(
+            &mut self.mask,
+            [bg.r, bg.g, bg.b],
+            crate::app::GRID_REVEAL_WAVE,
+            elapsed,
+            |revealed| 1.0 - revealed,
+        );
+        (crate::ui::animation::MASK_W, crate::ui::animation::MASK_H, &self.mask)
+    }
+
+    /// Advance spinner, reveal when page complete (or past `SPINNER_MAX_WAIT` if tiles ready).
+    /// Page only, not prefetch (wave reveals on-screen, rows below have no arrival).
+    /// `fetch_in_flight` prevents reveal during network wait. Returns frame to upload if changed.
     pub fn advance(&mut self, fetch_in_flight: bool, page: impl FnOnce() -> PageReady) -> Option<usize> {
         let since = *self.since.get_or_insert_with(Instant::now);
         if !fetch_in_flight {

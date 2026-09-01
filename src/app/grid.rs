@@ -16,21 +16,16 @@ use crate::app::spinner::GridReveal;
 use crate::app::view::home::{SECTION_GAP, SECTION_HEADING_H};
 use crate::core::model::GameEntry;
 
-/// Rows beyond viewport kept rasterized (prevents scroll stalls).
+/// Prefetch rows beyond viewport (prevents stalls).
 pub(crate) const CARD_PREFETCH_ROWS: i32 = 2;
-/// Rows beyond which tiles are dropped. Hysteresis prevents eviction oscillation.
+/// Rows beyond which tiles are dropped (hysteresis prevents oscillation).
 pub(crate) const CARD_KEEP_ROWS: i32 = 5;
-/// Rasterization time one frame will spend on card tiles before deferring the rest to the
-/// next. Checked *after* each card, so one is always built however slow the device — the
-/// window fills at whatever rate the hardware allows instead of at a rate picked for the
-/// slowest one. A fixed count of 1 (what this was) meant a 5x4 viewport took twenty frames
-/// to fill everywhere, which on a fast host is a third of a second of blank cards for no
-/// reason; on armv7 softfloat, where one card's text rasterization alone can cost most of a
-/// tick, this degrades back to exactly that one card.
+/// Budget per frame for card rasterization. Checked after each card so at least one always
+/// builds (window fills at hardware rate, not slowest-device rate). Fixed count of 1 meant a
+/// 5x4 viewport took 20 frames to fill; on armv7 softfloat this was still one card/tick.
 pub(crate) const CARD_BUILD_BUDGET: Duration = Duration::from_millis(6);
-/// Hard ceiling on cards per frame regardless of the clock: a host fast enough never to trip
-/// [`CARD_BUILD_BUDGET`] must still not rasterize *and upload* an unbounded batch in one tick,
-/// since the upload is charged to a later stage that the budget above cannot see.
+/// Ceiling regardless of clock: prevents unbounded rasterize+upload in one tick (upload
+/// charged to a later stage the budget can't see).
 pub(crate) const CARD_BUILD_BURST: usize = 8;
 
 /// Upper bound on grid sections: [`MAX_COLLECTIONS`](crate::core::model::MAX_COLLECTIONS)
@@ -110,8 +105,7 @@ impl<'a> GridLayout<'a> {
         let mut y_offset = 0;
         self.groups.iter().enumerate().map(move |(i, group)| {
             let rows = group.len.div_ceil(columns);
-            // Every heading takes a line; every one after the first also takes the gap that
-            // makes the block above it read as finished.
+            // Each heading takes one line; all but first add gap (visual block separation).
             y_offset += SECTION_HEADING_H + if i == 0 { 0 } else { SECTION_GAP };
             let placed = Placed {
                 group,
@@ -187,13 +181,6 @@ impl<'a> GridLayout<'a> {
         self.row_offset_at(idx / self.columns)
     }
 
-    /// How many diagonal steps grid slot `idx` is from the top-left corner — the stagger the
-    /// reveal wave sweeps the screen on. Here rather than at the call site because the row and
-    /// column of a slot are this type's arithmetic, clamped column count included.
-    pub(crate) fn diagonal_step(&self, idx: usize) -> usize {
-        idx / self.columns + idx % self.columns
-    }
-
     /// What the sections add to the grid's total height — the offset its last row carries.
     pub(crate) fn total_extra(&self) -> i32 {
         self.placed().last().map_or(0, |p| p.y_offset)
@@ -209,82 +196,48 @@ pub(crate) struct GridState {
     /// than by grid position because pinning a game reorders the grid, and keying by index would
     /// rebuild every tile after the moved one.
     pub card_ids: tile::CardIds,
-    /// When the last-armed card pop finishes — the one comparison `App::tick_animations`
-    /// needs, instead of walking every resident card's clock each frame to ask the same
-    /// question.
-    /// Never lowered by an eviction: a deadline that is merely late costs one extra frame
-    /// of the redraw loop, where one that is early would freeze a zoom mid-way.
+    /// When the last-armed card pop finishes (one comparison instead of walking every card).
+    /// Never lowered: late deadline costs one frame; early would freeze zoom mid-way.
     pub card_pop_until: Option<Instant>,
-    /// Current card size, derived from screen width in `App::advance_frame`. Screen geometry (the
-    /// event side reads it to size cover-art requests), not a rasterized tile.
+    /// Screen-derived card size, not rasterized.
     pub card_size: (u32, u32),
-    /// All card tiles are stale — the games list or the host changed. A fresh library load, so
-    /// `prepare_grid` also stands the reveal spinner back up.
+    /// All card tiles stale (games/host changed); also stands the reveal spinner up.
     pub dirty: bool,
-    /// Individual card tiles stale (cover art arrived), by pin id — cheaper than [`Self::dirty`]
-    /// when the layout is unchanged.
+    /// Individual card tiles stale (cover art), by pin id (cheaper than full dirty).
     pub cards_dirty: Vec<String>,
-    /// Card tiles still waiting to be rasterized inside the prefetch window. Keeps the main loop
-    /// ticking until the window is filled — without it the redraw-on-change loop would go idle
-    /// mid-build and leave blank cards on screen.
+    /// Cards waiting in prefetch window (keeps loop ticking until filled).
     pub tiles_pending: bool,
-    /// Scroll offset actually rendered this frame (px; 0 = row 0 at `view::home::GRID_TOP_Y`) —
-    /// eases toward [`Self::scroll_target`] each tick.
+    /// Scroll offset rendered this frame; eases toward `scroll_target`.
     pub scroll: i32,
     pub scroll_target: i32,
-    /// Where the grid is re-entered from the sidebar. Only ever consulted through the focus map,
-    /// which drops it when it no longer names a real card, so reorders and library reloads need no
-    /// invalidation of their own.
+    /// Grid re-entry from sidebar. Cleared by focus map when no longer valid.
     pub focus_last: usize,
-    /// Whether the initial build for the current library has finished, and the spinner shown until
-    /// it has.
+    /// Spinner state until initial build finishes.
     pub reveal: GridReveal,
-    /// `prepare_grid`'s per-frame working lists, kept across frames and cleared on entry.
-    /// All three are window-bounded, so this is not a scaling fix — it is the armv7 softfloat
-    /// allocator not being asked for three fresh collections on every frame of every scroll.
+    /// Per-frame scratch lists (window-bounded to avoid allocations every frame on armv7).
     pub scratch: GridScratch,
-    /// Card pixmaps freed by eviction, held for the next card built this frame. A scroll
-    /// evicts and builds in the same frame (see `prepare_grid`), and every card is exactly
-    /// [`Self::card_size`], so a recycled buffer never needs resizing — at 1080p each one is
-    /// ~360KB that would otherwise be freed and immediately reallocated.
+    /// Card pixmaps freed by eviction. Recycled for next build (avoids 360KB realloc at 1080p).
     pub free_cards: Vec<crate::ui::Painter>,
 }
 
-/// The lists `prepare_grid` refills each frame. Indices and ids only — nothing here borrows
-/// `games`, since it lives on `App` alongside it.
+/// Per-frame working lists. Indices/ids only; doesn't borrow `games`.
 #[derive(Default)]
 pub(crate) struct GridScratch {
-    /// Tiles inside the keep window, sorted, for the eviction test.
+    /// Tiles in keep window, sorted for eviction test.
     pub keep: Vec<crate::ui::render::TileId>,
-    /// Pin ids evicted this frame — owned, because releasing them mutates the map they
-    /// were read from.
+    /// Pin ids evicted (owned because releasing them mutates the map).
     pub dropped: Vec<String>,
-    /// Build candidates whose cover art has already arrived, and those still waiting.
+    /// Build candidates with/without cover art.
     pub ready: Vec<usize>,
     pub waiting: Vec<usize>,
 }
 
 impl GridState {
-    /// Starts (or restarts) `pin_id`'s pop at `at`. A card with no tile is not on screen
-    /// and has no arrival to show; it gets its clock when `prepare_grid` builds it.
+    /// Starts/restarts `pin_id`'s pop. Cards without tiles get their clock on build.
+    /// Grid's first appearance uses `GridReveal` mask instead (one surface, not per-card entrance).
     pub fn arm_card_pop(&mut self, pin_id: &str, at: Instant) {
-        self.arm_entrance(pin_id, tile::Entrance::pop(at), false);
-    }
-
-    /// Arms `pin_id`'s share of the reveal wave: a fade starting `delay` after `at`, which
-    /// the clock spends at zero progress (a future `Instant` reports no elapsed time). Never
-    /// restarts an arrival already under way.
-    pub fn arm_reveal_wave(&mut self, pin_id: &str, at: Instant, delay: Duration) {
-        self.arm_entrance(pin_id, tile::Entrance::reveal(at + delay), true);
-    }
-
-    fn arm_entrance(&mut self, pin_id: &str, entrance: tile::Entrance, if_idle: bool) {
-        let armed = if if_idle {
-            self.card_ids.arm_if_idle(pin_id, entrance)
-        } else {
-            self.card_ids.arm(pin_id, entrance)
-        };
-        if armed {
+        let entrance = tile::Entrance::pop(at);
+        if self.card_ids.arm(pin_id, entrance) {
             self.extend_pop_deadline(entrance.end());
         }
     }

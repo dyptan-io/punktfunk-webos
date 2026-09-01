@@ -1,7 +1,7 @@
 use super::*;
 use crate::platform::webos::device;
 use crate::platform::webos::input::{
-    webos_scancode_down as key_down, WEBOS_BLUE_SCANCODE, WEBOS_EXIT_SCANCODE, WEBOS_GREEN_SCANCODE,
+    webos_scancode_down as key_down, WEBOS_BLUE_KEYCODE, WEBOS_EXIT_SCANCODE, WEBOS_GREEN_SCANCODE,
     WEBOS_HOME_SCANCODE, WEBOS_YELLOW_SCANCODE,
 };
 
@@ -289,11 +289,7 @@ pub(super) fn run_inner() -> Result<()> {
         let mut green_held = key_down(WEBOS_GREEN_SCANCODE);
         let mut yellow_held = key_down(WEBOS_YELLOW_SCANCODE);
         let mut home_held = key_down(WEBOS_HOME_SCANCODE);
-        let mut blue_held = key_down(WEBOS_BLUE_SCANCODE);
-        // On-screen keyboard, raised by Blue mid-stream — there's no text field to declare
-        // "wants text" during a stream, so this drives `TextInputController` by button instead
-        // of by screen the way `run_ui_flow` does. Hiding is Back's job (webOS's IME dismisses
-        // on it).
+        // Blue controls text input because streams have no focused text field.
         let mut text_input = TextInputController::new(canvas.window().subsystem().text_input());
         // Transient toasts. `overlay_was_active` catches the fade-out edge so the canvas gets
         // wiped once; `stats_dst`/`log_dst` recomposite each frame at their own slower cadence.
@@ -448,8 +444,7 @@ pub(super) fn run_inner() -> Result<()> {
                             connected.send_input(&ev);
                         }
                     }
-                    // Committed text off the on-screen keyboard (Blue toggles it — see above);
-                    // it has no scancode of its own, only the string the IME composed.
+                    // Forward composed IME text, which has no scancode.
                     Event::TextInput { text, .. } => {
                         for ev in keyboard::text_key_events(&text) {
                             connected.send_input(&ev);
@@ -469,6 +464,28 @@ pub(super) fn run_inner() -> Result<()> {
                         if k.into_i32() == crate::platform::webos::input::WEBOS_RED_KEYCODE =>
                     {
                         buttons.red(false, |ev| connected.send_input(ev));
+                    }
+                    // Magic Remote Blue — raises the on-screen keyboard, so a game needing text
+                    // (chat, a search box) doesn't require dropping back to the menu. Like Red
+                    // it's matched by keycode, not polled by scancode: confirmed on-device that
+                    // `WEBOS_BLUE_SCANCODE`'s bit misses the first press of a session, while the
+                    // keycode arrives reliably from the very first press (see
+                    // `WEBOS_BLUE_KEYCODE`'s doc). `repeat: false` so a held Blue doesn't re-raise
+                    // on every OS auto-repeat tick. Hiding is Back's job — webOS's IME dismisses
+                    // on it, and this app never calls `stop()` in response to that.
+                    Event::KeyDown {
+                        keycode: Some(k),
+                        repeat: false,
+                        ..
+                    } if k.into_i32() == WEBOS_BLUE_KEYCODE => {
+                        // webOS requires a rectangle before enabling the IME.
+                        let w = 400i32.min(display_mode.w);
+                        text_input.raise(sdl2::rect::Rect::new(
+                            (display_mode.w - w) / 2,
+                            display_mode.h - 120,
+                            w as u32,
+                            60,
+                        ));
                     }
                     // Magic Remote Back has no scancode — forwarded as Esc. A held Back never
                     // arrives here; webOS delivers it as the EXIT gesture polled below instead.
@@ -604,12 +621,8 @@ pub(super) fn run_inner() -> Result<()> {
             if home_key_fired(&mut home_held) {
                 crate::platform::webos::luna::launch_home();
             }
-            // Colour buttons: edge-detected via raw scancode poll (the safe SDL2 event API
-            // can't see these keys), skipped while the dialog owns input. `rising_edge` is the
-            // one place that bookkeeping lives — see its doc for why it's not
-            // `scancode_rising_edge` directly.
+            // SDL2 lacks these colour scancodes. Ignore them while the dialog owns input.
             let dialog_open = disconnect.is_open();
-            // Green: stats-overlay toggle.
             if rising_edge(!dialog_open && key_down(WEBOS_GREEN_SCANCODE), &mut green_held) {
                 stats_enabled = !stats_enabled;
                 overlay_last = None; // force an immediate redraw
@@ -619,8 +632,6 @@ pub(super) fn run_inner() -> Result<()> {
                     stats_fade.close(());
                 }
             }
-            // Yellow: log-tail overlay Off -> Live -> Frozen -> Off; also handled in
-            // `run_ui_flow` for non-streaming screens.
             if rising_edge(!dialog_open && key_down(WEBOS_YELLOW_SCANCODE), &mut yellow_held) {
                 let was_on = log_overlay_state() != LogOverlayState::Off;
                 cycle_log_overlay();
@@ -631,23 +642,6 @@ pub(super) fn run_inner() -> Result<()> {
                 } else if was_on && !now_on {
                     log_fade.close(());
                 }
-            }
-            // Blue: raises the on-screen keyboard, so a game needing text (chat, a search box)
-            // doesn't require dropping back to the menu. Hiding is Back's job — webOS's IME
-            // dismisses on it, and `TextInputController::raise` never reads this app's own
-            // "active" belief, so there's no stuck-closed state Blue could get stuck reading.
-            if rising_edge(!dialog_open && key_down(WEBOS_BLUE_SCANCODE), &mut blue_held) {
-                // webOS's IME won't raise the panel off an `enable()` with no rectangle set
-                // yet — `run_ui_flow` always sets one first for the same reason. There's no
-                // text field to anchor to mid-stream, so a fixed strip near the bottom does.
-                let w = 400i32.min(display_mode.w);
-                text_input.raise(sdl2::rect::Rect::new(
-                    (display_mode.w - w) / 2,
-                    display_mode.h - 120,
-                    w as u32,
-                    60,
-                ));
-                tracing::debug!("on-screen keyboard requested");
             }
             // Connection-issue toast: fires on the rising edge of a freeze-until-reanchor hold
             // (dropped/gapped frames — see `session::pump`), which is the same "network
@@ -952,7 +946,6 @@ pub(super) fn run_inner() -> Result<()> {
             // added latency near zero; the wakeup rate is noise even on this SoC.
             std::thread::sleep(Duration::from_millis(2));
         };
-        // Harmless if Back already dismissed it, or it was never raised this stream.
         text_input.stop();
 
         // Trigger resistance is firmware state that outlives the session — hand the pad back
