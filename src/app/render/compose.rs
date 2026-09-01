@@ -569,8 +569,7 @@ impl App {
         // own clock (see `spinner::GridReveal::dissolve_mask` for why this is a fading cover
         // rather than the launch backdrop's erase-based technique).
         if self.render.grid.reveal.dissolving() {
-            let cover_h = screen_h.saturating_sub(view::home::GRID_TOP_Y as u32);
-            let cover = Rect::new(grid_x, view::home::GRID_TOP_Y, available_w, cover_h);
+            let cover = Rect::new(grid_x, 0, available_w, screen_h);
             cmds.push(DrawCmd::Tex {
                 tile: tile::GRID_REVEAL_MASK,
                 dst: cover,
