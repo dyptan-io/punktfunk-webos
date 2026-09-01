@@ -31,6 +31,8 @@ pub struct KnownHost {
     pub mgmt_port: Option<u16>,
     /// Wake-on-LAN MACs learned from mDNS; empty if never advertised.
     pub mac: Vec<String>,
+    /// Host OS identity chain from mDNS, used for the Desktop card's mark.
+    pub os: String,
     /// Auto-wake on unreachable (per-host, off by default; lives in Host power settings).
     pub wol_auto: bool,
     /// What to do to this host when the app exits (per-host, off by default; sits under
@@ -502,9 +504,10 @@ pub fn new_host_collections() -> Vec<Collection> {
 /// Upserts by `(host, port)`, keeping the existing fingerprint if the new record is unpaired
 /// (a fresh mDNS discovery shouldn't clobber a paired host) — same reasoning for `mac`,
 /// learned separately (see `App::drain_discovery`) and not necessarily known again at the
-/// point something else re-upserts this host. `games` and `wol_auto` are *always* kept from the
-/// existing record — as are `collections`: only the collections screen, the per-game settings
-/// screen and the Wake screen change them, so no add/edit/re-pair flow may clobber any of it.
+/// point something else re-upserts this host. The same rule preserves `os`. `games` and
+/// `wol_auto` are *always* kept from the existing record — as are `collections`: only the
+/// collections screen, the per-game settings screen and the Wake screen change them, so no
+/// add/edit/re-pair flow may clobber any of it.
 pub fn upsert_known_host(hosts: &mut Vec<KnownHost>, mut new: KnownHost) {
     let Some(existing) = hosts.iter_mut().find(|h| h.host == new.host && h.port == new.port) else {
         hosts.push(new);
@@ -515,6 +518,9 @@ pub fn upsert_known_host(hosts: &mut Vec<KnownHost>, mut new: KnownHost) {
     }
     if new.mac.is_empty() {
         new.mac.clone_from(&existing.mac);
+    }
+    if new.os.is_empty() {
+        new.os.clone_from(&existing.os);
     }
     new.games.clone_from(&existing.games);
     new.collections.clone_from(&existing.collections);
@@ -1128,4 +1134,7 @@ pub struct GameEntry {
     pub title: String,
     #[serde(default)]
     pub art: Artwork,
+    /// Packaged brand mark token, such as `steam`, for art-less launcher cards.
+    #[serde(default)]
+    pub icon: Option<String>,
 }

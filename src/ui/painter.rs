@@ -11,6 +11,18 @@ pub fn sk_color(c: Color) -> SkColor {
     SkColor::from_rgba8(c.r, c.g, c.b, c.a)
 }
 
+/// Builds a premultiplied pixmap from straight-alpha RGBA8 pixels.
+pub fn rgba_pixmap(width: u32, height: u32, mut pixels: Vec<u8>) -> Option<Pixmap> {
+    premultiply_rgba(&mut pixels);
+    Pixmap::from_vec(pixels, IntSize::from_wh(width, height)?)
+}
+
+/// Decodes image bytes into a pixmap without cropping or resizing.
+pub fn decode_pixmap(bytes: &[u8]) -> Option<Pixmap> {
+    let rgba = image::load_from_memory(bytes).ok()?.to_rgba8();
+    rgba_pixmap(rgba.width(), rgba.height(), rgba.into_raw())
+}
+
 /// Flat-color paint (no gradients/patterns). Anti-aliasing off for cheaper scan-conversion (~15-25% faster).
 pub fn solid_paint(color: Color) -> Paint<'static> {
     let mut paint = Paint::default();

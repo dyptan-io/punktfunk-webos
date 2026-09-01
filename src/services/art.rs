@@ -7,7 +7,6 @@ use std::sync::mpsc::{Receiver, Sender};
 use tiny_skia::{FilterQuality, IntSize, Pixmap, PixmapPaint, Transform};
 
 use crate::services::library::GameEntry;
-use crate::ui::painter::premultiply_rgba;
 
 /// A decoded wide hero image, RGB565 little-endian — it goes to the GPU as a raw texture
 /// (`Compositor::upload_raw`) rather than through a `Painter`, since nothing is ever
@@ -155,10 +154,7 @@ fn decode_hero(img: image::DynamicImage) -> Option<HeroImage> {
 /// size, premultiplied for `tiny_skia`.
 fn decode_card(img: image::DynamicImage, card_w: u32, card_h: u32) -> Option<Pixmap> {
     let rgba = crop_and_resize(&img.into_rgba8(), TARGET_ART_ASPECT, |_, _| (card_w, card_h))?;
-    let size = IntSize::from_wh(rgba.width(), rgba.height())?;
-    let mut buf = rgba.into_raw();
-    premultiply_rgba(&mut buf);
-    Pixmap::from_vec(buf, size)
+    crate::ui::painter::rgba_pixmap(rgba.width(), rgba.height(), rgba.into_raw())
 }
 
 /// Cache version magic ("PFR2" — bumped for center-cropped art).

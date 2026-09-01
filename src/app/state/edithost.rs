@@ -63,6 +63,7 @@ impl App {
                 fingerprint: old.fingerprint,
                 mgmt_port: old.mgmt_port,
                 mac: old.mac.clone(),
+                os: old.os.clone(),
                 wol_auto: old.wol_auto,
                 exit_action: old.exit_action,
                 games: old.games.clone(),

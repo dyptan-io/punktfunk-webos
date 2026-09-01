@@ -10,6 +10,7 @@ fn main() {
     // Generate third-party notices (shown on About screen).
     generate_third_party_notices(&manifest_dir);
     println!("cargo:rerun-if-changed=Cargo.lock");
+    println!("cargo:rerun-if-changed=assets/cards");
     let cc = std::env::var("CC_armv7_unknown_linux_gnueabi")
         .or_else(|_| std::env::var("CC"))
         .unwrap_or_else(|_| "cc".into());
@@ -50,6 +51,22 @@ fn generate_third_party_notices(manifest_dir: &str) {
          "Google's Material Icons, subsetted to the glyphs this UI draws and embedded via include_bytes!. Apache License 2.0.",
          Some("assets/icons/LICENSE"),
          "https://github.com/google/material-design-icons"),
+        ("Font Awesome brand card icons",
+         "Launcher and OS marks packaged as PNG files. Creative Commons Attribution 4.0.",
+         Some("assets/cards/LICENSES/font-awesome-brands.txt"),
+         "https://fontawesome.com"),
+        ("Simple Icons card icons",
+         "Launcher and OS marks packaged as PNG files. CC0 1.0 Universal.",
+         Some("assets/cards/LICENSES/simple-icons.txt"),
+         "https://simpleicons.org"),
+        ("Bazzite card icon",
+         "Bazzite mark packaged as a PNG file. Apache License 2.0.",
+         Some("assets/cards/LICENSES/bazzite.txt"),
+         "https://github.com/ublue-os/bazzite"),
+        ("Playnite card icon",
+         "Playnite mark packaged as a PNG file. MIT License.",
+         Some("assets/cards/LICENSES/playnite.txt"),
+         "https://github.com/JosefNemec/Playnite"),
         ("NDL DirectMedia",
          "LG webOS system library, `dlopen`'d at runtime from the device — NOT redistributed by this package. Header signatures were taken from mariotaku/ss4s.",
          None,

@@ -380,7 +380,11 @@ impl NdlVideo {
         // already sits a whole prime ahead and targeting the raw clock would feed nothing until the
         // clock caught up — dead exactly at session start. The constant offset costs a metronome
         // nothing.
-        let base_ms = if yields_to_real { 0 } else { self.last_audio_pts_ms.load(Ordering::Relaxed) };
+        let base_ms = if yields_to_real {
+            0
+        } else {
+            self.last_audio_pts_ms.load(Ordering::Relaxed)
+        };
         let mut pts_ms = self.last_audio_pts_ms.load(Ordering::Relaxed);
         let mut filling = false;
         while !stop.load(Ordering::Relaxed) {

@@ -249,7 +249,7 @@ impl Canvas<'_, '_> {
     /// `app::render::compose`, so an animating card is never rasterized twice.
     /// `render_card_title_tile` re-draws this layer translated, to have something real to
     /// frost over.
-    pub fn poster_art(&mut self, r: Rect, title: &str, art: Option<&Pixmap>) {
+    pub fn poster_art(&mut self, r: Rect, title: &str, art: Option<&Pixmap>, icon: Option<&Pixmap>) {
         match art {
             // Rounded to `CARD_RADIUS`, same as the placeholder poster and the glow
             // behind it — a square-cornered cover was the one thing in the card stack
@@ -257,7 +257,7 @@ impl Canvas<'_, '_> {
             // has already stretched it to card size; the draw rescales only if a pixmap
             // ever arrives at some other size.
             Some(pixmap) => self.painter.draw_pixmap_rounded(r, pixmap, CARD_RADIUS),
-            None => self.placeholder_poster(r, title),
+            None => self.placeholder_poster(r, title, icon),
         }
     }
 
@@ -267,8 +267,22 @@ impl Canvas<'_, '_> {
     /// and so a card carries its title even before focus slides the strip up.
     ///
     /// Cards only; hero art keeps its own (art-or-nothing) treatment.
-    fn placeholder_poster(&mut self, r: Rect, title: &str) {
+    fn placeholder_poster(&mut self, r: Rect, title: &str, icon: Option<&Pixmap>) {
         self.painter.fill_rounded_rect(r, CARD_RADIUS, tint_for(title));
+        if let Some(icon) = icon {
+            let side = (r.width().min(r.height()) * 9 / 20).max(1);
+            let scale = (side as f32 / icon.width() as f32).min(side as f32 / icon.height() as f32);
+            let w = (icon.width() as f32 * scale).round() as u32;
+            let h = (icon.height() as f32 * scale).round() as u32;
+            let dst = Rect::new(
+                r.x() + (r.width() as i32 - w as i32) / 2,
+                r.y() + (r.height() as i32 - h as i32) / 2,
+                w,
+                h,
+            );
+            self.painter.draw_pixmap_scaled(dst, icon);
+            return;
+        }
         let (raster, gap) = (self.fonts.raster, PLACEHOLDER_LINE_GAP);
         let max_w = r.width().saturating_sub(2 * PLACEHOLDER_PAD as u32);
         let font = fitting_font(raster, title, max_w);

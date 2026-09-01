@@ -879,7 +879,9 @@ impl Compositor {
                         // so the dissolve fades to its own black rather than to the plane.
                         // Once per process — this runs every frame of every dissolve.
                         BLEND_WARNED.call_once(|| {
-                            tracing::warn!("SDL custom blend unsupported — hero dissolve falls back to fading to black");
+                            tracing::warn!(
+                                "SDL custom blend unsupported — hero dissolve falls back to fading to black"
+                            );
                         });
                     }
                 }

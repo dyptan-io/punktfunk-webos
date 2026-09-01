@@ -13,6 +13,8 @@ pub struct DiscoveredHost {
     pub mgmt_port: Option<u16>,
     /// Wake-on-LAN MACs from mDNS (learned while awake, persisted to `KnownHost`).
     pub mac: Vec<String>,
+    /// Generic-to-specific OS identity chain, such as `linux/fedora/bazzite`.
+    pub os: String,
 }
 
 /// IPv4 address and short instance name from a resolved record. IPv4 only (same as other
@@ -40,6 +42,22 @@ fn addr_and_name(info: &mdns_sd::ResolvedService) -> Option<(String, String)> {
     ))
 }
 
+fn sanitize_os(raw: &str) -> String {
+    raw.to_lowercase()
+        .split('/')
+        .filter_map(|token| {
+            let token: String = token
+                .chars()
+                .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+                .take(32)
+                .collect();
+            (!token.is_empty()).then_some(token)
+        })
+        .take(5)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Turns a resolved record into a host, or `None` if it isn't usable (no IPv4).
 fn parse_discovery(info: &mdns_sd::ResolvedService) -> Option<DiscoveredHost> {
     let (addr, name) = addr_and_name(info)?;
@@ -56,6 +74,7 @@ fn parse_discovery(info: &mdns_sd::ResolvedService) -> Option<DiscoveredHost> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect(),
+        os: sanitize_os(props.get_property_val_str("os").unwrap_or("")),
     })
 }
 

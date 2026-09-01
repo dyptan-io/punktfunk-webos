@@ -151,6 +151,7 @@ pub(crate) struct PairingOutcome {
     pub(crate) name: String,
     pub(crate) mgmt_port: Option<u16>,
     pub(crate) mac: Vec<String>,
+    pub(crate) os: String,
     /// The host's pinned fingerprint, or a user-displayable error.
     pub(crate) result: Result<[u8; 32], String>,
 }
@@ -489,15 +490,16 @@ impl App {
 
     /// Merges freshly-discovered hosts into the entry list (known hosts keep their
     /// paired status; a discovered host not yet known gets appended), learns each
-    /// known host's Wake-on-LAN MAC(s) from its live advert while it's awake to
-    /// advertise them, and — if a wake is in flight (`self.screens.wake`) — notices when the
+    /// known host's OS and Wake-on-LAN MACs from its live advert, and — if a wake is in
+    /// flight (`self.screens.wake`) — notices when the
     /// waking host reappears on mDNS and reconnects. Returns whether the sidebar
     /// actually changed — `main.rs`'s render loop uses this to skip a redraw when a
     /// discovery tick found nothing new (see its dirty-flag docs).
     pub fn drain_discovery(&mut self) -> bool {
         let before = self.hosts.entries.len();
-        let mut changed = false;
-        let mut mac_learned = false;
+        let mut sidebar_changed = false;
+        let mut host_metadata_changed = false;
+        let mut grid_changed = false;
         let mut woke = None;
         // `found.addr` throughout this loop is deliberate, not a typo for a nonexistent
         // `found.host` — `DiscoveredHost` (discovery.rs) only has `addr`, `WakeState`/
@@ -506,7 +508,7 @@ impl App {
         for found in polled {
             // An announce is the host saying it is up, on its own initiative — the cheapest
             // liveness evidence there is, and previously the one the dot ignored.
-            changed |= self.note_reachable(&found.addr, found.port, true);
+            sidebar_changed |= self.note_reachable(&found.addr, found.port, true);
             #[allow(clippy::suspicious_operation_groupings)]
             if let Some(w) = &self.screens.wake {
                 if found.addr == w.host && found.port == w.port {
@@ -522,27 +524,43 @@ impl App {
             if let Some(known) = known {
                 if !found.mac.is_empty() && known.mac != found.mac {
                     known.mac.clone_from(&found.mac);
-                    mac_learned = true;
+                    host_metadata_changed = true;
+                }
+                if !found.os.is_empty() && known.os != found.os {
+                    known.os.clone_from(&found.os);
+                    host_metadata_changed = true;
+                    if self
+                        .library
+                        .selected_host
+                        .as_ref()
+                        .is_some_and(|(host, port)| host == &found.addr && *port == found.port)
+                    {
+                        self.render
+                            .grid
+                            .cards_dirty
+                            .push(crate::core::model::DESKTOP_PIN_ID.to_string());
+                        grid_changed = true;
+                    }
                 }
             }
             if !self.host_listed(&found.addr, found.port) {
                 self.hosts.entries.push(HostEntry::Discovered(found));
-                changed = true;
+                sidebar_changed = true;
             }
         }
-        if mac_learned {
+        if host_metadata_changed {
             self.persist();
         }
         if let Some((host, port, mgmt_port)) = woke {
             self.wake_succeeded(host, port, mgmt_port, "mDNS");
-            changed = true;
+            sidebar_changed = true;
         }
-        if changed {
+        if sidebar_changed {
             // Rows were appended, so the utility rows have moved.
             self.reanchor_sidebar_focus(before);
             self.render.sidebar_dirty = true;
         }
-        changed
+        sidebar_changed || grid_changed
     }
 
     /// Ends an in-flight wake because the host is actually back — whether that was

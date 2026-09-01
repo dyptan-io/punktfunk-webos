@@ -107,6 +107,7 @@ impl App {
         let name = entry.name().to_string();
         let mgmt_port = entry.mgmt_port();
         let mac = entry.mac().to_vec();
+        let os = entry.os().to_string();
         self.screens.pairing_busy = true;
         self.screens.pairing_status = Some("Requesting access — approve this TV on the host.".into());
         tracing::info!("requesting access to {host}:{port}");
@@ -124,6 +125,7 @@ impl App {
                 name,
                 mgmt_port,
                 mac,
+                os,
                 result,
             });
         });
@@ -147,6 +149,7 @@ impl App {
                         fingerprint: Some(fingerprint),
                         mgmt_port: outcome.mgmt_port,
                         mac: outcome.mac,
+                        os: outcome.os,
                         // Only reaches a genuinely new host — `upsert_known_host` keeps an
                         // existing record's pins and wol_auto.
                         games: store::new_host_games(&self.settings_ui.settings),
@@ -212,6 +215,7 @@ impl App {
         let name = entry.name().to_string();
         let mgmt_port = entry.mgmt_port();
         let mac = entry.mac().to_vec();
+        let os = entry.os().to_string();
         let pin: String = self
             .screens
             .pin_digits
@@ -245,6 +249,7 @@ impl App {
                 name,
                 mgmt_port,
                 mac,
+                os,
                 result,
             });
         });

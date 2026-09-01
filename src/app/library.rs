@@ -39,6 +39,7 @@ fn desktop_entry() -> GameEntry {
         id: DESKTOP_PIN_ID.to_string(),
         title: "Desktop".to_string(),
         art: crate::core::model::Artwork::default(),
+        icon: None,
     }
 }
 

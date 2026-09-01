@@ -87,11 +87,12 @@ pub struct CardTile<'a> {
     pub h: u32,
     pub title: &'a str,
     pub art: Option<&'a Pixmap>,
+    pub icon: Option<&'a Pixmap>,
 }
 
 impl Widget for CardTile<'_> {
     fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
-        c.poster_art(area, self.title, self.art);
+        c.poster_art(area, self.title, self.art, self.icon);
         Ok(())
     }
 }

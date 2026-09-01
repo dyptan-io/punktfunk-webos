@@ -53,6 +53,12 @@ impl HostEntry {
             Self::Discovered(h) => &h.mac,
         }
     }
+    pub fn os(&self) -> &str {
+        match self {
+            Self::Known(h) => &h.os,
+            Self::Discovered(h) => &h.os,
+        }
+    }
 }
 
 /// Every host the menu knows about, and what it has learned about them.
