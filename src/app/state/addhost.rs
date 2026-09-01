@@ -51,13 +51,13 @@ impl App {
         );
         self.persist();
         self.rebuild_entries();
-        self.home_focus = HomeFocus::Sidebar(
+        self.set_home_focus(HomeFocus::Sidebar(
             self.hosts
                 .entries
                 .iter()
                 .position(|e| e.host() == host && e.port() == port)
                 .unwrap_or(0),
-        );
+        ));
         self.nav.screen = Screen::Home;
     }
     /// Shared by `AddHost` and `EditHost`.

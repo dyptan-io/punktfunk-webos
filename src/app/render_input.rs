@@ -22,4 +22,6 @@ pub struct RenderInput<'a> {
     pub grid_reveal_ready: bool,
     /// The focused row's press dip (see `App::press`) — the sidebar's rows are buttons.
     pub press: crate::ui::animation::Press,
+    /// Focus-pop clock shared by Home's focused grid card and sidebar row.
+    pub focus_anim: Option<std::time::Instant>,
 }

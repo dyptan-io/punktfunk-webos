@@ -78,13 +78,13 @@ impl App {
         if self.library.selected_host.as_ref() == Some(&(old.host.clone(), old.port)) {
             self.library.selected_host = Some((host.clone(), port));
         }
-        self.home_focus = HomeFocus::Sidebar(
+        self.set_home_focus(HomeFocus::Sidebar(
             self.hosts
                 .entries
                 .iter()
                 .position(|e| e.host() == host && e.port() == port)
                 .unwrap_or(0),
-        );
+        ));
         self.screens.edit_host_index = None;
         self.render.sidebar_dirty = true;
         self.render.grid.dirty = true;

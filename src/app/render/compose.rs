@@ -40,6 +40,7 @@ impl App {
             status_alpha: self.home_status_alpha(),
             grid_reveal_ready: self.render.grid.reveal.is_revealed(),
             press: self.press_dip(Screen::Home),
+            focus_anim: self.render.focus_anim,
         }
     }
 
@@ -294,14 +295,13 @@ impl App {
         // The entering screen's only — the snapshot has its own focused row baked in.
         let focus_rect = self.modal_focus_rect(screen, screen_w, screen_h, fonts);
         if let Some(rect) = focus_rect {
-            let pad = ui::tiles::ROW_TILE_PAD;
-            let base = rect.inflate(pad).offset(0, dy);
+            let base = rect.offset(0, dy);
             // The zoom-in: same GPU-scale-around-center technique as the
             // grid's card focus pop (see above) — `modal_focus_tile` is
             // rasterized once at its literal size, never re-rendered for
             // this (except while `switch_anim` animates its content, see
             // `prepare_tiles`).
-            let dst = ui::animation::focus_tile_rect(base, self.render.modal.focus_anim, self.press_dip(screen));
+            let dst = ui::animation::focus_row_tile_rect(base, self.render.modal.focus_anim, self.press_dip(screen));
             let alpha = (255.0 * m) as u8;
             // In a scrolling modal the focused row can hang past the viewport's bottom
             // edge mid-glide (the crop lags the row offset by up to one stride), so it is
@@ -310,7 +310,7 @@ impl App {
             let tile_size = tiles.get(tile::MODAL_FOCUS).map(|p| (p.width(), p.height()));
             match (scroll_geom, tile_size) {
                 (Some((_, _, _, content)), Some((tw, th))) => {
-                    let viewport = content.inflate(pad).offset(0, dy);
+                    let viewport = content.inflate(ui::tiles::ROW_TILE_PAD).offset(0, dy);
                     if let Some((src, visible)) = Self::clip_tile(dst, viewport, tw, th) {
                         cmds.push(DrawCmd::TexCropped {
                             tile: tile::MODAL_FOCUS,
@@ -452,10 +452,9 @@ impl App {
         };
         if let Some(i) = sidebar_focus_row {
             let rect = view::sidebar::nav_row_rect(i, input.entries.len() + 2, screen_h);
-            let pad = ui::tiles::ROW_TILE_PAD;
-            cmds.push(DrawCmd::Tex {
+            cmds.push(DrawCmd::TexF {
                 tile: tile::FOCUS_ROW,
-                dst: input.press.rect(rect.inflate(pad)),
+                dst: ui::animation::focus_row_tile_rect_f(rect, input.focus_anim, input.press),
                 alpha: 0xff,
             });
         }
@@ -796,8 +795,8 @@ impl App {
                     // and then the card's transform on top of that. The inset the band is
                     // drawn at (`CARD_MENU_BAND_INSET`) is what the growth spends, so a
                     // focused row stays within the cover art.
-                    let popped = ui::animation::focus_tile_rect(
-                        band.inflate(pad),
+                    let popped = ui::animation::focus_row_tile_rect(
+                        band,
                         self.card_menu.as_ref().and_then(|m| m.focus_anim),
                         ui::animation::Press::default(),
                     );

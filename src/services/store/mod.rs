@@ -99,7 +99,7 @@ fn seed_desktop_capture(state: &mut Persisted) {
     };
     for host in &mut state.known_hosts {
         let untouched = host.games.values().all(|g| g.over.is_empty());
-        if !untouched || !host.games.get(DESKTOP_PIN_ID).is_some_and(|g| g.legacy_pin.is_some()) {
+        if !untouched || host.games.get(DESKTOP_PIN_ID).is_none_or(|g| g.legacy_pin.is_none()) {
             continue;
         }
         host.edit_overrides(DESKTOP_PIN_ID, |over| over.cursor_capture = Some(capture));

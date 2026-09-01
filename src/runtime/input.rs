@@ -333,13 +333,7 @@ impl ConfirmDialog {
         // Same open/close motion as the `App`'s `Screen` modals (see `compose_modal`):
         // the shared rise, same curve in both directions, no scale.
         let dy = crate::ui::animation::modal_rise(m);
-        let pad = crate::ui::tiles::ROW_TILE_PAD;
-        let base = crate::ui::render::Rect::new(
-            btn_rect.x() - pad,
-            btn_rect.y() - pad + dy,
-            btn_rect.width() + 2 * pad as u32,
-            btn_rect.height() + 2 * pad as u32,
-        );
+        let base = btn_rect.offset(0, dy);
         let shell_dst = crate::ui::render::Rect::new(0, dy, w, h);
         // Pane first, scrim second, shell tile third — the same order `App::compose_modal`
         // keeps, and for the same reason: the compositor captures its blur source at the
@@ -366,9 +360,9 @@ impl ConfirmDialog {
             dst: shell_dst,
             alpha: (255.0 * m) as u8,
         });
-        cmds.push(DrawCmd::Tex {
+        cmds.push(DrawCmd::TexF {
             tile: tile::DISCONNECT_FOCUS_BUTTON,
-            dst: crate::ui::animation::focus_tile_rect(base, self.focus_anim, self.press),
+            dst: crate::ui::animation::focus_row_tile_rect_f(base, self.focus_anim, self.press),
             alpha: (255.0 * m) as u8,
         });
         Ok(())

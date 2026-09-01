@@ -473,6 +473,7 @@ impl App {
         // Past the hosts are the two utility rows, which move with the list's length; a host
         // index only needs clamping into what's left.
         let i = if i >= before { i - before + now } else { i.min(now) };
+        // Content reanchoring preserves focus identity; it is not an interactive move.
         self.home_focus = HomeFocus::Sidebar(i);
     }
 
@@ -641,9 +642,11 @@ impl App {
             }
             match self.home_focus {
                 HomeFocus::Grid(_) => {
-                    self.home_focus = HomeFocus::Sidebar(self.sidebar_index_for_selected());
+                    self.set_home_focus(HomeFocus::Sidebar(self.sidebar_index_for_selected()));
                 }
-                HomeFocus::SidebarMenu(i) => self.home_focus = HomeFocus::Sidebar(i),
+                HomeFocus::SidebarMenu(i) => {
+                    self.set_home_focus(HomeFocus::Sidebar(i));
+                }
                 HomeFocus::Sidebar(_) => {}
             }
             return None;
@@ -667,7 +670,11 @@ impl App {
         animating |=
             ui::animation::ease_scroll(&mut self.render.modal.scroll_px, self.render.modal.scroll_target_px, dt);
         if let Some(t) = self.render.focus_anim {
-            if t.elapsed() >= ui::animation::CARD_FOCUS_POP {
+            let duration = match self.home_focus {
+                HomeFocus::Grid(_) => ui::animation::CARD_FOCUS_POP,
+                HomeFocus::Sidebar(_) | HomeFocus::SidebarMenu(_) => ui::animation::FOCUS_POP,
+            };
+            if t.elapsed() >= duration {
                 self.render.focus_anim = None;
             }
             animating = true;

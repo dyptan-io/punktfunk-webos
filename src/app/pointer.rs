@@ -22,7 +22,7 @@ use crate::ui::render::Rect;
 /// the *row* under the pointer changed. Stepping onto a button a row carries (its ⋯, a
 /// collection's drag/rename/remove) leaves the row itself put, and a row that keeps focus
 /// must not replay its focus pop — the same rule the D-pad's `step_row_button` follows, and
-/// the one the sidebar's ⋯ has always had (`set_home_focus` pops only grid cards).
+/// the sidebar follows when focus moves between a host row and its own ⋯ button.
 #[derive(Clone, Copy)]
 struct HoverChange {
     any: bool,
@@ -42,7 +42,10 @@ impl HoverChange {
 
     /// A hover on a row list, where the row and the button it carries move independently.
     const fn split(row: bool, button: bool) -> Self {
-        Self { any: row || button, row }
+        Self {
+            any: row || button,
+            row,
+        }
     }
 }
 
@@ -262,21 +265,6 @@ impl App {
             // EditHost, About) and Settings with a dropdown open.
             _ => HoverChange::NONE,
         }
-    }
-
-    /// Sets `home_focus`, reporting whether it actually moved — the hover/click
-    /// helpers redraw only on a real change.
-    fn set_home_focus(&mut self, focus: HomeFocus) -> bool {
-        let changed = self.home_focus != focus;
-        self.home_focus = focus;
-        // The card's zoom, glow and title wipe all run off `focus_anim`, which the D-pad
-        // arms in `ensure_grid_visible`; armed here for every pointer path at once, or
-        // landing on a card with the Magic Remote renders it already finished. Only on a
-        // change: the pointer streams motion events and each would restart the clock.
-        if changed && matches!(focus, HomeFocus::Grid(_)) {
-            self.render.focus_anim = Some(Instant::now());
-        }
-        changed
     }
 
     /// The `(content viewport, pixel scroll offset)` an open dropdown anchors its
@@ -536,12 +524,12 @@ impl App {
                 if let Some(idx) =
                     view::sidebar::hit_test_menu_button(x, y, self.hosts.entries.len(), self.sidebar_len(), screen_h)
                 {
-                    self.home_focus = HomeFocus::SidebarMenu(idx);
+                    self.set_home_focus(HomeFocus::SidebarMenu(idx));
                     self.open_host_menu(idx);
                     return None;
                 }
                 if let Some(idx) = view::sidebar::hit_test_row(x, y, self.sidebar_len(), screen_h) {
-                    self.home_focus = HomeFocus::Sidebar(idx);
+                    self.set_home_focus(HomeFocus::Sidebar(idx));
                 } else {
                     let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
                     let columns = view::home::grid_columns(available_w);
@@ -551,7 +539,7 @@ impl App {
                     if !self.is_grid_card(idx, columns) {
                         return None;
                     }
-                    self.home_focus = HomeFocus::Grid(idx);
+                    self.set_home_focus(HomeFocus::Grid(idx));
                 }
             }
             // `?` bails if the click hit the gap between rows or outside the viewport —

@@ -44,15 +44,15 @@ pub fn sidebar_menu_button_rect(row_rect: Rect) -> Rect {
 
 impl Painter {
     /// A selectable row with optional selection highlighting. When focused, shows
-    /// the full card with shadow and zoom. When selected (but not focused), shows a
+    /// the full fixed-size card; the compositor supplies its zoom. When selected, shows a
     /// subtle background. When neither, shows no background.
     fn selectable_with_selection(&mut self, rect: Rect, focused: bool, selected: bool) -> Rect {
-        let r = self.selectable(rect, focused);
+        self.selectable_fixed(rect, focused);
         if !focused && selected {
             let selected_bg = Color::RGBA(0x2b, 0x21, 0x48, 0x40);
-            self.fill_rounded_rect(r, CARD_RADIUS, selected_bg);
+            self.fill_rounded_rect(rect, CARD_RADIUS, selected_bg);
         }
-        r
+        rect
     }
 }
 

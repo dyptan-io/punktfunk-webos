@@ -169,8 +169,7 @@ impl App {
             if let Some(menu) = self.card_menu.as_mut() {
                 menu.idx = idx;
             }
-            self.home_focus = HomeFocus::Grid(idx);
-            self.render.grid.focus_last = idx;
+            self.set_home_focus(HomeFocus::Grid(idx));
             // A swap onto another row would otherwise leave the card half off screen.
             self.ensure_grid_visible(idx, columns, screen_w, screen_h);
         }

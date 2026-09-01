@@ -8,7 +8,7 @@ pub const CARD_RADIUS: i32 = 10;
 pub const MODAL_RADIUS: i32 = 20;
 
 /// Approximate moonlight-tv's 2% focus zoom by inflating rect from center.
-pub fn focus_zoom(rect: Rect, focused: bool) -> Rect {
+fn focus_zoom(rect: Rect, focused: bool) -> Rect {
     if !focused {
         return rect;
     }
@@ -69,19 +69,8 @@ impl Painter {
         r
     }
 
-    /// Card painted only when focused (no background for unfocused). Used by rows/buttons.
-    pub fn selectable(&mut self, rect: Rect, focused: bool) -> Rect {
-        let r = focus_zoom(rect, focused);
-        if focused {
-            self.card_shadow(r, CARD_RADIUS);
-            self.fill_rounded_rect(r, CARD_RADIUS, palette().surface);
-        }
-        r
-    }
-
-    /// Same as [`selectable`](Self::selectable) but never inflates: settings rows are
-    /// rasterized once at their literal size, and `app::App`'s draw-list building animates
-    /// the zoom-in itself by GPU-scaling the whole focused-row tile around its
+    /// Focus card that never inflates. Rows are rasterized once at their literal size;
+    /// `app::App`'s draw-list animates the zoom by GPU-scaling the focused-row tile around its
     /// center (same technique as the grid's card focus-pop) — a CPU-baked inflate
     /// here would fight that, since the rasterized content would then need
     /// re-rendering every animation frame instead of just repositioning.

@@ -18,7 +18,30 @@ use std::time::Instant;
 const GROUP_SIDEBAR: u8 = 0;
 const GROUP_GRID: u8 = 1;
 
+fn sidebar_row(focus: HomeFocus) -> Option<usize> {
+    match focus {
+        HomeFocus::Sidebar(index) | HomeFocus::SidebarMenu(index) => Some(index),
+        HomeFocus::Grid(_) => None,
+    }
+}
+
 impl App {
+    /// Applies an interactive Home focus transition and its visual state.
+    pub(crate) fn set_home_focus(&mut self, focus: HomeFocus) -> bool {
+        let previous = self.home_focus;
+        if previous == focus {
+            return false;
+        }
+        self.home_focus = focus;
+        if let HomeFocus::Grid(index) = focus {
+            self.render.grid.focus_last = index;
+        }
+        if matches!(focus, HomeFocus::Grid(_)) || sidebar_row(previous) != sidebar_row(focus) {
+            self.render.focus_anim = Some(Instant::now());
+        }
+        true
+    }
+
     /// Total sidebar nav positions: host rows + "+ Add host" + "Settings".
     pub(crate) fn sidebar_len(&self) -> usize {
         self.hosts.entries.len() + 2
@@ -157,9 +180,8 @@ impl App {
         else {
             return;
         };
-        self.home_focus = next;
+        self.set_home_focus(next);
         if let HomeFocus::Grid(idx) = next {
-            self.render.grid.focus_last = idx;
             self.ensure_grid_visible(idx, columns, screen_w, screen_h);
         }
     }
@@ -262,8 +284,7 @@ impl App {
 
         self.regroup_games();
         if let Some(new_idx) = self.grid_idx_for_pin_id(id, columns) {
-            self.home_focus = HomeFocus::Grid(new_idx);
-            self.render.grid.focus_last = new_idx;
+            self.set_home_focus(HomeFocus::Grid(new_idx));
             self.ensure_grid_visible(new_idx, columns, screen_w, screen_h);
         }
         // Only the card that moved pops. Every other card slides one slot along — a shift the
@@ -342,14 +363,12 @@ impl App {
 
     /// Scrolls the grid (via `grid_scroll_target` — the rendered offset eases
     /// toward it, see `tick_animations`) just far enough that focused card `idx`,
-    /// including its focus-ring halo, will be fully on screen; also starts the
-    /// focus pop, since this is called on exactly the moves that change grid
-    /// focus. Clamped to the grid's real extent.
+    /// including its focus-ring halo, will be fully on screen. Clamped to the
+    /// grid's real extent.
     pub(crate) fn ensure_grid_visible(&mut self, idx: usize, columns: usize, screen_w: u32, screen_h: u32) {
         /// Focus ring + `inflate` overhang around a focused card, plus a little
         /// breathing room.
         const FOCUS_MARGIN: i32 = 16;
-        self.render.focus_anim = Some(Instant::now());
         let available_w = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
         let card = self.unscrolled_card_rect(idx, columns, ui::widgets::SIDEBAR_W as i32, available_w);
         let viewport = (view::home::GRID_TOP_Y, screen_h as i32 - view::home::GRID_PAD);
@@ -397,6 +416,7 @@ impl App {
         self.library.clear();
         self.jobs.cancel_library();
         self.set_home_status(None, false);
+        // Teardown establishes the next stable focus before Home is drawn again.
         self.home_focus = HomeFocus::Sidebar(0);
         self.render.grid.focus_last = 0;
         self.render.grid.dirty = true;
@@ -498,7 +518,7 @@ impl App {
                 // navigated off that row, so a late fetch can't yank them.
                 if matches!(self.home_focus, HomeFocus::Sidebar(i) if Some(i) == self.sidebar_index_of_selected_host())
                 {
-                    self.home_focus = HomeFocus::Grid(0);
+                    self.set_home_focus(HomeFocus::Grid(0));
                 }
                 if !self.home_status_sticky {
                     self.set_home_status(None, false);

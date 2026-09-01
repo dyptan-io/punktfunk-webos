@@ -13,8 +13,7 @@ pub const TOP_Y: i32 = 216;
 /// [`TOP_Y`], then "Settings" pinned to the bottom of the panel — a spacer slot between
 /// them is what "pinned" means, so it stays put regardless of how many hosts are known.
 ///
-/// One split, read by the painter, both hit tests and `home_focus_map` alike; nothing
-/// recomputes a row's position from an index formula of its own.
+/// One split, read by the painter, hit tests and `home_focus_map` alike.
 pub fn nav_rows(row_count: usize, screen_h: u32) -> Vec<Rect> {
     let column = Rect::new(
         ui::widgets::SIDEBAR_PAD,
@@ -30,7 +29,6 @@ pub fn nav_rows(row_count: usize, screen_h: u32) -> Vec<Rect> {
     let mut rects = ui::layout::Layout::vertical(slots)
         .gap(ui::widgets::SIDEBAR_ROW_GAP)
         .split(column);
-    // Drop the spacer, leaving one rect per nav position.
     rects.remove(above);
     rects.truncate(row_count);
     rects
@@ -165,7 +163,7 @@ pub fn draw_host_row(c: &mut Canvas, rect: Rect, name: &str, state: &HostRowStat
     // Badged onto the icon's corner rather than given its own column: it needs no layout
     // of its own, and a presence dot on the thing it describes is a well-worn idiom.
     if let Some(online) = online {
-        let icon = ui::widgets::sidebar_icon_rect(ui::widgets::focus_zoom(rect, focused));
+        let icon = ui::widgets::sidebar_icon_rect(rect);
         let cx = icon.right() as f32 - 1.0;
         let cy = icon.bottom() as f32 - 2.0;
         // A ring of panel background first, so the dot reads as separate from the glyph
@@ -202,16 +200,6 @@ pub struct FocusedRowTile<'a> {
     pub online: Option<bool>,
 }
 
-impl FocusedRowTile<'_> {
-    /// The row's own size, before the padding [`TileWidget::size`] adds.
-    fn row_size() -> (u32, u32) {
-        (
-            ui::widgets::SIDEBAR_W - 2 * ui::widgets::SIDEBAR_PAD as u32,
-            ui::widgets::SIDEBAR_ROW_H,
-        )
-    }
-}
-
 impl ui::Widget for FocusedRowTile<'_> {
     fn render(self, area: ui::render::Rect, c: &mut ui::Canvas) -> Result<()> {
         let rect = area.inflate(-ui::tiles::ROW_TILE_PAD);
@@ -238,7 +226,10 @@ impl ui::Widget for FocusedRowTile<'_> {
 
 impl ui::TileWidget for FocusedRowTile<'_> {
     fn size(&self, _fonts: &ui::text::Fonts) -> (u32, u32) {
-        let (w, h) = Self::row_size();
-        ui::tiles::padded_size(w, h, ui::tiles::ROW_TILE_PAD)
+        ui::tiles::padded_size(
+            ui::widgets::SIDEBAR_W - 2 * ui::widgets::SIDEBAR_PAD as u32,
+            ui::widgets::SIDEBAR_ROW_H,
+            ui::tiles::ROW_TILE_PAD,
+        )
     }
 }
