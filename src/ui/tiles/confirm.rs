@@ -1,8 +1,7 @@
 //! The shared confirm-dialog shape: its geometry, its hit test, and its shell tile.
 //!
-//! Four modals wear it — forget host, send logs, wake, and the disconnect/quit prompts — and
-//! the last of those run in `runtime`, which has no `App`. So the geometry lives here, where
-//! both sides can reach it, and all four match by construction.
+//! Menu confirmations and the runtime's disconnect/quit prompts both use it. The runtime has
+//! no `App`, so the geometry lives here where both paths can match by construction.
 use crate::ui::prelude::*;
 use anyhow::Result;
 
@@ -49,36 +48,63 @@ pub fn confirm_button_at(content: Rect, x: i32, y: i32) -> Option<usize> {
     (0..2).find(|&i| confirm_button_rect(content, i).contains_point((x, y)))
 }
 
-/// Confirm dialog shell (full-screen tile): the same card + close (X) + header + unfocused
-/// buttons that `Canvas::modal_shell`/`Canvas::modal_header` paint for the forget-host and
-/// send-logs modals — replicated here because the streaming/quit loops have no `App`. The focused
-/// button composites on top as its own small tile (shell/focus-tile split).
+impl Canvas<'_, '_> {
+    /// Paints the shared confirmation card and its unfocused buttons.
+    pub fn confirm_dialog(
+        &mut self,
+        title: &str,
+        subtitle: &str,
+        subtitle_color: Color,
+        buttons: &[ConfirmButton<'_>; 2],
+        hover_close: bool,
+        surface: ConfirmSurface,
+    ) -> Result<()> {
+        let (card, content) = confirm_dialog_layout(self.screen_w, self.screen_h, self.fonts, subtitle);
+        match surface {
+            ConfirmSurface::Glass => self.modal_shell(card, hover_close)?,
+            ConfirmSurface::Opaque => {
+                self.painter.modal_card(card);
+                let color = if hover_close { palette().text } else { palette().muted };
+                self.icon(modal_close_rect(card), icons().close, color)?;
+            }
+        }
+        self.modal_header(card, title, palette().text, subtitle, subtitle_color)?;
+        self.render(ConfirmButtons::new(buttons), content)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum ConfirmSurface {
+    Glass,
+    Opaque,
+}
+
+/// Confirm dialog shell (full-screen tile), using the same card, header, and unfocused-button
+/// painter as the app's confirmation modals. The focused button composites on top separately.
 pub struct ConfirmDialogShellTile<'a> {
     pub screen_w: u32,
     pub screen_h: u32,
     pub title: &'a str,
     pub subtitle: &'a str,
     pub buttons: &'a [ConfirmButton<'a>; 2],
-    /// Draw the card as glass, for a caller that pushes a matching `DrawCmd::Frost` under it
-    /// (the menu's quit dialog). The in-stream prompts pass `false`: NDL video lives on a
+    /// Draw the card as glass when the caller pushes a matching `DrawCmd::Frost` under it.
+    /// In-stream prompts use [`ConfirmSurface::Opaque`]: NDL video lives on a
     /// hardware plane *below* the SDL surface, so it is not in the framebuffer and there is
     /// nothing there to blur.
-    pub glass: bool,
+    pub surface: ConfirmSurface,
 }
 
 impl Widget for ConfirmDialogShellTile<'_> {
     fn render(self, _area: Rect, c: &mut Canvas) -> Result<()> {
-        let (card, content) = confirm_dialog_layout(self.screen_w, self.screen_h, c.fonts, self.subtitle);
-        if self.glass {
-            c.painter.modal_card_glass(card);
-        } else {
-            c.painter.modal_card(card);
-        }
-        // These dialogs are remote/controller-driven (no local pointer over the overlay), so the
-        // X is a visual affordance only — always in the unhovered color.
-        c.icon(modal_close_rect(card), icons().close, palette().muted)?;
-        c.modal_header(card, self.title, palette().text, self.subtitle, palette().muted)?;
-        c.render(ConfirmButtons::new(self.buttons), content)
+        // These dialogs are remote/controller-driven, so the X is always unhovered.
+        c.confirm_dialog(
+            self.title,
+            self.subtitle,
+            palette().muted,
+            self.buttons,
+            false,
+            self.surface,
+        )
     }
 }
 

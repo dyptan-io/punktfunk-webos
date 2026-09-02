@@ -297,6 +297,7 @@ impl ConfirmDialog {
         let full = crate::ui::render::Rect::new(0, 0, w, h);
         // The theme's glass, but only where there is a framebuffer backdrop to blur.
         let glass = blurrable.then(crate::ui::theme::glass).flatten();
+        let frosted = glass.is_some();
         let styled_at = crate::ui::theme::epoch();
         self.shell_dirty |= std::mem::replace(&mut self.styled_at, styled_at) != styled_at;
         if self.shell_dirty {
@@ -308,7 +309,11 @@ impl ConfirmDialog {
                     title: self.title,
                     subtitle: self.subtitle,
                     buttons: &self.buttons,
-                    glass: glass.is_some(),
+                    surface: if glass.is_some() {
+                        crate::ui::tiles::ConfirmSurface::Glass
+                    } else {
+                        crate::ui::tiles::ConfirmSurface::Opaque
+                    },
                 },
                 &mut self.tc,
                 fonts,
@@ -355,6 +360,15 @@ impl ConfirmDialog {
             rect: full,
             color: crate::ui::render::Color::RGBA(0, 0, 0, (f32::from(crate::ui::theme::palette().scrim.a) * m) as u8),
         });
+        if frosted {
+            crate::ui::painter::push_shadow(
+                cmds,
+                tile::MODAL_SHADOW,
+                crate::ui::widgets::MODAL_RADIUS,
+                card.offset(0, dy),
+                (255.0 * m) as u8,
+            );
+        }
         cmds.push(DrawCmd::Tex {
             tile: tile::DISCONNECT_DIALOG,
             dst: shell_dst,
@@ -515,9 +529,11 @@ struct NavRepeat {
 pub(super) fn is_menu_press(event: &sdl2::event::Event, want: MenuEvent, allow_repeat: bool) -> bool {
     use sdl2::event::Event;
     match *event {
-        Event::KeyDown { keycode: Some(k), repeat, .. } => {
-            (allow_repeat || !repeat) && crate::platform::webos::input::menu_event_for_key(k) == Some(want)
-        }
+        Event::KeyDown {
+            keycode: Some(k),
+            repeat,
+            ..
+        } => (allow_repeat || !repeat) && crate::platform::webos::input::menu_event_for_key(k) == Some(want),
         Event::ControllerButtonDown { button, .. } => {
             crate::platform::webos::input::menu_event_for_button(button) == Some(want)
         }
@@ -529,9 +545,7 @@ pub(super) fn is_menu_press(event: &sdl2::event::Event, want: MenuEvent, allow_r
 pub(super) fn is_menu_release(event: &sdl2::event::Event, want: MenuEvent) -> bool {
     use sdl2::event::Event;
     match *event {
-        Event::KeyUp { keycode: Some(k), .. } => {
-            crate::platform::webos::input::menu_event_for_key(k) == Some(want)
-        }
+        Event::KeyUp { keycode: Some(k), .. } => crate::platform::webos::input::menu_event_for_key(k) == Some(want),
         Event::ControllerButtonUp { button, .. } => {
             crate::platform::webos::input::menu_event_for_button(button) == Some(want)
         }
@@ -583,7 +597,11 @@ impl UiInput {
     fn press_nav(&mut self, source: NavSource, ev: Option<MenuEvent>) -> Option<MenuEvent> {
         // Same source *and* same direction is the OS repeating a held key. A different
         // direction from the same control (a stick flicked across centre) is a new press.
-        if self.nav_repeat.as_ref().is_some_and(|r| r.source == source && Some(r.ev) == ev) {
+        if self
+            .nav_repeat
+            .as_ref()
+            .is_some_and(|r| r.source == source && Some(r.ev) == ev)
+        {
             return None;
         }
         let ev = ev?;

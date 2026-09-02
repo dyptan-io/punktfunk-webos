@@ -121,7 +121,7 @@ impl App {
             // The snapshot is a copy of `tile::MODAL`, which no longer carries a shadow of its
             // own — so the leaving card needs the same nine draws the entering one gets.
             let region = prev.region.offset(0, dy);
-            Self::push_shadow(cmds, tile::MODAL_SHADOW, ui::widgets::MODAL_RADIUS, region, a);
+            ui::painter::push_shadow(cmds, tile::MODAL_SHADOW, ui::widgets::MODAL_RADIUS, region, a);
             cmds.push(DrawCmd::Tex {
                 tile: tile::MODAL_PREV,
                 dst: region,
@@ -186,19 +186,6 @@ impl App {
         });
     }
 
-    /// Panel drop shadow: nine stretched atlas draws instead of panel-sized CPU blit.
-    /// Nine-sliceable (corners carry alpha variance, centre is flat). GPU not CPU.
-    fn push_shadow(cmds: &mut Vec<DrawCmd>, tile: ui::render::TileId, radius: i32, panel: Rect, alpha: u8) {
-        ui::render::push_nine_slice(
-            cmds,
-            tile,
-            ui::painter::shadow_atlas_side(radius),
-            ui::painter::shadow_slice(radius),
-            ui::painter::shadow_rect(panel),
-            alpha,
-        );
-    }
-
     /// Open modal card, content, dropdown, focus widget. m is modal fade/rise (rides everything).
     fn compose_modal_card(
         &self,
@@ -213,7 +200,7 @@ impl App {
         let dy = ui::animation::modal_rise(m);
         // Tile covers card region only; opening plays fade+rise (reverse of closing snapshot).
         let modal_base = self.render.modal.tile_region.offset(0, dy);
-        Self::push_shadow(
+        ui::painter::push_shadow(
             cmds,
             tile::MODAL_SHADOW,
             ui::widgets::MODAL_RADIUS,
@@ -283,7 +270,7 @@ impl App {
                 options_len as u32 * ui::widgets::DROPDOWN_OPTION_H,
             );
             // The popup lifts off the row behind it, same as the card lifts off the screen.
-            Self::push_shadow(cmds, tile::PANEL_SHADOW, ui::widgets::CARD_RADIUS, panel, dd_alpha);
+            ui::painter::push_shadow(cmds, tile::PANEL_SHADOW, ui::widgets::CARD_RADIUS, panel, dd_alpha);
             cmds.push(DrawCmd::Tex {
                 tile: tile::DROPDOWN_OVERLAY,
                 dst: panel,

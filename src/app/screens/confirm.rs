@@ -1,9 +1,9 @@
-//! The two-button confirm dialogs: Wake, Forget host, Send logs, and a finished speed test.
+//! The app's two-button confirmation dialogs.
 //!
-//! All four are one card whose height its subtitle decides, one button row under it, and a
+//! Each is one card whose height its subtitle decides, one button row under it, and a
 //! cursor picking between the two buttons. That used to be six `match self.screen` tables —
 //! the subtitle, the focus, the focus setter, the button rect, and two inside `prepare_modal`
-//! — each of which had to list the same four screens. Here the screen answers once, with a
+//! — each of which had to list every confirmation screen. Here the screen answers once, with a
 //! value, and everything else reads that value.
 use crate::app::nav::ScreenKey;
 use crate::app::view;

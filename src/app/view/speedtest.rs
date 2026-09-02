@@ -81,37 +81,6 @@ pub(crate) fn status(state: Option<&SpeedTestState>, host_name: &str) -> String 
     }
 }
 
-pub(crate) fn card_rect(
-    screen_w: u32,
-    screen_h: u32,
-    fonts: &Fonts,
-    state: Option<&SpeedTestState>,
-    host_name: &str,
-) -> Rect {
-    let status = status(state, host_name);
-    // Finished, it is the same two-button confirm dialog as Forget/SendLogs/Wake; while the
-    // test is still running there is nothing to press, so it is a plain message card.
-    if finished(state) {
-        ui::tiles::confirm_dialog_card(screen_w, screen_h, fonts, &status)
-    } else {
-        ui::widgets::simple_modal_card(screen_w, screen_h, |probe| {
-            (ui::text::modal_header_end_y(fonts, probe, &status) + 32) as u32
-        })
-    }
-}
-
-/// The button row's rect, below the status text. Only meaningful once the test has
-/// finished — see [`card_rect`].
-pub(crate) fn buttons_rect(
-    screen_w: u32,
-    screen_h: u32,
-    fonts: &Fonts,
-    state: Option<&SpeedTestState>,
-    host_name: &str,
-) -> Rect {
-    ui::tiles::confirm_dialog_layout(screen_w, screen_h, fonts, &status(state, host_name)).1
-}
-
 /// The recommendation this result's primary button would apply, if any.
 pub(crate) fn recommendation(state: Option<&SpeedTestState>) -> Option<u32> {
     match state {
@@ -130,16 +99,33 @@ pub(crate) struct Modal<'a> {
 
 impl ModalMetrics for Modal<'_> {
     fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
-        card_rect(screen_w, screen_h, fonts, self.state, self.host_name)
+        match self.confirm {
+            Some(confirm) => ui::tiles::confirm_dialog_card(screen_w, screen_h, fonts, &confirm.subtitle),
+            None => ui::widgets::message_modal_card(screen_w, screen_h, fonts, &status(self.state, self.host_name)),
+        }
     }
 }
 
 impl ModalScreen for Modal<'_> {
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
         let (state, host_name) = (self.state, self.host_name);
+        let failed = matches!(state, Some(SpeedTestState::Failed(_)));
+        if let Some(confirm) = self.confirm {
+            return c.confirm_dialog(
+                TITLE,
+                &confirm.subtitle,
+                if failed {
+                    ui::theme::palette().error
+                } else {
+                    ui::theme::palette().muted
+                },
+                &confirm.widgets(),
+                hover_close,
+                ui::tiles::ConfirmSurface::Glass,
+            );
+        }
         let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
         c.modal_shell(card, hover_close)?;
-        let failed = matches!(state, Some(SpeedTestState::Failed(_)));
         c.modal_header(
             card,
             TITLE,
@@ -151,13 +137,6 @@ impl ModalScreen for Modal<'_> {
                 ui::theme::palette().muted
             },
         )?;
-        if let Some(confirm) = self.confirm {
-            // Every button drawn unfocused; the focused one is its own tile.
-            c.render(
-                ui::widgets::ConfirmButtons::new(&confirm.widgets()),
-                buttons_rect(c.screen_w, c.screen_h, c.fonts, state, host_name),
-            )?;
-        }
         Ok(())
     }
 }
