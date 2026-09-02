@@ -22,7 +22,9 @@ pub use card::{
     FOCUS_RING_PAD,
 };
 pub use cardmenu::{CardMenuBandTile, CardMenuRowsTile, CardMenuTile, CardMenuTitleTile};
-pub use confirm::{confirm_button_at, confirm_dialog_card, confirm_dialog_layout, ConfirmDialogShellTile};
+pub use confirm::{
+    confirm_button_at, confirm_dialog_card, confirm_dialog_layout, ConfirmDialogShellTile, ConfirmSurface,
+};
 pub use overlay::{LogOverlayTile, StatsOverlayTile, LOG_OVERLAY_LINES};
 pub use text::{TextTile, WrappedTextTile};
 

@@ -308,7 +308,11 @@ impl ConfirmDialog {
                     title: self.title,
                     subtitle: self.subtitle,
                     buttons: &self.buttons,
-                    glass: glass.is_some(),
+                    surface: if glass.is_some() {
+                        crate::ui::tiles::ConfirmSurface::Glass
+                    } else {
+                        crate::ui::tiles::ConfirmSurface::Opaque
+                    },
                 },
                 &mut self.tc,
                 fonts,
@@ -515,9 +519,11 @@ struct NavRepeat {
 pub(super) fn is_menu_press(event: &sdl2::event::Event, want: MenuEvent, allow_repeat: bool) -> bool {
     use sdl2::event::Event;
     match *event {
-        Event::KeyDown { keycode: Some(k), repeat, .. } => {
-            (allow_repeat || !repeat) && crate::platform::webos::input::menu_event_for_key(k) == Some(want)
-        }
+        Event::KeyDown {
+            keycode: Some(k),
+            repeat,
+            ..
+        } => (allow_repeat || !repeat) && crate::platform::webos::input::menu_event_for_key(k) == Some(want),
         Event::ControllerButtonDown { button, .. } => {
             crate::platform::webos::input::menu_event_for_button(button) == Some(want)
         }
@@ -529,9 +535,7 @@ pub(super) fn is_menu_press(event: &sdl2::event::Event, want: MenuEvent, allow_r
 pub(super) fn is_menu_release(event: &sdl2::event::Event, want: MenuEvent) -> bool {
     use sdl2::event::Event;
     match *event {
-        Event::KeyUp { keycode: Some(k), .. } => {
-            crate::platform::webos::input::menu_event_for_key(k) == Some(want)
-        }
+        Event::KeyUp { keycode: Some(k), .. } => crate::platform::webos::input::menu_event_for_key(k) == Some(want),
         Event::ControllerButtonUp { button, .. } => {
             crate::platform::webos::input::menu_event_for_button(button) == Some(want)
         }
@@ -583,7 +587,11 @@ impl UiInput {
     fn press_nav(&mut self, source: NavSource, ev: Option<MenuEvent>) -> Option<MenuEvent> {
         // Same source *and* same direction is the OS repeating a held key. A different
         // direction from the same control (a stick flicked across centre) is a new press.
-        if self.nav_repeat.as_ref().is_some_and(|r| r.source == source && Some(r.ev) == ev) {
+        if self
+            .nav_repeat
+            .as_ref()
+            .is_some_and(|r| r.source == source && Some(r.ev) == ev)
+        {
             return None;
         }
         let ev = ev?;

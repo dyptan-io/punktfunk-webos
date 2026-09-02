@@ -26,16 +26,13 @@ impl ModalMetrics for Modal<'_> {
 
 impl ModalScreen for Modal<'_> {
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
-        let (card, content) = ui::tiles::confirm_dialog_layout(c.screen_w, c.screen_h, c.fonts, &self.confirm.subtitle);
-        c.modal_shell(card, hover_close)?;
-        c.modal_header(
-            card,
+        c.confirm_dialog(
             self.title,
-            ui::theme::palette().text,
             &self.confirm.subtitle,
             ui::theme::palette().muted,
-        )?;
-        // Every button drawn unfocused: the focused one is composited from its own tile.
-        c.render(ui::widgets::ConfirmButtons::new(&self.confirm.widgets()), content)
+            &self.confirm.widgets(),
+            hover_close,
+            ui::tiles::ConfirmSurface::Glass,
+        )
     }
 }

@@ -8,34 +8,6 @@ use crate::ui::ModalMetrics;
 use crate::ui::ModalScreen;
 use anyhow::Result;
 
-/// Card for the no-MAC modal: an informational "Host unreachable" message with no button
-/// row (nothing to send), so it's a plain message card, not a confirm dialog.
-pub(crate) fn message_card(screen_w: u32, screen_h: u32, fonts: &Fonts, status: &str) -> Rect {
-    ui::widgets::simple_modal_card(screen_w, screen_h, |probe| {
-        (ui::text::modal_header_end_y(fonts, probe, status) + 32) as u32
-    })
-}
-
-/// With a MAC it's the shared confirmation dialog; without one, the button-less card.
-pub(crate) fn card_rect(screen_w: u32, screen_h: u32, wake: &WakeState, fonts: &Fonts) -> Rect {
-    let status = status_text(wake);
-    if wake.mac.is_empty() {
-        message_card(screen_w, screen_h, fonts, &status)
-    } else {
-        ui::tiles::confirm_dialog_card(screen_w, screen_h, fonts, &status)
-    }
-}
-
-/// Title varies: with a MAC it's an action ("Wake this host?"), without it it's state. The
-/// prompt never turns into a progress line — pressing Wake closes the modal instead.
-pub(crate) fn title(wake: &WakeState) -> &'static str {
-    if wake.mac.is_empty() {
-        "Host unreachable"
-    } else {
-        "Wake this host?"
-    }
-}
-
 /// Status line; reconstructible from `wake` alone, so render and layout can't disagree.
 pub(crate) fn status_text(wake: &WakeState) -> String {
     if wake.mac.is_empty() {
@@ -60,36 +32,38 @@ pub(crate) struct Modal<'a> {
 
 impl ModalMetrics for Modal<'_> {
     fn card_rect(&self, screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
-        card_rect(screen_w, screen_h, self.wake, fonts)
+        match self.confirm {
+            Some(confirm) => ui::tiles::confirm_dialog_card(screen_w, screen_h, fonts, &confirm.subtitle),
+            None => ui::widgets::message_modal_card(screen_w, screen_h, fonts, &status_text(self.wake)),
+        }
     }
 }
 
 impl ModalScreen for Modal<'_> {
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
         let wake = self.wake;
+        if let Some(confirm) = self.confirm {
+            return c.confirm_dialog(
+                "Wake this host?",
+                &confirm.subtitle,
+                ui::theme::palette().muted,
+                &confirm.widgets(),
+                hover_close,
+                ui::tiles::ConfirmSurface::Glass,
+            );
+        }
         let status = status_text(wake);
-        // With a MAC it's the shared confirmation dialog (card + Wake/Cancel row); without one
-        // it's a button-less informational card — `drain_discovery` reconnects automatically
-        // once the host reappears on mDNS, so there is nothing for the user to do.
-        let (card, button_row) = match self.confirm {
-            Some(confirm) => {
-                let (card, content) = ui::tiles::confirm_dialog_layout(c.screen_w, c.screen_h, c.fonts, &status);
-                (card, Some((content, confirm)))
-            }
-            None => (message_card(c.screen_w, c.screen_h, c.fonts, &status), None),
-        };
+        // Without a MAC this is a button-less informational card. Discovery reconnects
+        // automatically once the host reappears, so there is nothing for the user to do.
+        let card = ui::widgets::message_modal_card(c.screen_w, c.screen_h, c.fonts, &status);
         c.modal_shell(card, hover_close)?;
         c.modal_header(
             card,
-            title(wake),
+            "Host unreachable",
             ui::theme::palette().text,
             &status,
             ui::theme::palette().muted,
         )?;
-        if let Some((content, confirm)) = button_row {
-            // Every button drawn unfocused; the focused one is its own tile.
-            c.render(ui::widgets::ConfirmButtons::new(&confirm.widgets()), content)?;
-        }
         Ok(())
     }
 }
