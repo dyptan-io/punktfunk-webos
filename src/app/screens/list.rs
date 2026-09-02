@@ -26,7 +26,7 @@ impl App {
                 let (auto_send, exit_action, access) = self.host_power_view();
                 view::hostpower::rows(auto_send, exit_action, access)
             }
-            Screen::Diagnostics => view::diagnostics::rows(&self.settings_ui.settings),
+            Screen::Diagnostics => view::diagnostics::rows(&self.settings_ui.settings, self.send_logs_host_ready()),
             Screen::Experimental => view::experimental::rows(&self.settings_ui.settings, self.hosts.rooted),
             Screen::HdrCalibration => {
                 let m = self.hdr_calibration_view()?;

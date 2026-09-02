@@ -143,6 +143,7 @@ pub enum ModalShellKey<'a> {
         log_level: LogLevelOverride,
         stats_overlay: bool,
         show_logs: bool,
+        send_to_host: bool,
     },
     Experimental {
         game_mode: bool,

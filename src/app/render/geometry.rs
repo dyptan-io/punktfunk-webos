@@ -506,6 +506,7 @@ impl App {
             }),
             Screen::Diagnostics => f(&view::diagnostics::Modal {
                 settings: &self.settings_ui.settings,
+                to_host: self.send_logs_host_ready(),
             }),
             Screen::HdrCalibration => f(&self.hdr_calibration_view()?),
             Screen::Experimental => f(&view::experimental::Modal {

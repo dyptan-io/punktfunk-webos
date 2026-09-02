@@ -1,18 +1,16 @@
-//! The "Send logs to developer" confirmation modal's logic and background upload.
-//!
-//! Reached from the Diagnostics screen's last row. A warning dialog explains that
-//! the current session's log file will be uploaded to the developer; both buttons
-//! (Cancel / Send) close the modal and return to Home. "Send" kicks off a
-//! background multipart upload — the same worker-thread + channel shape as the
-//! speed test and pairing ceremonies (see `app::state::speedtest`/`pairing`) — whose
-//! result lands in the Home status bar. Nothing here blocks the UI thread.
+//! Sends the session log to a paired host or, with confirmation, the developer.
+//! Uploads run in the background and report through the Home status bar.
 //!
 //! Rendering lives in `app::view::sendlogs`.
 use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
+use crate::services::library::{self, LibraryError};
 use std::path::Path;
+
+/// Leaves headroom below the host's 1 MiB request limit.
+const MAX_LOG_BYTES: u64 = 1000 * 1024;
 
 /// Upload endpoint (see the Go service: POST multipart `file` field to `/upload`).
 const UPLOAD_URL: &str = "https://www.upload.dyptan.dev/upload";
@@ -25,6 +23,36 @@ pub(crate) enum SendLogsMsg {
 }
 
 impl App {
+    /// Resolves a reachable, paired host for log delivery.
+    pub(crate) fn send_logs_host(&self) -> Option<HostTarget> {
+        let known = self.reachable_selected_host()?;
+        let pin = known.fingerprint?;
+        Some(HostTarget {
+            name: known.name.clone(),
+            addr: known.host.clone(),
+            mgmt_port: known.mgmt_port.unwrap_or(library::DEFAULT_MGMT_PORT),
+            identity: self.identity.clone(),
+            pin,
+        })
+    }
+
+    /// Whether "Send logs" would send directly to the host.
+    pub(crate) fn send_logs_host_ready(&self) -> bool {
+        self.reachable_selected_host()
+            .is_some_and(|known| known.fingerprint.is_some())
+    }
+
+    /// Sends to the host when available, otherwise opens developer confirmation.
+    pub(crate) fn send_logs_action(&mut self) {
+        let Some(target) = self.send_logs_host() else {
+            self.open_send_logs();
+            return;
+        };
+        let status = format!("Sending logs to {}…", target.name);
+        self.spawn_log_upload(status, move |path| upload_to_host(path, &target));
+        self.nav.resume(Screen::Home);
+    }
+
     /// Open the confirmation modal, defaulting focus to Cancel.
     pub(crate) fn open_send_logs(&mut self) {
         self.nav.enter(Screen::SendLogs, 1);
@@ -40,7 +68,7 @@ impl App {
         match ev {
             MenuEvent::Confirm => {
                 if self.nav.cursor(ScreenKey::SendLogs) == 0 {
-                    self.start_log_upload();
+                    self.spawn_log_upload("Sending logs to the developer…".into(), upload_logs);
                 }
                 self.close_send_logs();
             }
@@ -54,19 +82,18 @@ impl App {
         self.nav.resume(Screen::Home);
     }
 
-    /// Spawn the background upload of the on-disk log file. Sets an immediate
-    /// "sending…" status; the outcome replaces it via `drain_send_logs`.
-    fn start_log_upload(&mut self) {
+    /// Starts a background upload and publishes its status through `drain_send_logs`.
+    fn spawn_log_upload(&mut self, status: String, work: impl FnOnce(&Path) -> SendLogsMsg + Send + 'static) {
         let Some(path) = crate::logger::latest_log_file(&crate::services::store::app_dir()) else {
             self.set_home_status(Some("No logs to send yet.".into()), false);
             return;
         };
         let (tx, rx) = std::sync::mpsc::channel();
         self.jobs.send_logs = Some(rx);
-        self.set_home_status(Some("Sending logs to the developer…".into()), false);
+        self.set_home_status(Some(status), false);
         tracing::info!("send logs: uploading {}", path.display());
         std::thread::spawn(move || {
-            let _ = tx.send(upload_logs(&path));
+            let _ = tx.send(work(&path));
         });
     }
 
@@ -95,6 +122,84 @@ impl App {
                 false
             }
         }
+    }
+}
+
+/// Host endpoint and credentials resolved before starting the worker.
+/// Deliberately omits `Debug` because `identity` contains private key material.
+pub(crate) struct HostTarget {
+    pub(crate) name: String,
+    pub(crate) addr: String,
+    pub(crate) mgmt_port: u16,
+    pub(crate) identity: (String, String),
+    pub(crate) pin: [u8; 32],
+}
+
+/// Reads the newest [`MAX_LOG_BYTES`], dropping any partial leading line.
+fn log_tail(path: &Path) -> Result<String, String> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let unreadable = |e: std::io::Error| format!("Couldn't read the log file: {e}");
+    let mut f = std::fs::File::open(path).map_err(unreadable)?;
+    let len = f.metadata().map_err(unreadable)?.len();
+    let truncated = len > MAX_LOG_BYTES;
+    if truncated {
+        f.seek(SeekFrom::End(-(MAX_LOG_BYTES as i64))).map_err(unreadable)?;
+    }
+    let mut raw = Vec::with_capacity(len.min(MAX_LOG_BYTES) as usize);
+    f.read_to_end(&mut raw).map_err(unreadable)?;
+    // The seek may land within a UTF-8 character, so conversion remains lossy.
+    let from = if truncated {
+        raw.iter().position(|&b| b == b'\n').map_or(0, |i| i + 1)
+    } else {
+        0
+    };
+    let text = String::from_utf8_lossy(&raw[from..]);
+    if text.trim().is_empty() {
+        return Err("No logs to send yet.".into());
+    }
+    Ok(if truncated {
+        format!("… older log lines truncated …\n{text}")
+    } else {
+        text.into_owned()
+    })
+}
+
+/// Posts the log tail as plain text using the paired mTLS identity.
+fn upload_to_host(path: &Path, target: &HostTarget) -> SendLogsMsg {
+    let log = match log_tail(path) {
+        Ok(log) => log,
+        Err(e) => return SendLogsMsg::Err(e),
+    };
+    let body = format!(
+        "punktfunk-webos {} (webos {}) — client log bundle\n{log}",
+        crate::core::VERSION,
+        std::env::consts::ARCH,
+    );
+    let agent = match library::agent(&target.identity, Some(target.pin)) {
+        Ok(a) => a,
+        Err(e) => return SendLogsMsg::Err(format!("Couldn't send logs to {}: {e}", target.name)),
+    };
+    let url = format!(
+        "{}/api/v1/client-logs",
+        library::base_url(&target.addr, target.mgmt_port)
+    );
+    match agent
+        .post(url.as_str())
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .send(body.as_bytes())
+    {
+        Ok(_) => SendLogsMsg::Ok(format!("Logs sent to {} — thank you!", target.name)),
+        Err(e) => match library::classify(e) {
+            LibraryError::Http(413) => SendLogsMsg::Err("Log file too large to send (1 MB limit).".into()),
+            LibraryError::NotPaired => {
+                SendLogsMsg::Err(format!("{} refused the logs — pair with it again.", target.name))
+            }
+            other => SendLogsMsg::Err(format!(
+                "{}: {}",
+                target.name,
+                crate::app::view::hostpower::refusal_message(&other)
+            )),
+        },
     }
 }
 

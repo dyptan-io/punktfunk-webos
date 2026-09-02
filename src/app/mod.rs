@@ -801,6 +801,12 @@ impl App {
         self.known_host(host, *port)
     }
 
+    /// The selected host when its last reachability check succeeded.
+    pub(crate) fn reachable_selected_host(&self) -> Option<&KnownHost> {
+        let known = self.selected_known_host()?;
+        (self.known_host_online(known) == Some(true)).then_some(known)
+    }
+
     /// What to do to the selected host on the way out, or `None` when it is set to "None",
     /// has never been paired (the management lane needs this device's cert on its list), or
     /// no host is selected at all.
@@ -812,15 +818,10 @@ impl App {
         // same `library.selected_host` that `sidebar_index_of_selected_host` reads. Every
         // other known host is left alone whatever its own `exit_action` says: the setting is
         // per host, but quitting only ever ends the session you are in.
-        let known = self.selected_known_host()?;
-        // Only a host that answered its last check. Asking one that is already down or gone
-        // means waiting out `budget::EXIT_ACTION` on a connection that cannot complete, and
-        // the whole point of that budget being 200 ms is that it is never spent guessing.
-        // Unknown counts as down, same as everywhere else reachability is read.
-        if self.known_host_online(known) != Some(true) {
-            tracing::debug!("exit action skipped: {} was not reachable", known.host);
+        let Some(known) = self.reachable_selected_host() else {
+            tracing::debug!("exit action skipped: selected host was not reachable");
             return None;
-        }
+        };
         self.power_plan(known, known.exit_action)
     }
 
