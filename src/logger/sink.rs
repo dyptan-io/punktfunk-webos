@@ -8,7 +8,11 @@ use anyhow::{Context, Result};
 
 use super::launch;
 
-const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
+/// Rotation threshold. Sized so a whole active log fits the host's 1 MiB `client-logs`
+/// bundle cap (see `app::state::sendlogs`) — a "Send logs" bundle is then the current
+/// session in full rather than a tail of it. The margin absorbs the batch the flush
+/// check runs after, which can carry `written` past the threshold before the rename.
+const MAX_LOG_BYTES: u64 = 960 * 1024;
 /// Rotations kept (`base.log.1`..`.3`), bounding disk use at
 /// ~`(MAX_LOG_ROTATIONS + 1) * MAX_LOG_BYTES`.
 const MAX_LOG_ROTATIONS: usize = 3;
@@ -104,6 +108,15 @@ fn rotate(base: &Path) {
 /// Absolute path of the active log file (`open_file`'s target).
 fn log_file_path(app_dir: &Path) -> PathBuf {
     app_dir.join(format!("punktfunk-webos-{VERSION}.log"))
+}
+
+/// The active log file — the one THIS run is writing, or `None` when it has nothing in
+/// it yet (a TCP telemetry sink writes no file at all). Distinct from
+/// [`latest_log_file`]: a report about the session in progress wants this one, and
+/// falling back to a rotation would send a previous run's log instead.
+pub fn active_log_file(app_dir: &Path) -> Option<PathBuf> {
+    let active = log_file_path(app_dir);
+    active.metadata().is_ok_and(|m| m.len() > 0).then_some(active)
 }
 
 /// The log file to hand to a user-facing report — the one currently being written

@@ -20,7 +20,7 @@ use tracing_subscriber::{reload, Layer};
 pub use launch::{launch_level_override, webos_sdk_override};
 pub use level::{resolved_level, set_level_override};
 pub use ring::{recent_lines, set_ring_capture};
-pub use sink::latest_log_file;
+pub use sink::{active_log_file, latest_log_file};
 
 /// Installs the global subscriber (file/TCP + ring, shared level filter).
 /// Returns `WorkerGuard` — must stay alive for the process lifetime.

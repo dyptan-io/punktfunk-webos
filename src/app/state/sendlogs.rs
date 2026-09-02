@@ -22,9 +22,10 @@ use crate::core::screen::Screen;
 use crate::services::library::{self, LibraryError};
 use std::path::Path;
 
-/// The host caps a bundle at 1 MiB; send the newest bytes under it, with headroom for the
-/// truncation note.
-const MAX_LOG_BYTES: u64 = 768 * 1024;
+/// Ceiling on what a host-bound bundle carries, under the host's 1 MiB cap with headroom
+/// for the truncation note. `logger` rotates below this, so the active log normally goes
+/// whole and the tail only ever trims a file left by an older build's larger rotation.
+const MAX_LOG_BYTES: u64 = 1000 * 1024;
 
 /// Upload endpoint (see the Go service: POST multipart `file` field to `/upload`).
 const UPLOAD_URL: &str = "https://www.upload.dyptan.dev/upload";
@@ -99,7 +100,12 @@ impl App {
     /// `status` immediately; the outcome replaces it via `drain_send_logs`. Both
     /// destinations run through here, so the job/channel protocol is stated once.
     fn spawn_log_upload(&mut self, status: String, work: impl FnOnce(&Path) -> SendLogsMsg + Send + 'static) {
-        let Some(path) = crate::logger::latest_log_file(&crate::services::store::app_dir()) else {
+        // THIS run's log first: a report is about the session the user is in, and
+        // `latest_log_file`'s rotation fallback would hand over a previous run's instead.
+        // It still stands in when this run wrote no file at all (a TCP telemetry sink).
+        let app_dir = crate::services::store::app_dir();
+        let Some(path) = crate::logger::active_log_file(&app_dir).or_else(|| crate::logger::latest_log_file(&app_dir))
+        else {
             self.set_home_status(Some("No logs to send yet.".into()), false);
             return;
         };
