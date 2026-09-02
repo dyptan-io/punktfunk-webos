@@ -1,6 +1,13 @@
-//! The "Send logs to developer" confirmation modal's logic and background upload.
+//! "Send logs": upload this session's log to the paired host, or to the developer.
 //!
-//! Reached from the Diagnostics screen's last row. A warning dialog explains that
+//! Reached from the Diagnostics screen's last row. A selected, paired, reachable host takes
+//! the log over its management API (`POST /api/v1/client-logs`, the lane
+//! `pf-client-core::logring` defines, under the mTLS identity the library fetch and the
+//! stream already use) with no confirmation: its operator is trusted with the session
+//! anyway, and the status line names the host.
+//!
+//! With no such host there is nowhere local to send it, so the developer upload is the
+//! fallback and keeps its confirmation dialog: it explains that
 //! the current session's log file will be uploaded to the developer; both buttons
 //! (Cancel / Send) close the modal and return to Home. "Send" kicks off a
 //! background multipart upload — the same worker-thread + channel shape as the
@@ -12,7 +19,12 @@ use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
+use crate::services::library::{self, LibraryError};
 use std::path::Path;
+
+/// The host caps a bundle at 1 MiB; send the newest bytes under it, with headroom for the
+/// truncation note.
+const MAX_LOG_BYTES: u64 = 768 * 1024;
 
 /// Upload endpoint (see the Go service: POST multipart `file` field to `/upload`).
 const UPLOAD_URL: &str = "https://www.upload.dyptan.dev/upload";
@@ -25,6 +37,35 @@ pub(crate) enum SendLogsMsg {
 }
 
 impl App {
+    /// The host to send logs to — `None` when the developer fallback (and its confirmation)
+    /// is what "Send logs" means right now. A pin is required, not merely used when known:
+    /// the mgmt lane authorizes by certificate, and an unverified peer is not who a log
+    /// bundle goes to (the rule `power_plan` states for the other write on this lane).
+    pub(crate) fn send_logs_host(&self) -> Option<HostTarget> {
+        let known = self.reachable_selected_host()?;
+        let pin = known.fingerprint?;
+        Some(HostTarget {
+            name: known.name.clone(),
+            addr: known.host.clone(),
+            mgmt_port: known.mgmt_port.unwrap_or(library::DEFAULT_MGMT_PORT),
+            identity: self.identity.clone(),
+            pin,
+        })
+    }
+
+    /// The Diagnostics row's action: straight to the host when there is one, otherwise the
+    /// developer confirmation modal. Either way the outcome shows in the Home status bar,
+    /// which is where both paths leave the user.
+    pub(crate) fn send_logs_action(&mut self) {
+        let Some(target) = self.send_logs_host() else {
+            self.open_send_logs();
+            return;
+        };
+        let status = format!("Sending logs to {}…", target.name);
+        self.spawn_log_upload(status, move |path| upload_to_host(path, &target));
+        self.nav.resume(Screen::Home);
+    }
+
     /// Open the confirmation modal, defaulting focus to Cancel.
     pub(crate) fn open_send_logs(&mut self) {
         self.nav.enter(Screen::SendLogs, 1);
@@ -40,7 +81,7 @@ impl App {
         match ev {
             MenuEvent::Confirm => {
                 if self.nav.cursor(ScreenKey::SendLogs) == 0 {
-                    self.start_log_upload();
+                    self.spawn_log_upload("Sending logs to the developer…".into(), upload_logs);
                 }
                 self.close_send_logs();
             }
@@ -54,19 +95,20 @@ impl App {
         self.nav.resume(Screen::Home);
     }
 
-    /// Spawn the background upload of the on-disk log file. Sets an immediate
-    /// "sending…" status; the outcome replaces it via `drain_send_logs`.
-    fn start_log_upload(&mut self) {
+    /// Spawn the background upload of the on-disk log file, however `work` sends it. Sets
+    /// `status` immediately; the outcome replaces it via `drain_send_logs`. Both
+    /// destinations run through here, so the job/channel protocol is stated once.
+    fn spawn_log_upload(&mut self, status: String, work: impl FnOnce(&Path) -> SendLogsMsg + Send + 'static) {
         let Some(path) = crate::logger::latest_log_file(&crate::services::store::app_dir()) else {
             self.set_home_status(Some("No logs to send yet.".into()), false);
             return;
         };
         let (tx, rx) = std::sync::mpsc::channel();
         self.jobs.send_logs = Some(rx);
-        self.set_home_status(Some("Sending logs to the developer…".into()), false);
+        self.set_home_status(Some(status), false);
         tracing::info!("send logs: uploading {}", path.display());
         std::thread::spawn(move || {
-            let _ = tx.send(upload_logs(&path));
+            let _ = tx.send(work(&path));
         });
     }
 
@@ -95,6 +137,89 @@ impl App {
                 false
             }
         }
+    }
+}
+
+/// Where a host-bound bundle goes and what it travels under, resolved on the UI thread and
+/// moved to the worker — `services::power::ExitPlan`'s shape for the other mgmt-lane write.
+/// No `Debug`, derived or otherwise: `identity` holds the client key PEM.
+pub(crate) struct HostTarget {
+    pub(crate) name: String,
+    pub(crate) addr: String,
+    pub(crate) mgmt_port: u16,
+    pub(crate) identity: (String, String),
+    pub(crate) pin: [u8; 32],
+}
+
+/// The newest [`MAX_LOG_BYTES`] of the log as text, cut at a line boundary so the bundle
+/// never opens mid-line, with a note when anything was dropped. Reading the tail rather
+/// than the file is what keeps a long session under the host's 1 MiB cap.
+fn log_tail(path: &Path) -> Result<String, String> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let unreadable = |e: std::io::Error| format!("Couldn't read the log file: {e}");
+    let mut f = std::fs::File::open(path).map_err(unreadable)?;
+    let len = f.metadata().map_err(unreadable)?.len();
+    let truncated = len > MAX_LOG_BYTES;
+    if truncated {
+        f.seek(SeekFrom::End(-(MAX_LOG_BYTES as i64))).map_err(unreadable)?;
+    }
+    let mut raw = Vec::with_capacity(len.min(MAX_LOG_BYTES) as usize);
+    f.read_to_end(&mut raw).map_err(unreadable)?;
+    // Cut on the raw bytes, before the one conversion: a tail seek lands mid-line (and can
+    // land mid-UTF-8, hence lossy), and doing it here keeps the whole tail to one copy.
+    let from = if truncated {
+        raw.iter().position(|&b| b == b'\n').map_or(0, |i| i + 1)
+    } else {
+        0
+    };
+    let text = String::from_utf8_lossy(&raw[from..]);
+    if text.trim().is_empty() {
+        return Err("No logs to send yet.".into());
+    }
+    Ok(if truncated {
+        format!("… older log lines truncated …\n{text}")
+    } else {
+        text.into_owned()
+    })
+}
+
+/// POSTs the log tail to the host's `POST /api/v1/client-logs` as plain text, mTLS-
+/// authenticated by this device's paired identity — the wire shape
+/// `pf-client-core::logring::send_to_host` defines and the host console lists.
+fn upload_to_host(path: &Path, target: &HostTarget) -> SendLogsMsg {
+    let body = match log_tail(path) {
+        Ok(b) => b,
+        Err(e) => return SendLogsMsg::Err(e),
+    };
+    let agent = match library::agent(&target.identity, Some(target.pin)) {
+        Ok(a) => a,
+        Err(e) => return SendLogsMsg::Err(format!("Couldn't send logs to {}: {e}", target.name)),
+    };
+    let url = format!(
+        "{}/api/v1/client-logs",
+        library::base_url(&target.addr, target.mgmt_port)
+    );
+    match agent
+        .post(url.as_str())
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .send(body.as_bytes())
+    {
+        Ok(_) => SendLogsMsg::Ok(format!("Logs sent to {} — thank you!", target.name)),
+        Err(e) => match library::classify(e) {
+            LibraryError::Http(413) => SendLogsMsg::Err("Log file too large to send (1 MB limit).".into()),
+            // `refusal_message`'s NotPaired line is about the power grant; uploading a bundle
+            // needs no grant, only a pairing, so this lane words that one itself.
+            LibraryError::NotPaired => {
+                SendLogsMsg::Err(format!("{} refused the logs — pair with it again.", target.name))
+            }
+            // Everything else reads the same as any other refusal on this lane, prefixed with
+            // the host so the Home bar says which one turned the bundle away.
+            other => SendLogsMsg::Err(format!(
+                "{}: {}",
+                target.name,
+                crate::app::view::hostpower::refusal_message(&other)
+            )),
+        },
     }
 }
 

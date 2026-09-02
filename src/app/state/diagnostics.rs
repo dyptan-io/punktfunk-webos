@@ -52,9 +52,9 @@ impl App {
             }
             (menu::DIAG_ROW_SEND_LOGS, MenuEvent::Confirm) => {
                 // Persist any pending diagnostics changes before leaving the screen —
-                // the confirmation modal's buttons return to Home, not back here.
+                // neither the host send nor the confirmation modal comes back here.
                 self.persist();
-                self.open_send_logs();
+                self.send_logs_action();
             }
             (_, MenuEvent::Back) => {
                 self.persist();
