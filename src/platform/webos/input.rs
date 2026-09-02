@@ -86,6 +86,13 @@ impl StickMenuNav {
         }
     }
 
+    /// Whether `value` is inside the centre deadzone — i.e. this axis is holding no
+    /// direction. The threshold's one reader outside [`edge`](Self::edge), for a caller
+    /// running its own hold timer off the crossings [`axis_event`](Self::axis_event) reports.
+    pub const fn centred(value: i16) -> bool {
+        value.unsigned_abs() < STICK_MENU_DEADZONE.unsigned_abs()
+    }
+
     fn edge(state: &mut Option<MenuEvent>, value: i16, neg: MenuEvent, pos: MenuEvent) -> Option<MenuEvent> {
         let dir = if value <= -STICK_MENU_DEADZONE {
             Some(neg)

@@ -85,6 +85,25 @@ impl App {
         }
     }
 
+    /// Whether what's on screen navigates by row — a list screen, or a row list hanging over
+    /// one that doesn't (an open dropdown, a held card's submenu). Asked before choosing
+    /// between stepping focus and scrolling pixels, so a caller lands wherever an Up/Down
+    /// press would.
+    pub(crate) fn navigates_rows(&self) -> bool {
+        self.card_menu.is_some() || self.settings_ui.dropdown.is_some() || self.row_count() > 0
+    }
+
+    /// Where row focus is now, across all three places it can live. Only ever compared with
+    /// itself: a caller that navigates without an animation to redraw off (the wheel) samples
+    /// it either side of the step to tell a move from a press against the end of the list.
+    pub(crate) fn row_focus(&self) -> (usize, Option<usize>, Option<usize>) {
+        (
+            self.nav.cursor(ScreenKey::of(self.nav.screen)),
+            self.settings_ui.dropdown.as_ref().map(|dd| dd.focused),
+            self.card_menu.as_ref().map(|m| m.focused),
+        )
+    }
+
     /// The nav half of a list screen's event handling: moves the cursor and arms the focus
     /// pop, reporting whether the event was spent doing so. Every list handler starts here,
     /// and none of them counts its own rows any more.

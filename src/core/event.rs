@@ -17,3 +17,11 @@ pub enum MenuEvent {
     /// "Forget host" (separate from Back/Confirm to prevent accident).
     Secondary,
 }
+
+impl MenuEvent {
+    /// Whether this is one of the four navigation directions — the events that move focus and
+    /// so are the ones a held control repeats.
+    pub fn is_directional(self) -> bool {
+        matches!(self, Self::Up | Self::Down | Self::Left | Self::Right)
+    }
+}
