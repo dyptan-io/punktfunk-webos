@@ -391,7 +391,7 @@ fn prune_cache(dir: &std::path::Path) -> CacheTotals {
 /// Stretches a cached cover to card size, or hands it back untouched when it is already that
 /// size — which is the normal case, since covers are cached at card size. Only a `.raw` written
 /// by an older build, or by a session whose panel gave a different card size, is resampled here.
-fn resize_pixmap(src: Pixmap, w: u32, h: u32) -> Pixmap {
+pub(crate) fn resize_pixmap(src: Pixmap, w: u32, h: u32) -> Pixmap {
     let (sw, sh) = (src.width() as f32, src.height() as f32);
     if (src.width(), src.height()) == (w, h) || sw <= 0.0 || sh <= 0.0 {
         return src;

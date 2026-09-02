@@ -115,7 +115,7 @@ impl App {
         let Some(pin_id) = self.pin_id_at_grid_idx(idx, columns).map(str::to_string) else {
             return;
         };
-        let title = self.grid_card_content(idx, columns).0.to_string();
+        let title = self.grid_card_entry(idx, columns).title.clone();
         self.card_menu = Some(CardMenu {
             pin_id,
             idx,

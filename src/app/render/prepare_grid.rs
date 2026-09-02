@@ -204,7 +204,7 @@ impl App {
         let mut pending = false;
         let budget_from = Instant::now();
         let mut built = 0usize;
-        let desktop_os = self.selected_known_host().map(|host| host.os.clone());
+        let icon_side = ui::widgets::icon_side(card_w, card_h);
         for idx in ready.iter().copied().chain(waiting.iter().copied()) {
             // Budget counted on rasterized cards, not candidates (padding costs nothing).
             if built >= CARD_BUILD_BURST || (built > 0 && budget_from.elapsed() >= CARD_BUILD_BUDGET) {
@@ -217,15 +217,12 @@ impl App {
             built += 1;
             let recycled = self.render.grid.free_cards.pop();
             let tile = {
-                let game = layout
-                    .card_at(&self.library.games, idx)
-                    .expect("idx filtered to a real card before building");
+                let game = self.grid_card_entry(idx, columns);
                 let art = self.library.art.get(&game.id);
-                let icon = if game.id == crate::core::model::DESKTOP_PIN_ID {
-                    desktop_os.as_deref().and_then(crate::app::assets::os_icon)
-                } else {
-                    game.icon.as_deref().and_then(crate::app::assets::card_icon)
-                };
+                let icon = game
+                    .icon
+                    .as_deref()
+                    .and_then(|token| crate::app::assets::card_icon(token, icon_side));
                 ui::rasterize_into(
                     ui::tiles::CardTile {
                         w: card_w,
@@ -287,7 +284,7 @@ impl App {
         // Focused card title strip (own tile for moving wipe, not re-raster per frame).
         if let HomeFocus::Grid(idx) = self.home_focus {
             if let Some(pin_id) = self.library.pin_id_at(idx, columns) {
-                let (title, _) = self.grid_card_content(idx, columns);
+                let title = self.grid_card_entry(idx, columns).title.as_str();
                 // Keyed by card identity like the card tiles themselves (`CardIds`),
                 // not by title — two games can share one.
                 let overridden = self.game_has_overrides(pin_id);

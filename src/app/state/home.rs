@@ -303,6 +303,7 @@ impl App {
                 // Split the borrow: `regroup` needs the host record while it rewrites the
                 // library, and both live on `self`.
                 let host = std::mem::take(&mut self.hosts.known[idx]);
+                self.library.set_desktop_icon(&host.os);
                 self.library
                     .regroup(&host, self.recents.for_host(&host.host, host.port));
                 self.hosts.known[idx] = host;

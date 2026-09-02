@@ -238,6 +238,13 @@ fn label_right_pad(marked: bool) -> i32 {
     }
 }
 
+/// The box a card's brand mark is fitted into: just under half the card's short side, so it
+/// reads as a mark rather than as cover art. Lives here with the rest of the card's geometry,
+/// but `app` needs it too — it scales the mark once at load rather than per raster.
+pub fn icon_side(card_w: u32, card_h: u32) -> u32 {
+    (card_w.min(card_h) * 9 / 20).max(1)
+}
+
 impl Canvas<'_, '_> {
     /// Draws one game/Desktop card's art. `art`, when `Some` (a decoded cover, already
     /// downscaled and premultiplied by `art.rs`), fills the whole card, same as
@@ -257,8 +264,24 @@ impl Canvas<'_, '_> {
             // has already stretched it to card size; the draw rescales only if a pixmap
             // ever arrives at some other size.
             Some(pixmap) => self.painter.draw_pixmap_rounded(r, pixmap, CARD_RADIUS),
-            None => self.placeholder_poster(r, title, icon),
+            // A packaged launcher/OS mark stands in for a title poster when the card has one:
+            // a Steam or Windows card reads faster as its brand than as its own name.
+            None => match icon {
+                Some(icon) => self.icon_poster(r, title, icon),
+                None => self.placeholder_poster(r, title),
+            },
         }
+    }
+
+    /// The tinted card with a brand mark centered on it. The mark arrives already scaled to
+    /// [`icon_side`] (see `app::assets::load_card_icon`), so this only centers and blits.
+    fn icon_poster(&mut self, r: Rect, title: &str, icon: &Pixmap) {
+        self.painter.fill_rounded_rect(r, CARD_RADIUS, tint_for(title));
+        self.painter.draw_pixmap(
+            r.x() + (r.width() as i32 - icon.width() as i32) / 2,
+            r.y() + (r.height() as i32 - icon.height() as i32) / 2,
+            icon,
+        );
     }
 
     /// The stand-in cover for a game the host has no art for: the tinted card with the
@@ -267,22 +290,8 @@ impl Canvas<'_, '_> {
     /// and so a card carries its title even before focus slides the strip up.
     ///
     /// Cards only; hero art keeps its own (art-or-nothing) treatment.
-    fn placeholder_poster(&mut self, r: Rect, title: &str, icon: Option<&Pixmap>) {
+    fn placeholder_poster(&mut self, r: Rect, title: &str) {
         self.painter.fill_rounded_rect(r, CARD_RADIUS, tint_for(title));
-        if let Some(icon) = icon {
-            let side = (r.width().min(r.height()) * 9 / 20).max(1);
-            let scale = (side as f32 / icon.width() as f32).min(side as f32 / icon.height() as f32);
-            let w = (icon.width() as f32 * scale).round() as u32;
-            let h = (icon.height() as f32 * scale).round() as u32;
-            let dst = Rect::new(
-                r.x() + (r.width() as i32 - w as i32) / 2,
-                r.y() + (r.height() as i32 - h as i32) / 2,
-                w,
-                h,
-            );
-            self.painter.draw_pixmap_scaled(dst, icon);
-            return;
-        }
         let (raster, gap) = (self.fonts.raster, PLACEHOLDER_LINE_GAP);
         let max_w = r.width().saturating_sub(2 * PLACEHOLDER_PAD as u32);
         let font = fitting_font(raster, title, max_w);

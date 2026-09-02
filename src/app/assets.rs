@@ -1,6 +1,6 @@
 //! Everything this app ships as bytes: its brand font family, its icon font, the sidebar
-//! logo, and the loading spinner (rasterized via [`crate::ui::spinner`]). Card icons are
-//! packaged beside the binary and loaded when their tile is built.
+//! logo, and the loading spinner (rasterized via [`crate::ui::spinner`]). Card marks are the
+//! one asset kept on disk (see [`load_card_icon`]) rather than embedded.
 //!
 //! Deliberately not in `ui`. `ui` is a widget library — it names font *roles*
 //! ([`crate::ui::text::FontId`]) and draws the spinner in whatever two colours it is handed;
@@ -8,12 +8,14 @@
 //! brand's are this app's to decide. `runtime` hands the font bytes to
 //! `platform::webos::text_sdl`, which loads them into `SDL2_ttf` without knowing what they are.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tiny_skia::Pixmap;
 
+use crate::services::paths;
 use crate::ui::spinner;
 use crate::ui::text::FontWeight;
 use crate::ui::Painter;
@@ -38,34 +40,42 @@ pub static ICON_FONT_BYTES: &[u8] = include_bytes!("../../assets/icons/MaterialI
 /// Punktfunk logo (rasterized at sidebar size, 1:1 no scaling). See assets/logo/NOTICE.md.
 pub static LOGO_PNG: &[u8] = include_bytes!("../../assets/logo/logo-sidebar.png");
 
-fn card_asset_root() -> &'static Path {
-    static ROOT: OnceLock<PathBuf> = OnceLock::new();
-    ROOT.get_or_init(|| {
-        let installed = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent()?.parent().map(|p| p.join("assets/cards")));
-        installed
-            .filter(|p| p.is_dir())
-            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/cards"))
-    })
-}
-
-fn load_card_icon(dir: &str, name: &str) -> Option<Arc<Pixmap>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Option<Arc<Pixmap>>>>> = OnceLock::new();
-    if name.len() > 32
-        || !name.starts_with(|c: char| c.is_ascii_lowercase())
-        || !name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-    {
+/// The file a packaged mark lives in, or `None` if `name` may not be joined onto a path.
+/// Lowercases first since file names are lowercase but `GameEntry::icon` is host-casing
+/// (`Steam`); a mismatch cached as `None` is permanent, so validate before any miss.
+fn card_icon_path<'a>(dir: &str, name: &'a str) -> Option<(PathBuf, Cow<'a, str>)> {
+    let name = if name.bytes().any(|b| b.is_ascii_uppercase()) {
+        Cow::Owned(name.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(name)
+    };
+    if !paths::is_asset_token(&name) {
         return None;
     }
-    let key = format!("{dir}/{name}");
+    let path = paths::assets_dir()
+        .join("cards")
+        .join(dir)
+        .join(name.as_ref())
+        .with_extension("png");
+    Some((path, name))
+}
+
+/// Kept on disk rather than embedded: a host contributes one OS mark and a handful of launcher
+/// marks, so paying flash for the whole set buys nothing. Cached per `(name, side)`: read,
+/// decode and resample once per size. Marks are white silhouettes — source PNGs are
+/// black-on-transparent, so the fill lifts RGB to the alpha each pixel already has.
+fn load_card_icon(dir: &'static str, name: &str, side: u32) -> Option<Arc<Pixmap>> {
+    // Nested rather than keyed by a `(String, u32)` tuple so the hit path probes with a
+    // borrowed `&str` and allocates nothing.
+    type Cache = HashMap<&'static str, HashMap<String, HashMap<u32, Option<Arc<Pixmap>>>>>;
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    let (path, name) = card_icon_path(dir, name)?;
     let mut cache = CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().ok()?;
-    if let Some(icon) = cache.get(&key) {
+    let by_name = cache.entry(dir).or_default();
+    if let Some(icon) = by_name.get(name.as_ref()).and_then(|by_size| by_size.get(&side)) {
         return icon.clone();
     }
-    let icon = std::fs::read(card_asset_root().join(dir).join(name).with_extension("png"))
+    let icon = std::fs::read(path)
         .ok()
         .and_then(|bytes| crate::ui::painter::decode_pixmap(&bytes))
         .map(|mut icon| {
@@ -73,27 +83,49 @@ fn load_card_icon(dir: &str, name: &str) -> Option<Arc<Pixmap>> {
                 let alpha = pixel[3];
                 pixel[..3].fill(alpha);
             }
-            icon
+            fit_to(icon, side)
         })
         .map(Arc::new);
-    cache.insert(key, icon.clone());
+    by_name.entry(name.into_owned()).or_default().insert(side, icon.clone());
     icon
 }
 
-/// Loads the packaged launcher mark named by an API icon token.
-pub fn card_icon(token: &str) -> Option<Arc<Pixmap>> {
-    load_card_icon("launchers", token)
+/// Scales `icon` to fit a `side`-by-`side` box, keeping its aspect. Done once at load rather
+/// than per card raster: the grid asks for one size at a time.
+fn fit_to(icon: Pixmap, side: u32) -> Pixmap {
+    let scale = (side as f32 / icon.width() as f32).min(side as f32 / icon.height() as f32);
+    let w = ((icon.width() as f32 * scale).round() as u32).max(1);
+    let h = ((icon.height() as f32 * scale).round() as u32).max(1);
+    crate::services::art::resize_pixmap(icon, w, h)
 }
 
-/// Loads the most specific packaged mark in an advertised OS chain.
-pub fn os_icon(chain: &str) -> Option<Arc<Pixmap>> {
+/// The packaged mark a `GameEntry::icon` token names, at `side` pixels. A bare token is a
+/// launcher mark from the host's listing (`steam`); an `os/`-qualified one is the client's own
+/// pick for the Desktop card (see [`os_icon_token`]). Any other prefix is refused rather than
+/// joined onto a path.
+pub fn card_icon(token: &str, side: u32) -> Option<Arc<Pixmap>> {
+    let (dir, name) = match token.split_once('/') {
+        Some(("os", name)) => ("os", name),
+        Some(_) => return None,
+        None => ("launchers", token),
+    };
+    load_card_icon(dir, name, side)
+}
+
+/// The [`card_icon`] token for the most specific packaged mark in an advertised OS chain —
+/// `linux/fedora/bazzite` prefers `bazzite` and falls back toward `linux`. Resolved when the
+/// host's OS becomes known (see `Library::set_desktop_icon`), not per card build, so this
+/// only stats for the file rather than decoding it.
+pub fn os_icon_token(chain: &str) -> Option<String> {
     chain.split('/').rev().find_map(|name| {
+        // The two OS names whose mark is filed under a different one.
         let name = match name {
             "macos" => "apple",
             "steamos" => "steam",
             other => other,
         };
-        load_card_icon("os", name)
+        let (path, name) = card_icon_path("os", name)?;
+        path.is_file().then(|| format!("os/{name}"))
     })
 }
 

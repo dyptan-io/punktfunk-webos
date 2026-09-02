@@ -27,14 +27,15 @@ use std::time::{Duration, Instant};
 
 use crate::ui::render::Rect;
 use anyhow::Result;
-use tiny_skia::Pixmap;
 
 use crate::app::hosts::HostEntry;
 use crate::app::nav::ScreenKey;
 use crate::core::event::MenuEvent;
+use crate::core::model;
 pub use crate::core::model::ConnectTarget;
 pub use crate::core::screen::{HomeFocus, PairingFocus, Screen};
 use crate::services::discovery::Discovery;
+use crate::services::library::GameEntry;
 use crate::services::store::{self, KnownHost, Settings};
 use crate::ui;
 
@@ -505,6 +506,7 @@ impl App {
         // `found.host` — `DiscoveredHost` (discovery.rs) only has `addr`, `WakeState`/
         // `KnownHost` only have `host`; both hold the same kind of value (network address).
         let polled = self.jobs.discovery.as_mut().map(Discovery::poll).unwrap_or_default();
+        let selected = self.library.selected_host.clone();
         for found in polled {
             // An announce is the host saying it is up, on its own initiative — the cheapest
             // liveness evidence there is, and previously the one the dot ignored.
@@ -529,16 +531,14 @@ impl App {
                 if !found.os.is_empty() && known.os != found.os {
                     known.os.clone_from(&found.os);
                     host_metadata_changed = true;
-                    if self
-                        .library
-                        .selected_host
+                    // The Desktop card wears this host's OS mark, so a newly-learned OS
+                    // restamps the entry and re-rasters the one card that shows it.
+                    if selected
                         .as_ref()
-                        .is_some_and(|(host, port)| host == &found.addr && *port == found.port)
+                        .is_some_and(|(h, p)| h == &found.addr && *p == found.port)
                     {
-                        self.render
-                            .grid
-                            .cards_dirty
-                            .push(crate::core::model::DESKTOP_PIN_ID.to_string());
+                        self.library.set_desktop_icon(&found.os);
+                        self.render.grid.cards_dirty.push(model::DESKTOP_PIN_ID.to_string());
                         grid_changed = true;
                     }
                 }
@@ -863,12 +863,11 @@ impl App {
         self.known_host_mut(&host, port)
     }
 
-    /// The title of grid card `idx` (see `grid_card_at`) and its cover art, if
-    /// fetched. Callers must only pass an `idx` that `is_grid_card` (tile
-    /// building already filters padding gaps out).
-    pub(crate) fn grid_card_content(&self, idx: usize, columns: usize) -> (&str, Option<&Pixmap>) {
+    /// The entry behind grid card `idx` (see `grid_card_at`). Callers must only pass an
+    /// `idx` that `is_grid_card` (tile building already filters padding gaps out).
+    pub(crate) fn grid_card_entry(&self, idx: usize, columns: usize) -> &GameEntry {
         match self.grid_card_at(idx, columns) {
-            Some(game) => (game.title.as_str(), self.library.art.get(&game.id)),
+            Some(game) => game,
             None => unreachable!("idx filtered to a real card before building"),
         }
     }
