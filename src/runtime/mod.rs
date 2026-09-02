@@ -111,6 +111,7 @@ fn spawn_connect(
                 codec: settings.codec,
                 gamepad_type: settings.gamepad_type,
                 cursor_capture: settings.cursor_capture,
+                pad_audio_caps: crate::session::pad_audio::caps_for(&settings),
                 audio_route: settings.audio_route,
                 display_hdr: settings.hdr_display().hdr_meta(),
             })

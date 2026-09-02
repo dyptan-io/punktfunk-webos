@@ -176,8 +176,12 @@ impl Connected {
         &self,
         mut controller: Option<&mut sdl2::controller::GameController>,
         mut feedback: Option<&mut crate::platform::webos::dualsense::Feedback>,
+        haptics: Option<&crate::session::pad_audio::Envelope>,
     ) {
         let client = &self.client;
+        // While coil frames arrive, the motors belong to the derived envelope: the host still
+        // forwards the title's classic rumble, and applying both makes them fight.
+        let haptics_own_motors = haptics.is_some_and(crate::session::pad_audio::Envelope::active);
         // `next_rumble_command` is the policy-engine API: it already resolves lease expiry, stale
         // legacy hosts and close-drain zeros, so commands apply verbatim — all-zero stops now.
         //
@@ -192,6 +196,9 @@ impl Connected {
                 break; // NoFrame (empty) or Closed (session over)
             };
             budget -= 1;
+            if haptics_own_motors {
+                continue;
+            }
             if let Some(pad) = controller.as_deref_mut() {
                 // `backstop_ms` passes straight through, including 0: SDL2 reads a zero duration as
                 // "no expiration" (`rumble_expiration = 0`, run until changed), not "stop now", which
@@ -208,6 +215,13 @@ impl Connected {
                 if has_triggers {
                     let _ = pad.set_rumble_triggers(cmd.left_trigger, cmd.right_trigger, cmd.backstop_ms);
                 }
+            }
+        }
+
+        if let (Some(envelope), Some(pad)) = (haptics, controller.as_deref_mut()) {
+            if let Some((low, high)) = envelope.take_change() {
+                // 0 = until changed; the envelope itself sends the zero that ends it.
+                let _ = pad.set_rumble(low, high, 0);
             }
         }
 
