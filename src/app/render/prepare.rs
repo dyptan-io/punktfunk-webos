@@ -259,6 +259,7 @@ impl App {
                 log_level: self.settings_ui.settings.log_level_override,
                 stats_overlay: self.settings_ui.settings.stats_overlay,
                 show_logs: self.settings_ui.settings.show_logs,
+                send_to_host: self.send_logs_host_ready(),
             }),
             Screen::Experimental => Some(ModalShellKey::Experimental {
                 game_mode: self.settings_ui.settings.game_mode,

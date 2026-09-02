@@ -15,7 +15,7 @@ pub const SUBTITLE: &str = "Debug aids for on-device investigation.";
 
 /// Log level (dropdown), stats overlay + show logs (toggles), send logs (action).
 /// Order must match `menu::DIAG_ROW_*`.
-pub fn rows(settings: &Settings) -> Vec<FocusRow> {
+pub fn rows(settings: &Settings, to_host: bool) -> Vec<FocusRow> {
     vec![
         FocusRow::dropdown(
             crate::app::view::icons::ICON_BUG,
@@ -42,8 +42,11 @@ pub fn rows(settings: &Settings) -> Vec<FocusRow> {
                 .show_logs
                 .then(|| ui::widgets::RowSubtext::hint("Or use the Yellow button")),
         ),
-        FocusRow::action(crate::app::view::icons::ICON_SEND, "Send logs")
-            .with_subtext(ui::widgets::RowSubtext::hint("Sends logs to host/developer")),
+        FocusRow::action(crate::app::view::icons::ICON_SEND, "Send logs").with_subtext(if to_host {
+            ui::widgets::RowSubtext::hint("Will be sent to the host")
+        } else {
+            ui::widgets::RowSubtext::caution("Host is unavailable — send to developer")
+        }),
     ]
 }
 
@@ -54,6 +57,7 @@ pub fn card_rect(screen_w: u32, screen_h: u32, fonts: &Fonts) -> Rect {
 /// The diagnostics list as a [`ModalScreen`].
 pub(crate) struct Modal<'a> {
     pub settings: &'a Settings,
+    pub to_host: bool,
 }
 
 impl ModalMetrics for Modal<'_> {
@@ -74,6 +78,6 @@ impl ModalMetrics for Modal<'_> {
 impl ModalScreen for Modal<'_> {
     fn render(&self, c: &mut Canvas, hover_close: bool) -> Result<()> {
         let card = self.card_rect(c.screen_w, c.screen_h, c.fonts);
-        c.list_modal_screen(card, TITLE, SUBTITLE, &rows(self.settings), hover_close)
+        c.list_modal_screen(card, TITLE, SUBTITLE, &rows(self.settings, self.to_host), hover_close)
     }
 }

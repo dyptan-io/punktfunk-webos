@@ -8,10 +8,7 @@ use anyhow::{Context, Result};
 
 use super::launch;
 
-/// Rotation threshold. Sized so a whole active log fits the host's 1 MiB `client-logs`
-/// bundle cap (see `app::state::sendlogs`) — a "Send logs" bundle is then the current
-/// session in full rather than a tail of it. The margin absorbs the batch the flush
-/// check runs after, which can carry `written` past the threshold before the rename.
+/// Leaves batch-overrun headroom below the host's 1 MiB log-bundle limit.
 const MAX_LOG_BYTES: u64 = 960 * 1024;
 /// Rotations kept (`base.log.1`..`.3`), bounding disk use at
 /// ~`(MAX_LOG_ROTATIONS + 1) * MAX_LOG_BYTES`.
@@ -110,22 +107,25 @@ fn log_file_path(app_dir: &Path) -> PathBuf {
     app_dir.join(format!("punktfunk-webos-{VERSION}.log"))
 }
 
-/// The active log file — the one THIS run is writing, or `None` when it has nothing in
-/// it yet (a TCP telemetry sink writes no file at all). Distinct from
-/// [`latest_log_file`]: a report about the session in progress wants this one, and
-/// falling back to a rotation would send a previous run's log instead.
-pub fn active_log_file(app_dir: &Path) -> Option<PathBuf> {
-    let active = log_file_path(app_dir);
-    active.metadata().is_ok_and(|m| m.len() > 0).then_some(active)
+fn is_log_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some((version, suffix)) = name
+        .strip_prefix("punktfunk-webos-")
+        .and_then(|name| name.split_once(".log"))
+    else {
+        return false;
+    };
+    !version.is_empty()
+        && (suffix.is_empty()
+            || suffix
+                .strip_prefix('.')
+                .is_some_and(|rotation| rotation.parse::<usize>().is_ok()))
 }
 
-/// The log file to hand to a user-facing report — the one currently being written
-/// when there is one, else the newest across all rotations *and* app versions (a
-/// version bump changes `VERSION` in `log_file_path`, so matching only the current
-/// name would orphan older logs). The active file is preferred outright rather than
-/// by mtime: `rotate` renames carry the source mtime, so a just-rotated `.1` can look
-/// newer than the active file the process is still appending to.
-/// `None` if nothing has been logged yet.
+/// Returns the non-empty active log, otherwise the newest version or rotation.
+/// The active log wins because renaming preserves a rotated file's newer mtime.
 pub fn latest_log_file(app_dir: &Path) -> Option<PathBuf> {
     let active = log_file_path(app_dir);
     if active.metadata().is_ok_and(|m| m.len() > 0) {
@@ -134,12 +134,7 @@ pub fn latest_log_file(app_dir: &Path) -> Option<PathBuf> {
     std::fs::read_dir(app_dir)
         .ok()?
         .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.starts_with("punktfunk-webos-") && name.contains(".log"))
-        })
+        .filter(|entry| is_log_file(&entry.path()))
         .filter_map(|entry| {
             let meta = entry.metadata().ok()?;
             (meta.len() > 0).then_some(())?;

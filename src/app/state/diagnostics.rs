@@ -51,8 +51,7 @@ impl App {
                 self.arm_switch_anim(from);
             }
             (menu::DIAG_ROW_SEND_LOGS, MenuEvent::Confirm) => {
-                // Persist any pending diagnostics changes before leaving the screen —
-                // neither the host send nor the confirmation modal comes back here.
+                // Both send paths leave Diagnostics.
                 self.persist();
                 self.send_logs_action();
             }

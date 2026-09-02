@@ -167,9 +167,7 @@ pub const DIAG_ROW_LOG_LEVEL: usize = 0;
 pub const DIAG_ROW_STATS_OVERLAY: usize = 1;
 /// Menu-driven mirror of the Yellow-button log overlay — for remotes without one.
 pub const DIAG_ROW_SHOW_LOGS: usize = 2;
-/// Uploads the current session's log to the paired host, or to the developer when there
-/// is none (see `app::state::sendlogs`). An action row, not a setting — the developer
-/// fallback opens a warning/confirmation modal first, the host send does not.
+/// Sends the current session log to the paired host, falling back to the developer.
 pub const DIAG_ROW_SEND_LOGS: usize = 3;
 pub const DIAGNOSTICS_ROW_COUNT: usize = 4;
 

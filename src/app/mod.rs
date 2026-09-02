@@ -801,9 +801,7 @@ impl App {
         self.known_host(host, *port)
     }
 
-    /// The selected host if it answered its last reachability check — the precondition every
-    /// mgmt-lane request the user did not explicitly aim at a host shares (the exit action,
-    /// sending logs). Unknown counts as down, same as everywhere else reachability is read.
+    /// The selected host when its last reachability check succeeded.
     pub(crate) fn reachable_selected_host(&self) -> Option<&KnownHost> {
         let known = self.selected_known_host()?;
         (self.known_host_online(known) == Some(true)).then_some(known)
@@ -820,9 +818,6 @@ impl App {
         // same `library.selected_host` that `sidebar_index_of_selected_host` reads. Every
         // other known host is left alone whatever its own `exit_action` says: the setting is
         // per host, but quitting only ever ends the session you are in.
-        // Reachable only: asking a host that is already down means waiting out
-        // `budget::EXIT_ACTION` on a connection that cannot complete, and the whole point of
-        // that budget being 200 ms is that it is never spent guessing.
         let Some(known) = self.reachable_selected_host() else {
             tracing::debug!("exit action skipped: selected host was not reachable");
             return None;

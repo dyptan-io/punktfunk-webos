@@ -1,18 +1,5 @@
-//! "Send logs": upload this session's log to the paired host, or to the developer.
-//!
-//! Reached from the Diagnostics screen's last row. A selected, paired, reachable host takes
-//! the log over its management API (`POST /api/v1/client-logs`, the lane
-//! `pf-client-core::logring` defines, under the mTLS identity the library fetch and the
-//! stream already use) with no confirmation: its operator is trusted with the session
-//! anyway, and the status line names the host.
-//!
-//! With no such host there is nowhere local to send it, so the developer upload is the
-//! fallback and keeps its confirmation dialog: it explains that
-//! the current session's log file will be uploaded to the developer; both buttons
-//! (Cancel / Send) close the modal and return to Home. "Send" kicks off a
-//! background multipart upload — the same worker-thread + channel shape as the
-//! speed test and pairing ceremonies (see `app::state::speedtest`/`pairing`) — whose
-//! result lands in the Home status bar. Nothing here blocks the UI thread.
+//! Sends the session log to a paired host or, with confirmation, the developer.
+//! Uploads run in the background and report through the Home status bar.
 //!
 //! Rendering lives in `app::view::sendlogs`.
 use crate::app::nav::ScreenKey;
@@ -22,9 +9,7 @@ use crate::core::screen::Screen;
 use crate::services::library::{self, LibraryError};
 use std::path::Path;
 
-/// Ceiling on what a host-bound bundle carries, under the host's 1 MiB cap with headroom
-/// for the truncation note. `logger` rotates below this, so the active log normally goes
-/// whole and the tail only ever trims a file left by an older build's larger rotation.
+/// Leaves headroom below the host's 1 MiB request limit.
 const MAX_LOG_BYTES: u64 = 1000 * 1024;
 
 /// Upload endpoint (see the Go service: POST multipart `file` field to `/upload`).
@@ -38,10 +23,7 @@ pub(crate) enum SendLogsMsg {
 }
 
 impl App {
-    /// The host to send logs to — `None` when the developer fallback (and its confirmation)
-    /// is what "Send logs" means right now. A pin is required, not merely used when known:
-    /// the mgmt lane authorizes by certificate, and an unverified peer is not who a log
-    /// bundle goes to (the rule `power_plan` states for the other write on this lane).
+    /// Resolves a reachable, paired host for log delivery.
     pub(crate) fn send_logs_host(&self) -> Option<HostTarget> {
         let known = self.reachable_selected_host()?;
         let pin = known.fingerprint?;
@@ -54,9 +36,13 @@ impl App {
         })
     }
 
-    /// The Diagnostics row's action: straight to the host when there is one, otherwise the
-    /// developer confirmation modal. Either way the outcome shows in the Home status bar,
-    /// which is where both paths leave the user.
+    /// Whether "Send logs" would send directly to the host.
+    pub(crate) fn send_logs_host_ready(&self) -> bool {
+        self.reachable_selected_host()
+            .is_some_and(|known| known.fingerprint.is_some())
+    }
+
+    /// Sends to the host when available, otherwise opens developer confirmation.
     pub(crate) fn send_logs_action(&mut self) {
         let Some(target) = self.send_logs_host() else {
             self.open_send_logs();
@@ -96,16 +82,9 @@ impl App {
         self.nav.resume(Screen::Home);
     }
 
-    /// Spawn the background upload of the on-disk log file, however `work` sends it. Sets
-    /// `status` immediately; the outcome replaces it via `drain_send_logs`. Both
-    /// destinations run through here, so the job/channel protocol is stated once.
+    /// Starts a background upload and publishes its status through `drain_send_logs`.
     fn spawn_log_upload(&mut self, status: String, work: impl FnOnce(&Path) -> SendLogsMsg + Send + 'static) {
-        // THIS run's log first: a report is about the session the user is in, and
-        // `latest_log_file`'s rotation fallback would hand over a previous run's instead.
-        // It still stands in when this run wrote no file at all (a TCP telemetry sink).
-        let app_dir = crate::services::store::app_dir();
-        let Some(path) = crate::logger::active_log_file(&app_dir).or_else(|| crate::logger::latest_log_file(&app_dir))
-        else {
+        let Some(path) = crate::logger::latest_log_file(&crate::services::store::app_dir()) else {
             self.set_home_status(Some("No logs to send yet.".into()), false);
             return;
         };
@@ -146,9 +125,8 @@ impl App {
     }
 }
 
-/// Where a host-bound bundle goes and what it travels under, resolved on the UI thread and
-/// moved to the worker — `services::power::ExitPlan`'s shape for the other mgmt-lane write.
-/// No `Debug`, derived or otherwise: `identity` holds the client key PEM.
+/// Host endpoint and credentials resolved before starting the worker.
+/// Deliberately omits `Debug` because `identity` contains private key material.
 pub(crate) struct HostTarget {
     pub(crate) name: String,
     pub(crate) addr: String,
@@ -157,9 +135,7 @@ pub(crate) struct HostTarget {
     pub(crate) pin: [u8; 32],
 }
 
-/// The newest [`MAX_LOG_BYTES`] of the log as text, cut at a line boundary so the bundle
-/// never opens mid-line, with a note when anything was dropped. Reading the tail rather
-/// than the file is what keeps a long session under the host's 1 MiB cap.
+/// Reads the newest [`MAX_LOG_BYTES`], dropping any partial leading line.
 fn log_tail(path: &Path) -> Result<String, String> {
     use std::io::{Read as _, Seek as _, SeekFrom};
     let unreadable = |e: std::io::Error| format!("Couldn't read the log file: {e}");
@@ -171,8 +147,7 @@ fn log_tail(path: &Path) -> Result<String, String> {
     }
     let mut raw = Vec::with_capacity(len.min(MAX_LOG_BYTES) as usize);
     f.read_to_end(&mut raw).map_err(unreadable)?;
-    // Cut on the raw bytes, before the one conversion: a tail seek lands mid-line (and can
-    // land mid-UTF-8, hence lossy), and doing it here keeps the whole tail to one copy.
+    // The seek may land within a UTF-8 character, so conversion remains lossy.
     let from = if truncated {
         raw.iter().position(|&b| b == b'\n').map_or(0, |i| i + 1)
     } else {
@@ -189,14 +164,17 @@ fn log_tail(path: &Path) -> Result<String, String> {
     })
 }
 
-/// POSTs the log tail to the host's `POST /api/v1/client-logs` as plain text, mTLS-
-/// authenticated by this device's paired identity — the wire shape
-/// `pf-client-core::logring::send_to_host` defines and the host console lists.
+/// Posts the log tail as plain text using the paired mTLS identity.
 fn upload_to_host(path: &Path, target: &HostTarget) -> SendLogsMsg {
-    let body = match log_tail(path) {
-        Ok(b) => b,
+    let log = match log_tail(path) {
+        Ok(log) => log,
         Err(e) => return SendLogsMsg::Err(e),
     };
+    let body = format!(
+        "punktfunk-webos {} (webos {}) — client log bundle\n{log}",
+        crate::core::VERSION,
+        std::env::consts::ARCH,
+    );
     let agent = match library::agent(&target.identity, Some(target.pin)) {
         Ok(a) => a,
         Err(e) => return SendLogsMsg::Err(format!("Couldn't send logs to {}: {e}", target.name)),
@@ -213,13 +191,9 @@ fn upload_to_host(path: &Path, target: &HostTarget) -> SendLogsMsg {
         Ok(_) => SendLogsMsg::Ok(format!("Logs sent to {} — thank you!", target.name)),
         Err(e) => match library::classify(e) {
             LibraryError::Http(413) => SendLogsMsg::Err("Log file too large to send (1 MB limit).".into()),
-            // `refusal_message`'s NotPaired line is about the power grant; uploading a bundle
-            // needs no grant, only a pairing, so this lane words that one itself.
             LibraryError::NotPaired => {
                 SendLogsMsg::Err(format!("{} refused the logs — pair with it again.", target.name))
             }
-            // Everything else reads the same as any other refusal on this lane, prefixed with
-            // the host so the Home bar says which one turned the bundle away.
             other => SendLogsMsg::Err(format!(
                 "{}: {}",
                 target.name,
