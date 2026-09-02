@@ -23,15 +23,24 @@
 //! type rather than only this one. Reports built here never set the vibration valid-flag, so
 //! they cannot fight the kernel's force-feedback state — see [`build_report`].
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use punktfunk_core::quic::HidOutput;
 
+use crate::session::pad_audio::{Envelope, COIL_REPORT_FRAMES};
+
 /// `hid/internal/sendData` — the only one of the three HID methods that works. `getReport`
 /// hangs on a pad that doesn't answer; `setReport` refuses with error 4 whatever the payload.
 const SEND_DATA_URI: &str = "luna://com.webos.service.bluetooth2/hid/internal/sendData";
+/// Takes the pad's link out of Bluetooth sniff mode. In sniff, the stack delivers output reports
+/// in bursts at the sniff anchor points; that starved the pad's audio buffer between bursts and
+/// made every speaker layout choppy until this call — the single fix that made audio continuous
+/// (G5, webOS 10.3). `public` group, like `sendData`. Its counterpart re-enters sniff on release.
+const STOP_SNIFF_URI: &str = "luna://com.webos.service.bluetooth2/device/internal/stopSniff";
+const START_SNIFF_URI: &str = "luna://com.webos.service.bluetooth2/device/internal/startSniff";
 
 /// Bluetooth `DualSense` output report, per Linux `hid-playstation`'s
 /// `dualsense_output_report_bt`: `0x31`, seq/tag, tag, the 47-byte common block, 24 reserved
@@ -39,6 +48,13 @@ const SEND_DATA_URI: &str = "luna://com.webos.service.bluetooth2/hid/internal/se
 const REPORT_LEN: usize = 78;
 /// Where the 47-byte common block starts (after report id, `seq_tag`, tag).
 const COMMON: usize = 3;
+
+/// Bluetooth `0x32` coil report: id, seq, a 7-byte `0x11` session sub-packet, the 64-byte `0x12`
+/// coil sub-packet (32 stereo s8 frames at 3 kHz), padding, CRC32. Verified on a G5: the pad
+/// buzzes, with the SAxense flag convention (`tag | 0x80`) and the same CRC as `0x31`.
+const COIL_REPORT_LEN: usize = 142;
+/// One coil report per 512 samples at 48 kHz — the pad's clock. 10 ms (6.7% fast) overruns it.
+const COIL_TICK: Duration = Duration::from_nanos(10_666_667);
 
 /// `valid_flag0` bit: the right (R2) trigger effect block is meaningful in this report.
 const FLAG0_RIGHT_TRIGGER: u8 = 0x04;
@@ -201,7 +217,7 @@ pub struct Feedback {
 impl Feedback {
     /// Starts a feedback sender for the pad at Bluetooth `address`, or `None` when the
     /// platform can't support it (no `luna-send-pub`). Resolve `address` via [`find_address`].
-    pub fn new(address: String) -> Option<Self> {
+    pub fn new(address: String, coils: Option<Arc<Envelope>>) -> Option<Self> {
         if !crate::platform::webos::luna::available() {
             return None;
         }
@@ -211,7 +227,7 @@ impl Feedback {
         let (tx, rx) = std::sync::mpsc::sync_channel::<State>(1);
         let thread = std::thread::Builder::new()
             .name("ds5-feedback".into())
-            .spawn(move || sender_loop(&address, &rx))
+            .spawn(move || sender_loop(&address, &rx, coils))
             .ok()?;
         tracing::info!("DualSense feedback active (adaptive triggers, lightbar)");
         Some(Self {
@@ -323,8 +339,8 @@ fn build_report(seq: u8, state: &State) -> [u8; REPORT_LEN] {
 
 /// `reportData` as a bare int array — **no `reportId` key**. The service validates the whole
 /// object against a strict schema, so one extra property fails the call outright.
-fn payload_for(address: &str, report: &[u8; REPORT_LEN]) -> String {
-    let mut payload = String::with_capacity(REPORT_LEN * 4 + 64);
+fn payload_for(address: &str, report: &[u8]) -> String {
+    let mut payload = String::with_capacity(report.len() * 4 + 64);
     let _ = write!(payload, "{{\"address\":\"{address}\",\"reportData\":[");
     for (i, b) in report.iter().enumerate() {
         let _ = if i == 0 {
@@ -339,6 +355,32 @@ fn payload_for(address: &str, report: &[u8; REPORT_LEN]) -> String {
 
 fn send_report(address: &str, report: &[u8; REPORT_LEN]) -> anyhow::Result<()> {
     crate::platform::webos::luna::call(SEND_DATA_URI, &payload_for(address, report))
+}
+
+/// Builds one Bluetooth coil report: `frames` are 32 stereo s8 samples at 3 kHz.
+///
+/// Sub-packet layout per `awalol/DS5Dongle` / `egormanga/SAxense`: `[tag | 0x80][len][payload]`.
+/// The `0x11` session packet carries a free-running `counter`; its other bytes are what every
+/// working implementation sends and mean nothing documented.
+fn build_coil_report(seq: u8, counter: u8, frames: &[[i8; 2]; COIL_REPORT_FRAMES]) -> [u8; COIL_REPORT_LEN] {
+    let mut r = [0u8; COIL_REPORT_LEN];
+    r[0] = 0x32;
+    r[1] = (seq & 0x0F) << 4;
+    r[2] = 0x11 | 0x80;
+    r[3] = 7;
+    r[4] = 0xFE;
+    r[9] = 0xFF;
+    r[10] = counter;
+    r[11] = 0x12 | 0x80;
+    r[12] = (COIL_REPORT_FRAMES * 2) as u8;
+    for (i, [l, right]) in frames.iter().enumerate() {
+        r[13 + i * 2] = *l as u8;
+        r[14 + i * 2] = *right as u8;
+    }
+    let signed = std::iter::once(0xA2).chain(r[..COIL_REPORT_LEN - 4].iter().copied());
+    let crc = crc32_le(signed);
+    r[COIL_REPORT_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
+    r
 }
 
 /// Spacing between sends on the in-process bus ([`crate::platform::webos::ls2`]): no spawn per
@@ -371,7 +413,7 @@ const MIN_SEND_INTERVAL: Duration = Duration::from_millis(250);
 /// One log per run of failures, not per send: if the Bluetooth service stops accepting (pad
 /// powered off mid-session) every later update would otherwise repeat the same line for as
 /// long as the game keeps changing effects.
-fn sender_loop(address: &str, rx: &Receiver<State>) {
+fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>) {
     // In-process bus first: one function call per report instead of a spawn. Its failure is the
     // normal state on a TV whose hub refuses the registration, and the spawn route still works
     // there — so it is logged as information and the throttle stays at the spawn-safe value.
@@ -385,48 +427,127 @@ fn sender_loop(address: &str, rx: &Receiver<State>) {
             None
         }
     };
+    // The coil lane needs the bus: ~94 reports a second is not a spawn rate. Claiming it here
+    // parks the motor envelope for the session (`Envelope::own_coils`).
+    let lane = match (&bus, coils) {
+        (Some(bus), Some(envelope)) => {
+            // Un-burst the link before the first coil report; the reply is counted like any
+            // other (a refusal shows up once in the log through `REPLIES`).
+            let payload = format!("{{\"address\":\"{address}\"}}");
+            match bus.call(STOP_SNIFF_URI, &payload) {
+                Ok(()) => tracing::info!("DualSense audio haptics: coil lane over the Luna bus, sniff stopped"),
+                Err(e) => tracing::warn!("DualSense audio haptics: stopSniff refused ({e:#}); expect bursts"),
+            }
+            envelope.own_coils();
+            Some(envelope)
+        }
+        _ => None,
+    };
     let interval = if bus.is_some() { BUS_SEND_INTERVAL } else { MIN_SEND_INTERVAL };
     let mut failing = false;
     let mut last_sent: Option<State> = None;
+    let mut last_sent_at: Option<Instant> = None;
+    let mut pending: Option<State> = None;
     let mut sends: u32 = 0;
     // The pad expects a changing sequence number per report; low 4 bits, so it wraps freely.
+    // Shared by state and coil reports: it is per link, not per report kind.
     let mut seq: u8 = 0;
-    while let Ok(state) = rx.recv() {
-        if last_sent == Some(state) {
-            continue;
-        }
-        seq = seq.wrapping_add(1);
-        let report = build_report(seq, &state);
-        let sent = match &bus {
-            Some(bus) => {
-                let r = bus.call(SEND_DATA_URI, &payload_for(address, &report));
-                bus.pump();
-                // A refused reply is asynchronous: surface the first one per run of failures.
-                if let Some(text) = crate::platform::webos::ls2::REPLIES.take_failure() {
-                    tracing::warn!("DualSense feedback: Bluetooth service refused a report: {text}");
-                }
-                r
-            }
-            None => send_report(address, &report),
+    let mut next_tick = Instant::now() + COIL_TICK;
+    let mut counter: u8 = 0;
+    let mut frames = [[0i8; 2]; COIL_REPORT_FRAMES];
+    let mut coil_sends: u32 = 0;
+    loop {
+        // A state update, or the coil tick — whichever is first. Without a lane the wait is
+        // unbounded, as before; the spawn route also sleeps between sends, which the lane cannot.
+        let received = match &lane {
+            Some(_) => match rx.recv_timeout(next_tick.saturating_duration_since(Instant::now())) {
+                Ok(state) => Some(state),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            },
+            None => match rx.recv() {
+                Ok(state) => Some(state),
+                Err(_) => break,
+            },
         };
-        match sent {
-            Ok(()) => {
-                failing = false;
-                last_sent = Some(state);
-                sends += 1;
-                // Rate visible in the log without one line per send — the symptom this
-                // throttle exists for is invisible from the client's own counters.
-                if sends % 50 == 0 {
-                    tracing::debug!("DualSense feedback: {sends} reports sent");
+        if let Some(state) = received {
+            if last_sent != Some(state) {
+                pending = Some(state);
+            }
+        }
+        let due = last_sent_at.is_none_or(|at| at.elapsed() >= interval);
+        if let (Some(state), true) = (pending, due) {
+            pending = None;
+            seq = seq.wrapping_add(1);
+            let report = build_report(seq, &state);
+            let sent = match &bus {
+                Some(bus) => bus.call(SEND_DATA_URI, &payload_for(address, &report)),
+                None => send_report(address, &report),
+            };
+            match sent {
+                Ok(()) => {
+                    failing = false;
+                    last_sent = Some(state);
+                    last_sent_at = Some(Instant::now());
+                    sends += 1;
+                    // Rate visible in the log without one line per send — the symptom the
+                    // spawn throttle exists for is invisible from the client's own counters.
+                    if sends % 50 == 0 {
+                        tracing::debug!("DualSense feedback: {sends} reports sent");
+                    }
+                }
+                Err(e) => {
+                    if !failing {
+                        tracing::warn!("DualSense feedback send failed (further errors quiet): {e}");
+                        failing = true;
+                    }
                 }
             }
-            Err(e) => {
-                if !failing {
-                    tracing::warn!("DualSense feedback send failed (further errors quiet): {e}");
-                    failing = true;
+            if bus.is_none() {
+                std::thread::sleep(interval);
+            }
+        }
+        if let (Some(envelope), Some(bus)) = (&lane, &bus) {
+            let now = Instant::now();
+            if now >= next_tick {
+                next_tick += COIL_TICK;
+                if next_tick + COIL_TICK < now {
+                    // Stalled (a slow bus call, scheduling): resync rather than burst to catch up.
+                    next_tick = now + COIL_TICK;
+                }
+                // Keep the cadence through the hold window after the last frame — zeros, so the
+                // pad's buffer runs out cleanly rather than looping its tail — then go quiet.
+                let had_data = envelope.take_coils(&mut frames);
+                if had_data || envelope.active() {
+                    seq = seq.wrapping_add(1);
+                    counter = counter.wrapping_add(1);
+                    let report = build_coil_report(seq, counter, &frames);
+                    if let Err(e) = bus.call(SEND_DATA_URI, &payload_for(address, &report)) {
+                        if !failing {
+                            tracing::warn!("DualSense audio haptics send failed (further errors quiet): {e}");
+                            failing = true;
+                        }
+                    } else {
+                        coil_sends += 1;
+                        if coil_sends % 940 == 0 {
+                            tracing::debug!("DualSense audio haptics: {coil_sends} coil reports");
+                        }
+                    }
                 }
             }
         }
-        std::thread::sleep(interval);
+        if let Some(bus) = &bus {
+            bus.pump();
+            // A refused reply is asynchronous: surface the first one per run of failures.
+            if let Some(text) = crate::platform::webos::ls2::REPLIES.take_failure() {
+                tracing::warn!("DualSense feedback: Bluetooth service refused a report: {text}");
+            }
+        }
+    }
+    // Give the link back to sniff: the TV's own power policy, and what the pad expects at idle.
+    if let (Some(bus), Some(_)) = (&bus, &lane) {
+        let payload = format!("{{\"address\":\"{address}\"}}");
+        let _ = bus.call(START_SNIFF_URI, &payload);
+        bus.pump();
     }
 }

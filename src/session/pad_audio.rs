@@ -1,17 +1,20 @@
 //! The `0xD1` pad-audio plane on this client: the `DualSense` voice-coil ("haptics") and speaker
 //! lanes the host captures from the game's own controller-audio endpoint.
 //!
-//! Rendering tiers, per the plan of record: tier A writes the four channels to the pad itself,
-//! tier C derives rumble from the coil lane. This module is the decode thread plus tier C — an
-//! [`Envelope`] the main loop applies through the same evdev rumble route every pad already has.
-//! Without it a libScePad title (Spider-Man, GTA V Enhanced…) produces **no** vibration at all on
-//! this client: those games drive the coils, never the classic motors.
+//! Rendering tiers, per the plan of record: tier A plays the coil lane on the pad's own coils —
+//! here over Bluetooth, as `0x32` reports on the in-process Luna bus (`platform::webos::dualsense`)
+//! — and tier C derives rumble from it. This module is the decode thread plus both renderers'
+//! shared state, an [`Envelope`]: a 3 kHz ring the bus sender drains when it owns the coils, and
+//! motor levels the main loop applies through the evdev rumble route otherwise. Without either a
+//! libScePad title (Spider-Man, GTA V Enhanced…) produces **no** vibration at all on this client:
+//! those games drive the coils, never the classic motors.
 //!
 //! Frames: kind 0 = coils, Opus 48 kHz stereo, 5 ms; kind 1 = speaker, Opus stereo, 10 ms. An
 //! empty payload is the host's silence gate (deliberate silence, not loss). Lost frames are not
 //! concealed here: a 5 ms hole in a rumble envelope is inaudible, and PLC is CPU this SoC lacks.
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -34,6 +37,13 @@ const HOLD: Duration = Duration::from_millis(250);
 
 /// Per 5 ms frame: the envelope decays to ~10% in 40 ms. Attack is instant.
 const RELEASE: f32 = 0.75;
+
+/// The coils are a 3 kHz path: 48 kHz decimated by this (`dualsense-bluetooth-audio.md` §2.3).
+const COIL_DECIMATION: usize = 16;
+/// Stereo 3 kHz frames per Bluetooth coil report: 32 = 10.667 ms, the pad's own cadence.
+pub const COIL_REPORT_FRAMES: usize = 32;
+/// Ring bound, ~64 ms: a stalled sender drops the oldest rather than growing.
+const COIL_RING_MAX: usize = COIL_REPORT_FRAMES * 6;
 
 /// Fewest milliseconds between two motor writes. Each becomes an output report on the pad's
 /// link, which the coil lane will share once tier A exists — 60 Hz is plenty for a motor.
@@ -63,6 +73,11 @@ pub struct Envelope {
     owning: AtomicBool,
     pub frames: AtomicU32,
     pub speaker_frames: AtomicU32,
+    /// Tier A: decimated coil samples waiting for the Bluetooth sender.
+    coils: Mutex<VecDeque<[i8; 2]>>,
+    /// Set by the sender once it has a bus: from then on the coils play the lane and the motor
+    /// envelope stays idle. Never cleared — a bus that opened does not go away mid-session.
+    coils_owned: AtomicBool,
 }
 
 impl Envelope {
@@ -76,6 +91,8 @@ impl Envelope {
             owning: AtomicBool::new(false),
             frames: AtomicU32::new(0),
             speaker_frames: AtomicU32::new(0),
+            coils: Mutex::new(VecDeque::with_capacity(COIL_RING_MAX)),
+            coils_owned: AtomicBool::new(false),
         })
     }
 
@@ -93,6 +110,9 @@ impl Envelope {
     /// The motor pair the main loop should write now, if any: `Some((low, high))` for a changed
     /// level (rate-limited), `Some((0, 0))` once when the envelope expires, `None` otherwise.
     pub fn take_change(&self) -> Option<(u16, u16)> {
+        if self.coils_owned() {
+            return None;
+        }
         let now = self.now_ms();
         if !self.active() {
             return self.owning.swap(false, Ordering::Relaxed).then(|| {
@@ -111,6 +131,43 @@ impl Envelope {
         self.applied_at_ms.store(now, Ordering::Relaxed);
         self.owning.store(true, Ordering::Relaxed);
         Some(((levels >> 16) as u16, (levels & 0xFFFF) as u16))
+    }
+
+    /// The Bluetooth sender claims the lane (see `coils_owned`).
+    pub fn own_coils(&self) {
+        self.coils_owned.store(true, Ordering::Relaxed);
+    }
+
+    pub fn coils_owned(&self) -> bool {
+        self.coils_owned.load(Ordering::Relaxed)
+    }
+
+    /// One report's worth of coil frames, zero-filled past what has arrived. `false` when the ring
+    /// was empty — the sender keeps the cadence through the hold window on `active()` alone.
+    pub fn take_coils(&self, out: &mut [[i8; 2]; COIL_REPORT_FRAMES]) -> bool {
+        let mut ring = self.coils.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let had = !ring.is_empty();
+        for slot in out.iter_mut() {
+            *slot = ring.pop_front().unwrap_or([0, 0]);
+        }
+        had
+    }
+
+    /// Decimates one decoded coil frame (interleaved stereo 48 kHz) into the ring.
+    fn push_coils(&self, pcm: &[f32]) {
+        let mut ring = self.coils.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for block in pcm.chunks_exact(COIL_DECIMATION * 2) {
+            let (mut l, mut r) = (0f32, 0f32);
+            for s in block.chunks_exact(2) {
+                l += s[0];
+                r += s[1];
+            }
+            let q = |v: f32| (v / COIL_DECIMATION as f32 * 127.0).round().clamp(-127.0, 127.0) as i8;
+            if ring.len() >= COIL_RING_MAX {
+                ring.pop_front();
+            }
+            ring.push_back([q(l), q(r)]);
+        }
     }
 
     fn publish(&self, low: f32, high: f32) {
@@ -158,7 +215,12 @@ fn pump(client: &NativeClient, stop: &AtomicBool, envelope: &Envelope) -> Result
                     (0.0, 0.0)
                 } else {
                     match coils.decode_float(&frame.opus, &mut pcm, false) {
-                        Ok(samples) => peaks(&pcm[..samples * 2]),
+                        Ok(samples) => {
+                            if envelope.coils_owned() {
+                                envelope.push_coils(&pcm[..samples * 2]);
+                            }
+                            peaks(&pcm[..samples * 2])
+                        }
                         Err(e) => {
                             tracing::debug!("pad audio: coil decode failed: {e}");
                             (0.0, 0.0)
@@ -211,6 +273,22 @@ mod tests {
         std::thread::sleep(HOLD + Duration::from_millis(20));
         assert_eq!(env.take_change(), Some((0, 0)), "one explicit zero on expiry");
         assert_eq!(env.take_change(), None, "and only one");
+    }
+
+    #[test]
+    fn coil_ring_decimates_and_zero_fills() {
+        let env = Envelope::new();
+        env.own_coils();
+        // 240 stereo samples (one 5 ms frame) of a constant 0.5 left, -0.25 right → 15 frames.
+        let pcm: Vec<f32> = (0..240).flat_map(|_| [0.5f32, -0.25]).collect();
+        env.push_coils(&pcm);
+        let mut out = [[0i8; 2]; COIL_REPORT_FRAMES];
+        assert!(env.take_coils(&mut out));
+        assert_eq!(out[0], [64, -32]);
+        assert_eq!(out[14], [64, -32]);
+        assert_eq!(out[15], [0, 0], "zero-filled past the 15 frames that arrived");
+        assert!(!env.take_coils(&mut out), "drained");
+        assert_eq!(env.take_change(), None, "owned coils keep the motor envelope idle");
     }
 
     #[test]

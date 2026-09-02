@@ -20,12 +20,15 @@ const ARRIVAL_SENDS: usize = 3;
 /// `DualSense` HID feedback (adaptive triggers, lightbar), opened only for a pad kind that emits
 /// it — anything else never sends these events. Not found (USB pad, no `luna-send-pub`) isn't an
 /// error: logged once, the feature just stays off.
-fn open_ds_feedback(kind: store::GamepadType) -> Option<crate::platform::webos::dualsense::Feedback> {
+fn open_ds_feedback(
+    kind: store::GamepadType,
+    coils: Option<std::sync::Arc<crate::session::pad_audio::Envelope>>,
+) -> Option<crate::platform::webos::dualsense::Feedback> {
     if !kind.is_dualsense() {
         return None;
     }
     match crate::platform::webos::dualsense::find_address() {
-        Some(addr) => crate::platform::webos::dualsense::Feedback::new(addr),
+        Some(addr) => crate::platform::webos::dualsense::Feedback::new(addr, coils),
         None => {
             tracing::info!(
                 "no Bluetooth DualSense found in /proc/bus/input/devices — \
@@ -244,8 +247,6 @@ pub(super) fn run_inner() -> Result<()> {
             Vec::new()
         };
 
-        // See `open_ds_feedback`.
-        let mut ds_feedback = open_ds_feedback(settings.gamepad_type);
         // Pad audio (`0xD1`): a pad's render caps ride its arrival, so the session-default
         // DualSense still needs one declared at start. Only toward a host that has the plane —
         // an older host reads arrival flags as the bare pad index.
@@ -270,6 +271,9 @@ pub(super) fn run_inner() -> Result<()> {
                 Err(e) => tracing::warn!("pad audio off: {e:#}"),
             }
         }
+        // See `open_ds_feedback`. The envelope rides along so a Bluetooth pad plays the coil lane
+        // itself (tier A); it is harmless on the spawn route, which never claims it.
+        let mut ds_feedback = open_ds_feedback(settings.gamepad_type, haptics.clone());
         // The pad kind the host currently builds for pad 0: the handshake default until a
         // controller plugged in mid-stream declares another one.
         let mut declared_pad = settings.gamepad_type;
@@ -445,7 +449,7 @@ pub(super) fn run_inner() -> Result<()> {
                                 }
                                 declared_pad = kind;
                                 // Adaptive triggers/lightbar follow the kind the host now builds.
-                                ds_feedback = kind.is_dualsense().then(|| open_ds_feedback(kind)).flatten();
+                                ds_feedback = kind.is_dualsense().then(|| open_ds_feedback(kind, haptics.clone())).flatten();
                             }
                         }
                     }
