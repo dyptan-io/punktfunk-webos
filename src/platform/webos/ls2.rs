@@ -21,7 +21,9 @@ use anyhow::{bail, Result};
 
 use super::dl;
 
-/// Registered bus name: the app id, which is what the hub grants the dev-mode `public` group to.
+/// Registered bus name, tried first. SAM registers the running app under its id, so inside the
+/// launched app this is "already exists" and the handle is registered anonymously instead — the
+/// hub grants the dev-mode `public` group by executable path either way (both verified on-device).
 const BUS_NAME: &CStr = c"io.dyptan.punktfunk.webos";
 const LS2_LIB: &CStr = c"libluna-service2.so.3";
 const GLIB_LIB: &CStr = c"libglib-2.0.so.0";
@@ -137,15 +139,25 @@ impl Bus {
         };
         let mut handle: Handle = std::ptr::null_mut();
         // SAFETY: all pointers are to live locals; `BUS_NAME` is NUL-terminated.
-        let ok = unsafe {
+        let mut ok = unsafe {
             (fns.error_init)(&mut err);
             (fns.register)(BUS_NAME.as_ptr(), &mut handle, &mut err)
         };
         if !ok || handle.is_null() {
-            let msg = describe(&err);
-            // SAFETY: `err` was initialised by `LSErrorInit`.
-            unsafe { (fns.error_free)(&mut err) };
-            bail!("LSRegister({BUS_NAME:?}) refused: {msg}");
+            let named = describe(&err);
+            // SAFETY: `err` was initialised by `LSErrorInit`; re-initialised before reuse.
+            ok = unsafe {
+                (fns.error_free)(&mut err);
+                (fns.error_init)(&mut err);
+                (fns.register)(std::ptr::null(), &mut handle, &mut err)
+            };
+            if !ok || handle.is_null() {
+                let msg = describe(&err);
+                // SAFETY: as above.
+                unsafe { (fns.error_free)(&mut err) };
+                bail!("LSRegister refused: named {named}; anonymous {msg}");
+            }
+            tracing::debug!("Luna bus: {BUS_NAME:?} taken ({named}); registered anonymously");
         }
         // SAFETY: a fresh context; the handle is attached before any call.
         let context = unsafe { (fns.context_new)() };
