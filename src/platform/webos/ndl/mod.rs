@@ -80,6 +80,16 @@ const STATE_ERROR: c_int = 0x12;
 /// but a model that never delivers the callback must still stream.
 const LOAD_COMPLETE_TIMEOUT: Duration = Duration::from_millis(2_000);
 
+/// The bound for an AUDIO-ENABLED load, where giving up costs far more than a few held frames:
+/// the fallback is a video-only load, and a video-only load has no pacing reference at all
+/// (§ "NDL's audio plane"), so its lead grows for the whole session. That is issue #188 — a 2025
+/// QNED (webOS 10, `k24n`) needed ~2.4 s to complete a 4K120 HEVC HDR load, timed out at the 2 s
+/// this used to share with the video-only wait, and streamed unpaced; 4K60 and 1440p120 loaded
+/// inside 2 s on the same TV and were fine. A CX completes in ~40 ms, so nothing healthy waits.
+/// The cost is paid only by a unit whose plane genuinely never confirms: a longer black screen
+/// before the fallback, and [`v2::NdlVideo::prime_audio`] gives that time back on a fatal state.
+const AUDIO_LOAD_TIMEOUT: Duration = Duration::from_millis(6_000);
+
 /// Grace for a rejected load's callbacks to land before the video-only retry arms. The callback
 /// carries nothing identifying its load, so separating the two in TIME is the only way to stop a
 /// stale `LOADCOMPLETED` satisfying the retry's wait — and feeding an unloaded decoder is what
@@ -301,12 +311,24 @@ fn settle_before_retry(unloads_before: u64) {
 }
 
 /// Blocks until the armed load's `LOADCOMPLETED` lands. Returns `false` on timeout.
-fn wait_load_completed() -> bool {
-    let completed = poll_until(LOAD_COMPLETE_TIMEOUT, || LOAD_COMPLETED.fired());
-    if !completed {
-        tracing::warn!("NDL load: no LOADCOMPLETED within {LOAD_COMPLETE_TIMEOUT:?} — holding the first frames");
+///
+/// `budget` is the caller's, not a constant here: what a load can afford to wait is a property of
+/// the load — see [`AUDIO_LOAD_TIMEOUT`] — and `v2::NdlVideo::try_load` picks it at the same branch
+/// that picks the waiter.
+fn wait_load_completed(budget: Duration) -> bool {
+    // Ends on [`FATAL`] as well, for the same reason `v2::NdlVideo::prime_audio` does: a reported
+    // fatal state is the one answer that will not change by waiting, and the budget is only worth
+    // spending while the load is still plausibly coming.
+    poll_until(budget, || LOAD_COMPLETED.fired() || fatal());
+    if LOAD_COMPLETED.fired() {
+        return true;
     }
-    completed
+    if fatal() {
+        tracing::warn!("NDL load reported a fatal state — not waiting out the rest of {budget:?}");
+    } else {
+        tracing::warn!("NDL load: no LOADCOMPLETED within {budget:?} — holding the first frames");
+    }
+    false
 }
 
 /// Count of video/audio pump threads leaked past `SHUTDOWN_JOIN_TIMEOUT` (see

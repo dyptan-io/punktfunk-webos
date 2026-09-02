@@ -32,7 +32,13 @@ const FRAME_TIME: Duration = Duration::from_millis(100);
 const MAX_QUEUE_FRAMES: i32 = 2;
 
 /// How long the plane may go without presenting before the screen stops waiting for it.
-const PRESENT_DEADLINE: Duration = Duration::from_secs(3);
+///
+/// Measured from [`Playback::start`], so it has to cover the NDL load this thread does FIRST, not
+/// just the feed. That load is what sets the floor: an audio-enabled load waits `AUDIO_LOAD_TIMEOUT`
+/// (6 s) and a rejected one then falls back through a settle plus `LOAD_COMPLETE_TIMEOUT`. At the
+/// old 3 s this screen reported "the plane rejected the stream" while a slow but perfectly healthy
+/// load was still priming — the 2025 QNED of issue #188 takes ~2.4 s to complete one.
+const PRESENT_DEADLINE: Duration = Duration::from_secs(10);
 /// How long the feed thread is given to notice `stop` and return — the same ceiling, for the same
 /// reason, as a stream's teardown.
 const JOIN_TIMEOUT: Duration = crate::services::join::SHUTDOWN_JOIN_TIMEOUT;
