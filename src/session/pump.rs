@@ -61,6 +61,8 @@ struct VideoPump {
     /// Whether the host's per-content HDR metadata is worth draining. False on every session
     /// where nothing would apply it: an SDR or non-HEVC stream.
     is_hdr: bool,
+    /// Bytes taken off the transport this session — see [`Self::on_frame`].
+    bytes: u64,
     /// Core's cumulative drop count as of the last frame, to edge-detect new drops.
     last_dropped_seen: u64,
     /// Frame-index gaps pre-cover the reassembler's delayed drop accounting.
@@ -78,6 +80,7 @@ impl VideoPump {
             stage,
             stats,
             is_hdr,
+            bytes: 0,
             last_dropped_seen,
             drop_credit: 0,
             drop_credit_expiry: None,
@@ -113,13 +116,19 @@ impl VideoPump {
         }
     }
 
-    /// Frames taken off the transport this session — the counter the overlay reads.
+    /// Pictures the decoder took this session — the counter the overlay reads, owned by this
+    /// thread and mirrored into [`StreamStats`] per delivery.
     fn frames(&self) -> u64 {
-        self.stats.frames.load(Ordering::Relaxed)
+        self.stage.frames()
     }
 
     fn on_frame(&mut self, frame: &punktfunk_core::session::Frame) {
-        self.stats.bytes.fetch_add(frame.data.len() as u64, Ordering::Relaxed);
+        // Counted on this thread, then mirrored with a relaxed store — the point is to drop the
+        // atomic read-modify-write, not the freshness: the overlay reads both as deltas over its
+        // own 500ms window, so publishing them on the 2s heartbeat instead would leave three
+        // samples in four reading zero fps and the fourth spiking.
+        self.bytes = self.bytes.saturating_add(frame.data.len() as u64);
+        self.stats.bytes.store(self.bytes, Ordering::Relaxed);
         self.heartbeat();
 
         // Everything wire-shaped, and nothing else: whether this delivery is decodable at all,
@@ -158,24 +167,39 @@ impl VideoPump {
                 }
             }
         }
+        // After the submit, so the published count includes the AU this delivery completed.
+        self.stats.frames.store(self.frames(), Ordering::Relaxed);
     }
 
     /// Refreshes the overlay's backlog figure, and on a slower cadence logs the pump's state.
+    ///
+    /// Every figure here is diagnostic, so the whole body is skipped unless one of its two readers
+    /// is actually listening: the overlay, or the DEBUG log below. The NDL render-buffer query is
+    /// the expensive one — an FFI call behind the same lock the feed takes.
     fn heartbeat(&mut self) {
         if !self.heartbeat.due() {
             return;
         }
-        let backlog = self.stage.poll_backlog_depth();
+        // Latched for the feed path, so the timing decision there costs a field read rather than
+        // an atomic load per AU piece. A toggle takes effect within one heartbeat.
+        let wanted = self.stats.wants_diagnostics();
+        self.stage.set_diagnostics(wanted);
+        // `due()` on its own line, so the tick keeps advancing on a level where nothing listens.
+        let log_due = self.video_log.due() && tracing::enabled!(tracing::Level::DEBUG);
+        if !wanted && !log_due {
+            return;
+        }
+        let backlog = self.stage.backlog_depth();
+        let pacing = self.stage.pacing_health();
+        let plane_lead = self.stage.audio_plane_lead_ms();
         self.stats
             .render_backlog
             .store(backlog.unwrap_or(-1), Ordering::Relaxed);
-        let pacing = self.stage.pacing_health();
         self.stats.pacing_jitter_us.store(
             u32::try_from(pacing.jitter_ns.max(0) / 1_000).unwrap_or(u32::MAX),
             Ordering::Relaxed,
         );
         self.stats.pacing_late.store(pacing.late_stamps, Ordering::Relaxed);
-        let plane_lead = self.stage.audio_plane_lead_ms();
         if let Some(ms) = plane_lead {
             self.stats
                 .audio_plane_lead_ms
@@ -183,11 +207,10 @@ impl VideoPump {
         }
         // `backlog` separates "the decoder is behind" from "frames are arriving late" —
         // indistinguishable before this, since play() decodes and presents in one opaque call.
-        // Logged on its own slower cadence: the overlay wants a fresh depth, the log does not.
         //
         // DEBUG, so it costs a telemetry listener or `TELEMETRY_LEVEL=debug` to see — the
         // on-device file sink is INFO-only (`logger::resolved_level`).
-        if self.video_log.due() {
+        if log_due {
             // `late_stamp` is the judder, counted: frames NDL was handed too late to pace. The
             // rest describes the loop that produced them (see `session::timeline::PacingHealth`).
             tracing::debug!(

@@ -41,8 +41,6 @@ pub struct VideoSinkCaps {
     pub partial_au: bool,
     /// The decoder holds a render queue that can be dropped on the floor.
     pub flush: bool,
-    /// The queue's depth can be read back ([`VideoSink::queue_depth`]).
-    pub render_queue: bool,
 }
 
 impl VideoSinkCaps {
@@ -51,7 +49,6 @@ impl VideoSinkCaps {
         pts: false,
         partial_au: false,
         flush: false,
-        render_queue: false,
     };
 }
 

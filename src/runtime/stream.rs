@@ -274,7 +274,12 @@ pub(super) fn run_inner() -> Result<()> {
         // Stats overlay: refreshed ~2Hz onto the transparent stream window, over the
         // punch-through video plane via per-pixel alpha — window is never shown/hidden (that
         // crashed an earlier attempt, see docs/NOTES.md). Green button flips it live, session-only.
+        // The pumps read this too — with nothing on glass to show them, the video thread skips
+        // every counter the overlay is the only reader of. Seeded here; from the first tick on it
+        // is DERIVED from the fade below rather than set alongside the toggle, so there is one
+        // writer and no second copy of the state to keep in step.
         let mut stats_enabled = settings.stats_overlay;
+        connected.stats().set_diagnostics(stats_enabled);
         // Fades in/out on the same curve as the toast below — see `ModalFade::visibility_alpha`.
         let mut stats_fade = crate::ui::fade::ModalFade::<()>::overlay();
         if stats_enabled {
@@ -717,6 +722,9 @@ pub(super) fn run_inner() -> Result<()> {
             // Fade in/out on the toast's curve instead of cutting instantly; `visibility_alpha`
             // keeps returning `Some` through the close fade after the toggle itself flips off.
             let stats_alpha = stats_fade.visibility_alpha(stats_enabled);
+            // The counters follow what is VISIBLE, fade included — stopping them at the toggle
+            // freezes the figures for the last frames of the fade-out.
+            connected.stats().set_diagnostics(stats_alpha.is_some());
             let log_overlay_on = log_overlay_state() != LogOverlayState::Off;
             let log_alpha = log_fade.visibility_alpha(log_overlay_on);
             let overlay_active = stats_alpha.is_some() || log_alpha.is_some() || notif_active;

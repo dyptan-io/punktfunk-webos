@@ -6,29 +6,24 @@
 //! parts that are wire-shaped — pulling frames, and *how* a keyframe is asked for, which it
 //! answers to [`SinkResult::NeedKeyframe`] with `NativeClient::request_keyframe`.
 //!
-//! Two pieces sit in submodules because they are self-contained and independently testable:
-//! [`metrics`] (the A/V video reference) and [`parts`] (slice-progressive reassembly).
+//! Slice-progressive reassembly sits in [`parts`], on its own so it stays testable.
 
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use punktfunk_core::quic;
 
 use crate::core::media::{AudioPlane, NotReady, VideoSink, VideoSinkCaps};
-use crate::session::timeline::{ms, reconciled_frame_interval_ns, Pacing, PacingHealth};
+use crate::session::timeline::{ms, Pacing, PacingHealth};
 use crate::session::StreamStats;
 
-mod metrics;
 mod parts;
 
-use metrics::video_e2e_ns;
 use parts::{AuParts, PartStep};
 
 /// Feed calls slower than this suggest decoder backpressure rather than network loss.
 const FEED_BACKPRESSURE_WARN: Duration = Duration::from_millis(20);
-/// How often the sink refreshes NDL's render-buffer depth for diagnostics and A/V estimation.
-const BACKLOG_POLL: Duration = Duration::from_millis(250);
 /// One delivery off the transport, as the pump sees it — the stage decides what it means.
 pub struct WireFrame<'a> {
     pub data: &'a [u8],
@@ -80,16 +75,10 @@ pub enum SinkResult {
 
 /// Everything the sink needs to know up front.
 pub struct SinkConfig {
-    /// The host's frame cadence. Drives the frame-interval grid and A/V backlog estimate.
+    /// The host's frame cadence — the cushion's ceiling in [`Pacing`].
     pub stream_hz: u32,
     /// Whether the host asked for decode-latency reports (its ABR controller).
     pub report_decode_latency: bool,
-    /// Host-minus-client clock skew, live (`NativeClient::clock_offset_shared`). Read per
-    /// published frame, never cached — the handshake re-syncs it mid-stream.
-    pub clock_offset: Arc<AtomicI64>,
-    /// Where [`video_e2e_ns`] is published for the audio plane
-    /// (`NativeClient::video_e2e_shared`). `0` = nothing on the glass yet.
-    pub video_e2e: Arc<AtomicU64>,
 }
 
 /// Minimum spacing between [`SinkResult::NeedKeyframe`] results: the request travels on its own
@@ -112,10 +101,6 @@ pub struct VideoStage {
     parts: AuParts,
     stats: Arc<StreamStats>,
     cfg: SinkConfig,
-    /// The panel's actual drain cadence, reconciled against the stream rate. NDL drains at panel
-    /// cadence, so this, not the stream rate, converts render-queue depth into time for
-    /// [`video_e2e_ns`].
-    frame_interval_ns: u64,
     /// NDL host-PTS→player-clock mapping — see `session::timeline::Pacing`.
     pacing: Pacing,
     /// The stamp the access unit currently being fed was given, while it is still open. Every piece
@@ -126,17 +111,14 @@ pub struct VideoStage {
     /// the AU's TAIL arrival and inflates the measured jitter by the AU's own transmission time.
     /// `None` on the whole-AU path and between AUs.
     au_base_ns: Option<u64>,
-    /// Last polled depth, `None` if that query failed — which must not read as an empty queue.
-    backlog_cached: Option<u64>,
-    last_backlog_poll: Option<Instant>,
     last_keyframe_request: Option<Instant>,
     /// Submit time accumulated across the pieces of the AU currently being fed, so the overlay's
     /// `feed_us` stays a figure per PICTURE. Stored per-piece it reported only the last slice,
     /// which on a slice-progressive session is a fraction of the AU's real submission cost.
     au_feed_us: u32,
-    /// Pieces handed to the decoder this session. Only meaningful against `stats.frames` (completed
-    /// AUs): the ratio is the one number that says whether slice-progressive delivery is doing
-    /// anything at all on this mode, which cannot be read any other way — core only emits early
+    /// Pieces handed to the decoder this session. Only meaningful against the completed-AU count
+    /// (`frames`): the ratio is the one number that says whether slice-progressive delivery is
+    /// doing anything at all on this mode, which cannot be read any other way — core only emits early
     /// parts for an AU spanning more than one FEC block, so at small AU sizes the feature is inert.
     parts_fed: u64,
     /// Freeze-until-reanchor: while holding, frames are skipped rather than fed — the
@@ -146,12 +128,17 @@ pub struct VideoStage {
     hold_started: Option<Instant>,
     /// Intra-refresh wave boundaries observed since the latest loss.
     recovery_marks: u32,
+    /// Completed access units fed this session. A plain counter, mirrored into the overlay's cell
+    /// by the pump — nothing else writes it.
+    frames: u64,
+    /// Whether anything reads the diagnostic figures, latched from `StreamStats` on the pump's
+    /// heartbeat so the feed path never loads an atomic for it.
+    diagnostics: bool,
 }
 
 impl VideoStage {
     pub fn new(sink: Box<dyn VideoSink>, stats: Arc<StreamStats>, cfg: SinkConfig) -> Self {
         let stream_hz = cfg.stream_hz.max(1);
-        let frame_interval_ns = reconciled_frame_interval_ns(stream_hz);
         let audio_plane = sink.audio_plane();
         let caps = sink.caps();
         Self {
@@ -160,24 +147,21 @@ impl VideoStage {
             sink,
             audio_plane,
             stats,
-            frame_interval_ns,
-            // The SOURCE's nominal interval, NOT `frame_interval_ns`: that one is reconciled
-            // onto the panel because it converts a render-queue depth into time, and this one
-            // is the cushion's ceiling, so it has to describe the cadence the HOST produces.
-            // Core says so with a test of its own
+            // The cushion's ceiling, so it describes the cadence the HOST produces — never the
+            // panel's. Core says so with a test of its own
             // (`the_cadence_interval_comes_from_the_stream_mode_not_the_panel`): a 120 fps
             // stream on a 60 Hz panel would otherwise license twice the hold the source's own
             // cadence can justify.
             pacing: Pacing::new(1_000_000_000 / u64::from(stream_hz)),
             au_base_ns: None,
             cfg,
-            backlog_cached: None,
-            last_backlog_poll: None,
             last_keyframe_request: None,
             hold_started: None,
             recovery_marks: 0,
             au_feed_us: 0,
             parts_fed: 0,
+            frames: 0,
+            diagnostics: false,
         }
     }
 
@@ -237,42 +221,6 @@ impl VideoStage {
         self.recovery_marks = 0;
     }
 
-    /// NDL's render-queue depth, refreshed on [`BACKLOG_POLL`]'s cadence and cached between polls.
-    /// `None` is a failed query, not an empty queue.
-    ///
-    /// Called unconditionally for diagnostics and the A/V video reference ([`video_e2e_ns`]).
-    /// It must not depend on whether the host asks for decode latency.
-    fn poll_backlog(&mut self) -> Option<u64> {
-        // A backend with no queue to read has no depth, and asking costs an FFI call per poll for
-        // an answer that is always `None`.
-        if !self.caps.render_queue {
-            return None;
-        }
-        if self.last_backlog_poll.is_none_or(|t| t.elapsed() >= BACKLOG_POLL) {
-            self.last_backlog_poll = Some(Instant::now());
-            self.backlog_cached = self.sink.queue_depth().map(u64::from);
-        }
-        self.backlog_cached
-    }
-
-    /// Publish this frame's video end-to-end figure for the audio plane's sync loop.
-    ///
-    /// Nothing is published when [`video_e2e_ns`] cannot believe its own arithmetic — the cell
-    /// keeps its previous value and `AvSync` simply makes no observation, which is the same inert
-    /// path as a session where no frame has been presented yet.
-    fn publish_video_e2e(&self, submit_realtime_ns: i128, frame_pts_ns: u64, backlog: u64) {
-        let e2e = video_e2e_ns(
-            submit_realtime_ns,
-            self.cfg.clock_offset.load(Ordering::Relaxed),
-            frame_pts_ns,
-            backlog,
-            self.frame_interval_ns,
-        );
-        if let Some(ns) = e2e {
-            self.cfg.video_e2e.store(ns, Ordering::Relaxed);
-        }
-    }
-
     /// What the live mapping has to say for itself — see [`PacingHealth`]. The whole point of
     /// publishing it on both mappings is that `late_stamps` makes them comparable.
     pub fn pacing_health(&self) -> PacingHealth {
@@ -286,6 +234,16 @@ impl VideoStage {
         self.audio_plane.as_deref().map(AudioPlane::lead_ms)
     }
 
+    /// Completed access units fed this session — see the `frames` field.
+    pub fn frames(&self) -> u64 {
+        self.frames
+    }
+
+    /// Latch whether anything reads the diagnostic figures — see the `diagnostics` field.
+    pub fn set_diagnostics(&mut self, on: bool) {
+        self.diagnostics = on;
+    }
+
     /// Pieces fed this session — see [`Self::parts_fed`]. Read against the completed-AU count.
     pub fn parts_fed(&self) -> u64 {
         self.parts_fed
@@ -296,12 +254,13 @@ impl VideoStage {
         self.hold_started.is_some()
     }
 
-    /// Decoder backlog depth for the heartbeat/overlay, or `None` if NDL can't report one.
+    /// Decoder backlog depth for the heartbeat/overlay, or `None` if the backend has no queue to
+    /// read (or the query failed — which must not read as an empty one).
     ///
-    /// Polls ([`Self::poll_backlog`]) rather than querying NDL directly so diagnostics and A/V sync
-    /// share one reading and every `NDL_DirectVideoGetRenderBufferLength` stays on one cadence.
-    pub fn poll_backlog_depth(&mut self) -> Option<i32> {
-        self.poll_backlog().map(|d| i32::try_from(d).unwrap_or(i32::MAX))
+    /// Diagnostics only: nothing steers on it, so the caller asks only when something is going to
+    /// read the answer, and the FFI call rides that cadence rather than one of its own.
+    pub fn backlog_depth(&self) -> Option<i32> {
+        self.sink.queue_depth().map(|d| i32::try_from(d).unwrap_or(i32::MAX))
     }
 
     /// Present one delivery, or decide not to. The stage owns everything past the wire: how the
@@ -324,7 +283,7 @@ impl VideoStage {
         if partial {
             self.parts_fed += 1;
         } else {
-            self.stats.frames.fetch_add(1, Ordering::Relaxed);
+            self.frames += 1;
         }
         let flags = FrameFlags {
             reanchor: frame.reanchor,
@@ -360,42 +319,39 @@ impl VideoStage {
         };
 
         let base_ns = self.au_stamp_ns(pts_ns, flags.partial);
-        // The submit instant, on CLOCK_REALTIME — the same basis the host stamps `pts_ns` with and
-        // the skew handshake compares, so the two are directly subtractable. Taken BEFORE the feed
-        // call: `play` blocks for its submission time, and the frame enters NDL's pipeline behind
-        // exactly the frames the backlog below counts.
-        let submit_realtime_ns = punktfunk_core::client::now_realtime_ns();
-        let feed_start = Instant::now();
+        // The feed is timed only where something reads the figure: the host's ABR controller, or
+        // the overlay. With neither listening it is untimed and the backpressure warning below
+        // cannot fire — turn the overlay on to get it back.
+        let timed = self.cfg.report_decode_latency || self.diagnostics;
+        let feed_start = timed.then(Instant::now);
         let play_result = self.sink.feed(au, base_ns);
-        let feed_elapsed = feed_start.elapsed();
-        self.au_feed_us = self
-            .au_feed_us
-            .saturating_add(u32::try_from(feed_elapsed.as_micros()).unwrap_or(u32::MAX));
+        if let Some(elapsed) = feed_start.map(|t| t.elapsed()) {
+            self.au_feed_us = self
+                .au_feed_us
+                .saturating_add(u32::try_from(elapsed.as_micros()).unwrap_or(u32::MAX));
+            if elapsed >= FEED_BACKPRESSURE_WARN {
+                tracing::warn!(
+                    "NDL slow: {:.1}ms (frame {}, pts {:.2}ms)",
+                    elapsed.as_secs_f32() * 1000.0,
+                    flags.index,
+                    ms(base_ns),
+                );
+            }
+        }
         // Read before the reset below, because BOTH consumers are per PICTURE: the overlay's
-        // figure and the ABR submission term. Taking the last slice's `feed_elapsed` for the
+        // figure and the ABR submission term. Taking the last slice's elapsed time for the
         // latter reports a fraction of the AU's real cost on a slice-progressive session.
         let au_feed_us = self.au_feed_us;
         if !flags.partial {
-            self.stats.feed_us.store(au_feed_us, Ordering::Relaxed);
+            if timed {
+                self.stats.feed_us.store(au_feed_us, Ordering::Relaxed);
+            }
             self.au_feed_us = 0;
         }
-        if feed_elapsed >= FEED_BACKPRESSURE_WARN {
-            tracing::warn!(
-                "NDL slow: {:.1}ms (frame {}, pts {:.2}ms)",
-                feed_elapsed.as_secs_f32() * 1000.0,
-                flags.index,
-                ms(base_ns),
-            );
-        }
 
-        // A failed query counts as no queue for the A/V estimate; there is no better guess.
-        let backlog = self.poll_backlog().unwrap_or(0);
         let (decode_us, failed_keyframe) = match play_result {
             Ok(()) if flags.partial => (None, false),
             Ok(()) => {
-                // Only a frame NDL actually accepted is on its way to the glass. A failed feed is
-                // followed by a flush and a hold, where the reference would be meaningless.
-                self.publish_video_e2e(submit_realtime_ns, pts_ns, backlog);
                 // NDL exposes no decoded-output callback. Its render-buffer depth is presentation
                 // lead, not decoder latency, and feeding it into ABR created false learned caps at
                 // 4K120. `play` duration is the only measured decoder-pressure signal available:
