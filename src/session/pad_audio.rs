@@ -23,9 +23,16 @@ use punktfunk_core::quic::{PAD_AUDIO_KIND_HAPTICS, PAD_AUDIO_KIND_SPEAKER};
 
 use crate::core::model::Settings;
 
-/// Arrival-flag / `set_pad_audio_caps` bit: this client renders the coil lane. (Bit `0x02` is the
-/// speaker lane, declared only once a transport to the pad exists.)
+/// Arrival-flag / `set_pad_audio_caps` bit: this client renders the coil lane.
 pub const CAP_HAPTICS: u8 = 0x01;
+/// Same, for the speaker lane — declared only for a Bluetooth pad, the one transport that plays it.
+pub const CAP_SPEAKER: u8 = 0x02;
+
+/// Stereo 48 kHz samples the Bluetooth sender pulls per speaker report: 512, resampled to the
+/// 480 the pad's 10 ms Opus frame holds — the pad plays one frame per 10.667 ms.
+pub const SPEAKER_IN_SAMPLES: usize = 512;
+/// Speaker ring bound, ~400 ms of stereo: a stalled sender drops the oldest.
+const SPEAKER_RING_MAX: usize = 48_000 * 2 * 4 / 10;
 
 /// Stereo 48 kHz; a 20 ms frame is the largest Opus can carry in one packet.
 const MAX_FRAME_SAMPLES: usize = 960 * 2;
@@ -49,14 +56,18 @@ const COIL_RING_MAX: usize = COIL_REPORT_FRAMES * 6;
 /// link, which the coil lane will share once tier A exists — 60 Hz is plenty for a motor.
 const APPLY_INTERVAL: Duration = Duration::from_millis(16);
 
-/// The render capabilities this session declares, from Settings. Speaker stays undeclared: no
-/// route plays it yet, and a declared-but-silent lane would make the host stream it for nothing.
-pub fn caps_for(settings: &Settings) -> u8 {
+/// The render capabilities to declare, from Settings. `bt_pad` is whether a Bluetooth DualSense is
+/// attached: the speaker lane has no other route, and a declared-but-silent lane would make the
+/// host stream it for nothing.
+pub fn caps_for(settings: &Settings, bt_pad: bool) -> u8 {
+    let mut caps = 0;
     if settings.pad_haptics {
-        CAP_HAPTICS
-    } else {
-        0
+        caps |= CAP_HAPTICS;
     }
+    if settings.pad_speaker && bt_pad {
+        caps |= CAP_SPEAKER;
+    }
+    caps
 }
 
 /// What the decode thread publishes and the main loop applies to the motors.
@@ -75,6 +86,10 @@ pub struct Envelope {
     pub speaker_frames: AtomicU32,
     /// Tier A: decimated coil samples waiting for the Bluetooth sender.
     coils: Mutex<VecDeque<[i8; 2]>>,
+    /// Decoded speaker PCM (interleaved stereo 48 kHz) waiting for the Bluetooth sender.
+    speaker: Mutex<VecDeque<f32>>,
+    /// Milliseconds since `epoch` of the last speaker frame; `u64::MAX` before the first.
+    last_speaker_ms: AtomicU64,
     /// Set by the sender once it has a bus: from then on the coils play the lane and the motor
     /// envelope stays idle. Never cleared — a bus that opened does not go away mid-session.
     coils_owned: AtomicBool,
@@ -92,6 +107,8 @@ impl Envelope {
             frames: AtomicU32::new(0),
             speaker_frames: AtomicU32::new(0),
             coils: Mutex::new(VecDeque::with_capacity(COIL_RING_MAX)),
+            speaker: Mutex::new(VecDeque::with_capacity(SPEAKER_RING_MAX)),
+            last_speaker_ms: AtomicU64::new(u64::MAX),
             coils_owned: AtomicBool::new(false),
         })
     }
@@ -153,6 +170,40 @@ impl Envelope {
         had
     }
 
+    /// Whether speaker frames are arriving (within the hold window).
+    pub fn speaker_active(&self) -> bool {
+        let last = self.last_speaker_ms.load(Ordering::Relaxed);
+        last != u64::MAX && self.now_ms().saturating_sub(last) < HOLD.as_millis() as u64
+    }
+
+    /// Stereo samples queued for the speaker lane, so the sender can pre-fill the pad's buffer.
+    pub fn speaker_queued(&self) -> usize {
+        self.speaker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len() / 2
+    }
+
+    /// One report's worth of speaker PCM (`SPEAKER_IN_SAMPLES` stereo samples), or `false` when
+    /// fewer have arrived — the sender then sends a silent frame rather than a short one.
+    pub fn take_speaker(&self, out: &mut [f32; SPEAKER_IN_SAMPLES * 2]) -> bool {
+        let mut ring = self.speaker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ring.len() < out.len() {
+            return false;
+        }
+        for v in out.iter_mut() {
+            *v = ring.pop_front().unwrap_or(0.0);
+        }
+        true
+    }
+
+    fn push_speaker(&self, pcm: &[f32]) {
+        let mut ring = self.speaker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let overflow = (ring.len() + pcm.len()).saturating_sub(SPEAKER_RING_MAX).min(ring.len());
+        if overflow > 0 {
+            ring.drain(..overflow);
+        }
+        ring.extend(pcm.iter().copied());
+        self.last_speaker_ms.store(self.now_ms(), Ordering::Relaxed);
+    }
+
     /// Decimates one decoded coil frame (interleaved stereo 48 kHz) into the ring.
     fn push_coils(&self, pcm: &[f32]) {
         let mut ring = self.coils.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -192,6 +243,7 @@ pub fn spawn(client: Arc<NativeClient>, stop: Arc<AtomicBool>, envelope: Arc<Env
 
 fn pump(client: &NativeClient, stop: &AtomicBool, envelope: &Envelope) -> Result<()> {
     let mut coils = opus::Decoder::new(48_000, opus::Channels::Stereo).map_err(|e| anyhow::anyhow!("opus decoder: {e}"))?;
+    let mut speaker = opus::Decoder::new(48_000, opus::Channels::Stereo).map_err(|e| anyhow::anyhow!("opus decoder: {e}"))?;
     let mut pcm = vec![0f32; MAX_FRAME_SAMPLES];
     // Left coil → low (heavy) motor, right coil → high (light) motor: the pad's own left/right
     // split, and the mapping every tier-C client in the plan uses.
@@ -240,9 +292,18 @@ fn pump(client: &NativeClient, stop: &AtomicBool, envelope: &Envelope) -> Result
                 }
             }
             PAD_AUDIO_KIND_SPEAKER => {
-                // ponytail: counted only — no route to the pad's speaker yet (tier A over
-                // Bluetooth is the follow-up; until then the lane is not declared either).
-                envelope.speaker_frames.fetch_add(1, Ordering::Relaxed);
+                let n = envelope.speaker_frames.fetch_add(1, Ordering::Relaxed) + 1;
+                if n == 1 {
+                    tracing::info!("pad audio: first speaker frame (seq {})", frame.seq);
+                }
+                // Only the Bluetooth sender plays this lane; without it the frames are counted
+                // and dropped (the lane is not declared then, so this is the rare race at start).
+                if envelope.coils_owned() && !frame.opus.is_empty() {
+                    match speaker.decode_float(&frame.opus, &mut pcm, false) {
+                        Ok(samples) => envelope.push_speaker(&pcm[..samples * 2]),
+                        Err(e) => tracing::debug!("pad audio: speaker decode failed: {e}"),
+                    }
+                }
             }
             _ => {}
         }

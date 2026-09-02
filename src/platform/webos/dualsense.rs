@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use punktfunk_core::quic::HidOutput;
 
-use crate::session::pad_audio::{Envelope, COIL_REPORT_FRAMES};
+use crate::session::pad_audio::{Envelope, COIL_REPORT_FRAMES, SPEAKER_IN_SAMPLES};
 
 /// `hid/internal/sendData` — the only one of the three HID methods that works. `getReport`
 /// hangs on a pad that doesn't answer; `setReport` refuses with error 4 whatever the payload.
@@ -55,6 +55,23 @@ const COMMON: usize = 3;
 const COIL_REPORT_LEN: usize = 142;
 /// One coil report per 512 samples at 48 kHz — the pad's clock. 10 ms (6.7% fast) overruns it.
 const COIL_TICK: Duration = Duration::from_nanos(10_666_667);
+
+/// Bluetooth `0x36` audio report (LinuxAudio4Dualsense5's layout): config, a state sub-packet
+/// carrying the same common block as `0x31`, the coil frame, then one 200-byte Opus speaker frame.
+const AUDIO_REPORT_LEN: usize = 398;
+/// One 10 ms Opus frame at 160 kbit/s CBR: exactly this many bytes, which the pad requires.
+const SPEAKER_FRAME_LEN: usize = 200;
+/// Samples per speaker frame after the 512 → 480 resample.
+const SPEAKER_OUT_SAMPLES: usize = 480;
+/// Speaker reports sent ahead before steady cadence: the pad's FIFO then holds ~100 ms, which
+/// rides out the link's residual 35–45 ms scheduling gaps (measured; sniff off).
+const SPEAKER_PREFILL: usize = 10;
+/// Re-issue `stopSniff` this often while a lane runs — the stack drifts back on its own.
+const RESNIFF_EVERY: u32 = 47;
+/// The five config bytes of the audio report's `0x11` sub-packet ("audio buffer length").
+const AUDIO_CONFIG: u8 = 64;
+/// Speaker volume: the pad honours only `0x3D..=0x64`.
+const SPEAKER_VOLUME: u8 = 0x64;
 
 /// `valid_flag0` bit: the right (R2) trigger effect block is meaningful in this report.
 const FLAG0_RIGHT_TRIGGER: u8 = 0x04;
@@ -314,27 +331,141 @@ fn build_report(seq: u8, state: &State) -> [u8; REPORT_LEN] {
     r[0] = 0x31; // Bluetooth output report id
     r[1] = (seq & 0x0F) << 4; // high nibble = sequence, low nibble = tag mask (0)
     r[2] = 0x10; // DS_OUTPUT_TAG
-    if state.triggers_owned {
-        r[COMMON] = FLAG0_RIGHT_TRIGGER | FLAG0_LEFT_TRIGGER;
-        r[COMMON + OFF_RIGHT_TRIGGER..][..EFFECT_LEN].copy_from_slice(&state.right_trigger);
-        r[COMMON + OFF_LEFT_TRIGGER..][..EFFECT_LEN].copy_from_slice(&state.left_trigger);
-    }
-    if let Some((red, green, blue)) = state.lightbar {
-        r[COMMON + 1] |= FLAG1_LIGHTBAR;
-        r[COMMON + OFF_LIGHTBAR_RED] = red;
-        r[COMMON + OFF_LIGHTBAR_RED + 1] = green;
-        r[COMMON + OFF_LIGHTBAR_RED + 2] = blue;
-    }
-    if let Some(bits) = state.player_leds {
-        r[COMMON + 1] |= FLAG1_PLAYER_LEDS;
-        r[COMMON + OFF_PLAYER_LEDS] = bits & 0x1F;
-    }
+    fill_common(&mut r[COMMON..COMMON + 47], state);
     // CRC32 over a 0xA2 seed byte (the HIDP DATA/Output header the stack prepends) followed
     // by everything ahead of the CRC field itself.
     let signed = std::iter::once(0xA2).chain(r[..REPORT_LEN - 4].iter().copied());
     let crc = crc32_le(signed);
     r[REPORT_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
     r
+}
+
+/// The 47-byte common block (`0x31` body, `0x10` sub-packet payload) for `state`.
+fn fill_common(c: &mut [u8], state: &State) {
+    if state.triggers_owned {
+        c[0] = FLAG0_RIGHT_TRIGGER | FLAG0_LEFT_TRIGGER;
+        c[OFF_RIGHT_TRIGGER..][..EFFECT_LEN].copy_from_slice(&state.right_trigger);
+        c[OFF_LEFT_TRIGGER..][..EFFECT_LEN].copy_from_slice(&state.left_trigger);
+    }
+    if let Some((red, green, blue)) = state.lightbar {
+        c[1] |= FLAG1_LIGHTBAR;
+        c[OFF_LIGHTBAR_RED] = red;
+        c[OFF_LIGHTBAR_RED + 1] = green;
+        c[OFF_LIGHTBAR_RED + 2] = blue;
+    }
+    if let Some(bits) = state.player_leds {
+        c[1] |= FLAG1_PLAYER_LEDS;
+        c[OFF_PLAYER_LEDS] = bits & 0x1F;
+    }
+}
+
+/// The one-time speaker setup: route the shared output to the speaker at full volume with the
+/// pre-amp, as the Linux sink does. `0x31` with the audio valid-flags only, so it touches nothing
+/// the state reports own.
+fn build_speaker_setup(seq: u8) -> [u8; REPORT_LEN] {
+    let mut r = [0u8; REPORT_LEN];
+    r[0] = 0x31;
+    r[1] = (seq & 0x0F) << 4;
+    r[2] = 0x10;
+    r[COMMON] = 0x80 | 0x20; // AllowAudioControl | AllowSpeakerVolume
+    r[COMMON + 1] = 0x80; // AllowAudioControl2
+    r[COMMON + 5] = SPEAKER_VOLUME;
+    r[COMMON + 7] = 0x30; // OutputPathSelect: speaker
+    r[COMMON + 37] = 0x02; // SpeakerCompPreGain
+    let signed = std::iter::once(0xA2).chain(r[..REPORT_LEN - 4].iter().copied());
+    let crc = crc32_le(signed);
+    r[REPORT_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
+    r
+}
+
+/// Builds one `0x36` audio report: config, the state sub-packet (our common block plus the audio
+/// valid-flags, so the pad keeps its routing every report), the coil frame, the speaker frame.
+fn build_audio_report(
+    seq: u8,
+    counter: u8,
+    state: &State,
+    coils: &[[i8; 2]; COIL_REPORT_FRAMES],
+    speaker: &[u8; SPEAKER_FRAME_LEN],
+) -> [u8; AUDIO_REPORT_LEN] {
+    let mut r = [0u8; AUDIO_REPORT_LEN];
+    r[0] = 0x36;
+    r[1] = (seq & 0x0F) << 4;
+    r[2] = 0x11 | 0x80;
+    r[3] = 7;
+    r[4] = 0xFE;
+    r[5..10].fill(AUDIO_CONFIG);
+    r[10] = counter;
+    r[11] = 0x10 | 0x80;
+    r[12] = 63;
+    fill_common(&mut r[13..13 + 47], state);
+    r[13] |= 0x80 | 0x20; // AllowAudioControl | AllowSpeakerVolume
+    r[14] |= 0x80; // AllowAudioControl2
+    r[13 + 5] = SPEAKER_VOLUME;
+    r[13 + 7] = 0x30;
+    r[13 + 37] = 0x02;
+    r[76] = 0x12 | 0x80;
+    r[77] = (COIL_REPORT_FRAMES * 2) as u8;
+    for (i, [l, right]) in coils.iter().enumerate() {
+        r[78 + i * 2] = *l as u8;
+        r[79 + i * 2] = *right as u8;
+    }
+    r[142] = 0x13 | 0x80;
+    r[143] = SPEAKER_FRAME_LEN as u8;
+    r[144..144 + SPEAKER_FRAME_LEN].copy_from_slice(speaker);
+    let signed = std::iter::once(0xA2).chain(r[..AUDIO_REPORT_LEN - 4].iter().copied());
+    let crc = crc32_le(signed);
+    r[AUDIO_REPORT_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
+    r
+}
+
+/// The speaker encoder: 512 stereo samples per report resampled to 480, Opus 160 kbit/s CBR at
+/// complexity 0 — the settings both working implementations use, and the ones this SoC affords.
+struct SpeakerLane {
+    encoder: opus::Encoder,
+    /// An encoded frame of silence, sent when the ring is short so the pad's clock keeps running.
+    silence: [u8; SPEAKER_FRAME_LEN],
+    resampled: Vec<f32>,
+}
+
+impl SpeakerLane {
+    fn new() -> anyhow::Result<Self> {
+        let mut encoder = opus::Encoder::new(48_000, opus::Channels::Stereo, opus::Application::Audio)
+            .map_err(|e| anyhow::anyhow!("opus encoder: {e}"))?;
+        encoder.set_bitrate(opus::Bitrate::Bits(160_000)).map_err(|e| anyhow::anyhow!("bitrate: {e}"))?;
+        encoder.set_vbr(false).map_err(|e| anyhow::anyhow!("cbr: {e}"))?;
+        encoder.set_complexity(0).map_err(|e| anyhow::anyhow!("complexity: {e}"))?;
+        let mut lane = Self {
+            encoder,
+            silence: [0; SPEAKER_FRAME_LEN],
+            resampled: vec![0.0; SPEAKER_OUT_SAMPLES * 2],
+        };
+        let zeros = [0f32; SPEAKER_IN_SAMPLES * 2];
+        lane.silence = lane.encode(&zeros);
+        Ok(lane)
+    }
+
+    /// One report's frame from 512 stereo samples: linear 512 → 480, then a CBR frame padded or
+    /// cut to exactly 200 bytes (CBR lands there by itself; the guard is for a short first frame).
+    fn encode(&mut self, pcm: &[f32]) -> [u8; SPEAKER_FRAME_LEN] {
+        let step = (SPEAKER_IN_SAMPLES - 1) as f32 / (SPEAKER_OUT_SAMPLES - 1) as f32;
+        for i in 0..SPEAKER_OUT_SAMPLES {
+            let pos = i as f32 * step;
+            let j = (pos as usize).min(SPEAKER_IN_SAMPLES - 2);
+            let t = pos - j as f32;
+            for ch in 0..2 {
+                let a = pcm[j * 2 + ch];
+                let b = pcm[(j + 1) * 2 + ch];
+                self.resampled[i * 2 + ch] = a + (b - a) * t;
+            }
+        }
+        let mut out = [0u8; SPEAKER_FRAME_LEN];
+        match self.encoder.encode_float(&self.resampled, &mut out) {
+            Ok(n) if n == SPEAKER_FRAME_LEN => {}
+            Ok(n) => tracing::debug!("speaker lane: {n}-byte frame, expected {SPEAKER_FRAME_LEN}"),
+            Err(e) => tracing::debug!("speaker lane: encode failed: {e}"),
+        }
+        out
+    }
 }
 
 /// `reportData` as a bare int array — **no `reportId` key**. The service validates the whole
@@ -429,20 +560,39 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
     };
     // The coil lane needs the bus: ~94 reports a second is not a spawn rate. Claiming it here
     // parks the motor envelope for the session (`Envelope::own_coils`).
+    let sniff_payload = format!("{{\"address\":\"{address}\"}}");
     let lane = match (&bus, coils) {
         (Some(bus), Some(envelope)) => {
-            // Un-burst the link before the first coil report; the reply is counted like any
+            // Un-burst the link before the first audio report; the reply is counted like any
             // other (a refusal shows up once in the log through `REPLIES`).
-            let payload = format!("{{\"address\":\"{address}\"}}");
-            match bus.call(STOP_SNIFF_URI, &payload) {
-                Ok(()) => tracing::info!("DualSense audio haptics: coil lane over the Luna bus, sniff stopped"),
-                Err(e) => tracing::warn!("DualSense audio haptics: stopSniff refused ({e:#}); expect bursts"),
+            match bus.call(STOP_SNIFF_URI, &sniff_payload) {
+                Ok(()) => tracing::info!("DualSense audio: lanes over the Luna bus, sniff stopped"),
+                Err(e) => tracing::warn!("DualSense audio: stopSniff refused ({e:#}); expect bursts"),
             }
             envelope.own_coils();
             Some(envelope)
         }
         _ => None,
     };
+    // The speaker encoder is only built once a lane exists; a failure leaves the coils alone.
+    let mut speaker = lane.as_ref().and_then(|_| match SpeakerLane::new() {
+        Ok(lane) => Some(lane),
+        Err(e) => {
+            tracing::warn!("DualSense speaker lane off: {e:#}");
+            None
+        }
+    });
+    if let (Some(bus), Some(_)) = (&bus, &speaker) {
+        // Routing + volume once; every audio report re-asserts it in its state sub-packet.
+        let _ = bus.call(SEND_DATA_URI, &payload_for(address, &build_speaker_setup(0)));
+    }
+    let mut speaker_pcm = [0f32; SPEAKER_IN_SAMPLES * 2];
+    // `true` while the pad plays the speaker lane: cleared when it goes quiet, so the next burst
+    // pre-fills again instead of starting from an empty pad buffer.
+    let mut speaker_live = false;
+    let mut audio_reports: u32 = 0;
+    // The state the audio report's sub-packet carries: the last one applied.
+    let mut current: State = State::default();
     let interval = if bus.is_some() { BUS_SEND_INTERVAL } else { MIN_SEND_INTERVAL };
     let mut failing = false;
     let mut last_sent: Option<State> = None;
@@ -488,6 +638,7 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
                 Ok(()) => {
                     failing = false;
                     last_sent = Some(state);
+                    current = state;
                     last_sent_at = Some(Instant::now());
                     sends += 1;
                     // Rate visible in the log without one line per send — the symptom the
@@ -515,24 +666,56 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
                     // Stalled (a slow bus call, scheduling): resync rather than burst to catch up.
                     next_tick = now + COIL_TICK;
                 }
-                // Keep the cadence through the hold window after the last frame — zeros, so the
-                // pad's buffer runs out cleanly rather than looping its tail — then go quiet.
-                let had_data = envelope.take_coils(&mut frames);
-                if had_data || envelope.active() {
-                    seq = seq.wrapping_add(1);
-                    counter = counter.wrapping_add(1);
-                    let report = build_coil_report(seq, counter, &frames);
+                let had_coils = envelope.take_coils(&mut frames);
+                let speaker_on = speaker.is_some() && envelope.speaker_active();
+                // Pre-fill: hold the first reports until the ring has SPEAKER_PREFILL frames, then
+                // drain two per tick until caught up — the pad's FIFO keeps the surplus as headroom.
+                if speaker_on && !speaker_live {
+                    if envelope.speaker_queued() < SPEAKER_PREFILL * SPEAKER_IN_SAMPLES {
+                        continue;
+                    }
+                    speaker_live = true;
+                }
+                if !speaker_on {
+                    speaker_live = false;
+                }
+                let reports_now = if speaker_live && envelope.speaker_queued() >= 2 * SPEAKER_IN_SAMPLES { 2 } else { 1 };
+                for _ in 0..reports_now {
+                    let report: Vec<u8> = if speaker_live {
+                        let lane_enc = speaker.as_mut().expect("speaker_live implies a lane");
+                        let frame = if envelope.take_speaker(&mut speaker_pcm) {
+                            lane_enc.encode(&speaker_pcm)
+                        } else {
+                            lane_enc.silence
+                        };
+                        seq = seq.wrapping_add(1);
+                        counter = counter.wrapping_add(1);
+                        build_audio_report(seq, counter, &current, &frames, &frame).to_vec()
+                    } else if had_coils || envelope.active() {
+                        // Keep the cadence through the hold window after the last frame — zeros, so
+                        // the pad's buffer runs out cleanly rather than looping its tail.
+                        seq = seq.wrapping_add(1);
+                        counter = counter.wrapping_add(1);
+                        build_coil_report(seq, counter, &frames).to_vec()
+                    } else {
+                        break;
+                    };
                     if let Err(e) = bus.call(SEND_DATA_URI, &payload_for(address, &report)) {
                         if !failing {
-                            tracing::warn!("DualSense audio haptics send failed (further errors quiet): {e}");
+                            tracing::warn!("DualSense audio send failed (further errors quiet): {e}");
                             failing = true;
                         }
                     } else {
                         coil_sends += 1;
+                        audio_reports += 1;
                         if coil_sends % 940 == 0 {
-                            tracing::debug!("DualSense audio haptics: {coil_sends} coil reports");
+                            tracing::debug!("DualSense audio: {coil_sends} reports ({} speaker)", if speaker_live { "with" } else { "no" });
                         }
                     }
+                    frames = [[0; 2]; COIL_REPORT_FRAMES];
+                }
+                if audio_reports % RESNIFF_EVERY == 0 && audio_reports > 0 {
+                    let _ = bus.call(STOP_SNIFF_URI, &sniff_payload);
                 }
             }
         }
@@ -546,8 +729,7 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
     }
     // Give the link back to sniff: the TV's own power policy, and what the pad expects at idle.
     if let (Some(bus), Some(_)) = (&bus, &lane) {
-        let payload = format!("{{\"address\":\"{address}\"}}");
-        let _ = bus.call(START_SNIFF_URI, &payload);
+        let _ = bus.call(START_SNIFF_URI, &sniff_payload);
         bus.pump();
     }
 }

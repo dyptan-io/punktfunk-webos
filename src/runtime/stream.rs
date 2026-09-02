@@ -251,7 +251,9 @@ pub(super) fn run_inner() -> Result<()> {
         // DualSense still needs one declared at start. Only toward a host that has the plane —
         // an older host reads arrival flags as the bare pad index.
         let pad_audio_caps = if connected.client.host_caps() & punktfunk_core::quic::HOST_CAP_PAD_AUDIO != 0 {
-            crate::session::pad_audio::caps_for(&settings)
+            // The speaker lane needs a Bluetooth pad: only that transport plays it.
+            let bt_pad = crate::platform::webos::dualsense::find_address().is_some();
+            crate::session::pad_audio::caps_for(&settings, bt_pad)
         } else {
             0
         };
