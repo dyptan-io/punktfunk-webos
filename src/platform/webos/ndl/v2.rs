@@ -246,7 +246,10 @@ impl NdlVideo {
         // LOADCOMPLETED, and an audio-enabled load will not report it until its audio plane has
         // seen a packet, which is what the prime supplies.
         // Budget and waiter are picked at the same branch: what a load can afford to wait is a
-        // property of the load, and the two differ by 3x.
+        // property of the load, not of whichever waiter it happens to reach. The two budgets are
+        // equal today (see `AUDIO_LOAD_TIMEOUT` for the measurement that made them equal) and are
+        // still named apart, because giving up on the plane and giving up on the picture are not
+        // the same failure.
         let (primed_pts_ms, confirmed) = if audio {
             Self::prime_audio(fns, load_instant, AUDIO_LOAD_TIMEOUT)
         } else {
@@ -271,7 +274,10 @@ impl NdlVideo {
     ///
     /// `load_instant` is the caller's, not re-derived here: these stamps ARE the player clock's
     /// domain, and handing the origin down is what makes that a value rather than a coincidence of
-    /// two adjacent `Instant::now()` calls (see the field).
+    /// two adjacent `Instant::now()` calls (see the field). `budget` is measured from it too, so it
+    /// bounds the whole load — the `NDL_DirectMediaLoad` call included — rather than just the
+    /// priming after it. That is the figure `LOADCOMPLETED` is relative to, and it means a set
+    /// that blocks inside the load call cannot spend the budget twice.
     ///
     /// An audio-enabled load will not report until its audio plane has received data, but the
     /// pumps that would supply it don't spawn until `session::connect` returns — i.e. until this
@@ -292,7 +298,7 @@ impl NdlVideo {
         let mut pts_ms = 0;
         while !LOAD_COMPLETED.fired() {
             // A reported fatal state is the one answer that will not change by waiting, so the
-            // long budget above is spent only while the load is still plausibly coming.
+            // budget is spent only while the load is still plausibly coming.
             if super::fatal() {
                 tracing::warn!("NDL load reported a fatal state after {pts_ms}ms of silence");
                 return (pts_ms, false);
