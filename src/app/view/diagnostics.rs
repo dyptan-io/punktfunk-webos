@@ -43,7 +43,7 @@ pub fn rows(settings: &Settings) -> Vec<FocusRow> {
                 .then(|| ui::widgets::RowSubtext::hint("Or use the Yellow button")),
         ),
         FocusRow::action(crate::app::view::icons::ICON_SEND, "Send logs")
-            .with_subtext(ui::widgets::RowSubtext::hint("If a developer asked you to")),
+            .with_subtext(ui::widgets::RowSubtext::hint("Sends logs to host/developer")),
     ]
 }
 
