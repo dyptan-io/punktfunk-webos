@@ -341,6 +341,11 @@ fn send_report(address: &str, report: &[u8; REPORT_LEN]) -> anyhow::Result<()> {
     crate::platform::webos::luna::call(SEND_DATA_URI, &payload_for(address, report))
 }
 
+/// Spacing between sends on the in-process bus ([`crate::platform::webos::ls2`]): no spawn per
+/// report, so this only bounds how fast a host animating the lightbar can push reports through
+/// the Bluetooth service. Well inside what the pad accepts (audio runs at 10.7 ms per report).
+const BUS_SEND_INTERVAL: Duration = Duration::from_millis(16);
+
 /// Minimum wall time between two sends.
 ///
 /// A send is a fork/exec of `luna-send-pub` (see [`crate::platform::webos::luna`]), which copies the page
@@ -367,6 +372,20 @@ const MIN_SEND_INTERVAL: Duration = Duration::from_millis(250);
 /// powered off mid-session) every later update would otherwise repeat the same line for as
 /// long as the game keeps changing effects.
 fn sender_loop(address: &str, rx: &Receiver<State>) {
+    // In-process bus first: one function call per report instead of a spawn. Its failure is the
+    // normal state on a TV whose hub refuses the registration, and the spawn route still works
+    // there — so it is logged as information and the throttle stays at the spawn-safe value.
+    let bus = match crate::platform::webos::ls2::Bus::open() {
+        Ok(bus) => {
+            tracing::info!("DualSense feedback: in-process Luna bus");
+            Some(bus)
+        }
+        Err(e) => {
+            tracing::info!("DualSense feedback: in-process Luna bus unavailable ({e:#}); using luna-send-pub");
+            None
+        }
+    };
+    let interval = if bus.is_some() { BUS_SEND_INTERVAL } else { MIN_SEND_INTERVAL };
     let mut failing = false;
     let mut last_sent: Option<State> = None;
     let mut sends: u32 = 0;
@@ -377,7 +396,20 @@ fn sender_loop(address: &str, rx: &Receiver<State>) {
             continue;
         }
         seq = seq.wrapping_add(1);
-        match send_report(address, &build_report(seq, &state)) {
+        let report = build_report(seq, &state);
+        let sent = match &bus {
+            Some(bus) => {
+                let r = bus.call(SEND_DATA_URI, &payload_for(address, &report));
+                bus.pump();
+                // A refused reply is asynchronous: surface the first one per run of failures.
+                if let Some(text) = crate::platform::webos::ls2::REPLIES.take_failure() {
+                    tracing::warn!("DualSense feedback: Bluetooth service refused a report: {text}");
+                }
+                r
+            }
+            None => send_report(address, &report),
+        };
+        match sent {
             Ok(()) => {
                 failing = false;
                 last_sent = Some(state);
@@ -395,6 +427,6 @@ fn sender_loop(address: &str, rx: &Receiver<State>) {
                 }
             }
         }
-        std::thread::sleep(MIN_SEND_INTERVAL);
+        std::thread::sleep(interval);
     }
 }

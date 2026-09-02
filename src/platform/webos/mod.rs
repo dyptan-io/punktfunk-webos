@@ -10,6 +10,7 @@ pub mod gamepad;
 pub mod hdr_pattern;
 pub mod input;
 pub mod keyboard;
+pub mod ls2;
 pub mod luna;
 pub mod mouse;
 pub mod ndl;
