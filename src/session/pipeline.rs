@@ -53,7 +53,14 @@ impl MediaPipeline {
         // Re-checked against the plane the load actually produced: a rejected audio-enabled load
         // leaves no plane to ride.
         let plane = player.audio_plane();
-        let route = resolve_route(params.audio_route, client.audio_channels, plane.is_some());
+        // Two different questions: the metronome rides any plane the load produced, the real
+        // stream only one the load PROVED (`AudioPlane::accepts_stream`) — an unproven one can
+        // still be taken away mid-session, and the route cannot be re-picked by then.
+        let route = resolve_route(
+            params.audio_route,
+            client.audio_channels,
+            plane.as_ref().is_some_and(|p| p.accepts_stream()),
+        );
         tracing::info!(
             "audio path: {} on {} (host resolved {} channel(s))",
             audio_path_label(route, plane.is_some()),
@@ -111,8 +118,9 @@ impl MediaPipeline {
 /// comparison; until one of them is measured better on real hardware, the metronome keeps the plane
 /// and the audio takes the longer path.
 ///
-/// A rejected audio-enabled load (`NdlVideo::load` falls back to video-only) and V1 leave no
-/// plane to ride, and software is what is left.
+/// A refused audio plane (`NdlVideo` gives it up, at the load or at its verdict past the first
+/// frame) and V1 leave no plane to ride, and software is what is left. `has_plane` is the PROVEN
+/// plane, not merely one that was asked for — see the call site.
 fn resolve_route(pref: AudioRoutePref, channels: u8, has_plane: bool) -> AudioRoutePref {
     // Stereo or nothing: `Settings::clamp` already holds the document to it, and a session the
     // host resolved wider must not silently land on a plane whose decoder has no mode for it.
@@ -138,7 +146,8 @@ fn load_player(client: &NativeClient, panel: quic::HdrMeta) -> Result<(Box<dyn V
             // Every V2 load asks for a plane: a fed one is what makes NDL pace the picture at
             // all (docs/NOTES.md § "NDL's audio plane"). What rides it — the real stream or
             // `run_clock_plane`'s metronome — is the route's business. A set that refuses the
-            // load falls back to video-only in `NdlVideo::load`, and gives up pacing with it.
+            // plane reloads video-only and gives up pacing with it; the route is picked here
+            // before that verdict can be taken, and software is what both outcomes land on.
             NdlVideo::load(&app_id, width, height, codec, true).context("NDL load")?,
         )),
         NdlGeneration::V1 => Box::new(NdlV1Video::load(&app_id, width, height, codec).context("NDL v1 load")?),
@@ -187,8 +196,8 @@ fn audio_path_label(route: AudioRoutePref, has_plane: bool) -> &'static str {
         // A plane the real stream is not using is the pacing metronome — see
         // `NdlVideo::run_clock_plane`.
         (AudioRoutePref::Software, true) => "software Opus decode -> SDL2 + NDL clock plane",
-        // No plane means no pacing reference either: NDL v1 has none, or the
-        // audio-enabled load did not confirm and `load()` fell back to video-only.
+        // No plane means no pacing reference either: NDL v1 has none, or the audio-enabled
+        // load's plane was refused and the video sink reloaded without it.
         (AudioRoutePref::Software, false) => "software Opus decode -> SDL2, no clock plane",
     }
 }

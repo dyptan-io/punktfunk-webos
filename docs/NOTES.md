@@ -303,8 +303,9 @@ question:
 it yields to the real stream and only fills in after 300 ms with no packet, since a host that stops
 sending would otherwise starve the plane and freeze the picture.
 
-A set that refuses the audio-enabled load falls back to video-only inside `NdlVideo::load` and
-gives up pacing with it; the session log names which of the routes it took. **NDL v1 has
+A set that refuses the audio plane ends up video-only and gives up pacing with it — at the load
+itself when it fails outright, otherwise at the verdict past the first frame (below); the session
+log names which of the routes it took. **NDL v1 has
 no Opus audio type at all**, so webOS 4 has no pacing reference — the lever there would be gating
 frame release at feed time, which is not built.
 
@@ -322,25 +323,46 @@ match `webosbrew/webos-userland` field-for-field, including the explicit trailin
 whole struct is memcpy'd into a fixed-size union arm, so **any implicit padding in a `repr(C)`
 struct handed to NDL is uninitialized stack on the wire**.
 
-⚠ **A set that refuses the audio plane cannot be rescued by waiting longer — measured, issue
-#188.** The audio-enabled wait (`AUDIO_LOAD_TIMEOUT`) is a separate constant from the video-only
-one (`LOAD_COMPLETE_TIMEOUT`) because the two failures cost differently: giving up on the plane is
-not "a few held frames", it is the fallback to a video-only load and therefore an unpaced session.
-But both are 2 s, because raising one was tried on device and did nothing. A 2025 QNED (webOS 10,
-`k24n`) fails an audio-enabled 4K120 HEVC HDR load at 2 s and fails it identically at 6 s
-(`no LOADCOMPLETED within 6s of priming 6040ms of silence`), while the video-only retry that
-follows confirms in ~2.04 s. A CX confirms in ~40 ms. Nothing measured sits in between, so the
-distribution is bimodal — works almost instantly, or never — and the extra seconds only buy black
-screen plus a receive backlog deep enough to force a flush at first frame (three `receive backlog
-stopped draining` warns at 6 s, 90 frames dropped). **If a set is unpaced, the plane config is the
-thing to change, not the wait.** Both waits bail early on `ndl::fatal()`. The fallback warns that
-the picture will not be paced — grep the log for that line before theorising about any later delay.
+⚠ **`LOADCOMPLETED` is not reported against the same thing on every set, so it cannot be the test
+for the audio plane before a frame is fed — measured, issue #188.** A 2025 QNED (webOS 10, `k24n`)
+reports it **26 ms after the first access unit reaches the decoder, and never before**: its
+video-only load misses the 2 s `LOAD_COMPLETE_TIMEOUT`, then confirms the instant `ensure_loaded`
+gives up and feeds. A CX reports it ~40 ms after the load with no frame at all. The old code judged
+the plane inside the load wait, where nothing can feed a frame — the pumps do not spawn until
+`session::connect` returns — so on the QNED every session read a healthy plane as refused, fell
+back to video-only, and ran unpaced. That is issue #188's delay. Waiting longer changes nothing
+(6 s of silence primed, same result) and only buys black screen plus a receive backlog deep enough
+to force a flush at first frame (three `receive backlog stopped draining` warns, 90 frames
+dropped).
+
+So the plane is asked for and then **judged past the first frame**: `AUDIO_PRIME_BUDGET` (500 ms)
+buys only the fast confirmation a CX gives, an unconfirmed load starts the stream anyway, and
+`v2::PLANE_VERDICT` (750 ms after the first accepted frame) is where a plane that really was
+refused is given up — the load is then re-issued without its audio arm, because a load whose audio
+config was rejected keeps accepting frames into a pipeline that never runs, with no error on any
+call. **That re-load is stepped by the video feed, one frame at a time** (`begin_reload` /
+`advance_reload`), never inline and never on a thread of its own: inline it blocks the pump for the
+whole 400-800 ms settle and the receive queue fills behind it, and a second thread inside NDL is
+what `LEAKED_THREADS` exists to refuse. Each frame advances the state machine, is answered with
+`NotReady`, and goes back to draining the queue.
+
+The route is picked from the PROVEN plane (`AudioPlane::accepts_stream`), not from one that was
+merely asked for: an unproven plane is still worth keeping fed — that is the pacing — but the
+session's only audio must not ride something the verdict can still take away, since the route
+cannot be re-picked by then. Both load waits bail early on `ndl::fatal()`. Every path that
+loses the plane warns that the picture will not be paced — grep the log for that line before
+theorising about any later delay.
+
+Audio feeds gate on the `LOADCOMPLETED` latch itself, never on `feed_unblocked`: that flag is the
+VIDEO feed's gate and latches optimistically once frames have to flow regardless. A packet fed to a
+plane before NDL confirms it costs the session its audio outright.
 
 The load blocks `session::connect` between the handshake and the first `next_frame`, so anything
-timing a launch has to cover it: a rejected plane costs `AUDIO_LOAD_TIMEOUT` + `CALLBACK_SETTLE` ×
-2 + `LOAD_COMPLETE_TIMEOUT` ≈ 4.8 s. `app::hero` is fine (its `FIRST_FRAME_WAIT` only starts once
+timing a launch has to cover it — now `AUDIO_PRIME_BUDGET` at worst, rather than the ~4.8 s a
+rejected plane used to cost there; what a refused plane costs instead is a settle plus a second
+load *after* frames are flowing. `app::hero` is fine (its `FIRST_FRAME_WAIT` only starts once
 connect returns, under a 30 s `HERO_LOADING_MAX` backstop), but `hdr_pattern`'s `PRESENT_DEADLINE`
-runs from `Playback::start` and must stay above it.
+runs from `Playback::start` and must stay above the whole sequence.
 
 ⚠ **The prime's stamps and the player clock share one origin — `load_instant` is the load CALL.**
 NDL's PTS domain starts there (§ top of this section), and `prime_audio` already counted from it,
@@ -350,7 +372,7 @@ prime's ceiling as a permanent base, the offload route floored its first D ms of
 one stamp, and `plane_lead` in the heartbeat reported the gap on top of the depth. Worse, the
 offload route's REAL lead was `PLANE_LEAD_MS − D`, i.e. ≈ 0 on a CX — the one thing that constant
 exists to prevent. D was small enough on a CX (~40 ms) to hide all of it; raising
-`AUDIO_LOAD_TIMEOUT` made it routinely seconds, which is what forced the fix. One origin removes
+a load wait long enough to matter made it routinely seconds, which is what forced the fix. One origin removes
 every correction. `last_real_feed_ms` is seeded with the clock at construction rather than 0, since
 the clock already reads D by then.
 
@@ -406,7 +428,7 @@ So audio is now stamped `player_clock + PLANE_LEAD_MS` and the host PTS is ignor
 whatever the host PTS does across a freeze, so a resumed run lands where an uninterrupted one would
 have, and `last_audio_pts_ms` is left with nothing to do but absorb reordering. The clock plane
 targets the same figure, so the two feeders share the ceiling without either driving it.
-`load_confirmed` is the plane's start gate, which is what the video plane's latch used to double as.
+The plane's start gate is the `LOADCOMPLETED` latch itself; `feed_unblocked` is the video feed's own gate and must not be read as the pipeline's state (above).
 
 ⚠ **The ratchet was real and was NOT the mute.** Measured after the change, under a deliberately
 saturated airlink (276 Mb/s of competing download against a 188 Mb/s stream): 32 re-anchors,

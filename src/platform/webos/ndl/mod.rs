@@ -80,26 +80,25 @@ const STATE_ERROR: c_int = 0x12;
 /// but a model that never delivers the callback must still stream.
 const LOAD_COMPLETE_TIMEOUT: Duration = Duration::from_millis(2_000);
 
-/// The bound for an AUDIO-ENABLED load. Kept separate from [`LOAD_COMPLETE_TIMEOUT`] because the
-/// two failures cost differently — giving up here falls back to a video-only load, and a
-/// video-only load has no pacing reference at all (§ "NDL's audio plane"), so its lead grows for
-/// the whole session — but measured to the same value.
+/// How long an AUDIO-ENABLED load primes its plane while waiting for `LOADCOMPLETED` before it
+/// stops waiting and lets the session start. Kept separate from [`LOAD_COMPLETE_TIMEOUT`] because
+/// it is not the same question: this one only buys the FAST confirmation, and it is no longer the
+/// verdict on the plane.
 ///
-/// ⚠ **Raising it does NOT rescue a set whose plane is refused. Measured on device 2026-09-02,
-/// issue #188.** A 2025 QNED (webOS 10, `k24n`) fails an audio-enabled 4K120 HEVC HDR load at 2 s
-/// and fails it identically at 6 s — `no LOADCOMPLETED within 6s of priming 6040ms of silence` —
-/// while the video-only retry that follows confirms in ~2.04 s. The plane is REJECTED there, not
-/// slow. A CX confirms in ~40 ms, and nothing measured anywhere sits in between, so no value here
-/// turns a failing set into a working one. The extra seconds only buy black screen and a deeper
-/// receive backlog for the session to flush at first frame (three `receive backlog stopped
-/// draining` warns at 6 s, 90 frames dropped). Fixing such a set has to mean the plane config, not
-/// the wait.
-const AUDIO_LOAD_TIMEOUT: Duration = Duration::from_millis(2_000);
+/// ⚠ **`LOADCOMPLETED` is not always reported before the first video frame. Measured on device
+/// 2026-09-02, issue #188.** A 2025 QNED (webOS 10, `k24n`) reports it 26 ms after the first access
+/// unit reaches the decoder and never before: its video-only load misses the 2 s wait above, then
+/// confirms the instant `v2::NdlVideo::ensure_loaded` gives up and feeds. An audio-enabled load
+/// waiting on that callback with no video fed therefore waits forever — 6 s of silence changed
+/// nothing — and the plane it gave up on had never been refused. A CX confirms in ~40 ms with no
+/// frame at all, which is what this budget is sized for. The verdict on the plane moved past the
+/// first frame, where both kinds of set can answer it (`v2`'s `PLANE_VERDICT`); the seconds spent
+/// here bought only black screen and a receive backlog to flush (three `receive backlog stopped
+/// draining` warns at 6 s, 90 frames dropped).
+const AUDIO_PRIME_BUDGET: Duration = Duration::from_millis(500);
 
-/// Grace for a rejected load's callbacks to land before the video-only retry arms. The callback
-/// carries nothing identifying its load, so separating the two in TIME is the only way to stop a
-/// stale `LOADCOMPLETED` satisfying the retry's wait — and feeding an unloaded decoder is what
-/// turns a launch black.
+/// Grace for a rejected load's callbacks to land before the retry arms — see [`RetrySettle`],
+/// which is where that wait is spent and why it exists.
 const CALLBACK_SETTLE: Duration = Duration::from_millis(400);
 
 /// Poll interval for the two waits below (startup path only).
@@ -139,12 +138,15 @@ impl EventSeq {
         self.base.store(self.seq.load(Ordering::SeqCst), Ordering::SeqCst);
     }
 
+    /// `Acquire`, not `SeqCst`: the feeds read this per packet and per frame, and all it has to
+    /// order is the callback's own `bump` against this reader. No third party observes the two
+    /// counters in a total order.
     fn fired(&self) -> bool {
-        self.seq.load(Ordering::SeqCst) > self.base.load(Ordering::SeqCst)
+        self.seq.load(Ordering::Acquire) > self.base.load(Ordering::Acquire)
     }
 
     fn count(&self) -> u64 {
-        self.seq.load(Ordering::SeqCst)
+        self.seq.load(Ordering::Acquire)
     }
 }
 
@@ -307,32 +309,68 @@ fn unload_count() -> u64 {
     UNLOAD_COMPLETED.count()
 }
 
-/// Lets the rejected audio-enabled load's callbacks land before the video-only retry is armed:
-/// waits for its `UNLOADCOMPLETED`, then a fixed settle for anything still in flight behind it.
-/// `unloads_before` is [`unload_count`] from before the rejected load was attempted: the caller's
-/// own teardown may have unloaded already, and a spent callback must not be waited out.
-fn settle_before_retry(unloads_before: u64) {
-    poll_until(CALLBACK_SETTLE, || UNLOAD_COMPLETED.count() != unloads_before);
-    std::thread::sleep(CALLBACK_SETTLE);
+/// The wait between a rejected load's unload and the retry's load: its `UNLOADCOMPLETED` first,
+/// then [`CALLBACK_SETTLE`] for anything still in flight behind it. The callback carries nothing
+/// identifying its load, so separating the two in TIME is the only way to stop a stale one
+/// satisfying the retry's wait — and feeding an unloaded decoder is what turns a launch black.
+///
+/// Split from the sleeping loop below it because the same policy has two callers with opposite
+/// constraints: `v2::NdlVideo::load`'s fallback can block the launch thread, while the re-load a
+/// refused plane triggers mid-session must not block the video feed and steps this one frame at a
+/// time instead.
+pub(super) struct RetrySettle {
+    unloads_before: u64,
+    started: Instant,
+    unload_seen: Option<Instant>,
 }
 
-/// Blocks until the armed load's `LOADCOMPLETED` lands. Returns `false` on timeout.
-///
-/// `budget` is the caller's, not a constant here: what a load can afford to wait is a property of
-/// the load — see [`AUDIO_LOAD_TIMEOUT`] — and `v2::NdlVideo::try_load` picks it at the same branch
-/// that picks the waiter.
-fn wait_load_completed(budget: Duration) -> bool {
+impl RetrySettle {
+    /// Start the wait. `unloads_before` is [`unload_count`] from before the rejected load was
+    /// attempted: the caller's own teardown may have unloaded already, and a spent callback must
+    /// not be waited out.
+    pub(super) fn after_unload(unloads_before: u64) -> Self {
+        Self {
+            unloads_before,
+            started: Instant::now(),
+            unload_seen: None,
+        }
+    }
+
+    /// Whether the retry may be armed. Poll it; it latches the callback's arrival on the way.
+    pub(super) fn ready(&mut self) -> bool {
+        if self.unload_seen.is_none() && UNLOAD_COMPLETED.count() != self.unloads_before {
+            self.unload_seen = Some(Instant::now());
+        }
+        // A callback that never comes must not stall the retry for good, so the grace starts at
+        // the latest when its own budget is spent. `elapsed` on a future instant is zero, which is
+        // exactly "not yet".
+        let from = self.unload_seen.unwrap_or(self.started + CALLBACK_SETTLE);
+        from.elapsed() >= CALLBACK_SETTLE
+    }
+}
+
+/// [`RetrySettle`], slept out — for the load path, which has a thread to spend on it.
+fn settle_before_retry(unloads_before: u64) {
+    let mut settle = RetrySettle::after_unload(unloads_before);
+    while !settle.ready() {
+        std::thread::sleep(POLL);
+    }
+}
+
+/// Blocks up to [`LOAD_COMPLETE_TIMEOUT`] for the armed load's `LOADCOMPLETED`. Returns `false` on
+/// timeout. The audio-enabled load has its own wait — see `v2::NdlVideo::prime_audio`.
+fn wait_load_completed() -> bool {
     // Ends on [`FATAL`] as well, for the same reason `v2::NdlVideo::prime_audio` does: a reported
     // fatal state is the one answer that will not change by waiting, and the budget is only worth
     // spending while the load is still plausibly coming.
-    poll_until(budget, || LOAD_COMPLETED.fired() || fatal());
+    poll_until(LOAD_COMPLETE_TIMEOUT, || LOAD_COMPLETED.fired() || fatal());
     if LOAD_COMPLETED.fired() {
         return true;
     }
     if fatal() {
-        tracing::warn!("NDL load reported a fatal state — not waiting out the rest of {budget:?}");
+        tracing::warn!("NDL load reported a fatal state — not waiting out the rest of {LOAD_COMPLETE_TIMEOUT:?}");
     } else {
-        tracing::warn!("NDL load: no LOADCOMPLETED within {budget:?} — holding the first frames");
+        tracing::warn!("NDL load: no LOADCOMPLETED within {LOAD_COMPLETE_TIMEOUT:?} — holding the first frames");
     }
     false
 }
