@@ -315,6 +315,10 @@ impl App {
     pub(crate) fn settings_scope(&self) -> menu::SettingsScope {
         match self.nav.screen {
             Screen::Settings(scope) | Screen::CursorSettings(scope) => scope,
+            // The Reset dialog is raised *over* the per-game list and returns to it, so the
+            // scratch state is still what's being edited — without this arm every accessor
+            // below reads Global while it is up, and the reset it confirms lands nowhere.
+            Screen::ResetGameSettings => menu::SettingsScope::Game,
             _ => menu::SettingsScope::Global,
         }
     }

@@ -178,8 +178,20 @@ pub(super) fn run_ui_flow(
         if !quit_dialog.is_open() && matches!(app.nav.screen, Screen::Home) && chord.held_for(EXIT_HOLD) {
             tracing::info!("quit shortcut held — opening quit dialog");
             chord.clear();
-            quit_dialog.open_with(1, quit_subtitle(&app));
+            open_quit_dialog(&mut quit_dialog, &mut input, &app);
             dirty = true;
+        }
+        // Held D-pad/stick autorepeat (see `NAV_REPEAT_DELAY`) — the pad's stand-in for the
+        // OS key repeat the remote and a keyboard get. Skipped while a launch is in flight,
+        // like every other menu dispatch; the quit dialog ends the hold when it opens.
+        if app.launch_anim.is_none() {
+            if let Some(ev) = input.nav_repeat_due() {
+                dirty = true;
+                match dispatch_menu_event(&mut app, ev, display_mode, fonts) {
+                    EventAction::Next => {}
+                    EventAction::Launch => break 'ui,
+                }
+            }
         }
         dirty |= app.drain_jobs();
         dirty |= app.tick_screens();
@@ -295,8 +307,10 @@ pub(super) fn run_ui_flow(
                     *controller = None;
                     // Re-poll rather than clearing: another pad may still be attached.
                     app.set_gamepad_type(gamepad::detect_type(game_controller));
-                    // An unplugged pad sends no releases — drop any armed chord.
+                    // An unplugged pad sends no releases — drop any armed chord, and the
+                    // held direction it can no longer let go of.
                     chord.clear();
+                    input.clear_nav_repeat();
                     continue;
                 }
                 _ => {}
@@ -326,11 +340,10 @@ pub(super) fn run_ui_flow(
             // (see `App::back`), so it falls through to normal dispatch instead.
             if matches!(app.nav.screen, Screen::Home)
                 && matches!(app.home_focus, HomeFocus::Sidebar(_))
-                && matches!(&event, Event::KeyDown { keycode: Some(k), repeat: false, .. }
-                    if crate::platform::webos::input::menu_event_for_key(*k) == Some(MenuEvent::Back))
+                && is_menu_press(&event, MenuEvent::Back, false)
             {
                 tracing::info!("Back tap on Home sidebar — opening quit dialog");
-                quit_dialog.open_with(1, quit_subtitle(&app));
+                open_quit_dialog(&mut quit_dialog, &mut input, &app);
                 dirty = true;
                 continue;
             }
@@ -550,6 +563,14 @@ pub(super) fn run_ui_flow(
         }),
         None => quit(&app),
     })
+}
+
+/// Raises the quit dialog, focused on Cancel. Every path in goes through here so none can
+/// forget the hold it has to end: the releases of whatever was held when it opened go to the
+/// dialog, so a repeat left armed would keep stepping the menu underneath once it closes.
+fn open_quit_dialog(dialog: &mut ConfirmDialog, input: &mut UiInput, app: &App) {
+    input.clear_nav_repeat();
+    dialog.open_with(1, quit_subtitle(app));
 }
 
 /// What the quit dialog says Quit will do, which is whatever the exit action would actually

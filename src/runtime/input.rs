@@ -479,6 +479,66 @@ fn edge_trigger_back(ev: Option<MenuEvent>, held: &mut bool) -> Option<MenuEvent
     }
 }
 
+/// How long a held direction must be down before it starts repeating, and how often it repeats
+/// after that. The menu runs this timer for every input: SDL reports a pad as one press and one
+/// release (so without it a held D-pad moves exactly one row and a held Left never walks the
+/// Bitrate slider), and the remote/keyboard's *own* OS autorepeat is swallowed and re-paced
+/// here so a held direction feels the same whichever hand it comes from.
+const NAV_REPEAT_DELAY: Duration = Duration::from_millis(450);
+const NAV_REPEAT_PERIOD: Duration = Duration::from_millis(90);
+
+/// Which control is holding a direction down. Kept so the release that disarms the repeat is
+/// the same physical input that armed it: a stick pushed left while the D-pad is held up must
+/// not have its re-centre cancel the D-pad's repeat.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum NavSource {
+    Key(sdl2::keyboard::Keycode),
+    Button(sdl2::controller::Button),
+    Axis(sdl2::controller::Axis),
+}
+
+/// A held direction, mid-autorepeat.
+struct NavRepeat {
+    source: NavSource,
+    ev: MenuEvent,
+    /// When the next repeat is due — the press itself has already dispatched.
+    next: Instant,
+}
+
+/// Whether `event` is a press of `want` from any source the menu accepts one from — the
+/// remote/keyboard keys and the pad alike. One predicate, so a gesture keyed on a button can
+/// never end up listening to one family and not the other.
+///
+/// `allow_repeat` says whether the OS's auto-repeat of a held key counts: a gesture that acts
+/// on the press (Back) wants only the first, one that tracks the button being *down* (the
+/// card hold) has to see them all.
+pub(super) fn is_menu_press(event: &sdl2::event::Event, want: MenuEvent, allow_repeat: bool) -> bool {
+    use sdl2::event::Event;
+    match *event {
+        Event::KeyDown { keycode: Some(k), repeat, .. } => {
+            (allow_repeat || !repeat) && crate::platform::webos::input::menu_event_for_key(k) == Some(want)
+        }
+        Event::ControllerButtonDown { button, .. } => {
+            crate::platform::webos::input::menu_event_for_button(button) == Some(want)
+        }
+        _ => false,
+    }
+}
+
+/// The release half of [`is_menu_press`], for the gestures that resolve on the way up.
+pub(super) fn is_menu_release(event: &sdl2::event::Event, want: MenuEvent) -> bool {
+    use sdl2::event::Event;
+    match *event {
+        Event::KeyUp { keycode: Some(k), .. } => {
+            crate::platform::webos::input::menu_event_for_key(k) == Some(want)
+        }
+        Event::ControllerButtonUp { button, .. } => {
+            crate::platform::webos::input::menu_event_for_button(button) == Some(want)
+        }
+        _ => false,
+    }
+}
+
 /// The UI loop's input state that outlives a single event: the Back debounce,
 /// an in-flight hold-to-pin, and analogue-stick nav.
 #[derive(Default)]
@@ -491,17 +551,131 @@ pub(super) struct UiInput {
     /// Hold-to-pin on Home (see `CARD_HOLD`), while OK is held on a pinnable card.
     pub(super) card_held: Option<CardHold>,
     stick_nav: crate::platform::webos::input::StickMenuNav,
-    /// When the last wheel detent arrived, for the [`WHEEL_MOTION_GUARD`] window.
-    wheel_at: Option<Instant>,
+    /// The wheel's claim on focus, while it has one.
+    wheel: WheelFocus,
+    /// A click was spent confirming the scrolled focus — its release is the same press and
+    /// must not act a second time (as a tap, or as the end of a slider drag).
+    wheel_click: bool,
+    /// The held direction being autorepeated, if any.
+    nav_repeat: Option<NavRepeat>,
 }
 
-/// How long the wheel owns focus after a detent, pointer motion ignored. Scrolling
-/// emits motion at the same time — the Magic Remote keeps moving while its wheel
-/// turns, and a hand on a HID mouse never holds still — which would hand focus back
-/// to whatever row is under the cursor and undo the scroll. Distance can't separate
-/// the two (a real mouse move is arbitrarily large), so the wheel just wins for long
-/// enough to cover the pause between detents; a click ends the window early.
-const WHEEL_MOTION_GUARD: Duration = Duration::from_millis(500);
+impl UiInput {
+    /// Arms autorepeat on a direction that was just pressed.
+    ///
+    /// Pressing a non-directional one also ends any repeat in flight: whatever the user is
+    /// doing now, it isn't holding that direction with intent.
+    fn arm_nav_repeat(&mut self, source: NavSource, ev: MenuEvent) {
+        if !ev.is_directional() {
+            self.nav_repeat = None;
+            return;
+        }
+        self.nav_repeat = Some(NavRepeat {
+            source,
+            ev,
+            next: Instant::now() + NAV_REPEAT_DELAY,
+        });
+    }
+
+    /// Resolves one press from `source`: `None` while that control is already running a
+    /// repeat (the OS autorepeats a held remote/keyboard key, and those are this timer's to
+    /// pace rather than to dispatch), otherwise the event, with the hold armed.
+    fn press_nav(&mut self, source: NavSource, ev: Option<MenuEvent>) -> Option<MenuEvent> {
+        // Same source *and* same direction is the OS repeating a held key. A different
+        // direction from the same control (a stick flicked across centre) is a new press.
+        if self.nav_repeat.as_ref().is_some_and(|r| r.source == source && Some(r.ev) == ev) {
+            return None;
+        }
+        let ev = ev?;
+        self.arm_nav_repeat(source, ev);
+        Some(ev)
+    }
+
+    /// Disarms the repeat if `source` is the control currently holding it.
+    fn release_nav_repeat(&mut self, source: NavSource) {
+        if self.nav_repeat.as_ref().is_some_and(|r| r.source == source) {
+            self.nav_repeat = None;
+        }
+    }
+
+    /// Drops any armed repeat — the pad went away, or a dialog took input over, and the
+    /// release that would disarm it will never arrive.
+    pub(super) fn clear_nav_repeat(&mut self) {
+        self.nav_repeat = None;
+    }
+
+    /// The direction due to fire this tick, if the hold has run past its delay/period. One
+    /// step per call: the menu loop ticks finer than the period, and catching up with a burst
+    /// would race past whatever the user is watching.
+    pub(super) fn nav_repeat_due(&mut self) -> Option<MenuEvent> {
+        let r = self.nav_repeat.as_mut()?;
+        let now = Instant::now();
+        if now < r.next {
+            return None;
+        }
+        r.next = now + NAV_REPEAT_PERIOD;
+        Some(r.ev)
+    }
+}
+
+/// How far the pointer must travel from where it sat when the wheel took focus before it
+/// takes focus back, in screen px. Scrolling emits motion at the same time — the Magic Remote
+/// keeps moving while its wheel turns, and a hand on a HID mouse never holds still — which
+/// would hand focus to whatever row is under the cursor and undo the scroll. Measured from a
+/// fixed anchor rather than summed, so the wobble of a hand holding still never adds up to a
+/// release, and generous enough to sit outside it; a deliberate reach for a row clears it in
+/// the first few frames of the movement.
+const WHEEL_RELEASE_PX: i32 = 96;
+
+/// The wheel's claim on focus: it holds from the first detent until the pointer is
+/// deliberately moved (see [`WHEEL_RELEASE_PX`]) or a click spends it. No clock — a user who
+/// scrolls and then sits still keeps the row they scrolled to however long they read it.
+#[derive(Default)]
+struct WheelFocus {
+    /// Where the pointer was when the claim started. `None` while held but not yet placed:
+    /// SDL's wheel event carries scroll deltas, not a position, so the anchor is the first
+    /// motion after the detent.
+    anchor: Option<(i32, i32)>,
+    held: bool,
+}
+
+impl WheelFocus {
+    /// A detent arrived: the wheel owns focus from here, measured afresh. Re-anchoring on
+    /// every detent is what makes a long scroll safe — drift that stayed under the threshold
+    /// during the last one must not be carried forward into this one and add up to a release.
+    fn claim(&mut self) {
+        self.held = true;
+        self.anchor = None;
+    }
+
+    /// Gives focus back to the pointer.
+    fn release(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Whether the wheel still owns focus — pointer motion ignored, and a click confirming
+    /// what was scrolled to rather than what happens to be under the cursor.
+    fn holds(&self) -> bool {
+        self.held
+    }
+
+    /// Whether this motion should be ignored. The first one after a detent anchors the claim;
+    /// a later one far enough from that anchor is a deliberate reach and ends it.
+    fn swallows_motion(&mut self, x: i32, y: i32) -> bool {
+        if !self.held {
+            return false;
+        }
+        let Some((ax, ay)) = self.anchor else {
+            self.anchor = Some((x, y));
+            return true;
+        };
+        if (x - ax).pow(2) + (y - ay).pow(2) > WHEEL_RELEASE_PX.pow(2) {
+            self.release();
+            return false;
+        }
+        true
+    }
+}
 
 /// What the UI loop should do with the event `handle_ui_event` just consumed.
 pub(super) enum EventAction {
@@ -592,18 +766,9 @@ fn card_hold_gate(
             EventAction::Next
         });
     }
-    // No `repeat: false` filter, deliberately — OS auto-repeats while OK is held
-    // have to be caught here too, not dispatched as fresh presses.
-    let confirm_down = matches!(
-        *event,
-        Event::KeyDown { keycode: Some(k), .. }
-            if crate::platform::webos::input::menu_event_for_key(k) == Some(MenuEvent::Confirm)
-    ) || matches!(
-        *event,
-        Event::ControllerButtonDown { button, .. }
-            if crate::platform::webos::input::menu_event_for_button(button) == Some(MenuEvent::Confirm)
-    );
-    if confirm_down {
+    // Auto-repeats count here, deliberately: while OK is held they have to be caught by the
+    // gesture, not dispatched as fresh presses.
+    if is_menu_press(event, MenuEvent::Confirm, true) {
         // OK stays the gesture's until released, whatever the hold put on screen: the
         // card menu opens *under the still-held button*, and the next auto-repeat KeyDown
         // would otherwise dispatch Confirm straight into it.
@@ -618,17 +783,10 @@ fn card_hold_gate(
         }
         return None;
     }
-    let ends_hold = matches!(
-        *event,
-        Event::KeyUp { keycode: Some(k), .. }
-            if crate::platform::webos::input::menu_event_for_key(k) == Some(MenuEvent::Confirm)
-    ) || matches!(
-        *event,
-        Event::ControllerButtonUp { button, .. }
-            if crate::platform::webos::input::menu_event_for_button(button) == Some(MenuEvent::Confirm)
-    );
     // This press was ours (tap or hold) — swallow the release.
-    let hold = ends_hold.then(|| input.card_held.take()).flatten()?;
+    let hold = is_menu_release(event, MenuEvent::Confirm)
+        .then(|| input.card_held.take())
+        .flatten()?;
     *dirty = true;
     // A quick tap: the press never dispatched, so do it now. A hold that already opened its
     // menu, or one whose screen/focus moved out from under it, resolves to nothing.
@@ -643,7 +801,7 @@ fn card_hold_gate(
 
 /// Feeds a resolved `MenuEvent` to the app, translating what it returns into this
 /// loop's terms. The per-screen routing is `App::handle_menu_event`.
-fn dispatch_menu_event(
+pub(super) fn dispatch_menu_event(
     app: &mut App,
     menu_ev: MenuEvent,
     display_mode: sdl2::video::DisplayMode,
@@ -690,7 +848,7 @@ pub(super) fn handle_ui_event(
     // event handled below, redraw only if the motion actually changed the
     // focused/hovered element, not on every no-op tick.
     if let Event::MouseMotion { x, y, .. } = event {
-        if !input.wheel_at.is_some_and(|t| t.elapsed() < WHEEL_MOTION_GUARD) {
+        if !input.wheel.swallows_motion(x, y) {
             *dirty |= app.handle_mouse_motion(x, y, w, h, fonts);
         }
         return EventAction::Next;
@@ -700,41 +858,66 @@ pub(super) fn handle_ui_event(
     // redraws when the offset actually moved (a wheel tick at either clamp
     // edge is a no-op).
     if let Event::MouseWheel { y: wheel_y, .. } = event {
-        input.wheel_at = Some(Instant::now());
-        match app.nav.screen {
-            Screen::About => {
-                /// Licence-wall px per wheel detent — a few lines at a time.
-                const ABOUT_WHEEL_STEP: i32 = 90;
-                *dirty |= app.scroll_about_by(-wheel_y * ABOUT_WHEEL_STEP, w, h, fonts);
+        input.wheel.claim();
+        // Anything that navigates by row — a list screen, an open dropdown, a held card's
+        // submenu — takes one detent as one Up/Down press, so the wheel reaches every list
+        // the D-pad does (see `App::navigates_rows`). Only the two pixel-scrolled surfaces
+        // are left to handle themselves.
+        if wheel_y != 0 && app.navigates_rows() {
+            let menu_ev = if wheel_y > 0 { MenuEvent::Up } else { MenuEvent::Down };
+            // Redraw on a move only, like the pixel-scrolled arms below: a row list gets one
+            // for free off the focus pop `list_nav` arms, but an open dropdown has no such
+            // animation, so its pick would move with nothing on screen following it.
+            let before = app.row_focus();
+            dispatch_menu_event(app, menu_ev, display_mode, fonts);
+            *dirty |= app.row_focus() != before;
+        } else {
+            match app.nav.screen {
+                Screen::About => {
+                    /// Licence-wall px per wheel detent — a few lines at a time.
+                    const ABOUT_WHEEL_STEP: i32 = 90;
+                    *dirty |= app.scroll_about_by(-wheel_y * ABOUT_WHEEL_STEP, w, h, fonts);
+                }
+                Screen::Home => {
+                    /// Grid px scrolled per wheel detent — about a third of a card
+                    /// row, so a few ticks walk one row.
+                    const WHEEL_STEP: i32 = 120;
+                    *dirty |= app.scroll_grid_by(-wheel_y * WHEEL_STEP, w, h);
+                }
+                _ => {}
             }
-            Screen::Home => {
-                /// Grid px scrolled per wheel detent — about a third of a card
-                /// row, so a few ticks walk one row.
-                const WHEEL_STEP: i32 = 120;
-                *dirty |= app.scroll_grid_by(-wheel_y * WHEEL_STEP, w, h);
-            }
-            // List-modal screens (row-per-page, not pixel scroll): one detent
-            // moves focus exactly one row, same as an Up/Down key press.
-            Screen::Settings(_)
-            | Screen::Collections
-            | Screen::HostMenu
-            | Screen::HostPower
-            | Screen::Diagnostics
-            | Screen::Experimental
-            | Screen::CursorSettings(_)
-                if wheel_y != 0 =>
-            {
-                let menu_ev = if wheel_y > 0 { MenuEvent::Up } else { MenuEvent::Down };
-                dispatch_menu_event(app, menu_ev, display_mode, fonts);
-            }
-            _ => {}
         }
         return EventAction::Next;
     }
-    // A click is deliberate input: it takes focus at the press point regardless of a
-    // recent wheel detent, so drop the guard before either press path resolves hover focus.
-    if matches!(event, Event::MouseButtonDown { .. }) {
-        input.wheel_at = None;
+    // OK pressed while the wheel still owns focus (see `WheelFocus`): the user is
+    // acting on the row they just scrolled to, not on whatever the pointer drifted over while
+    // they scrolled — so it confirms the focused row, exactly as the remote's OK would, and
+    // the pointer position is ignored. Ends the window: the click is the end of the gesture.
+    if let Event::MouseButtonDown {
+        mouse_btn: sdl2::mouse::MouseButton::Left,
+        ..
+    } = event
+    {
+        if input.wheel.holds() {
+            input.wheel.release();
+            input.wheel_click = true;
+            *dirty = true;
+            return dispatch_menu_event(app, MenuEvent::Confirm, display_mode, fonts);
+        }
+        // Otherwise a click is deliberate input at its own position: it takes focus at the
+        // press point, so drop the claim before either press path resolves hover focus.
+        input.wheel.release();
+    }
+    // The release of that same click carries no second action.
+    if matches!(
+        event,
+        Event::MouseButtonUp {
+            mouse_btn: sdl2::mouse::MouseButton::Left,
+            ..
+        }
+    ) && std::mem::take(&mut input.wheel_click)
+    {
+        return EventAction::Next;
     }
     if let Some(action) = card_hold_gate(app, &event, input, display_mode, fonts, dirty) {
         return action;
@@ -832,27 +1015,45 @@ pub(super) fn handle_ui_event(
         _ => {}
     }
     let menu_ev = match event {
-        Event::KeyDown { keycode: Some(k), .. } => edge_trigger_back(
-            crate::platform::webos::input::menu_event_for_key(k),
-            &mut input.menu_back_down,
-        ),
+        // The OS autorepeats of a held key are dropped by `press_nav`, so the remote steps at
+        // the rate this timer sets rather than at webOS's.
+        Event::KeyDown { keycode: Some(k), .. } => {
+            let ev = edge_trigger_back(
+                crate::platform::webos::input::menu_event_for_key(k),
+                &mut input.menu_back_down,
+            );
+            input.press_nav(NavSource::Key(k), ev)
+        }
         Event::KeyUp { keycode: Some(k), .. } => {
             if crate::platform::webos::input::menu_event_for_key(k) == Some(MenuEvent::Back) {
                 input.menu_back_down = false;
             }
+            input.release_nav_repeat(NavSource::Key(k));
             None
         }
-        Event::ControllerButtonDown { button, .. } => edge_trigger_back(
-            crate::platform::webos::input::menu_event_for_button(button),
-            &mut input.menu_back_down,
-        ),
+        Event::ControllerButtonDown { button, .. } => {
+            let ev = edge_trigger_back(
+                crate::platform::webos::input::menu_event_for_button(button),
+                &mut input.menu_back_down,
+            );
+            input.press_nav(NavSource::Button(button), ev)
+        }
         Event::ControllerButtonUp { button, .. } => {
             if crate::platform::webos::input::menu_event_for_button(button) == Some(MenuEvent::Back) {
                 input.menu_back_down = false;
             }
+            input.release_nav_repeat(NavSource::Button(button));
             None
         }
-        Event::ControllerAxisMotion { axis, value, .. } => input.stick_nav.axis_event(axis, value),
+        Event::ControllerAxisMotion { axis, value, .. } => {
+            // Back at centre ends the hold this axis was running; a fresh deflection past the
+            // deadzone starts one.
+            if crate::platform::webos::input::StickMenuNav::centred(value) {
+                input.release_nav_repeat(NavSource::Axis(axis));
+            }
+            let ev = input.stick_nav.axis_event(axis, value);
+            input.press_nav(NavSource::Axis(axis), ev)
+        }
         _ => None,
     };
     let Some(menu_ev) = menu_ev else {

@@ -377,17 +377,6 @@ impl App {
         (0..options_len).find(|&i| ui::widgets::dropdown_option_rect(overlay, i).contains_point((x, y)))
     }
 
-    /// A click while a dropdown is open: an option under the pointer confirms it,
-    /// anything else dismisses (tap-outside-to-close). The hovered option is already
-    /// the cursor courtesy of `handle_mouse_motion`.
-    fn dropdown_click_event(&self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> MenuEvent {
-        if self.dropdown_option_at(x, y, screen_w, screen_h, fonts).is_some() {
-            MenuEvent::Confirm
-        } else {
-            MenuEvent::Back
-        }
-    }
-
     /// `(row index, which of its trailing buttons)` under the pointer on the host menu.
     /// Hover and click both go through this, so hovering previews exactly what clicking will
     /// do — a click on a row's ⋯ opens that instead of the row's own action, the same split
@@ -489,18 +478,27 @@ impl App {
             // Same "what Back means here" as everywhere else — see `back`'s docs.
             return self.back(screen_w, screen_h, fonts);
         }
-        // An open dropdown owns the click wherever it landed: an option, or outside it,
-        // which closes it. Same as hover.
+        // An open dropdown owns the click wherever it landed, and always takes it as a pick of
+        // the highlighted option: the one under the pointer when it is over one (hover made it
+        // the cursor just above), and otherwise the one the list is already on. Not
+        // tap-outside-to-close — the pointer is often nowhere near what the user is looking at,
+        // since the wheel scrolls the list without the cursor following and a hand holding the
+        // remote drifts off the panel.
         if self.settings_ui.dropdown.is_some() {
-            let ev = self.dropdown_click_event(x, y, screen_w, screen_h, fonts);
-            self.handle_menu_event(ev, screen_w, screen_h, fonts);
+            self.handle_menu_event(MenuEvent::Confirm, screen_w, screen_h, fonts);
             return None;
         }
         // Unlike hover, a click DOES move `home_focus`/`settings_focused` — fresh at
         // the click's own position, so it confirms what was actually clicked rather
         // than whatever the keyboard/remote last focused elsewhere. Each arm only
-        // *places* focus (or bails on a click that landed on nothing); the shared
-        // `press` below is what confirms it, so a click and an OK press act alike.
+        // *places* focus; the shared `press` below is what confirms it, so a click and an OK
+        // press act alike.
+        //
+        // A click that lands on no row of an open list leaves the focus where it is and
+        // confirms *that* — the pointer is often nowhere near what the user is looking at
+        // (the wheel scrolls without the cursor following, and a hand holding the remote
+        // drifts off the panel), so a press off the rows means "take the highlighted one".
+        // Dismissing is Back's job, and the modal's close button's.
         match self.nav.screen {
             Screen::Home if self.card_menu.is_some() => {
                 // The held card's submenu is over the grid: a click either picks one of its
@@ -510,12 +508,10 @@ impl App {
                 if self.fix_card_position() {
                     return None;
                 }
-                let Some(row) = self.card_menu_row_at(x, y, screen_w, fonts) else {
-                    self.close_card_menu();
-                    return None;
-                };
-                if let Some(menu) = self.card_menu.as_mut() {
-                    menu.focus(row);
+                if let Some(row) = self.card_menu_row_at(x, y, screen_w, fonts) {
+                    if let Some(menu) = self.card_menu.as_mut() {
+                        menu.focus(row);
+                    }
                 }
             }
             Screen::Home => {
@@ -542,23 +538,26 @@ impl App {
                     self.set_home_focus(HomeFocus::Grid(idx));
                 }
             }
-            // `?` bails if the click hit the gap between rows or outside the viewport —
-            // nothing to focus or confirm.
             Screen::Collections => {
                 // A click is one of the inputs that drops a held row — and only that.
                 if self.screens.collections.dragging.is_some() {
                     self.commit_collection_drag();
                     return None;
                 }
-                self.nav.set_cursor(
-                    ScreenKey::Collections,
-                    self.scroll_list_row_at(x, y, screen_w, screen_h)?,
-                );
-                self.screens.row_button = self.scroll_list_row_button_at(x, y, screen_w, screen_h);
+                if let Some(row) = self.scroll_list_row_at(x, y, screen_w, screen_h) {
+                    self.nav.set_cursor(ScreenKey::Collections, row);
+                    self.screens.row_button = self.scroll_list_row_button_at(x, y, screen_w, screen_h);
+                } else {
+                    // No row under the pointer, so no trailing button either: the press is on
+                    // the focused row itself.
+                    self.screens.row_button = None;
+                }
             }
             Screen::Settings(_) => {
-                self.nav
-                    .set_cursor(ScreenKey::Settings, self.scroll_list_row_at(x, y, screen_w, screen_h)?);
+                let hit = self.scroll_list_row_at(x, y, screen_w, screen_h);
+                if let Some(row) = hit {
+                    self.nav.set_cursor(ScreenKey::Settings, row);
+                }
                 // A press on the Bitrate track sets the value under the cursor directly and
                 // arms the drag (see `handle_mouse_motion`) instead of nudging one notch the
                 // way `Confirm` below would — a slider is for landing on a value, not stepping
@@ -571,6 +570,8 @@ impl App {
                         self.detected_gamepad_type,
                     )
                     .is_none()
+                    // A drag starts from the track itself, so it needs a real hit.
+                    && hit.is_some()
                 {
                     let (row_rect, track) = self.bitrate_row_and_track(screen_w, screen_h);
                     if on_track(x, y, track, row_rect) {
@@ -590,15 +591,19 @@ impl App {
                 self.screens.pairing_focus = PairingFocus::RequestAccess;
             }
             Screen::HostMenu => {
-                let (i, button) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts)?;
-                self.nav.set_cursor(ScreenKey::HostMenu, i);
-                self.screens.row_button = button;
+                let hit = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts);
+                if let Some((row, _)) = hit {
+                    self.nav.set_cursor(ScreenKey::HostMenu, row);
+                }
+                self.screens.row_button = hit.and_then(|(_, button)| button);
             }
             // Identical row-list geometry; only which focus field they carry differs.
             Screen::HostPower | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
-                let (row, button) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts)?;
-                *self.list_modal_focused_mut()? = row;
-                self.screens.row_button = button;
+                let hit = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts);
+                if let Some((row, _)) = hit {
+                    *self.list_modal_focused_mut()? = row;
+                }
+                self.screens.row_button = hit.and_then(|(_, button)| button);
             }
             // The one row is a track and a button, so a press is one or the other. Only the
             // button falls through to `press` below, which is what advances the step.
