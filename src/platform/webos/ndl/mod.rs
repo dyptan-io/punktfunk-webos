@@ -80,25 +80,12 @@ const STATE_ERROR: c_int = 0x12;
 /// but a model that never delivers the callback must still stream.
 const LOAD_COMPLETE_TIMEOUT: Duration = Duration::from_millis(2_000);
 
-/// How long an AUDIO-ENABLED load primes its plane while waiting for `LOADCOMPLETED` before it
-/// stops waiting and lets the session start. Kept separate from [`LOAD_COMPLETE_TIMEOUT`] because
-/// it is not the same question: this one only buys the FAST confirmation, and it is no longer the
-/// verdict on the plane.
-///
-/// ⚠ **`LOADCOMPLETED` is not always reported before the first video frame. Measured on device
-/// 2026-09-02, issue #188.** A 2025 QNED (webOS 10, `k24n`) reports it 26 ms after the first access
-/// unit reaches the decoder and never before: its video-only load misses the 2 s wait above, then
-/// confirms the instant `v2::NdlVideo::ensure_loaded` gives up and feeds. An audio-enabled load
-/// waiting on that callback with no video fed therefore waits forever — 6 s of silence changed
-/// nothing — and the plane it gave up on had never been refused. A CX confirms in ~40 ms with no
-/// frame at all, which is what this budget is sized for. The verdict on the plane moved past the
-/// first frame, where both kinds of set can answer it (`v2`'s `PLANE_VERDICT`); the seconds spent
-/// here bought only black screen and a receive backlog to flush (three `receive backlog stopped
-/// draining` warns at 6 s, 90 frames dropped).
+/// Timeout for audio-enabled load's prime phase. Separate from [`LOAD_COMPLETE_TIMEOUT`] because
+/// the verdict moved to [`PLANE_VERDICT`]. Issue #188: QNED reports LOADCOMPLETED only after first
+/// frame fed (not before); old 6s timeout caused 6s of black; sized for CX which confirms ~40ms.
 const AUDIO_PRIME_BUDGET: Duration = Duration::from_millis(500);
 
-/// Grace for a rejected load's callbacks to land before the retry arms — see [`RetrySettle`],
-/// which is where that wait is spent and why it exists.
+/// Grace for rejected load's callbacks before retry (see [`RetrySettle`]).
 const CALLBACK_SETTLE: Duration = Duration::from_millis(400);
 
 /// Poll interval for the two waits below (startup path only).
@@ -138,9 +125,7 @@ impl EventSeq {
         self.base.store(self.seq.load(Ordering::SeqCst), Ordering::SeqCst);
     }
 
-    /// `Acquire`, not `SeqCst`: the feeds read this per packet and per frame, and all it has to
-    /// order is the callback's own `bump` against this reader. No third party observes the two
-    /// counters in a total order.
+    /// Acquire, not `SeqCst`: only needs to order this read against the callback's bump.
     fn fired(&self) -> bool {
         self.seq.load(Ordering::Acquire) > self.base.load(Ordering::Acquire)
     }
@@ -309,15 +294,9 @@ fn unload_count() -> u64 {
     UNLOAD_COMPLETED.count()
 }
 
-/// The wait between a rejected load's unload and the retry's load: its `UNLOADCOMPLETED` first,
-/// then [`CALLBACK_SETTLE`] for anything still in flight behind it. The callback carries nothing
-/// identifying its load, so separating the two in TIME is the only way to stop a stale one
-/// satisfying the retry's wait — and feeding an unloaded decoder is what turns a launch black.
-///
-/// Split from the sleeping loop below it because the same policy has two callers with opposite
-/// constraints: `v2::NdlVideo::load`'s fallback can block the launch thread, while the re-load a
-/// refused plane triggers mid-session must not block the video feed and steps this one frame at a
-/// time instead.
+/// Wait policy for a rejected load's unload+settle before retry. Split from the sleeping loop
+/// because `v2::NdlVideo::load` can block the launch thread, while mid-session reloads must not
+/// block the video feed.
 pub(super) struct RetrySettle {
     unloads_before: u64,
     started: Instant,
@@ -325,9 +304,7 @@ pub(super) struct RetrySettle {
 }
 
 impl RetrySettle {
-    /// Start the wait. `unloads_before` is [`unload_count`] from before the rejected load was
-    /// attempted: the caller's own teardown may have unloaded already, and a spent callback must
-    /// not be waited out.
+    /// Start the wait. `unloads_before` is the pre-load unload count to ignore stale callbacks.
     pub(super) fn after_unload(unloads_before: u64) -> Self {
         Self {
             unloads_before,
@@ -336,20 +313,18 @@ impl RetrySettle {
         }
     }
 
-    /// Whether the retry may be armed. Poll it; it latches the callback's arrival on the way.
+    /// Whether the retry may be armed. Polls and latches the callback's arrival.
     pub(super) fn ready(&mut self) -> bool {
         if self.unload_seen.is_none() && UNLOAD_COMPLETED.count() != self.unloads_before {
             self.unload_seen = Some(Instant::now());
         }
-        // A callback that never comes must not stall the retry for good, so the grace starts at
-        // the latest when its own budget is spent. `elapsed` on a future instant is zero, which is
-        // exactly "not yet".
+        // If callback never comes, grace deadline is when the budget itself expires.
         let from = self.unload_seen.unwrap_or(self.started + CALLBACK_SETTLE);
         from.elapsed() >= CALLBACK_SETTLE
     }
 }
 
-/// [`RetrySettle`], slept out — for the load path, which has a thread to spend on it.
+/// Sleep through a `RetrySettle` (for the load path with a thread to block on).
 fn settle_before_retry(unloads_before: u64) {
     let mut settle = RetrySettle::after_unload(unloads_before);
     while !settle.ready() {
@@ -360,9 +335,7 @@ fn settle_before_retry(unloads_before: u64) {
 /// Blocks up to [`LOAD_COMPLETE_TIMEOUT`] for the armed load's `LOADCOMPLETED`. Returns `false` on
 /// timeout. The audio-enabled load has its own wait — see `v2::NdlVideo::prime_audio`.
 fn wait_load_completed() -> bool {
-    // Ends on [`FATAL`] as well, for the same reason `v2::NdlVideo::prime_audio` does: a reported
-    // fatal state is the one answer that will not change by waiting, and the budget is only worth
-    // spending while the load is still plausibly coming.
+    // Also exits on FATAL: it won't change by waiting, unlike pending callbacks.
     poll_until(LOAD_COMPLETE_TIMEOUT, || LOAD_COMPLETED.fired() || fatal());
     if LOAD_COMPLETED.fired() {
         return true;

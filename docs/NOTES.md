@@ -330,10 +330,7 @@ video-only load misses the 2 s `LOAD_COMPLETE_TIMEOUT`, then confirms the instan
 gives up and feeds. A CX reports it ~40 ms after the load with no frame at all. The old code judged
 the plane inside the load wait, where nothing can feed a frame — the pumps do not spawn until
 `session::connect` returns — so on the QNED every session read a healthy plane as refused, fell
-back to video-only, and ran unpaced. That is issue #188's delay. Waiting longer changes nothing
-(6 s of silence primed, same result) and only buys black screen plus a receive backlog deep enough
-to force a flush at first frame (three `receive backlog stopped draining` warns, 90 frames
-dropped).
+back to video-only, and ran unpaced. That is issue #188's delay; longer waits don't help.
 
 So the plane is asked for and then **judged past the first frame**: `AUDIO_PRIME_BUDGET` (500 ms)
 buys only the fast confirmation a CX gives, an unconfirmed load starts the stream anyway, and

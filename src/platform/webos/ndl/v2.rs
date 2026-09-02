@@ -16,23 +16,12 @@ use crate::core::media::{AudioFormat, AudioPlane, AudioSink, MediaClock, NotRead
 use super::{arm_load, ensure_init, ensure_not_poisoned, ffi, settle_before_retry, wait_load_completed, RetrySettle};
 use super::{lock_ffi, mark_frame_fed_logged, NdlCodec, AUDIO_PRIME_BUDGET, LOAD_COMPLETED, LOAD_COMPLETE_TIMEOUT};
 
-/// How long past the `NDL_DirectMediaLoad` CALL [`NdlVideo::ensure_loaded`] holds frames while
-/// `LOADCOMPLETED` is missing.
-///
-/// Measured from the load call, so it overlaps the load wait rather than stacking on it: a unit
-/// whose callback never comes would otherwise eat `LOAD_COMPLETE_TIMEOUT` + this before the first
-/// frame. Overlapped, the wait alone already spends the grace and the first feed goes straight
-/// through.
-///
-/// **A backstop, not a live path**, which is what the assert below pins: `load()` always spends a
-/// whole load budget first, so the first `ensure_loaded` feeds and [`NotReady`] is never
-/// constructed. Holding frames past it would be worse than useless on a set that reports
-/// `LOADCOMPLETED` only once a frame has been fed — there, the hold is the thing preventing the
-/// confirmation.
+/// Hold timeout measured from load call (overlaps wait, doesn't stack). A backstop, not live
+/// path: `load()` always spends whole budget first. On sets reporting LOADCOMPLETED after first
+/// frame, this hold would prevent it.
 const FEED_ANYWAY_AFTER: Duration = Duration::from_millis(300);
 
-// Asserted in `const`, not `debug_assert`'d at the branch: CI and the TV both run release, where a
-// debug assertion over three compile-time constants is never evaluated at all.
+// Const assert because debug assertions don't run on release (CI and TV use release builds).
 const _: () = assert!(
     FEED_ANYWAY_AFTER.as_millis() < LOAD_COMPLETE_TIMEOUT.as_millis()
         && FEED_ANYWAY_AFTER.as_millis() < AUDIO_PRIME_BUDGET.as_millis()
@@ -77,21 +66,8 @@ const PRIME_LEAD: i64 = 8;
 /// `plane_lead` in the video heartbeat, which is the only place the depth is observable.
 const PLANE_LEAD_MS: i64 = PRIME_LEAD * PRIME_PACKET_MS;
 
-/// Standing depth the SILENT METRONOME holds, i.e. the software route's cushion — deeper than
-/// [`PLANE_LEAD_MS`], which is the real stream's.
-///
-/// **A preserved measurement, not a derivation.** It is exactly the depth the 4K120 5.1 smoothness
-/// was confirmed on — the old metronome's stamps worked out to `2 * PLANE_LEAD_MS` ahead of the
-/// load call once the arithmetic is done in ONE domain, NOT `PLANE_LEAD_MS + load_duration`. Do
-/// that arithmetic before touching this; docs/NOTES.md § "NDL's audio plane" has it written out,
-/// along with the lagging-clock reading that made `plane_lead` report the wrong figure.
-///
-/// Kept at parity deliberately, in both directions. Under it is the known stutter risk. Over it is
-/// cheap — a silent plane costs nothing to hold, the real audio being on SDL, so unlike
-/// [`PLANE_LEAD_MS`] depth here is not a lip-sync trade — but it is still an unmeasured change to
-/// the one parameter high-refresh smoothness turns on, and this fix is not the place to make one.
-/// It IS the knob for a TV that still stutters at high refresh: walk it UP against `plane_lead` in
-/// the video heartbeat, which now reports the real depth.
+/// Standing depth the silent metronome holds (software route). Preserved measurement from 4K120
+/// 5.1, not derivable as `PLANE_LEAD_MS + load_duration` — see docs/NOTES.md § "NDL's audio plane".
 const METRONOME_LEAD_MS: i64 = 2 * PLANE_LEAD_MS;
 
 /// Gap between prime bursts. Polled through, not slept through — the callback lands mid-gap,
@@ -104,17 +80,8 @@ const PRIME_RETRY: Duration = Duration::from_millis(20);
 /// encodes silence into the same continuous 5 ms datagrams. Only a dead host capture gaps this wide.
 const REAL_FEED_GRACE_MS: i64 = 300;
 
-/// How long past the FIRST ACCEPTED FRAME an audio-enabled load has to report `LOADCOMPLETED`
-/// before its plane is declared refused and [`NdlVideo::begin_reload`] gives it up.
-///
-/// This is where the verdict has to be taken, not in the load wait: on a 2025 QNED the callback
-/// does not come until a frame has been fed (see [`AUDIO_PRIME_BUDGET`]), so a load judged before
-/// then is judged on a question the set cannot answer yet. Past the first frame both kinds of set
-/// can: the QNED answered 26 ms after it, and a CX has answered long before it.
-///
-/// Generous against that 26 ms, because the two outcomes are not symmetric. Early costs a working
-/// plane — the pacing reference the whole session depends on, and the bug this is. Late costs a
-/// few hundred ms of black on a set that really did refuse the config, which then reloads.
+/// Verdict timeout past first frame. QNED reports callback only when ingesting (not during
+/// load). Early=broken plane (the bug); late=black then video-only reload.
 const PLANE_VERDICT: Duration = Duration::from_millis(750);
 
 /// The audio plane every V2 load asks for: Opus, stereo, 48 kHz.
@@ -680,8 +647,11 @@ impl NdlVideo {
         {
             let mut pending = self.pending_hdr();
             let mut applied = self.applied_hdr.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(info) = applied.take() {
-                *pending = Some(info);
+            // A pending value is NEWER than the applied one, so it wins; `applied` is cleared
+            // either way, the reload having reset the panel.
+            let last = applied.take();
+            if pending.is_none() {
+                *pending = last;
             }
         }
         // The new load's own hold starts here, not at `load_instant` — which by now reads seconds,
