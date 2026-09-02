@@ -297,6 +297,7 @@ impl ConfirmDialog {
         let full = crate::ui::render::Rect::new(0, 0, w, h);
         // The theme's glass, but only where there is a framebuffer backdrop to blur.
         let glass = blurrable.then(crate::ui::theme::glass).flatten();
+        let frosted = glass.is_some();
         let styled_at = crate::ui::theme::epoch();
         self.shell_dirty |= std::mem::replace(&mut self.styled_at, styled_at) != styled_at;
         if self.shell_dirty {
@@ -359,6 +360,15 @@ impl ConfirmDialog {
             rect: full,
             color: crate::ui::render::Color::RGBA(0, 0, 0, (f32::from(crate::ui::theme::palette().scrim.a) * m) as u8),
         });
+        if frosted {
+            crate::ui::painter::push_shadow(
+                cmds,
+                tile::MODAL_SHADOW,
+                crate::ui::widgets::MODAL_RADIUS,
+                card.offset(0, dy),
+                (255.0 * m) as u8,
+            );
+        }
         cmds.push(DrawCmd::Tex {
             tile: tile::DISCONNECT_DIALOG,
             dst: shell_dst,

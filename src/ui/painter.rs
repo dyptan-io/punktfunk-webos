@@ -1,5 +1,5 @@
 //! Anti-aliased software rendering backend (`tiny_skia` Pixmap framebuffer).
-use crate::ui::render::{Color, Rect};
+use crate::ui::render::{Color, DrawList, Rect, TileId};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use tiny_skia::{
@@ -512,6 +512,18 @@ pub fn shadow_rect(rect: Rect) -> Rect {
         rect.width() + 2 * pad as u32,
         rect.height() + 2 * pad as u32,
     )
+}
+
+/// Composites a panel shadow from the shared nine-slice atlas.
+pub fn push_shadow(cmds: &mut DrawList, tile: TileId, radius: i32, panel: Rect, alpha: u8) {
+    crate::ui::render::push_nine_slice(
+        cmds,
+        tile,
+        shadow_atlas_side(radius),
+        shadow_slice(radius),
+        shadow_rect(panel),
+        alpha,
+    );
 }
 
 /// How hard [`render_glow_shape`] drives the dense end of its blur ramp to full
