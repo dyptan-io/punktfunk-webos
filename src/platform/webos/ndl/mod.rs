@@ -80,15 +80,21 @@ const STATE_ERROR: c_int = 0x12;
 /// but a model that never delivers the callback must still stream.
 const LOAD_COMPLETE_TIMEOUT: Duration = Duration::from_millis(2_000);
 
-/// The bound for an AUDIO-ENABLED load, where giving up costs far more than a few held frames:
-/// the fallback is a video-only load, and a video-only load has no pacing reference at all
-/// (§ "NDL's audio plane"), so its lead grows for the whole session. That is issue #188 — a 2025
-/// QNED (webOS 10, `k24n`) needed ~2.4 s to complete a 4K120 HEVC HDR load, timed out at the 2 s
-/// this used to share with the video-only wait, and streamed unpaced; 4K60 and 1440p120 loaded
-/// inside 2 s on the same TV and were fine. A CX completes in ~40 ms, so nothing healthy waits.
-/// The cost is paid only by a unit whose plane genuinely never confirms: a longer black screen
-/// before the fallback, and [`v2::NdlVideo::prime_audio`] gives that time back on a fatal state.
-const AUDIO_LOAD_TIMEOUT: Duration = Duration::from_millis(6_000);
+/// The bound for an AUDIO-ENABLED load. Kept separate from [`LOAD_COMPLETE_TIMEOUT`] because the
+/// two failures cost differently — giving up here falls back to a video-only load, and a
+/// video-only load has no pacing reference at all (§ "NDL's audio plane"), so its lead grows for
+/// the whole session — but measured to the same value.
+///
+/// ⚠ **Raising it does NOT rescue a set whose plane is refused. Measured on device 2026-09-02,
+/// issue #188.** A 2025 QNED (webOS 10, `k24n`) fails an audio-enabled 4K120 HEVC HDR load at 2 s
+/// and fails it identically at 6 s — `no LOADCOMPLETED within 6s of priming 6040ms of silence` —
+/// while the video-only retry that follows confirms in ~2.04 s. The plane is REJECTED there, not
+/// slow. A CX confirms in ~40 ms, and nothing measured anywhere sits in between, so no value here
+/// turns a failing set into a working one. The extra seconds only buy black screen and a deeper
+/// receive backlog for the session to flush at first frame (three `receive backlog stopped
+/// draining` warns at 6 s, 90 frames dropped). Fixing such a set has to mean the plane config, not
+/// the wait.
+const AUDIO_LOAD_TIMEOUT: Duration = Duration::from_millis(2_000);
 
 /// Grace for a rejected load's callbacks to land before the video-only retry arms. The callback
 /// carries nothing identifying its load, so separating the two in TIME is the only way to stop a

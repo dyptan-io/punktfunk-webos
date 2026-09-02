@@ -34,10 +34,12 @@ const MAX_QUEUE_FRAMES: i32 = 2;
 /// How long the plane may go without presenting before the screen stops waiting for it.
 ///
 /// Measured from [`Playback::start`], so it has to cover the NDL load this thread does FIRST, not
-/// just the feed. That load is what sets the floor: an audio-enabled load waits `AUDIO_LOAD_TIMEOUT`
-/// (6 s) and a rejected one then falls back through a settle plus `LOAD_COMPLETE_TIMEOUT`. At the
-/// old 3 s this screen reported "the plane rejected the stream" while a slow but perfectly healthy
-/// load was still priming — the 2025 QNED of issue #188 takes ~2.4 s to complete one.
+/// just the feed. That load is what sets the floor: a REJECTED audio-enabled load spends
+/// `AUDIO_LOAD_TIMEOUT`, then a settle, then `LOAD_COMPLETE_TIMEOUT` on the video-only retry — on
+/// the 2025 QNED of issue #188, ~4.8 s before the first frame. At the old 3 s this screen reported
+/// "the plane rejected the stream" while a load was still working through that sequence. Left with
+/// headroom over the measured worst case rather than trimmed to it: the cost of being late here is
+/// a slow calibration screen, and the cost of being early is a false verdict.
 const PRESENT_DEADLINE: Duration = Duration::from_secs(10);
 /// How long the feed thread is given to notice `stop` and return — the same ceiling, for the same
 /// reason, as a stream's teardown.

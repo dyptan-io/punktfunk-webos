@@ -322,23 +322,25 @@ match `webosbrew/webos-userland` field-for-field, including the explicit trailin
 whole struct is memcpy'd into a fixed-size union arm, so **any implicit padding in a `repr(C)`
 struct handed to NDL is uninitialized stack on the wire**.
 
-⚠ **The audio-enabled load gets a LONGER wait than the video-only one** (`AUDIO_LOAD_TIMEOUT` 6 s
-vs `LOAD_COMPLETE_TIMEOUT` 2 s). Giving up on it is not "a few held frames", it is the fallback to
-a video-only load, i.e. an unpaced session — so the wait is sized for the slowest load that still
-confirms, not for the first frame. Issue #188 was exactly this: a 2025 QNED (webOS 10, `k24n`)
-needed ~2.4 s to complete a 4K120 HEVC HDR load, timed out against the 2 s it then shared with the
-video-only wait, fell back, and streamed with delay accumulating for the whole session (RAM to
-~500 MB, late frames to ~1300). 4K60 and 1440p120 loaded inside 2 s on the same TV and were fine,
-which is why the mode looked like the variable. A CX confirms in ~40 ms, so no healthy unit waits.
-Both waits bail early on `ndl::fatal()`, so the budget is only ever spent on a load still plausibly
-coming. The fallback warns that the picture will not be paced — read the log for that line before
-theorising about any later delay symptom.
+⚠ **A set that refuses the audio plane cannot be rescued by waiting longer — measured, issue
+#188.** The audio-enabled wait (`AUDIO_LOAD_TIMEOUT`) is a separate constant from the video-only
+one (`LOAD_COMPLETE_TIMEOUT`) because the two failures cost differently: giving up on the plane is
+not "a few held frames", it is the fallback to a video-only load and therefore an unpaced session.
+But both are 2 s, because raising one was tried on device and did nothing. A 2025 QNED (webOS 10,
+`k24n`) fails an audio-enabled 4K120 HEVC HDR load at 2 s and fails it identically at 6 s
+(`no LOADCOMPLETED within 6s of priming 6040ms of silence`), while the video-only retry that
+follows confirms in ~2.04 s. A CX confirms in ~40 ms. Nothing measured sits in between, so the
+distribution is bimodal — works almost instantly, or never — and the extra seconds only buy black
+screen plus a receive backlog deep enough to force a flush at first frame (three `receive backlog
+stopped draining` warns at 6 s, 90 frames dropped). **If a set is unpaced, the plane config is the
+thing to change, not the wait.** Both waits bail early on `ndl::fatal()`. The fallback warns that
+the picture will not be paced — grep the log for that line before theorising about any later delay.
 
 The load blocks `session::connect` between the handshake and the first `next_frame`, so anything
-timing a launch has to cover it: worst case is `AUDIO_LOAD_TIMEOUT` + `CALLBACK_SETTLE` × 2 +
-`LOAD_COMPLETE_TIMEOUT` ≈ 8.8 s. `app::hero` is fine (its `FIRST_FRAME_WAIT` only starts once
+timing a launch has to cover it: a rejected plane costs `AUDIO_LOAD_TIMEOUT` + `CALLBACK_SETTLE` ×
+2 + `LOAD_COMPLETE_TIMEOUT` ≈ 4.8 s. `app::hero` is fine (its `FIRST_FRAME_WAIT` only starts once
 connect returns, under a 30 s `HERO_LOADING_MAX` backstop), but `hdr_pattern`'s `PRESENT_DEADLINE`
-runs from `Playback::start` and had to be raised with it.
+runs from `Playback::start` and must stay above it.
 
 ⚠ **The prime's stamps and the player clock share one origin — `load_instant` is the load CALL.**
 NDL's PTS domain starts there (§ top of this section), and `prime_audio` already counted from it,
