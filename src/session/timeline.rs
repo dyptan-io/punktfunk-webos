@@ -1,37 +1,8 @@
-//! Timeline plumbing for the video pump: the panel-reconciled frame interval, and the
-//! host-PTS → player-clock mapping NDL needs (it has no PTS clock of its own).
+//! Timeline plumbing for the video pump: the host-PTS → player-clock mapping NDL needs (it has no
+//! PTS clock of its own).
 //!
 //! One mapping, [`Pacing`]. The fixed anchor it replaced stamped from a constant taken at frame 0
 //! and had no rate term at all; see [`Pacing`] for why that shape could not be repaired in place.
-
-use crate::platform::webos::sdl_webos;
-
-/// Returns panel refresh in Hz, or `None` on query failure/implausible values — including
-/// an SDL that has no such query (`platform::webos::sdl_webos`), where the caller falls back
-/// to the stream's own rate.
-fn panel_refresh_hz() -> Option<u32> {
-    let fns = sdl_webos::fns().ok()?;
-    let mut rate: std::os::raw::c_int = 0;
-    // SAFETY: single out-param, no aliasing; read-only panel query.
-    let ok = unsafe { (fns.get_refresh_rate)(&mut rate) };
-    (ok != 0 && (20..=240).contains(&rate)).then_some(rate as u32)
-}
-
-/// Frame interval (ns): panel cadence if within ±2 Hz of stream, else stream rate.
-pub fn reconciled_frame_interval_ns(stream_hz: u32) -> u64 {
-    let hz = match panel_refresh_hz() {
-        Some(panel_hz) if stream_hz.abs_diff(panel_hz) <= 2 => {
-            tracing::info!("frame interval anchored to panel {panel_hz}Hz (stream {stream_hz}Hz)");
-            panel_hz
-        }
-        Some(panel_hz) => {
-            tracing::info!("frame interval on stream {stream_hz}Hz (panel {panel_hz}Hz differs by >2Hz)");
-            stream_hz
-        }
-        None => stream_hz,
-    };
-    1_000_000_000 / u64::from(hz.max(1))
-}
 
 /// Plays frames out on the host's own cadence instead of on their arrival instant, by stamping
 /// them from [`punktfunk_core::phase::CadenceClock`] rather than from a fixed anchor.

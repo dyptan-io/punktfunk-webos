@@ -647,7 +647,6 @@ impl VideoSink for std::sync::Arc<NdlVideo> {
             pts: true,
             partial_au: true,
             flush: true,
-            render_queue: true,
         }
     }
 

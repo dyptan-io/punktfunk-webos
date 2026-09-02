@@ -203,8 +203,6 @@ fn spawn_video_thread(
     let cfg = SinkConfig {
         stream_hz: client.mode().refresh_hz,
         report_decode_latency: client.wants_decode_latency(),
-        clock_offset: client.clock_offset_shared(),
-        video_e2e: client.video_e2e_shared(),
     };
     let (client, stop, stats) = (client.clone(), stop.clone(), stats.clone());
     std::thread::Builder::new()

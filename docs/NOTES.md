@@ -73,7 +73,7 @@ Host side: a game only emits trigger effects when it sees a `DualSense`, so pad 
 
 ## Known platform limitations (don't retry)
 
-- **Frame rate paces the stream; can't set panel refresh rate.** `webosbrew/SDL-webOS` exposes read-only `SDL_webOSGetRefreshRate` only; no set-side webOS API. Used by `session::timeline::reconciled_frame_interval_ns`: when measured panel Hz is within ±2 Hz of stream fps, the frame interval anchors to the panel's cadence instead of the stream's (aurora-tv's `session_worker.c` trick). That interval is what converts an NDL render-queue depth into time (e2e latency, decode reports).
+- **Frame rate paces the stream; can't set panel refresh rate.** `webosbrew/SDL-webOS` exposes read-only `SDL_webOSGetRefreshRate` only; no set-side webOS API. Nothing resolves the symbol now: its only reader converted an NDL render-queue depth into time for the A/V e2e estimate, and both were removed. Re-add them together (panel cadence when within ±2 Hz of stream fps — aurora-tv's `session_worker.c` trick) if a backlog-in-milliseconds figure is ever needed again.
 - **Magic Remote Back requires `SDL_WEBOS_ACCESS_POLICY_KEYS_BACK`** set before window creation. Arrives as `keycode = 2097155`. Same for Home (`SDL_WEBOS_ACCESS_POLICY_KEYS_HOME`) and Guide (`SDL_WEBOS_ACCESS_POLICY_KEYS_GUIDE`). Launcher ribbon overlay needs `SDL_WEBOS_ACCESS_POLICY_RIBBON=false` or it pops over the app.
 - **A held Back arrives as EXIT key, not a long Back — don't time the hold yourself.** webOS does long-press detection: short Back tap delivered as Back key (`keycode 2097155`, no scancode), but *holding* Back fires webOS's own EXIT gesture, delivered as discrete `SDL_SCANCODE_WEBOS_EXIT = 505` press — held Back key itself never reaches app (confirmed on-device: long press logs no Back down/up at all). So "hold Back to open the dialog" can't work by timing Back events; instead poll `WEBOS_EXIT_SCANCODE` (edge-detected like colour buttons — 505 is outside rust-sdl2's `Scancode` enum so never surfaces in safe event API) and open disconnect/quit dialog on its rising edge. Short Back tap stays plain: forwarded to host as Esc (stream) or back-nav (menu). Exactly aurora-tv's split (`keyboard_webos.c`: EXIT→open overlay, BACK→VK_ESCAPE). Needs `KEYS_EXIT` (above) or gesture SIGTERMs instead of delivering 505.
 - **Gamepad disconnect shortcuts must be holds, not presses** (`runtime::input::DisconnectChord`, 2 s). Guide, both shoulders, or Start+Back opens in-stream disconnect dialog — and every one of those buttons is also forwarded as real game input, which is the whole constraint: L1+R1 in particular is a common in-game binding, so press-to-fire would kill streams mid-play. Chord state tracked from transitions (SDL reports no held-state here), **cleared when it fires or pad unplugs** — an open dialog swallows controller events and an unplugged pad sends no releases, so without that the buttons stay logically down and the dialog reopens the moment it's dismissed.
@@ -265,7 +265,9 @@ What still matters:
 
 - NDL is submit-only (`NDL_DirectVideoPlay` reports nothing about presentation), so glass time can
   only be estimated and the decode+panel constant after the render queue drains is not observable
-  from the app at all. `session::sink::video_e2e_ns` still publishes that estimate for core.
+  from the app at all. The estimate this client used to publish for core (`video_e2e_ns`, from the
+  render-queue depth) was removed: nothing read it — `set_sync_target` is never called and the
+  overlay never printed it — so it cost a `CLOCK_REALTIME` read per frame to feed a dead cell.
 - ⚠ **Use `frame.pts_ns`, never the paced value**, wherever a host-clock comparison is made. Both
   are in scope at the submit site with near-identical names; the paced one has been mapped into
   NDL's player clock by `session::timeline::Pacing`.
@@ -436,7 +438,7 @@ along (`Frame::part`, the `frame_parts` connect flag) and this client passed `fa
 `session::pump`'s `AuParts` implements core's contract — parts in order, an `offset` mismatch or a
 new `first` over an open AU means that AU died — and reports the break as loss, which is what puts
 the sink into freeze-until-reanchor and asks for a keyframe. `session::sink` skips the per-frame
-reference points (`video_e2e`, the decode report, the audio latch) on a piece that is not the AU's
+reference points (the decode report, the audio latch) on a piece that is not the AU's
 last, since a piece is not a presentable frame.
 
 ⚠ **NDL has no `PARTIAL_FRAME` flag and no AU-boundary flag at all** — it takes raw Annex-B and
@@ -517,10 +519,9 @@ Wiring notes worth knowing before editing:
   and inflates the measured jitter by the AU's own transmission time. `VideoStage::au_base_ns` holds
   the stamp while the AU is open — which is also what makes every piece of one AU carry the same
   timestamp, as NDL (start-code boundaries, no AU flag) needs.
-- ⚠ **The cushion's ceiling is the STREAM mode's interval, not `frame_interval_ns`.** Those are two
-  different quantities that happen to agree on most panels: the reconciled one exists to convert a
-  render-queue depth into time, so it follows the panel's drain cadence, while the cushion bounds how
-  long a frame may be HELD, so it must follow the cadence the host produces. Core states this with a
+- ⚠ **The cushion's ceiling is the STREAM mode's interval, never the panel's.** The two agree on
+  most panels but are different quantities: the cushion bounds how long a frame may be HELD, so it
+  must follow the cadence the host produces. Core states this with a
   test of its own (`the_cadence_interval_comes_from_the_stream_mode_not_the_panel`) — a 120 fps
   stream on a 60 Hz panel would otherwise license twice the hold the source can justify. The anchor's
   trim ramp takes the same quantity, for the same reason: it pays debt off per frame, and frames come
