@@ -77,11 +77,19 @@ Host side: a game only emits trigger effects when it sees a `DualSense`, so pad 
 
 The pad's speaker and coils take Opus / s8-PCM over the same HID output plane (reports `0x32`/`0x36`/`0x39`, see `dualsense.rs` and the planning doc). Every layout sounded choppy until `device/internal/stopSniff` was called for the pad: **the TV keeps the HID link in sniff mode**, so output reports leave in bursts at the anchor points and the pad's audio buffer starves in between — it then replays stale buffer content, which is what "frames out of order" sounded like. `stopSniff`/`startSniff` sit in the `public` group; call stop when the audio lane opens and start when it closes. The coil lane alone masked this: a buzz with periodic holes still feels like a buzz.
 
-`startSniff` does **not** take the address-only payload `stopSniff` accepts — webOS 10.3 refuses it
-with `errorCode 144`, a generic schema error. The service binary is not visible from the dev-mode
-jail and the API manifest carries method names without schemas, so the real shape is not readable
-there; the reply is asynchronous, so the refusal surfaces ~11 ms into the NEXT session (`REPLIES` is
-process-wide). Until the schema is known the link is never handed back to sniff on teardown.
+**The two take different payloads.** `stopSniff` wants the address alone; `startSniff` wants HCI
+Sniff Mode's parameters and refuses anything else with `errorCode 144`, a schema error that names
+nothing. The working shape, found by sending candidates tagged and reading which was refused:
+
+```json
+{"address":"…","minInterval":96,"maxInterval":124,"attempt":4,"timeout":1}
+```
+
+Intervals are 0.625 ms slots and bound how long the pad waits to transmit, so they track the ~77 ms
+anchor the TV's own policy used — the pad drives this app's UI between sessions, and a slower
+power-saving interval would show up as input lag there. Report a refusal from the loop that CAUSED
+it: replies are asynchronous and `REPLIES` is process-wide, so an undispatched one surfaces ~11 ms
+into the next session and reads as its fault.
 
 Those two are the **only** sniff-related methods in the whole `bluetooth2` API (`/usr/share/luna-service2/api-permissions.d/com.webos.service.bluetooth2.api.json`) — there is no link-policy or QoS call, so nothing persistent can be set and a re-assert is the only lever. Do not re-assert on a timer: sniff is a link-IDLE state and a lane at 94 reports/s never lets the link idle, so `stopSniff` rides the edge out of an idle lane (2 s floor, since the host gates audio on silence). An earlier 500 ms poll cost two hub round-trips a second for nothing.
 

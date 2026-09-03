@@ -588,6 +588,13 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
     // The coil lane needs the bus: ~94 reports a second is not a spawn rate. Claiming it here
     // parks the motor envelope for the session (`Envelope::own_coils`).
     let sniff_payload = format!("{{\"address\":\"{address}\"}}");
+    // `startSniff` does NOT take the address-only payload `stopSniff` does: it wants HCI Sniff
+    // Mode's own parameters, and refuses anything else with a generic schema error (verified by
+    // sending both shapes tagged, webOS 10.3). Intervals are 0.625 ms slots, and they bound how
+    // long the pad waits to transmit — the pad also drives this app's UI between sessions, so
+    // they track the ~77 ms anchor the TV's own policy used rather than a slower power-saving one.
+    let sniff_params_payload =
+        format!("{{\"address\":\"{address}\",\"minInterval\":96,\"maxInterval\":124,\"attempt\":4,\"timeout\":1}}");
     let lane = match (&bus, coils) {
         (Some(bus), Some(envelope)) => {
             // Un-burst the link before the first audio report; the reply is counted like any
@@ -788,8 +795,18 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
     }
     // Give the link back to sniff: the TV's own power policy, and what the pad expects at idle.
     if let (Some(bus), Some(_)) = (&bus, &lane) {
-        let _ = bus.call(START_SNIFF_URI, &sniff_payload, ls2::Call::StartSniff);
-        bus.pump();
+        let _ = bus.call(START_SNIFF_URI, &sniff_params_payload, ls2::Call::StartSniff);
+        // Wait out the replies HERE. This loop is the last thing that can report them, and
+        // `REPLIES` is process-wide, so a refusal left undispatched surfaces inside the NEXT
+        // session and reads as its fault. Teardown is not latency-critical; a reply on this bus
+        // has measured 1.4-2.4 ms, so 100 ms is many times over.
+        for _ in 0..20 {
+            bus.pump();
+            if let Some(text) = ls2::REPLIES.take_failure() {
+                tracing::warn!("DualSense feedback: Bluetooth service refused a report: {text}");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 
