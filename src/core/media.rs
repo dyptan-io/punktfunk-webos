@@ -168,4 +168,14 @@ pub trait AudioPlane: AudioSink {
     /// thread. `yields_to_real` leaves the plane to whatever pump is feeding it and fills in only
     /// once that stops.
     fn run_keepalive(&self, stop: &AtomicBool, yields_to_real: bool);
+
+    /// Whether the session's REAL audio may ride this plane, as opposed to only a keepalive.
+    ///
+    /// A plane can exist without being proven: a backend may accept the request and confirm it
+    /// later, or never. Keeping it fed costs nothing if it turns out not to be there, but routing
+    /// the session's only audio onto it does — that is a silent session — so the two questions are
+    /// asked separately and the route takes the conservative one.
+    fn accepts_stream(&self) -> bool {
+        true
+    }
 }

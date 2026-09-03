@@ -56,7 +56,6 @@ impl NdlCodec {
         }
     }
 
-    /// From `punktfunk_core::quic::CODEC_*` wire bit.
     pub fn from_wire(codec: u8) -> Option<Self> {
         match codec {
             punktfunk_core::quic::CODEC_H264 => Some(Self::H264),
@@ -80,13 +79,28 @@ const STATE_ERROR: c_int = 0x12;
 /// but a model that never delivers the callback must still stream.
 const LOAD_COMPLETE_TIMEOUT: Duration = Duration::from_millis(2_000);
 
+/// How long an audio-enabled load is primed while waiting for `LOADCOMPLETED` (see
+/// `v2::NdlVideo::prime_audio`). Sized for a set that answers promptly — a CX confirms in ~40 ms
+/// — because a set that answers at all answers fast, and one that does not is not waiting on
+/// time. Issue #188: a 2025 QNED reports the callback only once a video FRAME has been fed, which
+/// cannot happen inside this wait, so every ms past a prompt answer is black screen bought for
+/// nothing. The plane is not judged by this wait; see [`AUDIO_PROVE_BUDGET`].
+pub const AUDIO_PRIME_BUDGET: Duration = Duration::from_millis(500);
+
+/// The budget a session spends when it intends to put its REAL audio on the plane, i.e. the user
+/// asked for the offload route. Longer than [`AUDIO_PRIME_BUDGET`] on purpose: an unconfirmed
+/// plane costs that session the route outright (`AudioPlane::accepts_stream`), and the route is
+/// picked once, before a frame has been fed, so an answer arriving later cannot be used. Every
+/// other session takes the short budget and loses nothing by it — the metronome rides an
+/// unconfirmed plane happily, and that is what paces the picture.
+pub const AUDIO_PROVE_BUDGET: Duration = LOAD_COMPLETE_TIMEOUT;
+
 /// Grace for a rejected load's callbacks to land before the video-only retry arms. The callback
 /// carries nothing identifying its load, so separating the two in TIME is the only way to stop a
 /// stale `LOADCOMPLETED` satisfying the retry's wait — and feeding an unloaded decoder is what
 /// turns a launch black.
 const CALLBACK_SETTLE: Duration = Duration::from_millis(400);
 
-/// Poll interval for the two waits below (startup path only).
 const POLL: Duration = Duration::from_millis(2);
 
 /// A process-global NDL event, counted rather than flagged: a late event still increments, so it
@@ -110,7 +124,6 @@ impl EventSeq {
         self.seq.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// Bump only if this load hasn't seen the event yet; `true` when this call was the first.
     fn bump_first(&self) -> bool {
         if self.fired() {
             return false;
@@ -123,12 +136,13 @@ impl EventSeq {
         self.base.store(self.seq.load(Ordering::SeqCst), Ordering::SeqCst);
     }
 
+    /// Acquire, not `SeqCst`: only needs to order this read against the callback's bump.
     fn fired(&self) -> bool {
-        self.seq.load(Ordering::SeqCst) > self.base.load(Ordering::SeqCst)
+        self.seq.load(Ordering::Acquire) > self.base.load(Ordering::Acquire)
     }
 
     fn count(&self) -> u64 {
-        self.seq.load(Ordering::SeqCst)
+        self.seq.load(Ordering::Acquire)
     }
 }
 
@@ -211,7 +225,7 @@ pub fn fatal() -> bool {
     FATAL.fired()
 }
 
-/// `PLAYING` for the current load. Diagnostics only — see [`PLAYING`].
+/// Diagnostics only — see [`PLAYING`].
 pub fn playing() -> bool {
     PLAYING.fired()
 }
@@ -240,12 +254,10 @@ pub fn presented() -> bool {
     first_frame_at().is_some_and(|t| t.elapsed() >= FIRST_PICTURE_HOLD)
 }
 
-/// When the armed load's first frame was accepted, if one has been.
 fn first_frame_at() -> Option<Instant> {
     *FIRST_FRAME_AT.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Records the first frame of the armed load (see [`arm_load`]); `true` if it was the first.
 fn mark_frame_fed() -> bool {
     let first = FRAME_FED.bump_first();
     if first {
@@ -254,8 +266,6 @@ fn mark_frame_fed() -> bool {
     first
 }
 
-/// [`mark_frame_fed`] plus the log line both generations emit; `since` is the handle's load
-/// instant. Returns whether this was the armed load's first frame.
 fn mark_frame_fed_logged(backend: &str, since: Instant) -> bool {
     let first = mark_frame_fed();
     if first {
@@ -286,7 +296,6 @@ fn poll_until(limit: Duration, done: impl Fn() -> bool) -> bool {
     true
 }
 
-/// `UNLOADCOMPLETED` count, for [`settle_before_retry`]'s baseline.
 fn unload_count() -> u64 {
     UNLOAD_COMPLETED.count()
 }
@@ -300,13 +309,20 @@ fn settle_before_retry(unloads_before: u64) {
     std::thread::sleep(CALLBACK_SETTLE);
 }
 
-/// Blocks until the armed load's `LOADCOMPLETED` lands. Returns `false` on timeout.
+/// Blocks up to [`LOAD_COMPLETE_TIMEOUT`] for the armed load's `LOADCOMPLETED`. Returns `false` on
+/// timeout. The audio-enabled load has its own wait — see `v2::NdlVideo::prime_audio`.
 fn wait_load_completed() -> bool {
-    let completed = poll_until(LOAD_COMPLETE_TIMEOUT, || LOAD_COMPLETED.fired());
-    if !completed {
+    // Also exits on FATAL: it won't change by waiting, unlike pending callbacks.
+    poll_until(LOAD_COMPLETE_TIMEOUT, || LOAD_COMPLETED.fired() || fatal());
+    if LOAD_COMPLETED.fired() {
+        return true;
+    }
+    if fatal() {
+        tracing::warn!("NDL load reported a fatal state — not waiting out the rest of {LOAD_COMPLETE_TIMEOUT:?}");
+    } else {
         tracing::warn!("NDL load: no LOADCOMPLETED within {LOAD_COMPLETE_TIMEOUT:?} — holding the first frames");
     }
-    completed
+    false
 }
 
 /// Count of video/audio pump threads leaked past `SHUTDOWN_JOIN_TIMEOUT` (see
@@ -338,9 +354,8 @@ impl Drop for LeakGuard {
     }
 }
 
-/// Marks one NDL-touching thread as leaked until the returned guard drops — which the caller must
-/// arrange to happen when that same thread actually finishes, however late. Leaking the guard
-/// (`mem::forget`) is the deliberate "nothing will ever tell us it recovered" case.
+/// Caller must arrange the guard to drop when the thread actually finishes, however late.
+/// Leaking it (`mem::forget`) means recovery is never signalled.
 #[must_use = "NDL stays poisoned until this guard drops — hold it until the wedged thread returns"]
 pub fn poison() -> LeakGuard {
     if LEAKED_THREADS.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -352,9 +367,7 @@ pub fn poison() -> LeakGuard {
     LeakGuard(())
 }
 
-/// `Err` while any leaked thread might still be live (see [`LEAKED_THREADS`]). One gate, one
-/// wording: every `load()` enforces it and `session::connect` checks it early to avoid holding a
-/// host session slot for a connect that can only end here.
+/// Checked early by `session::connect` to avoid holding a host slot for a connect that can only fail.
 pub fn ensure_not_poisoned() -> Result<()> {
     if LEAKED_THREADS.load(Ordering::SeqCst) > 0 {
         bail!("NDL is still tearing down a wedged decode thread from the previous session — try reconnecting shortly");
@@ -380,8 +393,6 @@ fn ensure_init(app_id: &str, api2: bool) -> Result<()> {
     Ok(())
 }
 
-/// The app id NDL is initialised with. Overridable for dev builds installed under another id —
-/// NDL keys its session on the caller's app id, so a mismatch fails the load.
 /// Widest layout the TV's audio output will actually pass **right now**, or `None` where it
 /// cannot be asked.
 ///
@@ -423,9 +434,6 @@ pub fn audio_output_width() -> Option<u8> {
 /// for the same reason: a stream whose audio decodes in software, and the HDR calibration feed.
 /// It lives here so the boost comes with it — this is a 20 ms metronome holding the depth NDL
 /// paces on, and at nice 0 it competes with the boosted decode threads on a 2-3 core `SoC`.
-///
-/// `yields_to_real` is the difference between the two audio paths — see
-/// [`v2::NdlVideo::run_clock_plane`].
 pub fn spawn_clock_plane(
     plane: std::sync::Arc<dyn crate::core::media::AudioPlane>,
     stop: std::sync::Arc<AtomicBool>,
@@ -439,6 +447,8 @@ pub fn spawn_clock_plane(
         })
 }
 
+/// Overridable for dev builds. NDL keys its session on the caller's app id, so a mismatch fails
+/// the load.
 pub fn app_id() -> String {
     std::env::var("APPID").unwrap_or_else(|_| "io.dyptan.punktfunk.webos".into())
 }

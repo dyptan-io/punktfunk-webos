@@ -170,9 +170,10 @@ pub(super) fn run_inner() -> Result<()> {
             }
         };
         tracing::info!("session connected, entering event loop");
-        // `connect` returns past LOADCOMPLETED with the pump feeding; the reveal then waits for a
-        // frame to actually reach NDL, so the menu is swapped straight for live video. NDL's own
-        // `PLAYING` is NOT that signal — it lands during `load()`, before anything is fed.
+        // `connect` returns with the load issued and the pump feeding; the reveal then waits for
+        // a frame to actually reach NDL, so the menu is swapped straight for live video. NDL's own
+        // `PLAYING` is NOT that signal — it lands during `load()`, before anything is fed, and
+        // `LOADCOMPLETED` is not one either: some sets report it only once a frame has been fed.
         // Bounded — a host that never sends must not leave a stale menu frame up.
         let reveal_wait = Instant::now();
         let deadline = reveal_deadline(first_frame_deadline);

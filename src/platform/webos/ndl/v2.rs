@@ -14,21 +14,32 @@ use anyhow::{bail, Result};
 use crate::core::media::{AudioFormat, AudioPlane, AudioSink, MediaClock, NotReady, Samples, VideoSink, VideoSinkCaps};
 
 use super::{arm_load, ensure_init, ensure_not_poisoned, ffi, settle_before_retry, wait_load_completed};
-use super::{lock_ffi, mark_frame_fed_logged, NdlCodec, LOAD_COMPLETED};
+use super::{
+    lock_ffi, mark_frame_fed_logged, NdlCodec, AUDIO_PRIME_BUDGET, AUDIO_PROVE_BUDGET, LOAD_COMPLETED,
+    LOAD_COMPLETE_TIMEOUT,
+};
 
 /// How long past the `NDL_DirectMediaLoad` CALL [`NdlVideo::ensure_loaded`] holds frames while
 /// `LOADCOMPLETED` is missing.
 ///
-/// Measured from `load_requested`, not `load_instant`: the latter is stamped after
-/// `wait_load_completed`, so timing the grace from it stacks the two windows and a unit whose
-/// callback never comes eats `LOAD_COMPLETE_TIMEOUT` + this before the first frame — three seconds
-/// of black on a CX, for a callback that provably was not going to arrive. Overlapping them means
-/// the wait alone already spends the grace, so the first feed goes straight through.
+/// Measured from `load_instant`, which is the load call itself, so this window OVERLAPS the load's
+/// own wait rather than stacking on it: a unit whose callback never comes would otherwise eat the
+/// load budget and then this one before the first frame.
 ///
-/// **A backstop, not a live path.** `load()` already waits `LOAD_COMPLETE_TIMEOUT` (longer than
-/// this), so the first `ensure_loaded` always feeds and [`NotReady`] is never constructed.
-/// Kept because it is what would make an early return from that wait safe.
-const FEED_ANYWAY_AFTER: Duration = Duration::from_millis(1_000);
+/// **A backstop, not a live path** for a set that confirms during the load — `load()` has already
+/// spent a longer budget by the time a frame gets here. It IS the live path on a set that reports
+/// `LOADCOMPLETED` only once a frame has been fed, where holding forever is the deadlock: nothing
+/// confirms until something feeds.
+const FEED_ANYWAY_AFTER: Duration = Duration::from_millis(300);
+
+// Const assert because debug assertions don't run on release (CI and TV use release builds).
+// Every budget a load can be issued with, since the hold must overlap the wait rather than stack
+// on it whichever one the session picked (`session::pipeline::plane_budget`).
+const _: () = assert!(
+    FEED_ANYWAY_AFTER.as_millis() < LOAD_COMPLETE_TIMEOUT.as_millis()
+        && FEED_ANYWAY_AFTER.as_millis() < AUDIO_PRIME_BUDGET.as_millis()
+        && FEED_ANYWAY_AFTER.as_millis() < AUDIO_PROVE_BUDGET.as_millis()
+);
 
 /// One empty Opus frame — `mariotaku/ss4s`'s `opus_empty_frame_211`. Its TOC declares STEREO,
 /// matching the load; the generic `0xF8 0xFF 0xFE` declares mono. (A CX took both.)
@@ -43,8 +54,8 @@ const PRIME_PACKET_MS: i64 = 5;
 const PRIME_LEAD: i64 = 8;
 
 /// Lead the REAL stream's stamps carry over the player clock, i.e. the audio queue depth NDL is
-/// left holding — [`PRIME_LEAD`] packets, the same depth the metronome maintains while it is the
-/// only feed.
+/// left holding — [`PRIME_LEAD`] packets, and what the prime's ceiling already sits at. The sole
+/// feed on the software route holds [`METRONOME_LEAD_MS`] instead, which is deeper.
 ///
 /// **This is not a sync tweak, it is what keeps the picture paced.** NDL regulates the video plane
 /// against its audio renderer, and the renderer's clock only advances smoothly while it has data
@@ -54,8 +65,9 @@ const PRIME_LEAD: i64 = 8;
 /// introduced to fix, back again the moment real audio displaced the metronome. Adding a constant
 /// here restores the depth without interleaving silence into the real stream.
 ///
-/// The clock plane targets the same figure, which is what lets the two feeders share
-/// [`NdlVideo::last_audio_pts_ms`] without either driving it.
+/// The clock plane targets the same figure WHEN IT SHARES THE PLANE with the real stream (the
+/// offload route's fill), which is what lets the two feeders share [`NdlVideo::last_audio_pts_ms`]
+/// without either driving it. As the sole feed it holds [`METRONOME_LEAD_MS`] instead.
 ///
 /// **The SDL path does the same thing, in its own currency** — `platform::webos::audio` primes and
 /// holds a 25 ms ring ahead of the speaker for exactly this reason: a renderer needs data queued
@@ -68,6 +80,10 @@ const PRIME_LEAD: i64 = 8;
 /// `plane_lead` in the video heartbeat, which is the only place the depth is observable.
 const PLANE_LEAD_MS: i64 = PRIME_LEAD * PRIME_PACKET_MS;
 
+/// Standing depth the silent metronome holds (software route). Preserved measurement from 4K120
+/// 5.1, not derivable as `PLANE_LEAD_MS + load_duration` — see docs/NOTES.md § "NDL's audio plane".
+const METRONOME_LEAD_MS: i64 = 2 * PLANE_LEAD_MS;
+
 /// Gap between prime bursts. Polled through, not slept through — the callback lands mid-gap,
 /// and this is launch-path time, i.e. black screen.
 const PRIME_RETRY: Duration = Duration::from_millis(20);
@@ -77,6 +93,23 @@ const PRIME_RETRY: Duration = Duration::from_millis(20);
 /// The test is "no packets at all", never amplitude: a silent game still streams, since the host
 /// encodes silence into the same continuous 5 ms datagrams. Only a dead host capture gaps this wide.
 const REAL_FEED_GRACE_MS: i64 = 300;
+
+/// How long past the first accepted frame an audio-enabled load has to report `LOADCOMPLETED`
+/// before the plane is called refused **in the log**. Diagnostic only — nothing is recovered.
+///
+/// This is the one window where the two indistinguishable cases separate. Before a frame is fed,
+/// "no callback yet" means either a healthy ingest-gated set or a pipeline that rejected the Opus
+/// config asynchronously (which then accepts every frame into a decoder that never runs — a whole
+/// black session with no error on any call). After a frame, a healthy set answers: the measured
+/// QNED takes 26 ms. Generous against that, since the cost of being early is a false alarm in the
+/// log and the cost of being late is nothing.
+///
+/// **Deliberately not a fallback.** Recovering means unloading and re-loading mid-session, which
+/// was written for issue #188 and reverted: it re-applies HDR metadata to the new pipeline, and
+/// mode re-entry on that path is itself a suspected cause of #188 (docs/NOTES.md § "NDL's audio
+/// plane"). Until a set is measured that genuinely refuses the plane this way, the honest move is
+/// to name it rather than to act on a guess — the whole of #188 was a misread of this signal.
+const PLANE_CONFIRM_GRACE: Duration = Duration::from_millis(750);
 
 /// The audio plane every V2 load asks for: Opus, stereo, 48 kHz.
 ///
@@ -102,36 +135,56 @@ fn plane_config() -> ffi::AudioUnion {
 pub struct NdlVideo {
     fns: &'static ffi::V2,
     /// PTS in ms since load (NDL's local clock, not wall-clock or host capture clock).
+    ///
+    /// ⚠ **Stamped at the `NDL_DirectMediaLoad` CALL, not after the load wait**, so it shares its
+    /// zero with [`Self::prime_audio`]'s stamps — which count from the same call, because that is
+    /// where NDL's own PTS domain starts. Stamping it after the wait instead put the prime a whole
+    /// load duration ahead of the player clock, and every consumer then had to correct for that
+    /// gap: the metronome carried the prime's ceiling as a permanent base, the offload route
+    /// floored its first load-duration of real packets onto a single stamp, and `plane_lead`
+    /// reported the gap instead of the depth. One origin removes all three. It also means the
+    /// player clock is already at the load duration when the session starts, which is what
+    /// `last_real_feed_ms` is seeded against.
     load_instant: Instant,
-    /// When `NDL_DirectMediaLoad` was issued — earlier than `load_instant` by however long
-    /// `wait_load_completed` blocked. Only [`FEED_ANYWAY_AFTER`] is measured from it; the PTS
-    /// domain stays on `load_instant`.
-    load_requested: Instant,
-    /// Whether this load got an audio plane. False on a video-only load, i.e. one whose
-    /// audio-enabled attempt was rejected — and with it goes the picture's pacing reference.
+    /// Whether this load asked for an audio plane — the picture's pacing reference. Fixed for the
+    /// life of the handle: the plane a load was given is the plane it keeps.
     audio: bool,
     /// Highest audio stamp fed so far (ms), shared by [`Self::play_audio`] and the clock plane so
     /// neither can hand NDL a timestamp going backwards — NDL reads a rewind as a seek and mutes
     /// the rest of the session.
     ///
-    /// It is a floor, never a driver: both feeders target the player clock plus
-    /// [`PLANE_LEAD_MS`], so the ceiling can only ever be at most one lead ahead of real time and
-    /// cannot ratchet away from it.
+    /// It is a floor, never a driver: every feeder targets the player clock plus its route's lead
+    /// ([`PLANE_LEAD_MS`], or [`METRONOME_LEAD_MS`] where the metronome is the only feed), so the
+    /// ceiling can only ever be that one lead ahead of real time and cannot ratchet away from it.
     last_audio_pts_ms: AtomicI64,
     /// Player-clock ms at the last REAL packet fed by [`Self::play_audio`].
     /// [`Self::run_clock_plane`] reads it to stay off the plane while the real stream carries it.
     ///
-    /// Starts at 0 (the load instant), NOT a sentinel: the grace then runs from session start, so
-    /// an offloaded session whose audio arrives normally never feeds a single silent packet. The
-    /// sentinel made every such session open by bursting silence to a ceiling a whole prime ahead
-    /// of the real timeline, and the real packets that followed were all floored onto it.
+    /// Seeded with the player clock at construction, NOT 0 and NOT a sentinel: `load_instant` is
+    /// the load CALL, so the clock already reads the load's duration by the time the session
+    /// starts, and a 0 here would read as that many ms since the last real packet — tripping
+    /// [`REAL_FEED_GRACE_MS`] before the first one arrives and opening every offloaded session
+    /// with a spurious "host capture is likely dead". Seeded, the grace runs from session start,
+    /// so an offloaded session whose audio arrives normally never feeds a silent packet.
     last_real_feed_ms: AtomicI64,
-    /// `false` while `LOADCOMPLETED` still hasn't been seen for this load. Latched once, so the
-    /// steady-state feed path costs one relaxed load.
+    /// The VIDEO feed's gate: `false` while frames are still being held for the load. Latched
+    /// once, so the steady-state feed path costs one relaxed load.
     ///
-    /// It is also what [`Self::flush`] refuses on, which is the guard that matters most: flushing
-    /// a pipeline NDL has not finished loading kills the session's audio permanently.
-    load_confirmed: AtomicBool,
+    /// Not a synonym for "NDL confirmed the load" — [`Self::ensure_loaded`] also latches it when
+    /// the frames have to flow regardless, which on a set that reports `LOADCOMPLETED` only
+    /// against ingest is the very thing that produces the confirmation. Anything asking about the
+    /// PIPELINE, rather than about this gate, wants [`Self::plane_ready`] instead: feeding the
+    /// audio plane early costs the session its audio permanently.
+    feed_unblocked: AtomicBool,
+    /// Player-clock ms at which an unconfirmed plane gets its log line, stamped on the first
+    /// accepted frame; `i64::MAX` before that and once spent — see [`PLANE_CONFIRM_GRACE`].
+    plane_check_ms: AtomicI64,
+    /// Whether the load itself confirmed the plane within its budget, which is what makes it safe
+    /// to put the session's only audio on — see [`AudioPlane::accepts_stream`]. An unconfirmed
+    /// plane is still worth keeping fed (that is the pacing, and it is what produces the
+    /// confirmation on an ingest-gated set), but it must not be the only audio path: nothing
+    /// downstream can re-pick the route once the session is running.
+    plane_proven: bool,
     /// HDR mastering metadata that arrived before the video plane had taken a frame.
     /// `NDL_DirectVideoSetHDRInfo` returns success against a pipeline that isn't ingesting yet
     /// but does nothing — the panel never enters HDR mode, and since the host only sends the
@@ -153,8 +206,12 @@ pub struct NdlVideo {
 
 impl NdlVideo {
     /// Load NDL video stream. Calls `NDL_DirectMediaInit` on first use.
-    /// Audio request is a probe: fails silently on unsupported models, retries video-only.
-    pub fn load(app_id: &str, width: i32, height: i32, codec: NdlCodec, audio: bool) -> Result<Self> {
+    ///
+    /// `audio` is the plane's prime budget, or `None` for a video-only load. The budget is how
+    /// long the load waits for `LOADCOMPLETED` before starting the stream unconfirmed — see
+    /// [`super::AUDIO_PRIME_BUDGET`] and [`super::AUDIO_PROVE_BUDGET`]. The audio request itself
+    /// is a probe: it fails silently on unsupported models, which retries video-only.
+    pub fn load(app_id: &str, width: i32, height: i32, codec: NdlCodec, audio: Option<Duration>) -> Result<Self> {
         ensure_not_poisoned()?;
         let fns = ffi::v2()?;
         ensure_init(app_id, true)?;
@@ -164,95 +221,144 @@ impl NdlVideo {
             kind: codec.ndl_type(),
             unknown1: 0,
         };
-        if audio {
-            // An audio-enabled load must PROVE itself with `LOADCOMPLETED`; a video-only one may
-            // proceed unconfirmed (below). `NDL_DirectMediaLoad` returning 0 is only "request
-            // accepted" — an Opus config the pipeline rejects fails asynchronously, then accepts
-            // every fed frame into a pipeline that is not running, which is a whole session of
-            // black picture with no error anywhere. Falling back needs an unload first (a failed
-            // load may hold decoder resources, docs/NOTES.md); it covers the `Err` arm, where no
-            // handle exists to unload on drop, and is harmless as a repeat.
-            // Snapshotted BEFORE the attempt, because the unconfirmed handle's own `Drop` unloads
-            // at the end of the match: a snapshot taken after it would miss that
-            // `UNLOADCOMPLETED` and wait out the settle for a callback already spent.
+        if let Some(budget) = audio {
+            // The plane is asked for here, but NOT judged here. `NDL_DirectMediaLoad` returning 0
+            // is only "request accepted" — an Opus config the pipeline rejects fails
+            // asynchronously and then accepts every fed frame into a pipeline that is not running,
+            // which is a whole session of black picture with no error anywhere. That is a real
+            // failure and it still has to be caught, but `LOADCOMPLETED` before the first frame is
+            // not the test for it: a 2025 QNED does not report the callback until a frame has been
+            // fed, and nothing can feed one until this returns and the pumps spawn. Judging here
+            // gave that set a video-only fallback on every session, i.e. no pacing reference at
+            // all, which is issue #188. So an accepted load is taken unconfirmed: the metronome
+            // rides it (that is the pacing, and on such a set it is what produces the
+            // confirmation), while the session's REAL audio only rides a confirmed one
+            // ([`Self::plane_proven`]).
+            //
+            // A hard `Err` is still answered here: there is no handle to defer with. The unload
+            // first is what a failed load needs before a retry (a failed load may hold decoder
+            // resources, docs/NOTES.md), and the snapshot precedes the attempt so a settle cannot
+            // wait out an `UNLOADCOMPLETED` already spent.
             let unloads_before = super::unload_count();
-            match Self::try_load(fns, video, true) {
-                Ok(loaded) if loaded.load_confirmed.load(Ordering::Relaxed) => return Ok(loaded),
-                Ok(_) => tracing::warn!("NDL audio-enabled load failed (no LOADCOMPLETED) — retrying video-only"),
-                Err(e) => tracing::warn!("NDL audio-enabled load failed ({e:#}) — retrying video-only"),
+            match Self::try_load(fns, video, Some(budget)) {
+                Ok(loaded) => return Ok(loaded),
+                // Loud, because a video-only load streams unpaced for the rest of the session
+                // (issue #188) and every later symptom reads as something else.
+                Err(e) => tracing::warn!(
+                    "NDL audio-enabled load failed ({e:#}) — retrying video-only, the picture will not be paced"
+                ),
             }
-            // Best-effort cleanup of the rejected load.
             fns.unload();
             // The rejected load's callbacks are indistinguishable from the retry's, so let them
             // land BEFORE arming below rather than racing them.
             settle_before_retry(unloads_before);
         }
-        Self::try_load(fns, video, false)
+        Self::try_load(fns, video, None)
     }
 
-    /// One `NDL_DirectMediaLoad` attempt, waited out to `LOADCOMPLETED` — priming the audio plane
-    /// through the wait when the load asked for one (see [`Self::prime_audio`]).
-    fn try_load(fns: &'static ffi::V2, video: ffi::VideoInfo, audio: bool) -> Result<Self> {
+    /// One `NDL_DirectMediaLoad` attempt, given its budget to report `LOADCOMPLETED` — priming
+    /// the audio plane through the wait when the load asked for one (see [`Self::prime_audio`]).
+    ///
+    /// An audio-enabled attempt that does not confirm is still returned: unconfirmed is a normal
+    /// state for one, not a failure (see [`Self::load`]).
+    fn try_load(fns: &'static ffi::V2, video: ffi::VideoInfo, audio: Option<Duration>) -> Result<Self> {
         let mut info = ffi::DataInfo {
             video,
-            audio: if audio { plane_config() } else { ffi::AudioUnion::SILENT },
+            audio: if audio.is_some() {
+                plane_config()
+            } else {
+                ffi::AudioUnion::SILENT
+            },
         };
         arm_load();
-        let load_requested = Instant::now();
+        // The instant of the CALL is the origin of NDL's PTS domain — see [`Self::load_instant`].
+        let load_instant = Instant::now();
         fns.load(&mut info, Some(super::on_load_state))?;
         // `ret == 0` is "request accepted", not "pipeline ready" — the first feed still needs
         // LOADCOMPLETED, and an audio-enabled load will not report it until its audio plane has
-        // seen a packet, which is what the prime supplies.
-        let (primed_pts_ms, confirmed) = if audio {
-            Self::prime_audio(fns)
-        } else {
-            (0, wait_load_completed())
+        // seen a packet, which is what the prime supplies. The two waits are different questions,
+        // not one budget twice: the audio one buys a fast confirmation and gives up cheaply, the
+        // video one is the picture's own bound.
+        let (primed_pts_ms, confirmed) = match audio {
+            Some(budget) => Self::prime_audio(fns, load_instant, budget),
+            None => (0, wait_load_completed()),
         };
+        // FATAL is not "unconfirmed", it is gone — and unconfirmed is the only state an
+        // audio-enabled load is allowed to be taken in. Answering it here is what keeps the audio
+        // request a PROBE: `load()` unloads and retries video-only, which is the whole point of
+        // asking for a plane optimistically. Left as `Ok`, the session would instead be torn down
+        // by `is_dead()` on a set that would have streamed perfectly well without the plane.
+        if audio.is_some() && super::fatal() {
+            bail!("NDL reported a fatal state during the audio-enabled load");
+        }
         Ok(Self {
             fns,
-            load_instant: Instant::now(),
-            load_requested,
-            audio,
+            load_instant,
+            audio: audio.is_some(),
             last_audio_pts_ms: AtomicI64::new(primed_pts_ms),
-            last_real_feed_ms: AtomicI64::new(0),
-            load_confirmed: AtomicBool::new(confirmed),
+            last_real_feed_ms: AtomicI64::new(load_instant.elapsed().as_millis() as i64),
+            feed_unblocked: AtomicBool::new(confirmed),
+            plane_check_ms: AtomicI64::new(i64::MAX),
+            plane_proven: audio.is_some() && confirmed,
             pending_hdr: Mutex::new(None),
             applied_hdr: Mutex::new(None),
         })
     }
 
     /// Feed silent Opus packets until the audio-enabled load reports `LOADCOMPLETED`, bounded by
-    /// `LOAD_COMPLETE_TIMEOUT`. Returns the highest stamp fed and whether the load confirmed.
+    /// `budget`. Returns the highest stamp fed and whether the load confirmed.
+    ///
+    /// Not confirming is not a refusal. Sets differ in what they report the callback against, and
+    /// one that reports it against video ingest cannot answer inside this wait at all — so the
+    /// handle is taken unconfirmed and [`Self::run_clock_plane`] continues this prime, which is
+    /// what eventually produces the callback. See [`AUDIO_PRIME_BUDGET`].
+    ///
+    /// `load_instant` is the caller's, not re-derived here: these stamps ARE the player clock's
+    /// domain, and handing the origin down is what makes that a value rather than a coincidence of
+    /// two adjacent `Instant::now()` calls (see the field). The budget is measured from it too, so
+    /// it bounds the whole load — the `NDL_DirectMediaLoad` call included — rather than just the
+    /// priming after it. That is the figure `LOADCOMPLETED` is relative to, and it means a set
+    /// that blocks inside the load call cannot spend the budget twice.
     ///
     /// An audio-enabled load will not report until its audio plane has received data, but the
     /// pumps that would supply it don't spawn until `session::connect` returns — i.e. until this
     /// wait is over. That deadlock is the whole black-picture-with-sound bug, so the load window
-    /// feeds itself.
+    /// feeds itself. (The VIDEO half of the same deadlock is why a load that does not confirm here
+    /// is still taken: nothing in this wait can feed a FRAME, and some sets report only once one
+    /// has been.)
     ///
     /// A burst at a time, because a packet fed before the plane exists may be dropped silently
     /// (`NDL_DirectAudioPlay` reports success either way).
     ///
-    /// The highest stamp is handed to `last_audio_pts_ms`: the prime runs BEFORE `load_instant`,
-    /// so its stamps already sit a lead ahead of where the player clock starts, and without that
-    /// floor the first real packet would read as a rewind — which mutes the session permanently
-    /// (see [`Self::play_audio`]). It costs a few early packets their exact stamp, bounded by
-    /// [`PRIME_LEAD`], and the player clock overtakes it within one lead.
-    fn prime_audio(fns: &'static ffi::V2) -> (i64, bool) {
+    /// The highest stamp is handed to `last_audio_pts_ms` as the floor, without which the first
+    /// real packet would read as a rewind — which mutes the session permanently (see
+    /// [`Self::play_audio`]). Because `load_instant` is the load call, these stamps are already in
+    /// the player-clock domain: the ceiling sits exactly [`PRIME_LEAD`] packets above the clock,
+    /// the same lead every later feeder targets, so the clock overtakes it within one lead however
+    /// long the load took.
+    fn prime_audio(fns: &'static ffi::V2, load_instant: Instant, budget: Duration) -> (i64, bool) {
         let silence = &OPUS_SILENCE[..];
-        let start = Instant::now();
         let mut pts_ms = 0;
         while !LOAD_COMPLETED.fired() {
-            if start.elapsed() >= super::LOAD_COMPLETE_TIMEOUT {
-                tracing::warn!(
-                    "NDL load: no LOADCOMPLETED within {:?} of priming {pts_ms}ms of silence",
-                    super::LOAD_COMPLETE_TIMEOUT
+            // A reported fatal state is the one answer that will not change by waiting, so the
+            // budget is spent only while the load is still plausibly coming.
+            if super::fatal() {
+                tracing::warn!("NDL load reported a fatal state after {pts_ms}ms of silence");
+                return (pts_ms, false);
+            }
+            if load_instant.elapsed() >= budget {
+                // INFO, not WARN: on a set that reports the callback against video ingest this is
+                // every session's normal path, and the metronome carries the plane from here.
+                tracing::info!(
+                    "NDL load: no LOADCOMPLETED within {budget:?} of priming {pts_ms}ms of silence \
+                     — starting the stream, the clock plane carries the prime from here"
                 );
                 return (pts_ms, false);
             }
             // Stamps track wall-clock, topped up to PRIME_LEAD packets ahead of it — so the burst
             // per gap is however many 5 ms packets that gap consumed, and the ceiling stays a
             // fixed lead over real time. That ceiling is the floor real audio is pinned to.
-            let target_ms = start.elapsed().as_millis() as i64 + PRIME_LEAD * PRIME_PACKET_MS;
+            let target_ms = load_instant.elapsed().as_millis() as i64 + PRIME_LEAD * PRIME_PACKET_MS;
             {
                 let _ffi = lock_ffi();
                 while pts_ms < target_ms {
@@ -267,14 +373,17 @@ impl NdlVideo {
         }
         tracing::info!(
             "NDL audio prime: LOADCOMPLETED after {:?} ({pts_ms}ms of silence)",
-            start.elapsed()
+            load_instant.elapsed()
         );
         (pts_ms, true)
     }
 
-    /// Whether this load has an audio plane. It always does when the load confirmed, since NDL
-    /// only paces the picture against a fed audio plane — see [`Self::run_clock_plane`]. False means
-    /// the audio-enabled load was rejected and `load()` fell back to video-only.
+    /// Whether this load asked for an audio plane — the picture's only pacing reference, see
+    /// [`Self::run_clock_plane`]. False only for a load that was refused one outright, which is
+    /// a session with no pacing reference at all.
+    ///
+    /// Not the same question as "may the real stream ride it" — that is
+    /// [`AudioPlane::accepts_stream`], and it is the stricter of the two.
     pub fn has_audio_plane(&self) -> bool {
         self.audio
     }
@@ -296,9 +405,9 @@ impl NdlVideo {
     /// below is left with nothing to do but absorb reordering.
     ///
     /// Every stamp carries [`PLANE_LEAD_MS`] on top of it, so NDL always holds that much audio
-    /// ahead of its renderer — read that constant before touching this arithmetic. The clock plane
-    /// targets the same figure, which is what lets the two feeders share the ceiling without
-    /// either pushing it.
+    /// ahead of its renderer — read that constant before touching this arithmetic. The clock
+    /// plane's FILL targets the same figure, which is what lets the two feeders share the ceiling
+    /// without either pushing it; the metronome, which never shares a plane with this, does not.
     ///
     /// **Both planes are still in one time base** — NDL synchronises them against each other, and
     /// the video plane's own stamps are the player clock too (`session::timeline::Pacing` maps the
@@ -307,7 +416,12 @@ impl NdlVideo {
         // The plane's start gate. Feeding a pipeline NDL has not finished loading costs the
         // session its audio outright, and unlike the video feed this path has no `ensure_loaded`
         // of its own — the prime is what carries the plane through the load window.
-        if !self.load_confirmed.load(Ordering::Relaxed) {
+        //
+        // The CALLBACK, not `feed_unblocked`: that flag is the video feed's gate and latches
+        // optimistically once the frames have to flow regardless (see [`Self::ensure_loaded`]).
+        // Audio has no such deadline — a plane fed early is a plane lost — so it waits for the
+        // real thing.
+        if !self.plane_ready() {
             return Ok(());
         }
         let now_ms = (self.elapsed_ns() / 1_000_000) as i64;
@@ -364,31 +478,38 @@ impl NdlVideo {
     /// a pure metronome, the only feed. On (NDL offload): the real stream is the metronome, and
     /// this fills in only after [`REAL_FEED_GRACE_MS`] without a packet — a dead host capture,
     /// which would otherwise starve the plane and freeze the picture.
+    ///
+    /// **Deliberately NOT gated on `LOADCOMPLETED`.** This is [`Self::prime_audio`]'s continuation
+    /// under a different budget, feeding the same plane through the same call, and the prime is
+    /// not gated either — NDL's own requirement is that the plane be fed, and on an ingest-gated
+    /// set feeding it is what eventually produces the callback. Gating here would leave the plane
+    /// unfed from the end of the prime until the first video frame, which on such a set is seconds,
+    /// and covers the ~100 ms of ingest that sets NDL's standing present cushion. Only the REAL
+    /// stream waits for the callback ([`Self::play_audio`]): silence is recoverable, misrouted
+    /// audio is not.
     pub fn run_clock_plane(&self, stop: &std::sync::atomic::AtomicBool, yields_to_real: bool) {
-        // Continue the prime's stamps instead of restarting from the player clock: the prime runs
-        // BEFORE `load_instant`, so its ceiling already sits a whole prime ahead, and targeting the
-        // raw clock would feed nothing until it caught up — dead exactly at session start. The
-        // resulting constant offset from the video timeline costs a metronome nothing.
-        // On the offload route the real stream owns the ceiling, so a fill targets exactly what
-        // [`Self::play_audio`] targets and carries no base of its own: `burst_silence` floors on
-        // the ceiling the stream left, and adding the prime's base on top of that raised it by one
-        // `PLANE_LEAD_MS` per fill episode — recovered audio then floored onto the jump and pinned
-        // to a single stamp for the length of it, the ratchet this path exists to avoid.
-        //
-        // The metronome route is the only feed, so it continues the prime's stamps instead of
-        // restarting from the player clock: the prime runs BEFORE `load_instant`, so its ceiling
-        // already sits a whole prime ahead and targeting the raw clock would feed nothing until the
-        // clock caught up — dead exactly at session start. The constant offset costs a metronome
-        // nothing.
-        let base_ms = if yields_to_real {
-            0
+        if !self.audio {
+            tracing::info!("NDL clock plane: the load has no audio plane — nothing to pace against");
+            return;
+        }
+        // A fill on the offload route must target exactly what [`Self::play_audio`] targets, or
+        // the real packets that resume are floored onto the fill's higher ceiling and pinned to
+        // one stamp for the length of it. The metronome is the only feed on its route and answers
+        // to nothing else, so it holds the deeper [`METRONOME_LEAD_MS`] cushion. Neither carries a
+        // base of its own — see the `load_instant` field for why one is no longer needed.
+        let lead_ms = if yields_to_real {
+            PLANE_LEAD_MS
         } else {
-            self.last_audio_pts_ms.load(Ordering::Relaxed)
+            METRONOME_LEAD_MS
         };
-        let mut pts_ms = self.last_audio_pts_ms.load(Ordering::Relaxed);
         let mut filling = false;
         while !stop.load(Ordering::Relaxed) {
             let now_ms = (self.elapsed_ns() / 1_000_000) as i64;
+            // Any stretch the plane went unfed — the wait above, or a yielded run whose real
+            // stream stopped — is time the ceiling did not advance through. Carry it forward
+            // rather than letting the burst below pay it back a 5 ms packet at a time under the
+            // FFI lock the picture also needs. Forwards only, so it is never a rewind.
+            self.last_audio_pts_ms.fetch_max(now_ms, Ordering::Relaxed);
             if yields_to_real && now_ms - self.last_real_feed_ms.load(Ordering::Relaxed) < REAL_FEED_GRACE_MS {
                 if filling {
                     tracing::info!("NDL clock plane: host audio resumed at {now_ms}ms — yielding");
@@ -404,24 +525,37 @@ impl NdlVideo {
                 );
                 filling = true;
             }
-            match self.burst_silence(pts_ms, base_ms + now_ms + PLANE_LEAD_MS) {
-                Ok(fed_to) => pts_ms = fed_to,
+            // No running `pts_ms` of its own: `burst_silence` floors on the shared ceiling and
+            // publishes back to it, so a local could only ever restate what the atomic says.
+            match self.burst_silence(now_ms, now_ms + lead_ms) {
+                Ok(_) => {}
                 Err(e) => {
                     // Dead for the session; the picture keeps running unpaced, as it did before
                     // the clock plane existed.
-                    tracing::warn!("NDL clock plane stopping at {pts_ms}ms: {e:#}");
+                    tracing::warn!(
+                        "NDL clock plane stopping at {}ms: {e:#}",
+                        self.last_audio_pts_ms.load(Ordering::Relaxed)
+                    );
                     return;
                 }
             }
             std::thread::sleep(PRIME_RETRY);
         }
-        tracing::info!("NDL clock plane ending at {pts_ms}ms");
+        tracing::info!(
+            "NDL clock plane ending at {}ms",
+            self.last_audio_pts_ms.load(Ordering::Relaxed)
+        );
     }
 
     /// How far the audio plane's stamps currently run ahead of the player clock, in ms — the queue
-    /// depth NDL paces the picture on ([`PLANE_LEAD_MS`]), and the only observable proxy for it.
-    /// Reads the ceiling, so it reports whichever feed last raised it. Sagging towards zero under
-    /// real audio is the stutter signature.
+    /// depth NDL paces the picture on, and the only observable proxy for it. Reads the ceiling, so
+    /// it reports whichever feed last raised it. Sagging towards zero under real audio is the
+    /// stutter signature.
+    ///
+    /// ⚠ **Which target it should read depends on the route**: [`METRONOME_LEAD_MS`] (80) on the
+    /// software route, where the silent metronome is the only feed, and [`PLANE_LEAD_MS`] (40) on
+    /// offload, where the real stream owns the plane. A software session reading 40 is as wrong as
+    /// an offloaded one reading 80.
     pub fn audio_plane_lead_ms(&self) -> i64 {
         self.last_audio_pts_ms.load(Ordering::Relaxed) - (self.elapsed_ns() / 1_000_000) as i64
     }
@@ -432,29 +566,39 @@ impl NdlVideo {
         self.load_instant.elapsed().as_nanos() as u64
     }
 
+    /// Whether the REAL stream may ride the plane: this load asked for one AND NDL has confirmed
+    /// it. The silent metronome does not ask this — see [`Self::run_clock_plane`].
+    ///
+    /// Both halves matter. The callback latch alone is not enough: a video-only load confirms
+    /// normally and has no audio arm, and feeding that is a silent session. [`Self::feed_unblocked`]
+    /// is not the latch either — that one is the video feed's gate and latches optimistically
+    /// (see [`Self::play_audio`]).
+    fn plane_ready(&self) -> bool {
+        self.audio && LOAD_COMPLETED.fired()
+    }
+
     /// `Err` while this load hasn't reported `LOADCOMPLETED`: the sink then flushes, holds and
     /// requests a keyframe — exactly what a late load needs, instead of frames into a decoder that
     /// isn't there. Bounded by [`FEED_ANYWAY_AFTER`], since a model that never delivers the
     /// callback must still stream.
     fn ensure_loaded(&self) -> Result<()> {
-        if self.load_confirmed.load(Ordering::Relaxed) {
+        if self.feed_unblocked.load(Ordering::Relaxed) {
             return Ok(());
         }
-        let elapsed = self.load_requested.elapsed();
+        let elapsed = self.load_instant.elapsed();
         if LOAD_COMPLETED.fired() {
             tracing::info!("NDL LOADCOMPLETED landed {elapsed:?} after load");
         } else if elapsed >= FEED_ANYWAY_AFTER {
-            // Real elapsed, not the constant — `load()` has already spent
-            // `LOAD_COMPLETE_TIMEOUT` by the time a frame gets here.
+            // Real elapsed, not the constant — `load()` has already spent a whole load budget by
+            // the time a frame gets here.
             tracing::warn!("NDL: still no LOADCOMPLETED {elapsed:?} after the load — feeding anyway");
         } else {
             return Err(NotReady.into());
         }
-        self.load_confirmed.store(true, Ordering::Relaxed);
+        self.feed_unblocked.store(true, Ordering::Relaxed);
         Ok(())
     }
 
-    /// Guard on the deferred-HDR slot (see [`Self::pending_hdr`]).
     fn pending_hdr(&self) -> MutexGuard<'_, Option<ffi::HdrInfo>> {
         self.pending_hdr.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -507,8 +651,31 @@ impl NdlVideo {
         // Outside the FFI guard — `replay_pending_hdr` takes it again, and it isn't reentrant.
         if first_frame {
             self.replay_pending_hdr();
+            // Only an unconfirmed plane has anything left to answer for.
+            if self.audio && !LOAD_COMPLETED.fired() {
+                let now_ms = (self.elapsed_ns() / 1_000_000) as i64;
+                self.plane_check_ms
+                    .store(now_ms + PLANE_CONFIRM_GRACE.as_millis() as i64, Ordering::Relaxed);
+            }
         }
+        self.check_plane_confirmed();
         Ok(())
+    }
+
+    /// Name a plane that never confirmed, once, past [`PLANE_CONFIRM_GRACE`]. Costs one relaxed
+    /// load per frame until it fires, then nothing for the rest of the session.
+    fn check_plane_confirmed(&self) {
+        let deadline = self.plane_check_ms.load(Ordering::Relaxed);
+        if deadline == i64::MAX || (self.elapsed_ns() / 1_000_000) as i64 <= deadline {
+            return;
+        }
+        self.plane_check_ms.store(i64::MAX, Ordering::Relaxed);
+        if self.plane_ready() {
+            return;
+        }
+        // Loud: nothing is recovered, so this line is the only trace. What it can and cannot mean
+        // is on [`PLANE_CONFIRM_GRACE`].
+        tracing::warn!("NDL: no LOADCOMPLETED {PLANE_CONFIRM_GRACE:?} after the first frame — the audio plane was likely refused, the picture will not be paced");
     }
 
     /// Apply HDR mastering metadata. `meta` and `color` use the same SEI-standard
@@ -576,7 +743,9 @@ impl NdlVideo {
         // the session's audio plane for the rest of the load (see [`NotReady`]), and nothing
         // has been fed yet, so there is no render buffer to discard either. The sink's loss path
         // flushes before it ever calls `play`, so the guard has to live here.
-        if !self.load_confirmed.load(Ordering::Relaxed) && !LOAD_COMPLETED.fired() {
+        // The callback latch, not [`Self::plane_ready`]: this is a question about the PIPELINE,
+        // and a video-only load has no plane but still has a render buffer to discard.
+        if !self.feed_unblocked.load(Ordering::Relaxed) && !LOAD_COMPLETED.fired() {
             return Ok(());
         }
         let _ffi = lock_ffi();
@@ -631,6 +800,10 @@ impl AudioPlane for NdlVideo {
 
     fn run_keepalive(&self, stop: &std::sync::atomic::AtomicBool, yields_to_real: bool) {
         self.run_clock_plane(stop, yields_to_real);
+    }
+
+    fn accepts_stream(&self) -> bool {
+        self.plane_proven
     }
 }
 
