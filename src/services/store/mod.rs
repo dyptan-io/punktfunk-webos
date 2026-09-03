@@ -5,6 +5,7 @@
 //! - [`load_or_create_identity`] handles the PEM pair, which stays outside the document.
 mod identity;
 mod legacy;
+pub mod shared;
 mod writer;
 
 use std::path::PathBuf;
