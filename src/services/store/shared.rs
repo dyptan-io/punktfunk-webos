@@ -149,6 +149,41 @@ pub fn from_shared(t: &trust::Settings) -> Settings {
     }
 }
 
+/// Enough of a host record for the shared shell to name and reach it.
+///
+/// Lives here rather than beside the shell's `SettingsStore`, which is arm-gated and therefore
+/// never *runs* on a test runner — the armv7 build cannot execute on one. Real conversion logic
+/// belongs where `task test` can execute it; only glue belongs behind that gate.
+///
+/// 🛑 `id` is pinned to `None` on purpose, overriding the base. `KnownHost::default()` MINTS a
+/// fresh stable id — right for punktfunk, where a record is created once and keeps it, wrong
+/// here: this converts on demand, so taking the default would hand the shell a DIFFERENT id for
+/// the same host on every call, and "Copy link" would emit a `punktfunk://` link whose record id
+/// matches nothing. This client keys hosts by `addr:port` and mints no ids, so `None` is the only
+/// truthful answer; Copy link degrades to "isn't saved any more" instead of lying.
+pub fn to_shared_host(h: &crate::core::model::KnownHost) -> trust::KnownHost {
+    trust::KnownHost {
+        name: h.name.clone(),
+        addr: h.host.clone(),
+        port: h.port,
+        fp_hex: h.fingerprint.map(hex).unwrap_or_default(),
+        paired: h.fingerprint.is_some(),
+        mac: h.mac.clone(),
+        os: h.os.clone(),
+        mgmt_port: h.mgmt_port,
+        id: None,
+        ..trust::KnownHost::default()
+    }
+}
+
+fn hex(bytes: [u8; 32]) -> String {
+    use std::fmt::Write;
+    bytes.iter().fold(String::with_capacity(64), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
 /// The shared pad name. Lossless in both directions — `GamepadPref` carries every kind this
 /// client offers, Edge and Switch Pro included — so the pad choice is a genuinely shared field
 /// rather than a TV-only one parked in `extra`.
@@ -287,6 +322,37 @@ mod tests {
         let parsed: Settings = serde_json::from_value(on_disk).expect("read legacy");
         let after = from_shared(&to_shared(&parsed));
         assert_eq!(after, before);
+    }
+
+    /// Host records reach the shell named and reachable, with `paired` following the fingerprint
+    /// and the hex being the full 32 bytes.
+    #[test]
+    fn hosts_convert_for_the_shell() {
+        let paired = crate::core::model::KnownHost {
+            name: "desk".into(),
+            host: "192.168.1.5".into(),
+            port: 47_989,
+            fingerprint: Some([0xab; 32]),
+            mgmt_port: Some(47_990),
+            ..Default::default()
+        };
+        let h = to_shared_host(&paired);
+        assert_eq!((h.name.as_str(), h.addr.as_str(), h.port), ("desk", "192.168.1.5", 47_989));
+        assert_eq!(h.mgmt_port, Some(47_990));
+        assert!(h.paired);
+        assert_eq!(h.fp_hex, "ab".repeat(32), "32 bytes is 64 hex chars");
+        // Not merely absent — STABLE. `KnownHost::default()` mints a fresh id, so a conversion
+        // that took the default would differ on every call for the same host.
+        assert!(h.id.is_none(), "no minted record id to report");
+        assert_eq!(to_shared_host(&paired).id, h.id, "same host, same answer");
+
+        let unpaired = crate::core::model::KnownHost {
+            fingerprint: None,
+            ..paired
+        };
+        let h = to_shared_host(&unpaired);
+        assert!(!h.paired, "no fingerprint means not paired");
+        assert!(h.fp_hex.is_empty());
     }
 
     /// `av1` is a codec this client cannot decode; it must not present as a selected option.
