@@ -74,6 +74,14 @@ tasks:
       - rustup target add {{.TARGET}}
       - cargo check --target {{.TARGET}}
 
+  test:
+    desc: >-
+      Run the unit tests on the HOST target. The armv7 cross build cannot execute on a runner,
+      and `lint` only type-checks the tests — this is the only task that runs them. Needs native
+      SDL2 (`libsdl2-dev`, `libsdl2-ttf-dev`); `docker:test` brings its own.
+    cmds:
+      - cargo test --bin punktfunk-webos
+
   lint:
     desc: Cross-target `cargo clippy` (the lint set in Cargo.toml's `[lints.clippy]`), no Docker (used by CI)
     deps: [toolchain:all]
@@ -112,6 +120,14 @@ tasks:
     cmds:
       - task: toolchain:docker-run
         vars: {TARGET_TASK: check}
+
+  docker:test:
+    desc: Run the unit tests inside Docker — the local dev entry point for `test`
+    cmds:
+      - task: toolchain:docker-run
+        vars:
+          TARGET_TASK: test
+          EXTRA_APT: libsdl2-dev libsdl2-ttf-dev
 
   docker:lint:
     desc: Cross-target `cargo clippy` (the lint set in Cargo.toml's `[lints.clippy]`), inside Docker

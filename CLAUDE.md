@@ -13,11 +13,13 @@ One target: Linux (webOS armv7 cross target, or a plain Linux box).
 | --- | --- |
 | `task docker:check` / `docker:build` | `cargo check` / release build |
 | `task docker:lint` / `fmt` | clippy / `cargo fmt` |
+| `task docker:test` | run the unit tests (the only task that RUNS them; `lint` only type-checks) |
 | `task docker:package` | build + `dist/*.ipk` |
 | `task docker:deploy` | run the app in a container over VNC — UI work needs no TV |
 | `task deploy TELEMETRY=auto` | install to the TV, stream logs here (`TELEMETRY_LEVEL=debug\|info\|warn\|error`) |
 
 CI lints with `-D warnings` and clippy is load-bearing — run `docker:lint`, not just `check`.
+CI also runs `task test` on the host target; the cross build cannot execute tests.
 
 ## Architecture
 

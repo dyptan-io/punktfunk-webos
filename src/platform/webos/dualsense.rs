@@ -421,6 +421,35 @@ fn build_audio_report(
     r
 }
 
+/// Linear 512 → 480 stereo resample: the host feeds 48 kHz, the pad plays one 480-sample frame
+/// per 10.667 ms report. Free-standing so the ratio is checkable without an encoder — a wrong
+/// step is inaudible on speech and only shows up as the pad drifting off the host's clock.
+fn resample_frame(pcm: &[f32], out: &mut [f32]) {
+    let step = (SPEAKER_IN_SAMPLES - 1) as f32 / (SPEAKER_OUT_SAMPLES - 1) as f32;
+    for i in 0..SPEAKER_OUT_SAMPLES {
+        let pos = i as f32 * step;
+        let j = (pos as usize).min(SPEAKER_IN_SAMPLES - 2);
+        let t = pos - j as f32;
+        for ch in 0..2 {
+            let a = pcm[j * 2 + ch];
+            let b = pcm[(j + 1) * 2 + ch];
+            out[i * 2 + ch] = a + (b - a) * t;
+        }
+    }
+}
+
+/// The next tick strictly after `now`, in whole [`COIL_TICK`] steps from `tick`.
+///
+/// Whole steps hold the pad's phase, and landing in the FUTURE is what stops a tick whose work
+/// overran from firing again at once — each catch-up report is one the pad's clock has no room
+/// for, and it goes out carrying silence.
+fn advance_tick(mut tick: Instant, now: Instant) -> Instant {
+    while tick <= now {
+        tick += COIL_TICK;
+    }
+    tick
+}
+
 /// The speaker encoder: 512 stereo samples per report resampled to 480, Opus 160 kbit/s CBR at
 /// complexity 0 — the settings both working implementations use, and the ones this `SoC` affords.
 struct SpeakerLane {
@@ -454,17 +483,7 @@ impl SpeakerLane {
     /// One report's frame from 512 stereo samples: linear 512 → 480, then a CBR frame padded or
     /// cut to exactly 200 bytes (CBR lands there by itself; the guard is for a short first frame).
     fn encode(&mut self, pcm: &[f32]) -> [u8; SPEAKER_FRAME_LEN] {
-        let step = (SPEAKER_IN_SAMPLES - 1) as f32 / (SPEAKER_OUT_SAMPLES - 1) as f32;
-        for i in 0..SPEAKER_OUT_SAMPLES {
-            let pos = i as f32 * step;
-            let j = (pos as usize).min(SPEAKER_IN_SAMPLES - 2);
-            let t = pos - j as f32;
-            for ch in 0..2 {
-                let a = pcm[j * 2 + ch];
-                let b = pcm[(j + 1) * 2 + ch];
-                self.resampled[i * 2 + ch] = a + (b - a) * t;
-            }
-        }
+        resample_frame(pcm, &mut self.resampled);
         let mut out = [0u8; SPEAKER_FRAME_LEN];
         match self.encoder.encode_float(&self.resampled, &mut out) {
             Ok(n) if n == SPEAKER_FRAME_LEN => {}
@@ -676,13 +695,7 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
         if let (Some(envelope), Some(bus)) = (&lane, &bus) {
             let now = Instant::now();
             if now >= next_tick {
-                // Land on the next tick in the FUTURE, keeping the pad's phase. Advancing one
-                // interval lets a tick whose work overran fire again at once, and every catch-up
-                // report is one the pad's clock has no room for: measured 110/s against its 93.75,
-                // the surplus carrying silence, which is what broke the speech up.
-                while next_tick <= now {
-                    next_tick += COIL_TICK;
-                }
+                next_tick = advance_tick(next_tick, now);
                 let had_coils = envelope.take_coils(&mut frames);
                 let speaker_on = speaker.is_some() && envelope.speaker_active();
                 if !speaker_on {
@@ -772,5 +785,86 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
     if let (Some(bus), Some(_)) = (&bus, &lane) {
         let _ = bus.call(START_SNIFF_URI, &sniff_payload);
         bus.pump();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The seal is what the pad checks before it plays anything, and a wrong one is invisible:
+    /// the Bluetooth service still answers `returnValue:true` for every dropped report.
+    #[test]
+    fn crc_matches_the_standard_check_value() {
+        assert_eq!(crc32_le(*b"123456789"), 0xCBF4_3926);
+    }
+
+    #[test]
+    fn an_audio_report_carries_its_sub_packets_where_the_pad_looks() {
+        let coils = [[7i8, -7]; COIL_REPORT_FRAMES];
+        let speaker = [0x5Au8; SPEAKER_FRAME_LEN];
+        let r = build_audio_report(3, 9, &State::default(), &coils, &speaker);
+
+        assert_eq!((r[0], r[1]), (0x36, 0x30));
+        assert_eq!((r[2], r[3], r[4], r[10]), (0x91, 7, 0xFE, 9));
+        assert!(r[5..10].iter().all(|&b| b == AUDIO_CONFIG));
+        assert_eq!((r[11], r[12]), (0x90, 63));
+        assert_eq!((r[76], r[77]), (0x92, 64));
+        assert_eq!((r[78], r[79]), (7, 249));
+        assert_eq!((r[142], r[143]), (0x93, SPEAKER_FRAME_LEN as u8));
+        assert_eq!(&r[144..344], &speaker[..]);
+
+        // Routing and volume ride EVERY report: the pad drops back to the jack otherwise.
+        assert_eq!(r[13] & 0xA0, 0xA0);
+        assert_eq!(r[14] & 0x80, 0x80);
+        assert_eq!((r[18], r[20], r[50]), (SPEAKER_VOLUME, 0x30, 0x02));
+
+        // One pass over the 0xA2 seed and every byte before the seal.
+        let want = crc32_le(std::iter::once(0xA2).chain(r[..394].iter().copied()));
+        assert_eq!(u32::from_le_bytes(r[394..].try_into().unwrap()), want);
+    }
+
+    #[test]
+    fn a_coil_report_seals_the_same_way() {
+        let frames = [[1i8, -1]; COIL_REPORT_FRAMES];
+        let r = build_coil_report(1, 2, &frames);
+
+        assert_eq!((r[0], r[1]), (0x32, 0x10));
+        assert_eq!((r[2], r[3], r[4], r[9], r[10]), (0x91, 7, 0xFE, 0xFF, 2));
+        assert_eq!((r[11], r[12], r[13], r[14]), (0x92, 64, 1, 255));
+
+        let want = crc32_le(std::iter::once(0xA2).chain(r[..138].iter().copied()));
+        assert_eq!(u32::from_le_bytes(r[138..].try_into().unwrap()), want);
+    }
+
+    /// The ratio IS the pad's clock: 512 in, 480 out per report. Endpoints pin the step.
+    #[test]
+    fn the_resample_spans_the_whole_input() {
+        let mut pcm = [0f32; SPEAKER_IN_SAMPLES * 2];
+        for i in 0..SPEAKER_IN_SAMPLES {
+            pcm[i * 2] = i as f32;
+            pcm[i * 2 + 1] = -(i as f32);
+        }
+        let mut out = vec![0f32; SPEAKER_OUT_SAMPLES * 2];
+        resample_frame(&pcm, &mut out);
+
+        let last = (SPEAKER_OUT_SAMPLES - 1) * 2;
+        let end = (SPEAKER_IN_SAMPLES - 1) as f32;
+        assert!(out[0].abs() < 1e-3 && out[1].abs() < 1e-3);
+        assert!((out[last] - end).abs() < 1e-3);
+        assert!((out[last + 1] + end).abs() < 1e-3);
+    }
+
+    /// The overfeed that broke speech up: a tick that overran used to fire again immediately.
+    #[test]
+    fn an_overrun_tick_lands_in_the_future_on_the_pads_phase() {
+        let tick = Instant::now();
+        let now = tick + COIL_TICK * 5 + Duration::from_micros(300);
+        let next = advance_tick(tick, now);
+
+        assert!(next > now);
+        let steps = (next - tick).as_nanos() / COIL_TICK.as_nanos();
+        assert_eq!(steps, 6);
+        assert_eq!(next - tick, COIL_TICK * 6);
     }
 }

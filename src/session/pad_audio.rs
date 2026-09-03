@@ -77,7 +77,9 @@ pub struct Envelope {
     /// Milliseconds since `epoch` of the last coil frame; `u64::MAX` before the first.
     last_frame_ms: AtomicU64,
     epoch: Instant,
-    /// Main-loop state: the pair last written to the pad, and when.
+    /// Main-loop state: the pair last written to the pad, and when — `u64::MAX` before the first
+    /// write, like `last_frame_ms`. A zero here would read as "applied at the envelope's epoch"
+    /// and swallow the first level for `APPLY_INTERVAL`.
     applied: AtomicU32,
     applied_at_ms: AtomicU64,
     /// Whether the motors currently hold a derived level (so expiry sends one zero, not many).
@@ -102,7 +104,7 @@ impl Envelope {
             last_frame_ms: AtomicU64::new(u64::MAX),
             epoch: Instant::now(),
             applied: AtomicU32::new(0),
-            applied_at_ms: AtomicU64::new(0),
+            applied_at_ms: AtomicU64::new(u64::MAX),
             owning: AtomicBool::new(false),
             frames: AtomicU32::new(0),
             speaker_frames: AtomicU32::new(0),
@@ -141,7 +143,8 @@ impl Envelope {
         if levels == self.applied.load(Ordering::Relaxed) {
             return None;
         }
-        if now.saturating_sub(self.applied_at_ms.load(Ordering::Relaxed)) < APPLY_INTERVAL.as_millis() as u64 {
+        let applied_at = self.applied_at_ms.load(Ordering::Relaxed);
+        if applied_at != u64::MAX && now.saturating_sub(applied_at) < APPLY_INTERVAL.as_millis() as u64 {
             return None;
         }
         self.applied.store(levels, Ordering::Relaxed);
