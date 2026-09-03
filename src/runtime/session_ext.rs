@@ -218,7 +218,7 @@ impl Connected {
             }
         }
 
-        if let (Some(envelope), Some(pad)) = (haptics, controller.as_deref_mut()) {
+        if let (Some(envelope), Some(pad)) = (haptics, controller) {
             if let Some((low, high)) = envelope.take_change() {
                 // 0 = until changed; the envelope itself sends the zero that ends it.
                 let _ = pad.set_rumble(low, high, 0);

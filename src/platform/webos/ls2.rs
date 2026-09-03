@@ -48,8 +48,15 @@ struct Fns {
     register: unsafe extern "C" fn(*const c_char, *mut Handle, *mut LsError) -> bool,
     unregister: unsafe extern "C" fn(Handle, *mut LsError) -> bool,
     context_attach: unsafe extern "C" fn(Handle, *mut c_void, *mut LsError) -> bool,
-    call_one_reply:
-        unsafe extern "C" fn(Handle, *const c_char, *const c_char, Filter, *mut c_void, *mut Token, *mut LsError) -> bool,
+    call_one_reply: unsafe extern "C" fn(
+        Handle,
+        *const c_char,
+        *const c_char,
+        Filter,
+        *mut c_void,
+        *mut Token,
+        *mut LsError,
+    ) -> bool,
     message_payload: unsafe extern "C" fn(Message) -> *const c_char,
     context_new: unsafe extern "C" fn() -> *mut c_void,
     context_iteration: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
@@ -92,7 +99,10 @@ pub static REPLIES: Replies = Replies {
 impl Replies {
     /// Takes the first failure text recorded since the last take, if any.
     pub fn take_failure(&self) -> Option<String> {
-        self.first_failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+        self.first_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 }
 

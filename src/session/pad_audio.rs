@@ -11,7 +11,7 @@
 //!
 //! Frames: kind 0 = coils, Opus 48 kHz stereo, 5 ms; kind 1 = speaker, Opus stereo, 10 ms. An
 //! empty payload is the host's silence gate (deliberate silence, not loss). Lost frames are not
-//! concealed here: a 5 ms hole in a rumble envelope is inaudible, and PLC is CPU this SoC lacks.
+//! concealed here: a 5 ms hole in a rumble envelope is inaudible, and PLC is CPU this `SoC` lacks.
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -56,7 +56,7 @@ const COIL_RING_MAX: usize = COIL_REPORT_FRAMES * 6;
 /// link, which the coil lane will share once tier A exists — 60 Hz is plenty for a motor.
 const APPLY_INTERVAL: Duration = Duration::from_millis(16);
 
-/// The render capabilities to declare, from Settings. `bt_pad` is whether a Bluetooth DualSense is
+/// The render capabilities to declare, from Settings. `bt_pad` is whether a Bluetooth `DualSense` is
 /// attached: the speaker lane has no other route, and a declared-but-silent lane would make the
 /// host stream it for nothing.
 pub fn caps_for(settings: &Settings, bt_pad: bool) -> u8 {
@@ -178,7 +178,11 @@ impl Envelope {
 
     /// Stereo samples queued for the speaker lane, so the sender can pre-fill the pad's buffer.
     pub fn speaker_queued(&self) -> usize {
-        self.speaker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len() / 2
+        self.speaker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+            / 2
     }
 
     /// One report's worth of speaker PCM (`SPEAKER_IN_SAMPLES` stereo samples), or `false` when
@@ -196,7 +200,9 @@ impl Envelope {
 
     fn push_speaker(&self, pcm: &[f32]) {
         let mut ring = self.speaker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let overflow = (ring.len() + pcm.len()).saturating_sub(SPEAKER_RING_MAX).min(ring.len());
+        let overflow = (ring.len() + pcm.len())
+            .saturating_sub(SPEAKER_RING_MAX)
+            .min(ring.len());
         if overflow > 0 {
             ring.drain(..overflow);
         }
@@ -230,7 +236,11 @@ impl Envelope {
 }
 
 /// Spawns the decode thread. Ends on `stop` (set at teardown before the join).
-pub fn spawn(client: Arc<NativeClient>, stop: Arc<AtomicBool>, envelope: Arc<Envelope>) -> Result<std::thread::JoinHandle<()>> {
+pub fn spawn(
+    client: Arc<NativeClient>,
+    stop: Arc<AtomicBool>,
+    envelope: Arc<Envelope>,
+) -> Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name("punktfunk-webos-pad-audio".into())
         .spawn(move || {
@@ -242,8 +252,10 @@ pub fn spawn(client: Arc<NativeClient>, stop: Arc<AtomicBool>, envelope: Arc<Env
 }
 
 fn pump(client: &NativeClient, stop: &AtomicBool, envelope: &Envelope) -> Result<()> {
-    let mut coils = opus::Decoder::new(48_000, opus::Channels::Stereo).map_err(|e| anyhow::anyhow!("opus decoder: {e}"))?;
-    let mut speaker = opus::Decoder::new(48_000, opus::Channels::Stereo).map_err(|e| anyhow::anyhow!("opus decoder: {e}"))?;
+    let mut coils =
+        opus::Decoder::new(48_000, opus::Channels::Stereo).map_err(|e| anyhow::anyhow!("opus decoder: {e}"))?;
+    let mut speaker =
+        opus::Decoder::new(48_000, opus::Channels::Stereo).map_err(|e| anyhow::anyhow!("opus decoder: {e}"))?;
     let mut pcm = vec![0f32; MAX_FRAME_SAMPLES];
     // Left coil → low (heavy) motor, right coil → high (light) motor: the pad's own left/right
     // split, and the mapping every tier-C client in the plan uses.

@@ -451,7 +451,10 @@ pub(super) fn run_inner() -> Result<()> {
                                 }
                                 declared_pad = kind;
                                 // Adaptive triggers/lightbar follow the kind the host now builds.
-                                ds_feedback = kind.is_dualsense().then(|| open_ds_feedback(kind, haptics.clone())).flatten();
+                                ds_feedback = kind
+                                    .is_dualsense()
+                                    .then(|| open_ds_feedback(kind, haptics.clone()))
+                                    .flatten();
                             }
                         }
                     }
