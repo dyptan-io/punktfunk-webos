@@ -1,9 +1,9 @@
 
-![punktfunk](https://raw.githubusercontent.com/dyptan-io/punktfunk-webos/main/assets/logo/logo-sidebar.png)
+![punktfunk](https://raw.githubusercontent.com/punktfunk/client-webos/main/assets/logo/logo-sidebar.png)
 
 Low-latency desktop and game streaming for LG webOS.
 
-![Home screen](https://raw.githubusercontent.com/dyptan-io/punktfunk-webos/main/assets/screenshots/home.jpg)
+![Home screen](https://raw.githubusercontent.com/punktfunk/client-webos/main/assets/screenshots/home.jpg)
 
 * **Video.** Up to 4K120 with HDR. HEVC or H.264, decoded by the TV's media pipeline.
 * **Bitrate.** Automatic mode adapts to the network, or set a fixed rate up to 200 Mbps.
