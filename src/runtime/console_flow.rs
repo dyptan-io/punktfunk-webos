@@ -59,13 +59,16 @@ pub(super) fn run(
     let handles = ConsoleHandles::new();
     let mut service = Service::new(handles.clone(), store.clone(), identity.clone());
 
-    let console_gl = match gl {
-        Some(existing) => existing,
-        // First entry of the process pays for the context and the shader warm-up; every later
-        // one reuses both (see `ConsoleGl::ctx`).
-        None => gl.insert(ConsoleGl::new(canvas.window(), canvas.window().subsystem())?),
+    // A preview UI must not be able to take the app down with it: if GL or Skia will not come
+    // up on this set, say so, turn the shell back off in the document and let the classic menus
+    // have the screen. Returning `Err` here would propagate out of the whole menu loop.
+    let console_gl = match bring_up(gl, canvas) {
+        Ok(gl) => gl,
+        Err(e) => {
+            tracing::error!("console: no GL host on this TV ({e:#}) — falling back to the classic menus");
+            return Ok(leave_for_classic(&store));
+        }
     };
-    console_gl.make_current(canvas.window())?;
 
     let opts = ConsoleOptions {
         device_name: "webOS TV".into(),
@@ -89,7 +92,14 @@ pub(super) fn run(
         });
         ConsoleEntry::Library(Box::new(row))
     });
-    let mut console = Console::new(opts, entry, &handles)?;
+    let mut console = match Console::new(opts, entry, &handles) {
+        Ok(console) => console,
+        // Same reasoning as the GL bring-up above — most likely the font build.
+        Err(e) => {
+            tracing::error!("console: shell would not build ({e:#}) — falling back to the classic menus");
+            return Ok(leave_for_classic(&store));
+        }
+    };
     handles.console.set_notice(notice.unwrap_or_else(|| {
         // ponytail: the only way back to the classic menus until the shell grows a webOS row
         // for it — `GamepadUi` toggles Android's TOUCH shell and means nothing here (see the
@@ -355,6 +365,23 @@ pub(super) fn run(
     // compiled shaders stay, so coming back here is a re-upload rather than a cold start.
     console_gl.release_resources();
     Ok(outcome)
+}
+
+/// Bring up (or reuse) the shell's GL context and make it current. Split out so the caller can
+/// answer a failure by handing the screen back rather than by failing the app.
+fn bring_up<'a>(
+    gl: &'a mut Option<ConsoleGl>,
+    canvas: &sdl2::render::Canvas<sdl2::video::Window>,
+) -> Result<&'a mut ConsoleGl> {
+    if gl.is_none() {
+        // The first entry of the process pays for the context and the shader warm-up; every
+        // later one reuses both (see `ConsoleGl::ctx`).
+        *gl = Some(ConsoleGl::new(canvas.window(), canvas.window().subsystem())?);
+    }
+    let gl = gl.as_mut().expect("just built");
+    // The classic menus and the stream have both made their own context current in between.
+    gl.make_current(canvas.window())?;
+    Ok(gl)
 }
 
 /// Turn the console off in the document, so the next menu entry lands on the classic menus.
