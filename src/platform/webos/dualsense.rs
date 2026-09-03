@@ -151,16 +151,27 @@ fn crc32_le(bytes: impl IntoIterator<Item = u8>) -> u32 {
 /// (no `Uniq`), which is correct — this path is Bluetooth-only.
 pub fn find_address() -> Option<String> {
     let devices = std::fs::read_to_string("/proc/bus/input/devices").ok()?;
-    // Bound rather than returned directly: the iterator borrows `devices`, and a tail-position
-    // temporary outlives the local it borrows from.
-    let address = dualsense_blocks(&devices).find_map(|block| {
-        block
-            .lines()
-            .find_map(|l| l.strip_prefix("U: Uniq="))
-            .map(|u| u.trim().to_ascii_lowercase())
-            .filter(|u| !u.is_empty())
-    });
-    address
+    address_in(&devices)
+}
+
+/// The Bluetooth address of an attached `DualSense`, or `None` when the only one is wired.
+///
+/// **`Uniq` is not the discriminator.** `hid-playstation` reads the pad's Bluetooth MAC out of its
+/// pairing-info feature report over USB as well, so a wired pad publishes exactly the same address
+/// as a paired one (verified on a G5 with one pad on both transports). `I: Bus=` is what separates
+/// them: `0005` is Bluetooth, `0003` is USB. Everything this address reaches — `sendData`, the
+/// sniff calls, the whole audio lane — goes through `bluetooth2`, which a wired pad is not on, so
+/// handing one back would claim the coils for a transport that cannot carry them.
+fn address_in(devices: &str) -> Option<String> {
+    dualsense_blocks(devices)
+        .filter(|block| block.lines().any(|l| l.trim_end().starts_with("I: Bus=0005")))
+        .find_map(|block| {
+            block
+                .lines()
+                .find_map(|l| l.strip_prefix("U: Uniq="))
+                .map(|u| u.trim().to_ascii_lowercase())
+                .filter(|u| !u.is_empty())
+        })
 }
 
 /// The `/proc/bus/input/devices` records of every connected `DualSense`, matched on the `N: Name=`
@@ -875,6 +886,21 @@ mod tests {
         assert!(out[0].abs() < 1e-3 && out[1].abs() < 1e-3);
         assert!((out[last] - end).abs() < 1e-3);
         assert!((out[last + 1] + end).abs() < 1e-3);
+    }
+
+    /// A wired pad publishes the same `Uniq` as a paired one, so only `I: Bus=` tells them apart.
+    /// Getting this wrong claims the coils for a transport that cannot carry them, and the pad
+    /// ends up with no vibration at all: the lane is dead and the motors were handed to it.
+    #[test]
+    fn only_a_bluetooth_pad_has_an_address() {
+        const USB: &str = "I: Bus=0003 Vendor=054c\nN: Name=\"Sony Interactive Entertainment DualSense Wireless Controller\"\nU: Uniq=14:3a:9a:1f:d1:64\n";
+        const BT: &str =
+            "I: Bus=0005 Vendor=054c\nN: Name=\"DualSense Wireless Controller\"\nU: Uniq=AA:BB:CC:DD:EE:FF\n";
+
+        assert_eq!(address_in(USB), None, "a wired pad is not on the Bluetooth service");
+        assert_eq!(address_in(BT), Some("aa:bb:cc:dd:ee:ff".into()));
+        // Both attached: the paired one is the only one the bus can reach.
+        assert_eq!(address_in(&format!("{USB}\n{BT}")), Some("aa:bb:cc:dd:ee:ff".into()));
     }
 
     /// The overfeed that broke speech up: a tick that overran used to fire again immediately.
