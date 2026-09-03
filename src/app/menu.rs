@@ -68,6 +68,13 @@ pub enum SettingsRow {
     /// real settings: it's the only input-side one, and picking `DualSense` is what turns on
     /// adaptive triggers (`crate::platform::webos::dualsense`).
     Gamepad,
+    /// Rumble derived from the pad's `0xD1` coil lane (`session::pad_audio`). On a libScePad
+    /// title (Spider-Man, GTA V Enhanced…) it is the ONLY vibration there is: those games drive
+    /// the coils and never the classic motors.
+    PadHaptics,
+    /// The pad's own speaker. Bluetooth only — the `0x36` report over the Luna bus is its one
+    /// transport, so a USB pad leaves the lane undeclared whatever this row says.
+    PadSpeaker,
     /// Not a setting — a link to `Screen::CursorSettings`, directly below Controller since
     /// it's the other input-side entry. Both pointer toggles live behind it rather than on
     /// this list: neither is something a user sets more than once, and pairing them makes the
@@ -95,7 +102,7 @@ pub enum SettingsRow {
 }
 
 /// The global list, in display order.
-const GLOBAL_ROWS: [SettingsRow; 12] = [
+const GLOBAL_ROWS: [SettingsRow; 14] = [
     SettingsRow::Resolution,
     SettingsRow::Framerate,
     SettingsRow::Bitrate,
@@ -103,6 +110,8 @@ const GLOBAL_ROWS: [SettingsRow; 12] = [
     SettingsRow::Hdr,
     SettingsRow::Audio,
     SettingsRow::Gamepad,
+    SettingsRow::PadHaptics,
+    SettingsRow::PadSpeaker,
     SettingsRow::Cursor,
     SettingsRow::Theme,
     SettingsRow::Experimental,
@@ -211,6 +220,9 @@ pub(crate) enum RowLock {
     RouteStereoOnly,
     /// Nothing is plugged into the TV, so there is no controller to describe to the host.
     NoGamepad,
+    /// Both pad-audio lanes ride `DualSense`-only reports, so neither means anything on
+    /// another pad — listed rather than hidden, so the feature is discoverable without one.
+    NeedsDualSense,
 }
 
 /// Why an Experimental row can't be changed. Same contract as [`RowLock`]: the predicate that
@@ -356,6 +368,9 @@ pub(crate) fn row_lock(row: SettingsRow, settings: &Settings, detected: Option<G
         SettingsRow::Audio if channel_options_up_to(caps.max_channels).len() < 2 => Some(RowLock::StereoOnly),
         SettingsRow::Audio if audio_channel_options(settings).len() < 2 => Some(RowLock::RouteStereoOnly),
         SettingsRow::Gamepad if detected.is_none() => Some(RowLock::NoGamepad),
+        SettingsRow::PadHaptics | SettingsRow::PadSpeaker if !detected.is_some_and(GamepadType::is_dualsense) => {
+            Some(RowLock::NeedsDualSense)
+        }
         _ => None,
     }
 }
@@ -388,6 +403,8 @@ pub fn settings_logical_row(set: SettingsScope, display: usize) -> Option<Settin
 pub fn toggle_value(settings: &Settings, row: SettingsRow) -> Option<bool> {
     match row {
         SettingsRow::Hdr => Some(settings.hdr_enabled),
+        SettingsRow::PadHaptics => Some(settings.pad_haptics),
+        SettingsRow::PadSpeaker => Some(settings.pad_speaker),
         SettingsRow::CursorCapture => Some(settings.cursor_capture),
         SettingsRow::CursorGestures => Some(settings.cursor_gestures),
         _ => None,
@@ -410,8 +427,10 @@ fn row_fields(row: SettingsRow) -> &'static [OverrideField] {
         SettingsRow::CursorCapture => &[OverrideField::CursorCapture],
         SettingsRow::CursorGestures => &[OverrideField::CursorGestures],
         SettingsRow::Cursor => &[OverrideField::CursorCapture, OverrideField::CursorGestures],
-        // Rows that override nothing: links out or an action.
-        SettingsRow::Theme
+        // Rows that override nothing: device-wide toggles, links out, or an action.
+        SettingsRow::PadHaptics
+        | SettingsRow::PadSpeaker
+        | SettingsRow::Theme
         | SettingsRow::Experimental
         | SettingsRow::Diagnostics
         | SettingsRow::About
@@ -774,6 +793,14 @@ pub fn adjust_setting(settings: &mut Settings, row: SettingsRow, forward: bool, 
         }
         SettingsRow::Hdr => {
             settings.hdr_enabled = !settings.hdr_enabled;
+            true
+        }
+        SettingsRow::PadHaptics => {
+            settings.pad_haptics = !settings.pad_haptics;
+            true
+        }
+        SettingsRow::PadSpeaker => {
+            settings.pad_speaker = !settings.pad_speaker;
             true
         }
         SettingsRow::CursorCapture => {
