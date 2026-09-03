@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use punktfunk_core::quic::HidOutput;
 
+use super::ls2;
 use crate::session::pad_audio::{Envelope, COIL_REPORT_FRAMES, SPEAKER_IN_SAMPLES};
 
 /// `hid/internal/sendData` — the only one of the three HID methods that works. `getReport`
@@ -574,7 +575,7 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
     // In-process bus first: one function call per report instead of a spawn. Its failure is the
     // normal state on a TV whose hub refuses the registration, and the spawn route still works
     // there — so it is logged as information and the throttle stays at the spawn-safe value.
-    let bus = match crate::platform::webos::ls2::Bus::open() {
+    let bus = match ls2::Bus::open() {
         Ok(bus) => {
             tracing::info!("DualSense feedback: in-process Luna bus");
             Some(bus)
@@ -591,7 +592,7 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
         (Some(bus), Some(envelope)) => {
             // Un-burst the link before the first audio report; the reply is counted like any
             // other (a refusal shows up once in the log through `REPLIES`).
-            match bus.call(STOP_SNIFF_URI, &sniff_payload) {
+            match bus.call(STOP_SNIFF_URI, &sniff_payload, ls2::Call::StopSniff) {
                 Ok(()) => tracing::info!("DualSense audio: lanes over the Luna bus, sniff stopped"),
                 Err(e) => tracing::warn!("DualSense audio: stopSniff refused ({e:#}); expect bursts"),
             }
@@ -610,7 +611,11 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
     });
     if let (Some(bus), Some(_)) = (&bus, &speaker) {
         // Routing + volume once; every audio report re-asserts it in its state sub-packet.
-        let _ = bus.call(SEND_DATA_URI, &payload_for(address, &build_speaker_setup(0)));
+        let _ = bus.call(
+            SEND_DATA_URI,
+            &payload_for(address, &build_speaker_setup(0)),
+            ls2::Call::SendReport,
+        );
     }
     let mut speaker_pcm = [0f32; SPEAKER_IN_SAMPLES * 2];
     // `true` while the pad plays the speaker lane: cleared when it goes quiet, so the next burst
@@ -665,7 +670,7 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
             seq = seq.wrapping_add(1);
             let report = build_report(seq, &state);
             let sent = match &bus {
-                Some(bus) => bus.call(SEND_DATA_URI, &payload_for(address, &report)),
+                Some(bus) => bus.call(SEND_DATA_URI, &payload_for(address, &report), ls2::Call::SendReport),
                 None => send_report(address, &report),
             };
             match sent {
@@ -732,7 +737,7 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
                 };
                 if sending && was_quiet && refloor {
                     last_resniff = Some(now);
-                    let _ = bus.call(STOP_SNIFF_URI, &sniff_payload);
+                    let _ = bus.call(STOP_SNIFF_URI, &sniff_payload, ls2::Call::StopSniff);
                 }
                 was_quiet = !sending;
                 for _ in 0..if holding { 0 } else { reports_now } {
@@ -755,7 +760,7 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
                     } else {
                         break;
                     };
-                    if let Err(e) = bus.call(SEND_DATA_URI, &payload_for(address, &report)) {
+                    if let Err(e) = bus.call(SEND_DATA_URI, &payload_for(address, &report), ls2::Call::SendReport) {
                         if !failing {
                             tracing::warn!("DualSense audio send failed (further errors quiet): {e}");
                             failing = true;
@@ -776,14 +781,14 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
         if let Some(bus) = &bus {
             bus.pump();
             // A refused reply is asynchronous: surface the first one per run of failures.
-            if let Some(text) = crate::platform::webos::ls2::REPLIES.take_failure() {
+            if let Some(text) = ls2::REPLIES.take_failure() {
                 tracing::warn!("DualSense feedback: Bluetooth service refused a report: {text}");
             }
         }
     }
     // Give the link back to sniff: the TV's own power policy, and what the pad expects at idle.
     if let (Some(bus), Some(_)) = (&bus, &lane) {
-        let _ = bus.call(START_SNIFF_URI, &sniff_payload);
+        let _ = bus.call(START_SNIFF_URI, &sniff_payload, ls2::Call::StartSniff);
         bus.pump();
     }
 }

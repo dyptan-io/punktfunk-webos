@@ -82,6 +82,27 @@ fn fns() -> Result<&'static Fns> {
     })
 }
 
+/// Which call a reply belongs to, so an asynchronous refusal can name itself. Rides the
+/// callback's context pointer as a plain integer and is never dereferenced, so there is no
+/// lifetime to manage — the hub may deliver the reply long after the caller moved on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Call {
+    SendReport = 1,
+    StopSniff = 2,
+    StartSniff = 3,
+}
+
+impl Call {
+    fn name(raw: usize) -> &'static str {
+        match raw {
+            1 => "sendData",
+            2 => "stopSniff",
+            3 => "startSniff",
+            _ => "unknown call",
+        }
+    }
+}
+
 /// Reply bookkeeping shared by every [`Bus`]: the counts the stats overlay and the logs read.
 pub struct Replies {
     pub ok: AtomicU32,
@@ -107,7 +128,7 @@ impl Replies {
 }
 
 /// Every call's reply lands here. Runs on the pumping thread, inside [`Bus::pump`].
-unsafe extern "C" fn on_reply(_sh: Handle, reply: Message, _ctx: *mut c_void) -> bool {
+unsafe extern "C" fn on_reply(_sh: Handle, reply: Message, ctx: *mut c_void) -> bool {
     let Ok(f) = fns() else { return true };
     // SAFETY: `reply` is the live message the hub delivered for this callback.
     let payload = unsafe { (f.message_payload)(reply) };
@@ -125,7 +146,7 @@ unsafe extern "C" fn on_reply(_sh: Handle, reply: Message, _ctx: *mut c_void) ->
             .first_failure
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        first.get_or_insert(text);
+        first.get_or_insert(format!("{} refused: {text}", Call::name(ctx as usize)));
     }
     true
 }
@@ -188,7 +209,7 @@ impl Bus {
 
     /// Fires one call; the reply is counted by [`on_reply`] when [`pump`](Self::pump) runs.
     /// `Err` is the hub refusing to accept the call at all, not a failing reply.
-    pub fn call(&self, uri: &str, payload: &str) -> Result<()> {
+    pub fn call(&self, uri: &str, payload: &str, what: Call) -> Result<()> {
         let uri = CString::new(uri)?;
         let payload = CString::new(payload)?;
         let mut err = LsError {
@@ -198,7 +219,7 @@ impl Bus {
         };
         let mut token: Token = 0;
         // SAFETY: handle attached in `open`; strings NUL-terminated and outlive the call, which
-        // copies them; the callback takes no context.
+        // copies them; the context is an integer the callback only ever reads back as one.
         let ok = unsafe {
             (self.fns.error_init)(&mut err);
             (self.fns.call_one_reply)(
@@ -206,7 +227,7 @@ impl Bus {
                 uri.as_ptr(),
                 payload.as_ptr(),
                 on_reply,
-                std::ptr::null_mut(),
+                what as usize as *mut c_void,
                 &mut token,
                 &mut err,
             )
