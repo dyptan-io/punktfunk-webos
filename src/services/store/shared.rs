@@ -28,7 +28,10 @@ fn key(name: &str) -> String {
 }
 
 fn get<T: serde::de::DeserializeOwned>(t: &trust::Settings, name: &str) -> Option<T> {
-    t.extra.get(&key(name)).cloned().and_then(|v| serde_json::from_value(v).ok())
+    t.extra
+        .get(&key(name))
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
 }
 
 fn put<T: serde::Serialize>(t: &mut trust::Settings, name: &str, value: &T) {
@@ -69,12 +72,17 @@ pub fn legacy_shape(settings: &serde_json::Value) -> bool {
     MOVED.iter().any(|k| map.contains_key(*k))
 }
 
-/// This client's settings as the shared document.
+/// This client's settings as the shared document, written over `base`.
 ///
 /// The scalar stream fields are mapped for real, not parked in `extra`: resolution, refresh,
 /// bitrate, HDR on/off, audio channels and the two pad-audio lanes mean exactly the same thing
 /// on every client, and sharing them is the point of the exercise.
-pub fn to_shared(s: &Settings) -> trust::Settings {
+///
+/// 🛑 `base` is the document as it was last read (`Persisted::shared_base`), NOT a default. The
+/// shared schema is wider than this client's `Settings`, so building it from `Settings` alone
+/// silently resets every field only the other writers know about — the gamepad shell's palette
+/// and library view among them. Everything not named below is carried through untouched.
+pub fn to_shared(base: &trust::Settings, s: &Settings) -> trust::Settings {
     let mut t = trust::Settings {
         width: s.width,
         height: s.height,
@@ -96,7 +104,7 @@ pub fn to_shared(s: &Settings) -> trust::Settings {
         // This client offers capture as a switch, not a two-name mode.
         mouse_mode: if s.cursor_capture { "capture" } else { "desktop" }.to_string(),
         gamepad: shared_gamepad(s.gamepad_type),
-        ..trust::Settings::default()
+        ..base.clone()
     };
 
     put(&mut t, "hdr_peak_nits", &s.hdr_peak_nits);
@@ -109,6 +117,7 @@ pub fn to_shared(s: &Settings) -> trust::Settings {
     put(&mut t, "audio_route", &s.audio_route);
     put(&mut t, "cursor_gestures", &s.cursor_gestures);
     put(&mut t, "theme", &s.theme);
+    put(&mut t, "console_ui", &s.console_ui);
     t
 }
 
@@ -146,6 +155,7 @@ pub fn from_shared(t: &trust::Settings) -> Settings {
         audio_route: get(t, "audio_route").unwrap_or(d.audio_route),
         cursor_gestures: get(t, "cursor_gestures").unwrap_or(d.cursor_gestures),
         theme: get(t, "theme").unwrap_or(d.theme),
+        console_ui: get(t, "console_ui").unwrap_or(d.console_ui),
     }
 }
 
@@ -176,12 +186,69 @@ pub fn to_shared_host(h: &crate::core::model::KnownHost) -> trust::KnownHost {
     }
 }
 
-fn hex(bytes: [u8; 32]) -> String {
+/// The shell's stable row key for a host: its pinned fingerprint, else `addr:port`
+/// (`pf_console_ui::HostRow::key`, the desktop's rule — the two must agree or a link copied
+/// on one client names nothing on the other).
+///
+/// Every host-scoped command the shell raises (Forget, Wake, Edit, the clipboard toggle)
+/// carries this string and nothing else, so [`find_known`] has to invert it. That is the
+/// whole reason both live here, ungated, where `task test` can actually run them.
+pub fn host_key(fp_hex: &str, addr: &str, port: u16) -> String {
+    if fp_hex.is_empty() {
+        format!("{addr}:{port}")
+    } else {
+        fp_hex.to_string()
+    }
+}
+
+/// [`host_key`] for a record this client holds.
+pub fn known_host_key(h: &crate::core::model::KnownHost) -> String {
+    host_key(&h.fingerprint.map(hex).unwrap_or_default(), &h.host, h.port)
+}
+
+/// The record a shell row key addresses, or `None` if it names no host this client knows.
+///
+/// A pinned-profile card's key is `<host key>\0<profile id>`. This client mints none (it has
+/// no profile catalog — see `store::console::ConsoleStore::profiles`), but the key is the
+/// shell's shape, not ours, so the suffix is trimmed rather than trusted to be absent.
+pub fn find_known(hosts: &[crate::core::model::KnownHost], key: &str) -> Option<usize> {
+    let key = key.split('\0').next().unwrap_or(key);
+    hosts.iter().position(|h| known_host_key(h) == key)
+}
+
+/// The store a library id belongs to — the `steam` of `steam:570`.
+///
+/// `GameEntry::id` is store-qualified by contract (see its doc); the shell prints this as the
+/// card's store line. An id with no prefix yields the whole id rather than an empty string,
+/// which reads as "unknown store" instead of a blank.
+pub fn store_of(id: &str) -> &str {
+    id.split_once(':').map_or(id, |(store, _)| store)
+}
+
+/// A pinned fingerprint as the lowercase hex the shell's rows and links carry.
+pub fn hex(bytes: [u8; 32]) -> String {
     use std::fmt::Write;
     bytes.iter().fold(String::with_capacity(64), |mut s, b| {
         let _ = write!(s, "{b:02x}");
         s
     })
+}
+
+/// The inverse: a fingerprint the shell handed back, or `None` for anything that is not
+/// exactly 32 bytes of hex.
+///
+/// Strict on purpose. This is the pin a session is verified against, so a short, odd-length or
+/// non-hex string has to fail rather than silently produce a shorter key that would either be
+/// rejected on the wire or — worse — compared against the wrong thing.
+pub fn parse_fp(fp_hex: &str) -> Option<[u8; 32]> {
+    if fp_hex.len() != 64 {
+        return None;
+    }
+    let bytes: Vec<u8> = (0..64)
+        .step_by(2)
+        .filter_map(|i| u8::from_str_radix(fp_hex.get(i..i + 2)?, 16).ok())
+        .collect();
+    bytes.try_into().ok()
 }
 
 /// The shared pad name. Lossless in both directions — `GamepadPref` carries every kind this
@@ -191,6 +258,12 @@ fn hex(bytes: [u8; 32]) -> String {
 /// Spelled by `GamepadPref::as_str`, never by hand, so the stored string cannot drift from the
 /// name `from_name` parses on the other side.
 fn shared_gamepad(t: GamepadType) -> String {
+    gamepad_pref(t).as_str().to_string()
+}
+
+/// This client's pad choice as punktfunk's. Also what the console shell's button-glyph legend
+/// is picked by, which is why it is a value rather than only ever a string.
+pub fn gamepad_pref(t: GamepadType) -> punktfunk_core::config::GamepadPref {
     use punktfunk_core::config::GamepadPref as Pref;
     match t {
         GamepadType::Auto => Pref::Auto,
@@ -200,8 +273,6 @@ fn shared_gamepad(t: GamepadType) -> String {
         GamepadType::DualSenseEdge => Pref::DualSenseEdge,
         GamepadType::SwitchPro => Pref::SwitchPro,
     }
-    .as_str()
-    .to_string()
 }
 
 /// The inverse. `None` for a kind this client has no row for (a Steam Deck's pad, say), so the
@@ -253,11 +324,57 @@ mod tests {
             audio_route: AudioRoutePref::NdlOpus,
             cursor_gestures: true,
             theme: ThemeChoice::Funk,
+            console_ui: true,
         };
-        assert_eq!(from_shared(&to_shared(&s)), s, "non-default settings");
+        assert_eq!(
+            from_shared(&to_shared(&trust::Settings::default(), &s)),
+            s,
+            "non-default settings"
+        );
 
         s = Settings::default();
-        assert_eq!(from_shared(&to_shared(&s)), s, "defaults");
+        assert_eq!(from_shared(&to_shared(&trust::Settings::default(), &s)), s, "defaults");
+    }
+
+    /// The shared schema is wider than this client's `Settings`, and everything outside it has
+    /// to survive a save from this side. Without the carried base the gamepad shell's own rows
+    /// — its palette, its library view — would reset the moment either UI wrote the file, which
+    /// reads as a setting that will not stick rather than as data loss.
+    #[test]
+    fn a_save_keeps_the_fields_this_client_does_not_model() {
+        let stored = trust::Settings {
+            ui_palette: "mint".to_string(),
+            library_view: "grid".to_string(),
+            render_scale: 1.5,
+            mic_enabled: true,
+            extra: [("android.low_latency".to_string(), serde_json::Value::Bool(true))]
+                .into_iter()
+                .collect(),
+            ..trust::Settings::default()
+        };
+        // What a load does: read it into this client's shape, keeping the document as the base.
+        let mine = from_shared(&stored);
+        // …and what a save does, after this client changed something of its own.
+        let written = to_shared(
+            &stored,
+            &Settings {
+                bitrate_kbps: 42_000,
+                ..mine
+            },
+        );
+
+        assert_eq!(written.bitrate_kbps, 42_000, "this client's own edit lands");
+        assert_eq!(written.ui_palette, "mint", "the shell's palette survives");
+        assert_eq!(written.library_view, "grid", "so does its library view");
+        assert!((written.render_scale - 1.5).abs() < f64::EPSILON);
+        assert!(written.mic_enabled);
+        assert_eq!(
+            written.extra.get("android.low_latency"),
+            Some(&serde_json::Value::Bool(true)),
+            "another client's namespaced rows ride through untouched"
+        );
+        // And this client's own prefixed rows are still written alongside them.
+        assert!(written.extra.contains_key("webos.theme"));
     }
 
     /// A document another client wrote has none of our `webos.` keys; we must read its shared
@@ -289,7 +406,7 @@ mod tests {
         .expect("encode");
         assert!(legacy_shape(&legacy), "this client's own shape is legacy");
 
-        let moved = serde_json::to_value(to_shared(&Settings::default())).expect("encode");
+        let moved = serde_json::to_value(to_shared(&trust::Settings::default(), &Settings::default())).expect("encode");
         assert!(!legacy_shape(&moved), "the shared shape is not legacy");
 
         // A document from another client has neither the moved keys nor the prefix.
@@ -320,7 +437,7 @@ mod tests {
         assert!(legacy_shape(&on_disk));
 
         let parsed: Settings = serde_json::from_value(on_disk).expect("read legacy");
-        let after = from_shared(&to_shared(&parsed));
+        let after = from_shared(&to_shared(&trust::Settings::default(), &parsed));
         assert_eq!(after, before);
     }
 
@@ -337,7 +454,10 @@ mod tests {
             ..Default::default()
         };
         let h = to_shared_host(&paired);
-        assert_eq!((h.name.as_str(), h.addr.as_str(), h.port), ("desk", "192.168.1.5", 47_989));
+        assert_eq!(
+            (h.name.as_str(), h.addr.as_str(), h.port),
+            ("desk", "192.168.1.5", 47_989)
+        );
         assert_eq!(h.mgmt_port, Some(47_990));
         assert!(h.paired);
         assert_eq!(h.fp_hex, "ab".repeat(32), "32 bytes is 64 hex chars");
@@ -353,6 +473,61 @@ mod tests {
         let h = to_shared_host(&unpaired);
         assert!(!h.paired, "no fingerprint means not paired");
         assert!(h.fp_hex.is_empty());
+    }
+
+    /// The shell addresses hosts by row key alone, so every key this client mints must lead
+    /// back to the record it came from — a miss is a Forget or a Wake that silently does
+    /// nothing. Both spellings, and the pinned-card suffix the shell may append.
+    #[test]
+    fn row_keys_invert_to_their_host() {
+        let paired = crate::core::model::KnownHost {
+            name: "desk".into(),
+            host: "192.168.1.5".into(),
+            port: 47_989,
+            fingerprint: Some([0xab; 32]),
+            ..Default::default()
+        };
+        let unpaired = crate::core::model::KnownHost {
+            name: "typed".into(),
+            host: "10.0.0.9".into(),
+            port: 47_989,
+            fingerprint: None,
+            ..Default::default()
+        };
+        let hosts = vec![paired.clone(), unpaired.clone()];
+
+        assert_eq!(known_host_key(&paired), "ab".repeat(32), "paired keys on its pin");
+        assert_eq!(
+            known_host_key(&unpaired),
+            "10.0.0.9:47989",
+            "unpaired keys on addr:port"
+        );
+        assert_eq!(find_known(&hosts, &known_host_key(&paired)), Some(0));
+        assert_eq!(find_known(&hosts, &known_host_key(&unpaired)), Some(1));
+        // A pinned profile card rides its host's key behind a NUL.
+        let pinned = format!("{}\0work", known_host_key(&paired));
+        assert_eq!(find_known(&hosts, &pinned), Some(0), "the card resolves to its host");
+        assert_eq!(find_known(&hosts, "nothing"), None);
+    }
+
+    /// The pin the shell hands back has to survive the round trip exactly, and anything that
+    /// is not a whole fingerprint has to be refused rather than truncated — this is the value
+    /// a session is verified against.
+    #[test]
+    fn fingerprints_round_trip_and_refuse_junk() {
+        let fp = [0xab; 32];
+        assert_eq!(parse_fp(&hex(fp)), Some(fp));
+        assert_eq!(parse_fp(""), None, "an unpaired row carries no pin");
+        assert_eq!(parse_fp(&"ab".repeat(31)), None, "62 hex chars is not a fingerprint");
+        assert_eq!(parse_fp(&"zz".repeat(32)), None, "not hex at all");
+    }
+
+    /// The card's store line comes off the id, and an id without a prefix must not read blank.
+    #[test]
+    fn store_comes_off_the_id() {
+        assert_eq!(store_of("steam:570"), "steam");
+        assert_eq!(store_of("custom:my-thing"), "custom");
+        assert_eq!(store_of("bare"), "bare");
     }
 
     /// `av1` is a codec this client cannot decode; it must not present as a selected option.

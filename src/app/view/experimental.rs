@@ -50,10 +50,16 @@ pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
         Some(lock) => row.locked(true).with_subtext(lock_caption(lock)),
         None => row,
     };
+    // The shell owns the whole menu while it is on, and it has fewer screens than this client
+    // does — so the caption says what turning it on costs, not just what it is.
+    let console_ui = FocusRow::toggle(icons::ICON_GAMEPAD, "Gamepad shell", settings.console_ui).with_subtext(
+        ui::widgets::RowSubtext::caution("Preview of the shared menus — the Blue button brings these back"),
+    );
     vec![
         apply(game_mode, ExpRow::GameMode),
         apply(audio, ExpRow::AudioProcessing),
         apply(calibrate, ExpRow::HdrCalibration),
+        apply(console_ui, ExpRow::ConsoleUi),
     ]
 }
 
@@ -88,6 +94,7 @@ fn lock_caption(lock: ExpRowLock) -> ui::widgets::RowSubtext {
     match lock {
         ExpRowLock::RootUnknown => ui::widgets::RowSubtext::hint("Checking whether your TV is rooted..."),
         ExpRowLock::NotRooted => ui::widgets::RowSubtext::caution("Your TV is not rooted, Game mode is unavailable"),
+        ExpRowLock::NoShell => ui::widgets::RowSubtext::caution("This build has no gamepad shell"),
         ExpRowLock::SoftwareOnly => ui::widgets::RowSubtext::hint("This TV has no NDL audio plane"),
         ExpRowLock::HdrOff => ui::widgets::RowSubtext::hint("Turn HDR on in Settings to calibrate it"),
     }

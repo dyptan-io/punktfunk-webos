@@ -139,6 +139,9 @@ pub struct App {
     /// webOS on-screen keyboard up (moves address form from under panel).
     pub(crate) keyboard_shown: bool,
     pub(crate) identity: (String, String),
+    /// The stored settings object's fields this UI does not model, carried so a save from here
+    /// does not reset them — see [`store::Persisted::shared_base`].
+    shared_base: pf_client_core::trust::Settings,
     /// Last tick time (for real-time scroll easing, not frame-count based).
     last_tick: Option<Instant>,
 }
@@ -235,6 +238,7 @@ impl App {
             known_hosts,
             selected_host,
             version: _,
+            shared_base,
         } = loaded;
         let entries = known_entries(&known_hosts);
 
@@ -273,6 +277,7 @@ impl App {
             detected_gamepad_type: None,
             keyboard_shown: false,
             identity,
+            shared_base,
             last_tick: None,
         };
         // Restore the last-active sidebar host (if it's still known and paired)
@@ -782,6 +787,10 @@ impl App {
             // Always this build's version: whatever wrote the document last is what a future
             // migration needs to know, and that is now us.
             version: Some(store::VERSION.to_string()),
+            // Carried, never rebuilt: this UI models a subset of the stored schema, and
+            // dropping the rest here would reset the gamepad shell's own rows every time
+            // anything on this side was saved. See [`store::Persisted::shared_base`].
+            shared_base: self.shared_base.clone(),
         });
     }
 

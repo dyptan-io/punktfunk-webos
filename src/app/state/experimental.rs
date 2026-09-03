@@ -150,6 +150,16 @@ impl App {
                     menu::apply_audio_route(&mut self.settings_ui.settings, next);
                 }
             }
+            (Some(menu::ExpRow::ConsoleUi), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm)
+                if menu::exp_row_lock(menu::ExpRow::ConsoleUi, &self.settings_ui.settings, self.hosts.rooted)
+                    .is_none() =>
+            {
+                let from = self.settings_ui.settings.console_ui;
+                self.settings_ui.settings.console_ui = !from;
+                self.arm_switch_anim(from);
+                // Nothing else to do here: `runtime::ui_flow` watches this value and hands the
+                // menu over on its next tick, which is what makes the flip immediate.
+            }
             (Some(menu::ExpRow::HdrCalibration), MenuEvent::Confirm)
                 if menu::exp_row_lock(
                     menu::ExpRow::HdrCalibration,

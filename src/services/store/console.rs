@@ -15,10 +15,6 @@
 //! Only one UI is live at a time (that is what the flip means), so this owns the document while
 //! the console is up and [`ConsoleStore::snapshot`] hands it back when the console closes.
 
-// `expect`, not `allow`: nothing constructs this until the console host lands, and this then
-// fails the build the moment it does — so the marker cannot outlive its reason.
-#![expect(dead_code, reason = "the console host is the consumer; it lands next")]
-
 use std::sync::{Arc, Mutex};
 
 use pf_client_core::trust;
@@ -49,17 +45,39 @@ impl ConsoleStore {
     pub fn snapshot(&self) -> Persisted {
         self.state.lock().expect(POISONED).clone()
     }
+
+    /// Change the document and persist all of it. The host-list commands (save, edit, forget)
+    /// go through here for the same reason [`SettingsStore::save`] does: one writer, whole
+    /// document, so a host edit and a settings change cannot race into disagreeing files.
+    ///
+    /// Returns whether `edit` reported a change; a command naming a host this client does not
+    /// know says `false` and nothing is written.
+    pub fn edit(&self, edit: impl FnOnce(&mut Persisted) -> bool) -> bool {
+        let snapshot = {
+            let mut state = self.state.lock().expect(POISONED);
+            if !edit(&mut state) {
+                return false;
+            }
+            state.clone()
+        };
+        self.writer.save(snapshot);
+        true
+    }
 }
 
 impl SettingsStore for ConsoleStore {
     fn load(&self) -> trust::Settings {
-        shared::to_shared(&self.state.lock().expect(POISONED).settings)
+        let state = self.state.lock().expect(POISONED);
+        shared::to_shared(&state.shared_base, &state.settings)
     }
 
     fn save(&self, settings: &trust::Settings) {
         let snapshot = {
             let mut state = self.state.lock().expect(POISONED);
             state.settings = shared::from_shared(settings);
+            // The shell's whole document becomes the new carried base, so the rows only IT
+            // knows about (its palette, its library view) survive this client's next save.
+            state.shared_base = settings.clone();
             state.clone()
         };
         // Whole document, one writer — see the module note.

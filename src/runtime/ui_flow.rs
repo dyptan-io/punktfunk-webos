@@ -181,6 +181,15 @@ pub(super) fn run_ui_flow(
             quit_dialog.open_with(1, quit_subtitle(&app));
             dirty = true;
         }
+        // The flip, watched rather than signalled: the Experimental row writes the setting and
+        // this hands the menu over. `app` drops on return, and its `StateWriter` flushes and
+        // joins in `Drop` — so the value is on disk before the menu loop re-reads it.
+        if app.settings_ui.settings.console_ui {
+            tracing::info!("gamepad shell turned on — handing the menu over");
+            app.persist();
+            text_input.stop();
+            return Ok(UiOutcome::Reenter);
+        }
         dirty |= app.drain_jobs();
         dirty |= app.tick_screens();
         // Fire on hold elapsed, not release, so user sees it before letting go.

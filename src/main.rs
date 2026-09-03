@@ -7,6 +7,10 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 #[cfg(target_os = "linux")]
 mod app;
+// The shared gamepad shell. armv7-only, because that is the only target the prebuilt Skia
+// archive exists for — see Cargo.toml, and `console`'s own module doc.
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+mod console;
 mod core;
 mod logger;
 #[cfg(target_os = "linux")]
