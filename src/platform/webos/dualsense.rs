@@ -23,8 +23,8 @@
 //! type rather than only this one. Reports built here never set the vibration valid-flag, so
 //! they cannot fight the kernel's force-feedback state — see [`build_report`].
 use std::fmt::Write as _;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -51,12 +51,12 @@ const COMMON: usize = 3;
 
 /// Bluetooth `0x32` coil report: id, seq, a 7-byte `0x11` session sub-packet, the 64-byte `0x12`
 /// coil sub-packet (32 stereo s8 frames at 3 kHz), padding, CRC32. Verified on a G5: the pad
-/// buzzes, with the SAxense flag convention (`tag | 0x80`) and the same CRC as `0x31`.
+/// buzzes, with the `SAxense` flag convention (`tag | 0x80`) and the same CRC as `0x31`.
 const COIL_REPORT_LEN: usize = 142;
 /// One coil report per 512 samples at 48 kHz — the pad's clock. 10 ms (6.7% fast) overruns it.
 const COIL_TICK: Duration = Duration::from_nanos(10_666_667);
 
-/// Bluetooth `0x36` audio report (LinuxAudio4Dualsense5's layout): config, a state sub-packet
+/// Bluetooth `0x36` audio report (`LinuxAudio4Dualsense5`'s layout): config, a state sub-packet
 /// carrying the same common block as `0x31`, the coil frame, then one 200-byte Opus speaker frame.
 const AUDIO_REPORT_LEN: usize = 398;
 /// One 10 ms Opus frame at 160 kbit/s CBR: exactly this many bytes, which the pad requires.
@@ -66,8 +66,10 @@ const SPEAKER_OUT_SAMPLES: usize = 480;
 /// Speaker reports sent ahead before steady cadence: the pad's FIFO then holds ~100 ms, which
 /// rides out the link's residual 35–45 ms scheduling gaps (measured; sniff off).
 const SPEAKER_PREFILL: usize = 10;
-/// Re-issue `stopSniff` this often while a lane runs — the stack drifts back on its own.
-const RESNIFF_EVERY: u32 = 47;
+/// Floor between two `stopSniff` calls. Sniff is a link-IDLE power state, so it is re-asserted on
+/// the edge out of an idle lane, never on a timer — a lane at 94 reports/s never lets the link
+/// idle. The floor exists only because a silence-gated host can gate audio on and off quickly.
+const RESNIFF_FLOOR: Duration = Duration::from_secs(2);
 /// The five config bytes of the audio report's `0x11` sub-packet ("audio buffer length").
 const AUDIO_CONFIG: u8 = 64;
 /// Speaker volume: the pad honours only `0x3D..=0x64`.
@@ -120,9 +122,10 @@ struct State {
 }
 
 /// CRC32 (IEEE 802.3, reflected) — the `crc32_le` variant `hid-playstation` signs Bluetooth
-/// output reports with. Computed bitwise: 78 bytes per report at human-paced update rates
-/// isn't worth a 1 KiB lookup table. Over an iterator so the seed byte the signature covers
-/// chains onto the report without copying it into a buffer first.
+/// output reports with. Bitwise, so no 1 KiB table: 398 bytes at 94 reports/s is ~300k inner
+/// steps a second, well under the Opus encode beside it. One call per report — a two-call seal
+/// inverts the running state at the seam and the pad silently drops every report.
+/// Over an iterator so the seed byte the signature covers chains on without a copy.
 fn crc32_le(bytes: impl IntoIterator<Item = u8>) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for b in bytes {
@@ -259,10 +262,10 @@ impl Feedback {
     /// Variants this pad has no route for are dropped: `TrackpadHaptic` is a Steam
     /// Controller voice-coil buzz, and `HidRaw` is a passthrough report for a device the host
     /// mirrors as-is — replaying either on a `DualSense` would mean writing arbitrary bytes in
-    /// the wrong protocol. `AudioCtl` is the routing/volume half of pad audio, which this client
-    /// never asks for (it advertises no `CLIENT_CAP_PAD_AUDIO`, so no host sends it) and could
-    /// not honour anyway: the feedback path here is the Bluetooth service's state model, not a
-    /// hidraw node, so there is nothing to write a DS5 output report to.
+    /// the wrong protocol. `AudioCtl` is the routing/volume half of pad audio: the client does
+    /// advertise `CLIENT_CAP_PAD_AUDIO` now, so a host can send it, but every audio report already
+    /// re-asserts routing and the pad honours volume only in `0x3D..=0x64` — [`SPEAKER_VOLUME`]
+    /// sits at that ceiling. Dropped until a host asks for something that range can express.
     pub fn apply(&mut self, event: &HidOutput) {
         match event {
             HidOutput::Led { r, g, b, .. } => self.state.lightbar = Some((*r, *g, *b)),
@@ -419,7 +422,7 @@ fn build_audio_report(
 }
 
 /// The speaker encoder: 512 stereo samples per report resampled to 480, Opus 160 kbit/s CBR at
-/// complexity 0 — the settings both working implementations use, and the ones this SoC affords.
+/// complexity 0 — the settings both working implementations use, and the ones this `SoC` affords.
 struct SpeakerLane {
     encoder: opus::Encoder,
     /// An encoded frame of silence, sent when the ring is short so the pad's clock keeps running.
@@ -431,9 +434,13 @@ impl SpeakerLane {
     fn new() -> anyhow::Result<Self> {
         let mut encoder = opus::Encoder::new(48_000, opus::Channels::Stereo, opus::Application::Audio)
             .map_err(|e| anyhow::anyhow!("opus encoder: {e}"))?;
-        encoder.set_bitrate(opus::Bitrate::Bits(160_000)).map_err(|e| anyhow::anyhow!("bitrate: {e}"))?;
+        encoder
+            .set_bitrate(opus::Bitrate::Bits(160_000))
+            .map_err(|e| anyhow::anyhow!("bitrate: {e}"))?;
         encoder.set_vbr(false).map_err(|e| anyhow::anyhow!("cbr: {e}"))?;
-        encoder.set_complexity(0).map_err(|e| anyhow::anyhow!("complexity: {e}"))?;
+        encoder
+            .set_complexity(0)
+            .map_err(|e| anyhow::anyhow!("complexity: {e}"))?;
         let mut lane = Self {
             encoder,
             silence: [0; SPEAKER_FRAME_LEN],
@@ -590,10 +597,15 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
     // `true` while the pad plays the speaker lane: cleared when it goes quiet, so the next burst
     // pre-fills again instead of starting from an empty pad buffer.
     let mut speaker_live = false;
-    let mut audio_reports: u32 = 0;
+    // Ticks still allowed to send two reports, so the pre-fill reaches the pad's FIFO.
+    let mut prefill_left: usize = 0;
     // The state the audio report's sub-packet carries: the last one applied.
     let mut current: State = State::default();
-    let interval = if bus.is_some() { BUS_SEND_INTERVAL } else { MIN_SEND_INTERVAL };
+    let interval = if bus.is_some() {
+        BUS_SEND_INTERVAL
+    } else {
+        MIN_SEND_INTERVAL
+    };
     let mut failing = false;
     let mut last_sent: Option<State> = None;
     let mut last_sent_at: Option<Instant> = None;
@@ -603,6 +615,9 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
     // Shared by state and coil reports: it is per link, not per report kind.
     let mut seq: u8 = 0;
     let mut next_tick = Instant::now() + COIL_TICK;
+    // Sniff is re-asserted on the edge out of an idle lane; `stopSniff` at open covers the first.
+    let mut was_quiet = false;
+    let mut last_resniff: Option<Instant> = None;
     let mut counter: u8 = 0;
     let mut frames = [[0i8; 2]; COIL_REPORT_FRAMES];
     let mut coil_sends: u32 = 0;
@@ -661,26 +676,53 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
         if let (Some(envelope), Some(bus)) = (&lane, &bus) {
             let now = Instant::now();
             if now >= next_tick {
-                next_tick += COIL_TICK;
-                if next_tick + COIL_TICK < now {
-                    // Stalled (a slow bus call, scheduling): resync rather than burst to catch up.
-                    next_tick = now + COIL_TICK;
+                // Land on the next tick in the FUTURE, keeping the pad's phase. Advancing one
+                // interval lets a tick whose work overran fire again at once, and every catch-up
+                // report is one the pad's clock has no room for: measured 110/s against its 93.75,
+                // the surplus carrying silence, which is what broke the speech up.
+                while next_tick <= now {
+                    next_tick += COIL_TICK;
                 }
                 let had_coils = envelope.take_coils(&mut frames);
                 let speaker_on = speaker.is_some() && envelope.speaker_active();
-                // Pre-fill: hold the first reports until the ring has SPEAKER_PREFILL frames, then
-                // drain two per tick until caught up — the pad's FIFO keeps the surplus as headroom.
-                if speaker_on && !speaker_live {
-                    if envelope.speaker_queued() < SPEAKER_PREFILL * SPEAKER_IN_SAMPLES {
-                        continue;
-                    }
-                    speaker_live = true;
-                }
                 if !speaker_on {
                     speaker_live = false;
+                    prefill_left = 0;
                 }
-                let reports_now = if speaker_live && envelope.speaker_queued() >= 2 * SPEAKER_IN_SAMPLES { 2 } else { 1 };
-                for _ in 0..reports_now {
+                // Pre-fill: hold the first reports back until the ring holds SPEAKER_PREFILL
+                // frames, then let the next few ticks send two, so the surplus lands in the pad's
+                // FIFO as headroom rather than in ours.
+                let mut holding = false;
+                if speaker_on && !speaker_live {
+                    if envelope.speaker_queued() < SPEAKER_PREFILL * SPEAKER_IN_SAMPLES {
+                        holding = true;
+                    } else {
+                        speaker_live = true;
+                        prefill_left = SPEAKER_PREFILL - 1;
+                    }
+                }
+                // Two per tick only while that pre-fill drains. Keyed on ring depth alone it never
+                // stops: the host feeds exactly the pad's rate, so depth later is clock drift, not
+                // backlog, and the ring's own cap is what absorbs that.
+                let reports_now = if prefill_left > 0 && envelope.speaker_queued() >= 2 * SPEAKER_IN_SAMPLES {
+                    prefill_left -= 1;
+                    2
+                } else {
+                    1
+                };
+                // Re-assert on the edge out of idle: that is the only window in which the link can
+                // have slid back into sniff, and it costs one call per burst instead of two a second.
+                let sending = !holding && (speaker_live || had_coils || envelope.active());
+                let refloor = match last_resniff {
+                    Some(t) => now.duration_since(t) >= RESNIFF_FLOOR,
+                    None => true,
+                };
+                if sending && was_quiet && refloor {
+                    last_resniff = Some(now);
+                    let _ = bus.call(STOP_SNIFF_URI, &sniff_payload);
+                }
+                was_quiet = !sending;
+                for _ in 0..if holding { 0 } else { reports_now } {
                     let report: Vec<u8> = if speaker_live {
                         let lane_enc = speaker.as_mut().expect("speaker_live implies a lane");
                         let frame = if envelope.take_speaker(&mut speaker_pcm) {
@@ -707,15 +749,14 @@ fn sender_loop(address: &str, rx: &Receiver<State>, coils: Option<Arc<Envelope>>
                         }
                     } else {
                         coil_sends += 1;
-                        audio_reports += 1;
                         if coil_sends % 940 == 0 {
-                            tracing::debug!("DualSense audio: {coil_sends} reports ({} speaker)", if speaker_live { "with" } else { "no" });
+                            tracing::debug!(
+                                "DualSense audio: {coil_sends} reports ({} speaker)",
+                                if speaker_live { "with" } else { "no" }
+                            );
                         }
                     }
                     frames = [[0; 2]; COIL_REPORT_FRAMES];
-                }
-                if audio_reports % RESNIFF_EVERY == 0 && audio_reports > 0 {
-                    let _ = bus.call(STOP_SNIFF_URI, &sniff_payload);
                 }
             }
         }
