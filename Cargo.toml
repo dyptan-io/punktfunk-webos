@@ -59,7 +59,19 @@ tracing-appender = "0.2"
 # v0.32.0 makes bitrate values total wire budgets and adds recovery-point marks. The webOS pump
 # mirrors those semantics while keeping NDL queue depth out of the decoder-pressure signal.
 # v0.34.0 adds deterministic multi-address mDNS selection, shared with the other clients.
-punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", tag = "v0.34.0", features = ["quic"] }
+#
+# 🛑 A REV, not a tag, and the SAME rev for all three punktfunk crates. The console shell needs
+# pf-client-core's `desktop` feature split and `Platform::WebOS`, both merged after v0.34.0 was
+# cut. It must also be ONE source: pin punktfunk-core by tag while pf-client-core resolves it by
+# rev and cargo builds two copies whose types do not unify — the shell would then reject the
+# `GamepadPref` this crate hands it. Re-pin all three together, to the next tag that carries them.
+punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", rev = "6bf1412b9f923f1a706fcdbc68d8b5e51ebdc1f5", features = ["quic"] }
+# The shared console shell (design/webos-skia-console-port.md). `default-features = false` drops
+# the Vulkan overlay — this client owns its own GL surface — and `gl` asks Skia for the GLES
+# backend the panel exposes. pf-client-core lean carries the portable half the shell speaks:
+# `trust::Settings`, the menu vocabulary, the library model, deep links.
+pf-console-ui = { git = "https://git.unom.io/unom/punktfunk", rev = "6bf1412b9f923f1a706fcdbc68d8b5e51ebdc1f5", default-features = false, features = ["gl"] }
+pf-client-core = { git = "https://git.unom.io/unom/punktfunk", rev = "6bf1412b9f923f1a706fcdbc68d8b5e51ebdc1f5", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # mDNS LAN discovery; direct dep (not via pf-client-core — see session.rs docs).
@@ -92,6 +104,20 @@ sdl2 = { version = "0.38", default-features = false, features = ["ttf", "unsafe_
 opus = "0.3"
 # setpriority for video pump scheduling; explicit dep for libc::gettid calls.
 libc = "0.2"
+# The console host needs Skia directly — `Console::frame` draws into a `skia_safe::Canvas`, and
+# the host owns the `DirectContext` and the surface wrapping framebuffer 0. Linux-gated like
+# SDL2 so a macOS/Windows dev build stays free of it: pf-console-ui above is an empty crate off
+# Linux/Windows/Android and pulls no Skia there, and this must not undo that.
+#
+# ⚠ rust-skia publishes NO armv7 archive for any OS. Ours is a release asset on
+# git.unom.io/unom/skia-binaries; the Taskfile points SKIA_BINARIES_URL at it. Without that,
+# skia-bindings does not fail — it silently builds Skia from source for an hour.
+# Default features stay ON deliberately: they carry `binary-cache` (the prebuilt fetch above)
+# and the jpeg/pdf codecs, and they are what make the archive key
+# `gl-jpegd-jpege-pdf-textlayout` — the one that exists. Turning them off here would be a no-op
+# anyway, since pf-console-ui takes them and cargo unions features, but it would read as though
+# a source build were intended.
+skia-safe = { version = "0.99", features = ["gl", "textlayout"] }
 
 [build-dependencies]
 serde_json = "1"
