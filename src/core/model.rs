@@ -965,6 +965,12 @@ pub struct Settings {
     /// Which look the menus draw in — see [`ThemeChoice`]. Cosmetic and purely local, so it
     /// applies the moment it is picked rather than on the next launch.
     pub theme: ThemeChoice,
+    /// Draw the shared gamepad shell (`pf-console-ui`) instead of this client's own menus.
+    /// Read once per menu entry, so a flip lands on the next return to the menu.
+    ///
+    /// Persisted in the shared document like everything else, but namespaced `webos.`: the
+    /// shell is the second presentation of one file, not a second file.
+    pub console_ui: bool,
 }
 
 impl Default for Settings {
@@ -996,6 +1002,9 @@ impl Default for Settings {
             audio_route: AudioRoutePref::default(),
             cursor_gestures: false,
             theme: ThemeChoice::default(),
+            // Off: the shell is a preview, and the menus this client shipped are the ones
+            // every screen is reachable from (see `console`'s module doc).
+            console_ui: false,
         }
     }
 }
@@ -1122,6 +1131,18 @@ pub struct Persisted {
     /// which shape it is reading. `store::load` stamps it on first sight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// The stored settings object exactly as it was last read, so the fields this client does
+    /// not model survive a save.
+    ///
+    /// The shared schema is much wider than [`Settings`] — the gamepad shell alone writes a
+    /// palette, a library view and its own layout prefs, and other clients write more. Writing
+    /// the document back from [`Settings`] alone would reset every one of them on the next
+    /// save from EITHER UI, which on the shell reads as a setting that will not stick.
+    ///
+    /// `serde(skip)`: it is not a key of its own, it IS the settings object — reconstructed on
+    /// load (`services::store::from_document`) and merged over on save.
+    #[serde(skip)]
+    pub shared_base: pf_client_core::trust::Settings,
 }
 
 /// Cover-art paths for a title (host-relative, fetched via mTLS). Cards prefer

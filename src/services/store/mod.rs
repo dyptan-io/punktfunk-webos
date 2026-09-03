@@ -151,11 +151,16 @@ fn migrate_collections(state: &mut Persisted) {
 /// writes it back in the shared schema.
 fn from_document(mut doc: Value) -> Persisted {
     let object = doc.get("settings").cloned().unwrap_or(Value::Null);
+    // The shared object as stored, kept whole. Everything this client does not model rides
+    // back out on the next save through it — see [`Persisted::shared_base`]. A legacy document
+    // has no such fields, so it carries nothing.
+    let mut shared_base = pf_client_core::trust::Settings::default();
     let settings = if shared::legacy_shape(&object) {
         tracing::info!("settings.json predates the shared schema — converting on this load");
         serde_json::from_value(object).unwrap_or_default()
     } else {
-        shared::from_shared(&serde_json::from_value(object).unwrap_or_default())
+        shared_base = serde_json::from_value(object).unwrap_or_default();
+        shared::from_shared(&shared_base)
     };
     // Put this client's shape back so the rest of the document (known hosts, the selected row,
     // the version stamp) deserializes exactly as it always did.
@@ -163,14 +168,18 @@ fn from_document(mut doc: Value) -> Persisted {
         Ok(v) => doc["settings"] = v,
         Err(e) => tracing::warn!("could not re-encode settings: {e:#}"),
     }
-    serde_json::from_value(doc).unwrap_or_default()
+    Persisted {
+        shared_base,
+        ..serde_json::from_value(doc).unwrap_or_default()
+    }
 }
 
 pub fn save(state: &Persisted) -> Result<()> {
     let mut doc = serde_json::to_value(state).context("serialize app state")?;
     // The one place the settings object leaves this client in punktfunk's shape. Every other
     // key stays as it was — only `settings` is shared.
-    doc["settings"] = serde_json::to_value(shared::to_shared(&state.settings)).context("serialize shared settings")?;
+    doc["settings"] = serde_json::to_value(shared::to_shared(&state.shared_base, &state.settings))
+        .context("serialize shared settings")?;
     let json = serde_json::to_string_pretty(&doc).context("render app state")?;
     crate::services::atomic::write(&path(), &json, "settings.json")
 }

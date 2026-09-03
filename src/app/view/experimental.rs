@@ -17,8 +17,8 @@ use anyhow::Result;
 pub const TITLE: &str = "Experimental";
 pub const SUBTITLE: &str = "Unstable, off by default.";
 
-/// Game mode, audio processing, HDR calibration, then the two pad-audio lanes. Order must match
-/// `menu::EXP_ROWS`. `rooted` is the root-probe verdict, `None` while it is still running.
+/// Game mode, audio processing, HDR calibration, the two pad-audio lanes, then the shell. Order
+/// must match `menu::EXP_ROWS`. `rooted` is the root-probe verdict, `None` while it is running.
 pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
     // Driving the TV's Game picture/sound modes needs the Homebrew Channel's root helper — the
     // public bus is denied `settingsservice` outright (see `platform::webos::game_mode`). The row
@@ -58,12 +58,18 @@ pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
         Some(lock) => row.locked(true).with_subtext(lock_caption(lock)),
         None => row,
     };
+    // The shell owns the whole menu while it is on, and it has fewer screens than this client
+    // does — so the caption says what turning it on costs, not just what it is.
+    let console_ui = FocusRow::toggle(icons::ICON_GAMEPAD, "Gamepad shell", settings.console_ui).with_subtext(
+        ui::widgets::RowSubtext::caution("Preview of the shared menus — the Blue button brings these back"),
+    );
     vec![
         apply(game_mode, ExpRow::GameMode),
         apply(audio, ExpRow::AudioProcessing),
         apply(calibrate, ExpRow::HdrCalibration),
         apply(pad_haptics, ExpRow::PadHaptics),
         apply(pad_speaker, ExpRow::PadSpeaker),
+        apply(console_ui, ExpRow::ConsoleUi),
     ]
 }
 
@@ -98,6 +104,7 @@ fn lock_caption(lock: ExpRowLock) -> ui::widgets::RowSubtext {
     match lock {
         ExpRowLock::RootUnknown => ui::widgets::RowSubtext::hint("Checking whether your TV is rooted..."),
         ExpRowLock::NotRooted => ui::widgets::RowSubtext::caution("Your TV is not rooted, Game mode is unavailable"),
+        ExpRowLock::NoShell => ui::widgets::RowSubtext::caution("This build has no gamepad shell"),
         ExpRowLock::SoftwareOnly => ui::widgets::RowSubtext::hint("This TV has no NDL audio plane"),
         ExpRowLock::HdrOff => ui::widgets::RowSubtext::hint("Turn HDR on in Settings to calibrate it"),
     }

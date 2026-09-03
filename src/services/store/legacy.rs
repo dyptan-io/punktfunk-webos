@@ -21,6 +21,9 @@ pub(super) fn migrate(settings: Settings) -> Persisted {
         known_hosts,
         selected_host: None,
         version: None,
+        // A pre-consolidation document predates the shared schema entirely, so there is
+        // nothing of another client's to carry.
+        shared_base: pf_client_core::trust::Settings::default(),
     };
     if present.is_empty() {
         return state;
