@@ -27,16 +27,20 @@ fn open_ds_feedback(
     if !kind.is_dualsense() {
         return None;
     }
-    match crate::platform::webos::dualsense::find_address() {
-        Some(addr) => crate::platform::webos::dualsense::Feedback::new(addr, coils),
-        None => {
-            tracing::info!(
-                "no Bluetooth DualSense found in /proc/bus/input/devices — \
-                 adaptive triggers off for this session"
-            );
-            None
-        }
+    if let Some(addr) = crate::platform::webos::dualsense::find_address() {
+        return crate::platform::webos::dualsense::Feedback::new(addr, coils);
     }
+    // A wired pad is not on `bluetooth2`, but the kernel gives it a hidraw node and the same
+    // effects reach it as a 48-byte `0x02` report. Audio does not come this way: those lanes ride
+    // the pad's own UAC card, so the coil envelope is left with the motors here.
+    if let Some(node) = crate::platform::webos::hidraw::Hidraw::find_dualsense() {
+        return crate::platform::webos::dualsense::Feedback::new_usb(node);
+    }
+    tracing::info!(
+        "no DualSense on the Bluetooth service or on a hidraw node — \
+         adaptive triggers off for this session"
+    );
+    None
 }
 
 pub(super) fn run_inner() -> Result<()> {
@@ -251,9 +255,11 @@ pub(super) fn run_inner() -> Result<()> {
         // DualSense still needs one declared at start. Only toward a host that has the plane —
         // an older host reads arrival flags as the bare pad index.
         let pad_audio_caps = if connected.client.host_caps() & punktfunk_core::quic::HOST_CAP_PAD_AUDIO != 0 {
-            // The speaker lane needs a Bluetooth pad: only that transport plays it.
-            let bt_pad = crate::platform::webos::dualsense::find_address().is_some();
-            crate::session::pad_audio::caps_for(&settings, bt_pad)
+            // The speaker lane needs a transport that can play it, and there are two: a paired
+            // pad takes `0x36` reports on the Luna bus, a wired one has its own 4-channel card.
+            let speaker_route = crate::platform::webos::dualsense::find_address().is_some()
+                || crate::platform::webos::usb_audio::card_present();
+            crate::session::pad_audio::caps_for(&settings, speaker_route)
         } else {
             0
         };
@@ -273,6 +279,14 @@ pub(super) fn run_inner() -> Result<()> {
                 Err(e) => tracing::warn!("pad audio off: {e:#}"),
             }
         }
+        // A wired pad plays both lanes on its own card. Started only when no paired pad is around:
+        // that one carries the lanes over Bluetooth, and two writers would fight for the coils.
+        let usb_audio_thread = match (&haptics, crate::platform::webos::dualsense::find_address()) {
+            (Some(envelope), None) => {
+                crate::platform::webos::usb_audio::spawn(envelope.clone(), connected.stop.clone())
+            }
+            _ => None,
+        };
         // See `open_ds_feedback`. The envelope rides along so a Bluetooth pad plays the coil lane
         // itself (tier A); it is harmless on the spawn route, which never claims it.
         let mut ds_feedback = open_ds_feedback(settings.gamepad_type, haptics.clone());
@@ -1000,6 +1014,12 @@ pub(super) fn run_inner() -> Result<()> {
             let _ = pad.set_rumble(0, 0, 0);
         }
         if let Some(handle) = pad_audio_thread.take() {
+            connected.stop.store(true, Ordering::Relaxed);
+            let _ = handle.join();
+        }
+        // The wired writer blocks in `snd_pcm_writei`, so it wakes at most a chunk (5 ms) after
+        // the stop flag — the card is closed on the way out, which is what releases the pad.
+        if let Some(handle) = usb_audio_thread {
             connected.stop.store(true, Ordering::Relaxed);
             let _ = handle.join();
         }

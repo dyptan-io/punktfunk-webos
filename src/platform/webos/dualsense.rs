@@ -2,10 +2,11 @@
 //! Bluetooth HID plane.
 //!
 //! **Why this route exists.** SDL's own `DualSense` support (`SDL_GameControllerSendEffect`,
-//! present in the bundled fork) drives the pad through `/dev/hidraw*`, and a webOS app's jail
-//! exposes no hidraw node at all — not even with the pad connected, and with no `hidraw`
-//! class in `/sys` either (verified on webOS 10.3, non-rooted; see `docs/NOTES.md`). So the
-//! effect bytes cannot go through SDL. What *is* reachable is the TV's own Bluetooth stack:
+//! present in the bundled fork) drives the pad through `/dev/hidraw*`. A **wired** pad does get
+//! such a node and this client writes it directly (see [`super::hidraw`]); a **Bluetooth** pad
+//! got none in the jail on webOS 10.3, and there is no `hidraw` class in `/sys` to look one up
+//! with. So for the transport this module serves, the effect bytes cannot go through SDL. What
+//! *is* reachable is the TV's own Bluetooth stack:
 //! `com.webos.service.bluetooth2/hid/internal/sendData` writes an arbitrary HID output report
 //! to a connected HID device, and it sits in the `public` API group a dev-mode install
 //! already holds — no root required.
@@ -23,6 +24,7 @@
 //! type rather than only this one. Reports built here never set the vibration valid-flag, so
 //! they cannot fight the kernel's force-feedback state — see [`build_report`].
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -32,6 +34,10 @@ use punktfunk_core::quic::HidOutput;
 
 use super::ls2;
 use crate::session::pad_audio::{Envelope, COIL_REPORT_FRAMES, SPEAKER_IN_SAMPLES};
+
+/// Counts trigger effects folded in, so a "triggers do nothing" report can be told apart from a
+/// title that never sends one. A debug aid: it must not change what is written to the pad.
+static TRIGGERS_SEEN: AtomicU32 = AtomicU32::new(0);
 
 /// `hid/internal/sendData` — the only one of the three HID methods that works. `getReport`
 /// hangs on a pad that doesn't answer; `setReport` refuses with error 4 whatever the payload.
@@ -269,6 +275,25 @@ impl Feedback {
         })
     }
 
+    /// Same, for a pad on USB: the kernel's hidraw node instead of the Bluetooth service.
+    ///
+    /// Takes no [`Envelope`]: the `0xD1` lanes do not ride hidraw. A wired pad carries them on its
+    /// own UAC audio card, so the coils are NOT claimed here and the derived rumble envelope keeps
+    /// the motors — which is what gives a wired pad any vibration at all under a libScePad title.
+    pub fn new_usb(node: crate::platform::webos::hidraw::Hidraw) -> Option<Self> {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<State>(1);
+        tracing::info!("DualSense feedback active over USB ({})", node.path);
+        let thread = std::thread::Builder::new()
+            .name("ds5-feedback-usb".into())
+            .spawn(move || usb_sender_loop(&node, &rx))
+            .ok()?;
+        Some(Self {
+            state: State::default(),
+            tx: Some(tx),
+            thread: Some(thread),
+        })
+    }
+
     /// Folds one host feedback event into the pad state and queues a send.
     ///
     /// Variants this pad has no route for are dropped: `TrackpadHaptic` is a Steam
@@ -293,6 +318,17 @@ impl Feedback {
                     self.state.right_trigger = block;
                 }
                 self.state.triggers_owned = true;
+                // Whether a title sends trigger effects at all is the question a "triggers do
+                // nothing" report actually turns on, and no other line answers it: the transport
+                // is shared with the lightbar, so silence here means the host sent nothing.
+                let n = TRIGGERS_SEEN.fetch_add(1, Ordering::Relaxed) + 1;
+                if n == 1 || n % 20 == 0 {
+                    tracing::debug!(
+                        "DualSense trigger effect #{n}: {} mode {:#04x}",
+                        if *which == 0 { "L2" } else { "R2" },
+                        block[0]
+                    );
+                }
             }
             HidOutput::TrackpadHaptic { .. } | HidOutput::HidRaw { .. } | HidOutput::AudioCtl { .. } => return,
         }
@@ -524,6 +560,65 @@ fn payload_for(address: &str, report: &[u8]) -> String {
 
 fn send_report(address: &str, report: &[u8; REPORT_LEN]) -> anyhow::Result<()> {
     crate::platform::webos::luna::call(SEND_DATA_URI, &payload_for(address, report))
+}
+
+/// The wired pad's output report: `0x02`, the same 47-byte common block the Bluetooth `0x31`
+/// carries, then 15 reserved bytes — `hid-playstation`'s `DS_OUTPUT_REPORT_USB_SIZE`, the
+/// counterpart of the 78 in [`REPORT_LEN`]. No CRC: the kernel addresses a wired pad directly, so
+/// nothing signs for us. **The length is load-bearing.** A report cut to the common block alone is
+/// short of what the descriptor declares and the pad drops it without a word — lightbar and
+/// triggers simply never move, which is exactly how this was found.
+const USB_REPORT_LEN: usize = 63;
+/// Where the common block sits in it: straight after the report id.
+const USB_COMMON: usize = 1;
+
+fn build_usb_report(state: &State) -> [u8; USB_REPORT_LEN] {
+    let mut r = [0u8; USB_REPORT_LEN];
+    r[0] = 0x02;
+    fill_common(&mut r[USB_COMMON..USB_COMMON + 47], state);
+    r
+}
+
+/// The wired pad's routing report: sends the pad's audio out of its **speaker** rather than the
+/// headphone jack it defaults to, at the one volume it honours.
+///
+/// The Bluetooth lane re-asserts this inside every `0x36`; a wired pad has no such carrier, so it
+/// is sent once when the card opens. Without it the coils play and the speaker stays silent —
+/// which looks exactly like a broken speaker lane.
+pub fn build_usb_speaker_setup() -> [u8; USB_REPORT_LEN] {
+    let mut r = [0u8; USB_REPORT_LEN];
+    r[0] = 0x02;
+    r[USB_COMMON] = 0x80 | 0x20; // AllowAudioControl | AllowSpeakerVolume
+    r[USB_COMMON + 1] = 0x80; // AllowAudioControl2
+    r[USB_COMMON + 5] = SPEAKER_VOLUME;
+    r[USB_COMMON + 7] = 0x30; // OutputPathSelect: speaker
+    r[USB_COMMON + 37] = 0x02; // SpeakerCompPreGain
+    r
+}
+
+/// Drains queued states to a wired pad.
+///
+/// No throttle and no dedupe interval, unlike the Luna routes: a hidraw write is one syscall, not
+/// the fork/exec that blacked out the video plane, so there is nothing here to protect the render
+/// loop from. Identical states are still dropped — the pad gains nothing from being told twice.
+fn usb_sender_loop(node: &crate::platform::webos::hidraw::Hidraw, rx: &Receiver<State>) {
+    let mut last: Option<State> = None;
+    let mut failing = false;
+    while let Ok(state) = rx.recv() {
+        if last == Some(state) {
+            continue;
+        }
+        last = Some(state);
+        match node.write_report(&build_usb_report(&state)) {
+            Ok(()) => failing = false,
+            Err(e) => {
+                if !failing {
+                    tracing::warn!("DualSense USB feedback failed (further errors quiet): {e:#}");
+                    failing = true;
+                }
+            }
+        }
+    }
 }
 
 /// Builds one Bluetooth coil report: `frames` are 32 stereo s8 samples at 3 kHz.

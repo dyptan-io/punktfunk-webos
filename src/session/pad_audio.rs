@@ -95,6 +95,11 @@ pub struct Envelope {
     /// Set by the sender once it has a bus: from then on the coils play the lane and the motor
     /// envelope stays idle. Never cleared — a bus that opened does not go away mid-session.
     coils_owned: AtomicBool,
+    /// Coil PCM at full rate, for a wired pad. Its card takes 48 kHz on all four channels, so the
+    /// 3 kHz decimation the `0x32` report needs would only throw the lane away.
+    coils_pcm: Mutex<VecDeque<f32>>,
+    /// Which of the two rings [`Envelope::push_coils_frame`] fills.
+    usb_pcm: AtomicBool,
 }
 
 impl Envelope {
@@ -112,6 +117,8 @@ impl Envelope {
             speaker: Mutex::new(VecDeque::with_capacity(SPEAKER_RING_MAX)),
             last_speaker_ms: AtomicU64::new(u64::MAX),
             coils_owned: AtomicBool::new(false),
+            coils_pcm: Mutex::new(VecDeque::with_capacity(SPEAKER_RING_MAX)),
+            usb_pcm: AtomicBool::new(false),
         })
     }
 
@@ -213,6 +220,34 @@ impl Envelope {
         self.last_speaker_ms.store(self.now_ms(), Ordering::Relaxed);
     }
 
+    /// The wired pad's audio card claims both lanes: the coils play at full rate on it, so the
+    /// motor envelope idles exactly as it does for the Bluetooth lane — the kernel's rumble report
+    /// sets `HAPTICS_SELECT` on either transport, which would mute the coils it is competing with.
+    pub fn own_usb(&self) {
+        self.usb_pcm.store(true, Ordering::Relaxed);
+        self.coils_owned.store(true, Ordering::Relaxed);
+    }
+
+    /// One decoded coil frame into whichever ring the live transport reads.
+    fn push_coils_frame(&self, pcm: &[f32]) {
+        if self.usb_pcm.load(Ordering::Relaxed) {
+            push_pcm(&self.coils_pcm, pcm);
+        } else {
+            self.push_coils(pcm);
+        }
+    }
+
+    /// Up to `out.len()` samples of coil PCM, zero-filled past what has arrived. Unlike the
+    /// Bluetooth lane there is no silent-frame substitute: the card wants a chunk every time.
+    pub fn take_coils_pcm(&self, out: &mut [f32]) {
+        drain_pcm(&self.coils_pcm, out);
+    }
+
+    /// Same for the speaker lane, on the wired transport.
+    pub fn take_speaker_pcm(&self, out: &mut [f32]) {
+        drain_pcm(&self.speaker, out);
+    }
+
     /// Decimates one decoded coil frame (interleaved stereo 48 kHz) into the ring.
     fn push_coils(&self, pcm: &[f32]) {
         let mut ring = self.coils.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -284,7 +319,7 @@ fn pump(client: &NativeClient, stop: &AtomicBool, envelope: &Envelope) -> Result
                     match coils.decode_float(&frame.opus, &mut pcm, false) {
                         Ok(samples) => {
                             if envelope.coils_owned() {
-                                envelope.push_coils(&pcm[..samples * 2]);
+                                envelope.push_coils_frame(&pcm[..samples * 2]);
                             }
                             peaks(&pcm[..samples * 2])
                         }
@@ -324,6 +359,27 @@ fn pump(client: &NativeClient, stop: &AtomicBool, envelope: &Envelope) -> Result
         }
     }
     Ok(())
+}
+
+/// Appends to a PCM ring, dropping the oldest past [`SPEAKER_RING_MAX`]: a stalled reader costs
+/// latency, never unbounded memory.
+fn push_pcm(ring: &Mutex<VecDeque<f32>>, pcm: &[f32]) {
+    let mut ring = ring.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let overflow = (ring.len() + pcm.len())
+        .saturating_sub(SPEAKER_RING_MAX)
+        .min(ring.len());
+    if overflow > 0 {
+        ring.drain(..overflow);
+    }
+    ring.extend(pcm.iter().copied());
+}
+
+/// Fills `out` from a PCM ring, zero-filling the tail when the lane is quiet.
+fn drain_pcm(ring: &Mutex<VecDeque<f32>>, out: &mut [f32]) {
+    let mut ring = ring.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for v in out.iter_mut() {
+        *v = ring.pop_front().unwrap_or(0.0);
+    }
 }
 
 /// Peak absolute sample per channel of interleaved stereo.

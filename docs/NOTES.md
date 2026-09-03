@@ -56,7 +56,17 @@ Hybrid software/GPU: `tiny_skia` rasterizes tiles, SDL2 composites. Redraw-on-ch
 - HDR mastering metadata can change mid-session — drain `next_hdr_meta` every frame.
 - **`NDL_DirectVideoSetHDRInfo` forces panel into HDR mode on *any* call** (OLED65CX, webOS 5): ignores SDR `transfer`/`primaries` triplet, emits HDR infoframe regardless, so SDR/H.264 stream showed in HDR picture mode. Fix: `ndl::v2::set_color_info` no-ops when `meta` is `None` (SDR) — only genuine HDR mastering metadata reaches NDL. Cost: NDL can no longer fix a bitstream's missing VUI colour info; SDR relies on bitstream VUI. HDR also gated to HEVC end-to-end (`session::connect`: `apply_hdr = host_hdr && codec==H265`; explicit H.264 pick drops HDR caps + hides Settings toggle).
 
-## DualSense feedback: Bluetooth service, not hidraw
+## DualSense feedback: hidraw when wired, the Bluetooth service otherwise
+
+**A wired pad DOES get `/dev/hidraw0`**, `root:jailer` and read-write — the group the app runs in,
+verified from inside the app on a G5 (webOS 10.3, non-rooted): `DualSense feedback active over USB
+(/dev/hidraw0)`. The earlier "the jail exposes no hidraw at all" was probed with no pad plugged in,
+and `hid-playstation` only creates a node for a device that exists. There is no `/sys/class/hidraw`
+in the jail, so the node is identified by asking it (`HIDIOCGRAWINFO`), not by walking sysfs. A
+wired pad takes the 48-byte `0x02` report with **no CRC** and no throttle — one syscall per write —
+carrying the same 47-byte common block the Bluetooth `0x31` does, which is why every effect works
+on both. Open question worth an experiment: whether a *Bluetooth* pad also gets a node now, since
+that would retire the whole Luna route below.
 
 Adaptive triggers work on **non-rooted** TV, but not through SDL. Verified end-to-end on G5 (webOS 10.3, dev-mode install, `DualSense` over Bluetooth): trigger resistance, section walls, lightbar colour all confirmed on real hardware.
 
