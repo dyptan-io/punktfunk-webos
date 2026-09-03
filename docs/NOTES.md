@@ -77,13 +77,31 @@ Host side: a game only emits trigger effects when it sees a `DualSense`, so pad 
 
 The pad's speaker and coils take Opus / s8-PCM over the same HID output plane (reports `0x32`/`0x36`/`0x39`, see `dualsense.rs` and the planning doc). Every layout sounded choppy until `device/internal/stopSniff` was called for the pad: **the TV keeps the HID link in sniff mode**, so output reports leave in bursts at the anchor points and the pad's audio buffer starves in between — it then replays stale buffer content, which is what "frames out of order" sounded like. `stopSniff`/`startSniff` sit in the `public` group; call stop when the audio lane opens and start when it closes. The coil lane alone masked this: a buzz with periodic holes still feels like a buzz.
 
+`startSniff` does **not** take the address-only payload `stopSniff` accepts — webOS 10.3 refuses it
+with `errorCode 144`, a generic schema error. The service binary is not visible from the dev-mode
+jail and the API manifest carries method names without schemas, so the real shape is not readable
+there; the reply is asynchronous, so the refusal surfaces ~11 ms into the NEXT session (`REPLIES` is
+process-wide). Until the schema is known the link is never handed back to sniff on teardown.
+
 Those two are the **only** sniff-related methods in the whole `bluetooth2` API (`/usr/share/luna-service2/api-permissions.d/com.webos.service.bluetooth2.api.json`) — there is no link-policy or QoS call, so nothing persistent can be set and a re-assert is the only lever. Do not re-assert on a timer: sniff is a link-IDLE state and a lane at 94 reports/s never lets the link idle, so `stopSniff` rides the edge out of an idle lane (2 s floor, since the host gates audio on silence). An earlier 500 ms poll cost two hub round-trips a second for nothing.
 
 **Feed the pad at its own clock, never faster.** One report per 10.667 ms, and the tick must land on the next interval in the *future* — advancing by one interval lets a tick whose work overran fire again at once, and each catch-up report is one the pad has no room for. Measured 110 reports/s against the pad's 93.75 with speech breaking up audibly; the surplus carries the silence frame, because the host feeds exactly 48 kHz and the ring cannot fill it. Two reports per tick belong to the pre-fill alone: keyed on ring depth they never stop, since depth after the pre-fill is clock drift, not backlog.
 
 ## Pad audio (`0xD1`): both lanes on a Bluetooth pad
 
-`session::pad_audio` declares `CAP_HAPTICS` (`set_pad_audio_caps` **before** the `GamepadArrival`, and only toward a `HOST_CAP_PAD_AUDIO` host — an older host reads arrival flags as the bare pad index) and decodes the coil lane into a rumble `Envelope` the main loop applies through the same evdev route. **While coil frames arrive the wire rumble plane is drained but not applied** (`pump_feedback_once`): the host forwards a title's classic rumble too, and the kernel's rumble report also sets `HAPTICS_SELECT`, which mutes real coils — the arbitration every other client does by evidence. The speaker lane is declared too, but **only for a Bluetooth pad** (`find_address`): the `0x36` report over the Luna bus is its one transport, and a USB pad has no `Uniq` to find. Verified on a G5 against a Linux host: speech through the pad speaker is continuous, a sustained pure tone is rougher (every Opus frame seam speech would mask).
+`session::pad_audio` declares `CAP_HAPTICS` (`set_pad_audio_caps` **before** the `GamepadArrival`, and only toward a `HOST_CAP_PAD_AUDIO` host — an older host reads arrival flags as the bare pad index) and decodes the coil lane into a rumble `Envelope` the main loop applies through the same evdev route. **While coil frames arrive the wire rumble plane is drained but not applied** (`pump_feedback_once`): the host forwards a title's classic rumble too, and the kernel's rumble report also sets `HAPTICS_SELECT`, which mutes real coils — the arbitration every other client does by evidence. **Verified against a real libScePad title (Spider-Man, 2026-09-03).** Both lanes ran over a live
+1440p session: coil frames with real content (envelope peak 0.10-0.12 in gameplay), speaker frames
+alongside, and **not one wire-rumble command applied for the whole run** — a title's classic rumble
+correctly yields to its own coils. A game's own rumble still works when no coil frames are arriving,
+so claiming the lane does not cost a pad its motors. The pad speaker plays what the title mixes for
+it and no more: the chain is unity gain end to end and `SPEAKER_VOLUME` already sits at `0x64`, the
+top of the range the pad honours, so "quiet" is the title's mix, not headroom we are leaving.
+
+⚠ `Envelope::active()` only asks whether coil frames ARRIVE, not whether they carry anything, and
+it is what suppresses the wire rumble plane. Spider-Man streams real content so it never bit, but a
+title streaming near-silence would mute a pad's motors for its whole run and give nothing back.
+
+The speaker lane is declared too, but **only for a Bluetooth pad** (`find_address`): the `0x36` report over the Luna bus is its one transport, and a USB pad has no `Uniq` to find. Verified on a G5 against a Linux host: speech through the pad speaker is continuous, a sustained pure tone is rougher (every Opus frame seam speech would mask).
 
 Jail facts for the USB route (probed from the dev-mode ssh jail, `jail_app.conf` says the same for apps): **no `/dev/bus/usb`** anywhere, so usbfs/libusb is out; **`/dev/snd` is mounted rw** and the app's uid is in `audio`, PulseAudio (`/var/run/pulse/native`) answers `pactl`. Whether a wired pad's 4-channel USB-audio card appears there is untested (no USB pad was at hand).
 
