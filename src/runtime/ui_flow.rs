@@ -181,6 +181,15 @@ pub(super) fn run_ui_flow(
             open_quit_dialog(&mut quit_dialog, &mut input, &app);
             dirty = true;
         }
+        // The flip, watched rather than signalled: the Experimental row writes the setting and
+        // this hands the menu over. `app` drops on return, and its `StateWriter` flushes and
+        // joins in `Drop` — so the value is on disk before the menu loop re-reads it.
+        if app.settings_ui.settings.console_ui {
+            tracing::info!("gamepad shell turned on — handing the menu over");
+            app.persist();
+            text_input.stop();
+            return Ok(UiOutcome::Reenter);
+        }
         // Held D-pad/stick autorepeat (see `NAV_REPEAT_DELAY`) — the pad's stand-in for the
         // OS key repeat the remote and a keyboard get. Skipped while a launch is in flight,
         // like every other menu dispatch; the quit dialog ends the hold when it opens.

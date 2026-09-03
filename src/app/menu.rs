@@ -158,17 +158,27 @@ pub enum ExpRow {
     PadHaptics,
     /// The pad's own speaker, on either transport. Same reasoning as [`Self::PadHaptics`].
     PadSpeaker,
+    /// Hands the menus over to the shared gamepad shell (`pf-console-ui`), the same one the
+    /// desktop and Android clients draw. Experimental because it is a preview: the screens
+    /// this client has that the shell does not are unreachable while it is on.
+    ConsoleUi,
 }
 
 /// Order is display order. `AudioProcessing` stays at index 1 so its dropdown's `(Screen, row)`
-/// tile key does not move.
-pub const EXP_ROWS: [ExpRow; 5] = [
+/// tile key does not move; a new row goes on the end for the same reason.
+pub const EXP_ROWS: [ExpRow; 6] = [
     ExpRow::GameMode,
     ExpRow::AudioProcessing,
     ExpRow::HdrCalibration,
     ExpRow::PadHaptics,
     ExpRow::PadSpeaker,
+    ExpRow::ConsoleUi,
 ];
+
+/// Whether this build links the shared shell at all. Only the armv7 TV target does — see
+/// Cargo.toml — so on every other target the row is listed and locked rather than missing,
+/// which keeps the screen's row indices the same everywhere.
+pub(crate) const CONSOLE_UI_BUILT: bool = cfg!(all(target_os = "linux", target_arch = "arm"));
 
 /// Display position of [`ExpRow::AudioProcessing`] — the row a dropdown can hang off, which is
 /// what `DropdownState::row` names.
@@ -238,6 +248,8 @@ pub(crate) enum ExpRowLock {
     SoftwareOnly,
     /// HDR is switched off in Settings, so there is no PQ signal to measure a panel with.
     HdrOff,
+    /// This build has no shared shell linked (see [`CONSOLE_UI_BUILT`]).
+    NoShell,
 }
 
 /// `rooted` is the root-probe verdict, `None` while it is still running.
@@ -247,13 +259,15 @@ pub(crate) fn exp_row_lock(row: ExpRow, settings: &Settings, rooted: Option<bool
         (ExpRow::GameMode, Some(false)) => Some(ExpRowLock::NotRooted),
         (ExpRow::AudioProcessing, _) if audio_routes().len() < 2 => Some(ExpRowLock::SoftwareOnly),
         (ExpRow::HdrCalibration, _) if !settings.hdr_enabled || !video_caps().hdr => Some(ExpRowLock::HdrOff),
+        (ExpRow::ConsoleUi, _) if !CONSOLE_UI_BUILT => Some(ExpRowLock::NoShell),
         // The pad rows never lock: both default on, and a pad that cannot play a lane simply
         // never has it declared (`pad_audio::caps_for`) — nothing for the user to be told.
         (ExpRow::GameMode, Some(true))
         | (ExpRow::AudioProcessing, _)
         | (ExpRow::HdrCalibration, _)
         | (ExpRow::PadHaptics, _)
-        | (ExpRow::PadSpeaker, _) => None,
+        | (ExpRow::PadSpeaker, _)
+        | (ExpRow::ConsoleUi, _) => None,
     }
 }
 

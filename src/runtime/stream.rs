@@ -85,6 +85,11 @@ pub(super) fn run_inner() -> Result<()> {
     // config carries no alpha channel by default — without this every transparent clear composites
     // as opaque black. `.opengl()` below is what makes the attribute apply.
     video.gl_attr().set_alpha_size(8);
+    // Skia clips paths against the stencil buffer, and the EGL config is chosen at window
+    // creation — asking once the window exists is too late. Costs a stencil plane on a window
+    // that already carries alpha; `console::gl` reads back what was actually granted rather
+    // than assuming this was honoured.
+    video.gl_attr().set_stencil_size(8);
 
     let window = video
         .window("punktfunk", display_mode.w as u32, display_mode.h as u32)
@@ -134,22 +139,42 @@ pub(super) fn run_inner() -> Result<()> {
     // bottom status line — shown on the Home screen right after re-entering the menu.
     let mut menu_toast: Option<String> = None;
 
+    // Held across menu entries rather than per entry: the shell's GL context carries every
+    // compiled shader and its glyph atlas, and rebuilding those costs the cold-start stutter
+    // `console::gl` describes. `None` until the shell is first asked for, so a TV that never
+    // turns it on never creates a second GL context at all.
+    let mut console_gl: Option<console_flow::ConsoleGl> = None;
     // The loop's value is the exit action owed on the way out — see the single fire site
     // below it, which is the only reason this is a `break`-with-value rather than a `return`.
     let exit_plan = 'menu: loop {
-        let ui = run_ui_flow(
-            &mut canvas,
-            &mut compositor,
-            &texture_creator,
-            &mut events,
-            &game_controller,
-            &mut controller,
-            &identity,
-            display_mode,
-            &fonts,
-            menu_status.take(),
-            menu_toast.take(),
-        )?;
+        // Which of the two menus this entry draws. Asked per entry, not once, because that is
+        // what makes the flip live: either side can write the setting and the other picks it
+        // up on the next return here.
+        let ui = if console_flow::wanted() {
+            console_flow::run(
+                &mut canvas,
+                &mut console_gl,
+                &mut events,
+                &game_controller,
+                &mut controller,
+                &identity,
+                menu_toast.take().or_else(|| menu_status.take()),
+            )?
+        } else {
+            run_ui_flow(
+                &mut canvas,
+                &mut compositor,
+                &texture_creator,
+                &mut events,
+                &game_controller,
+                &mut controller,
+                &identity,
+                display_mode,
+                &fonts,
+                menu_status.take(),
+                menu_toast.take(),
+            )?
+        };
         // A `let ... else` can't bind out of its own else arm, and the quit case is exactly
         // where the value is.
         let ConnectOutcome {
@@ -161,6 +186,8 @@ pub(super) fn run_inner() -> Result<()> {
         } = match ui {
             UiOutcome::Launch(outcome) => outcome,
             UiOutcome::Quit(plan) => break 'menu plan,
+            // The flip: re-enter and read the setting again.
+            UiOutcome::Reenter => continue 'menu,
         };
         tracing::debug!("settings: {settings:?}");
 
