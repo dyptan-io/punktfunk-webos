@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use punktfunk_core::client::NativeClient;
-use punktfunk_core::quic;
 
 use crate::core::media::{AudioPlane, AudioSink, VideoSink};
 use crate::platform::webos::device::{self, NdlGeneration};
@@ -49,21 +48,17 @@ impl MediaPipeline {
         stop: &Arc<AtomicBool>,
         stats: &Arc<StreamStats>,
     ) -> Result<(Self, AudioRoutePref, bool)> {
-        let (player, is_hdr) = load_player(client, params.display_hdr)?;
-        // Re-checked against the plane the load actually produced: a rejected audio-enabled load
-        // leaves no plane to ride.
+        let (player, is_hdr) = load_player(client, params)?;
+        // Re-checked against the plane the load actually produced: rejected audio-enabled loads
+        // leave no plane to ride. Metronome rides any plane and paces unconfirmed fine; real stream
+        // rides only proven ones because the route can't be re-picked once running — a non-working
+        // plane means silent audio.
         let plane = player.audio_plane();
-        // Two different questions: the metronome rides any plane the load produced, the real
-        // stream only one the load PROVED (`AudioPlane::accepts_stream`) — an unproven one can
-        // still be taken away mid-session, and the route cannot be re-picked by then.
-        let route = resolve_route(
-            params.audio_route,
-            client.audio_channels,
-            plane.as_ref().is_some_and(|p| p.accepts_stream()),
-        );
+        let proven = plane.as_ref().is_some_and(|p| p.accepts_stream());
+        let route = resolve_route(params.audio_route, client.audio_channels, proven);
         tracing::info!(
             "audio path: {} on {} (host resolved {} channel(s))",
-            audio_path_label(route, plane.is_some()),
+            audio_path_label(params.audio_route, route, plane.is_some(), proven),
             player.name(),
             client.audio_channels,
         );
@@ -109,18 +104,10 @@ impl MediaPipeline {
     }
 }
 
-/// Picks the route a session WANTS, then downgrades it to what the load actually produced.
-///
-/// **Software is the default** ([`AudioRoutePref`]'s own default). It is the only shape whose
-/// pacing is known good: NDL paces the picture against a FED audio plane, and a plane fed from the
-/// network inherits the stream's arrival jitter — which is the stutter the silent clock plane was
-/// introduced to cure. The two plane routes are shorter and are kept selectable for exactly that
-/// comparison; until one of them is measured better on real hardware, the metronome keeps the plane
-/// and the audio takes the longer path.
-///
-/// A refused audio plane (`NdlVideo` gives it up, at the load or at its verdict past the first
-/// frame) and V1 leave no plane to ride, and software is what is left. `has_plane` is the PROVEN
-/// plane, not merely one that was asked for — see the call site.
+/// Downgrades the requested route to what the load proved. Software is the default and only
+/// route with known-good pacing: NDL paces against a fed plane, which inherits network jitter
+/// (silence plane cures this). Plane routes are kept selectable for comparison but unproven.
+/// `has_plane` is the proven plane, not the requested one — see the call site.
 fn resolve_route(pref: AudioRoutePref, channels: u8, has_plane: bool) -> AudioRoutePref {
     // Stereo or nothing: `Settings::clamp` already holds the document to it, and a session the
     // host resolved wider must not silently land on a plane whose decoder has no mode for it.
@@ -130,11 +117,26 @@ fn resolve_route(pref: AudioRoutePref, channels: u8, has_plane: bool) -> AudioRo
     }
 }
 
+/// How long the V2 load waits for LOADCOMPLETED before starting unconfirmed. Only offload needs
+/// proof — metronome paces unconfirmed planes fine, but wrong audio route is silent forever. Issue
+/// #188: some sets report the callback only after the first video frame; extra waiting during load
+/// just adds black screen.
+fn plane_budget(pref: AudioRoutePref, channels: u8) -> std::time::Duration {
+    // Same test as `resolve_route`, deliberately: only a session that will actually END UP on the
+    // plane is worth waiting for one. A wider layout takes the software route whatever the load
+    // says, so paying the long budget there is black screen bought for an answer nobody reads.
+    match pref {
+        AudioRoutePref::NdlOpus if channels == 2 => crate::platform::webos::ndl::AUDIO_PROVE_BUDGET,
+        AudioRoutePref::NdlOpus | AudioRoutePref::Software => crate::platform::webos::ndl::AUDIO_PRIME_BUDGET,
+    }
+}
+
 /// Opens the decoder for the negotiated stream and hands it the colorimetry.
 ///
 /// Returns the player and whether HDR mastering metadata is being applied — the answer the
 /// video pump needs to know whether to forward per-content metadata at all.
-fn load_player(client: &NativeClient, panel: quic::HdrMeta) -> Result<(Box<dyn VideoSink>, bool)> {
+fn load_player(client: &NativeClient, params: &ConnectParams) -> Result<(Box<dyn VideoSink>, bool)> {
+    let panel = params.display_hdr;
     let resolved_mode = client.mode();
     let fps = resolved_mode.refresh_hz.max(1);
     let codec =
@@ -143,12 +145,17 @@ fn load_player(client: &NativeClient, panel: quic::HdrMeta) -> Result<(Box<dyn V
     let (width, height) = (resolved_mode.width as i32, resolved_mode.height as i32);
     let player: Box<dyn VideoSink> = match device::ndl_generation() {
         NdlGeneration::V2 => Box::new(Arc::new(
-            // Every V2 load asks for a plane: a fed one is what makes NDL pace the picture at
-            // all (docs/NOTES.md § "NDL's audio plane"). What rides it — the real stream or
-            // `run_clock_plane`'s metronome — is the route's business. A set that refuses the
-            // plane reloads video-only and gives up pacing with it; the route is picked here
-            // before that verdict can be taken, and software is what both outcomes land on.
-            NdlVideo::load(&app_id, width, height, codec, true).context("NDL load")?,
+            // V2 loads ask for a plane to enable NDL pacing (docs/NOTES.md). Metronome is happy
+            // unconfirmed, but real audio needs proof or silence results. Only offload route pays
+            // the longer budget; wrong plane proof costs the route before any frame is fed.
+            NdlVideo::load(
+                &app_id,
+                width,
+                height,
+                codec,
+                Some(plane_budget(params.audio_route, client.audio_channels)),
+            )
+            .context("NDL load")?,
         )),
         NdlGeneration::V1 => Box::new(NdlV1Video::load(&app_id, width, height, codec).context("NDL v1 load")?),
     };
@@ -184,20 +191,24 @@ fn load_player(client: &NativeClient, panel: quic::HdrMeta) -> Result<(Box<dyn V
     Ok((player, is_hdr))
 }
 
-/// Why this session's audio ended up on the path it did.
-///
-/// Naming the REASON matters: "software Opus" is the correct outcome on the software route, on a
-/// route that asked for a plane and didn't get one, and on a backend that has no plane at all —
-/// and a silent session looks identical on all of them. Without this the first debugging question
-/// has no answer in the log.
-fn audio_path_label(route: AudioRoutePref, has_plane: bool) -> &'static str {
+/// Why this session's audio ended up on the route it did. "Software Opus" is correct on three
+/// different failure modes, all looking identical — logging the reason is essential for debugging.
+/// `pref` distinguishes a downgrade (which narrowed channels per `max_channels` clamp before plane
+/// proof) from a never-wanted route; downgrade merits explicit mention.
+fn audio_path_label(pref: AudioRoutePref, route: AudioRoutePref, has_plane: bool, proven: bool) -> &'static str {
     match (route, has_plane) {
         (AudioRoutePref::NdlOpus, _) => "NDL hardware Opus decode (+ clock plane standing by)",
+        // The user asked for the plane and the load never confirmed it in its budget. Stereo was
+        // already negotiated on the strength of that request and cannot be widened now. Gated on
+        // `proven` because a >2ch session takes the same downgrade for an unrelated reason.
+        (AudioRoutePref::Software, true) if pref == AudioRoutePref::NdlOpus && !proven => {
+            "software Opus decode -> SDL2 + NDL clock plane (offload asked for, plane unconfirmed)"
+        }
         // A plane the real stream is not using is the pacing metronome — see
         // `NdlVideo::run_clock_plane`.
         (AudioRoutePref::Software, true) => "software Opus decode -> SDL2 + NDL clock plane",
-        // No plane means no pacing reference either: NDL v1 has none, or the audio-enabled
-        // load's plane was refused and the video sink reloaded without it.
+        // No plane means no pacing reference either: NDL v1 has none, or the audio-enabled load
+        // was refused outright and fell back to video-only.
         (AudioRoutePref::Software, false) => "software Opus decode -> SDL2, no clock plane",
     }
 }
@@ -228,16 +239,10 @@ fn spawn_video_thread(
 /// `(audio pump, clock plane)`.
 type PlaneThreads = (Option<std::thread::JoinHandle<()>>, Option<std::thread::JoinHandle<()>>);
 
-/// The threads on NDL's audio plane, if this load got one: the loop that holds the plane at depth,
-/// plus the real stream's pump on the routes that ride it.
-///
-/// **Something feeds the plane on EVERY session that has one** — NDL paces the picture against a
-/// fed plane regardless of where the audio goes. Which loop does it is the route's one structural
-/// difference:
-///
-/// - `Software`: the metronome (`AudioPlane::run_keepalive`), silence only, and the audio goes to
-///   the SDL device the runtime owns.
-/// - `NdlOpus`: the metronome yielding to the real stream, which the TV's own decoder stamps.
+/// Threads feeding and riding NDL's audio plane: the keep-alive loop and real stream's pump
+/// (if the route rides it). NDL paces the picture against any fed plane regardless of audio routing;
+/// the route determines which thread feeds it: Software uses the metronome (silence only),
+/// `NdlOpus` yields to the real stream (hardware-stamped).
 fn spawn_plane_threads(
     client: &Arc<NativeClient>,
     ndl_audio: Option<Arc<dyn AudioPlane>>,

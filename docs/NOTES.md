@@ -303,9 +303,8 @@ question:
 it yields to the real stream and only fills in after 300 ms with no packet, since a host that stops
 sending would otherwise starve the plane and freeze the picture.
 
-A set that refuses the audio plane ends up video-only and gives up pacing with it — at the load
-itself when it fails outright, otherwise at the verdict past the first frame (below); the session
-log names which of the routes it took. **NDL v1 has
+A set that refuses the audio plane outright ends up video-only at the load and gives up pacing with
+it; the session log names which of the routes it took. **NDL v1 has
 no Opus audio type at all**, so webOS 4 has no pacing reference — the lever there would be gating
 frame release at feed time, which is not built.
 
@@ -332,32 +331,51 @@ the plane inside the load wait, where nothing can feed a frame — the pumps do 
 `session::connect` returns — so on the QNED every session read a healthy plane as refused, fell
 back to video-only, and ran unpaced. That is issue #188's delay; longer waits don't help.
 
-So the plane is asked for and then **judged past the first frame**: `AUDIO_PRIME_BUDGET` (500 ms)
-buys only the fast confirmation a CX gives, an unconfirmed load starts the stream anyway, and
-`v2::PLANE_VERDICT` (750 ms after the first accepted frame) is where a plane that really was
-refused is given up — the load is then re-issued without its audio arm, because a load whose audio
-config was rejected keeps accepting frames into a pipeline that never runs, with no error on any
-call. **That re-load is stepped by the video feed, one frame at a time** (`begin_reload` /
-`advance_reload`), never inline and never on a thread of its own: inline it blocks the pump for the
-whole 400-800 ms settle and the receive queue fills behind it, and a second thread inside NDL is
-what `LEAKED_THREADS` exists to refuse. Each frame advances the state machine, is answered with
-`NotReady`, and goes back to draining the queue.
+So the plane is **asked for and then kept, confirmed or not**. `AUDIO_PRIME_BUDGET` (500 ms) buys
+only the fast confirmation a CX gives; a load that does not answer inside it is taken anyway and
+the metronome carries on feeding the plane, which on an ingest-gated set is what eventually
+produces the callback. `run_clock_plane` is therefore **deliberately not gated on `LOADCOMPLETED`**
+— it is the prime's continuation, feeding the same plane through the same call, and gating it
+would leave the plane unfed from the end of the prime until the first video frame. On the QNED
+that is seconds, and it covers the ~100 ms of ingest that sets NDL's standing present cushion.
+
+⚠ **There is no mid-session verdict and no in-session re-load.** One was written for #188 and
+reverted: it could not be right, because the plane question is resolution-independent (NDL's
+`VideoInfo` carries no framerate at all) while #188 is 4K120-HDR-only on a set where 4K60 and
+1440p120 are fine. It also had to re-apply HDR metadata to the new pipeline, which is the
+mode-drop documented under *Video decode* above — the fallback could cause what it was meant to
+fix. A load whose audio config the pipeline rejects outright still fails at the load and falls
+back there, which is the only fallback that exists.
+
+What survives of the verdict is the **log line**, not the recovery: `v2::PLANE_CONFIRM_GRACE`
+(750 ms past the first accepted frame) is where an unconfirmed plane gets named. That window is
+the one place the two readings separate — before a frame, "no callback" is a healthy ingest-gated
+set *and* a pipeline that rejected the Opus config asynchronously, and the second accepts every
+frame into a decoder that never runs. Nothing is recovered, deliberately: a set that does this has
+not been measured, and acting on the guess is what #188 already cost. If that WARN ever shows up
+in a report, THAT is the set to build a fallback for.
 
 The route is picked from the PROVEN plane (`AudioPlane::accepts_stream`), not from one that was
-merely asked for: an unproven plane is still worth keeping fed — that is the pacing — but the
-session's only audio must not ride something the verdict can still take away, since the route
-cannot be re-picked by then. Both load waits bail early on `ndl::fatal()`. Every path that
-loses the plane warns that the picture will not be paced — grep the log for that line before
-theorising about any later delay.
+merely asked for: an unconfirmed plane paces the picture perfectly well, but the session's only
+audio must not ride one that may never work, and the route cannot be re-picked once the stream is
+running. Only a session that means to put REAL audio there pays for the answer: `plane_budget`
+charges the offload route `AUDIO_PROVE_BUDGET` (2 s) and every other session the short one, since
+on an ingest-gated set the extra wait is pure black screen and buys nothing. A downgrade off
+offload is worse than either route on its own — `AudioRoutePref::max_channels` has already clamped
+the handshake to stereo on the strength of the request — so the `audio path:` line names it
+explicitly. Both load waits bail early on `ndl::fatal()`. Every path that loses the plane warns
+that the picture will not be paced — grep the log for that line before theorising about any later
+delay.
 
-Audio feeds gate on the `LOADCOMPLETED` latch itself, never on `feed_unblocked`: that flag is the
-VIDEO feed's gate and latches optimistically once frames have to flow regardless. A packet fed to a
-plane before NDL confirms it costs the session its audio outright.
+The REAL audio feed gates on the `LOADCOMPLETED` latch itself, never on `feed_unblocked`: that flag
+is the VIDEO feed's gate and latches optimistically once frames have to flow regardless. Real audio
+on a plane NDL has not confirmed costs the session its sound outright — whereas silence on one is
+free, which is the whole reason the two feeds gate differently.
 
 The load blocks `session::connect` between the handshake and the first `next_frame`, so anything
-timing a launch has to cover it — now `AUDIO_PRIME_BUDGET` at worst, rather than the ~4.8 s a
-rejected plane used to cost there; what a refused plane costs instead is a settle plus a second
-load *after* frames are flowing. `app::hero` is fine (its `FIRST_FRAME_WAIT` only starts once
+timing a launch has to cover it — now `AUDIO_PRIME_BUDGET` at worst on the software route
+(`AUDIO_PROVE_BUDGET` on offload), rather than the ~4.8 s an unconfirmed plane used to cost when
+the load wait was the verdict. `app::hero` is fine (its `FIRST_FRAME_WAIT` only starts once
 connect returns, under a 30 s `HERO_LOADING_MAX` backstop), but `hdr_pattern`'s `PRESENT_DEADLINE`
 runs from `Playback::start` and must stay above the whole sequence.
 

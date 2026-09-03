@@ -31,15 +31,18 @@ const FRAME_TIME: Duration = Duration::from_millis(100);
 /// never presents cannot block the thread.
 const MAX_QUEUE_FRAMES: i32 = 2;
 
-/// Timeout for first frame to appear. Covers NDL load (audio-prime budget + possible video-only
-/// retry); old 3s caused false "plane rejected" verdict mid-load. Headroom over worst case: late
-/// costs slow screen, early costs false verdict.
-const PRESENT_DEADLINE: Duration = Duration::from_secs(10);
+/// How long the plane may go without presenting before the screen stops waiting for it.
+///
+/// Must clear the worst-case load, or it fires mid-load and tells the user the plane was rejected
+/// while it is still coming up. A plane the pipeline refuses outright costs the prime budget, an
+/// unload, the retry settle (up to 800 ms) and then the video-only load's own 2 s wait — about
+/// 3.3 s — so the old 3 s could never clear it. Erring long is the cheap direction: late costs a
+/// slow screen, early costs a wrong answer.
+const PRESENT_DEADLINE: Duration = Duration::from_secs(5);
 /// How long the feed thread is given to notice `stop` and return — the same ceiling, for the same
 /// reason, as a stream's teardown.
 const JOIN_TIMEOUT: Duration = crate::services::join::SHUTDOWN_JOIN_TIMEOUT;
 
-/// What to show: a background field and the patches on it, in 10-bit narrow-range luma codes.
 pub struct Pattern {
     pub background: u16,
     pub patches: Vec<Patch>,
@@ -81,22 +84,20 @@ impl Playback {
         })
     }
 
-    /// Replaces what is on screen. Dropped silently if the feed has already gone — the caller's
-    /// own `presenting`/`stalled` reporting is what surfaces that.
+    /// Dropped silently if the feed has already gone — the caller's own `presenting`/`stalled`
+    /// reporting surfaces that.
     pub fn show(&self, meta: HdrMeta, pattern: Pattern) {
         let _ = self.tx.send((meta, pattern));
     }
 
-    /// Whether a frame has actually reached the decoder, which is also the gate on punching the
-    /// menu's background through to the video plane. Read from NDL, which has one plane — this is
-    /// per-process, and only meaningful because nothing else can be playing while it is up.
+    /// Whether a frame has reached the decoder. Per-process only; only meaningful because nothing
+    /// else can play while this is up.
     #[must_use]
     pub fn presenting(&self) -> bool {
         ndl::presenting()
     }
 
-    /// Nothing has presented and the deadline has passed — the plane rejected the stream, or
-    /// there is no plane. The screen says so rather than sitting on black.
+    /// Plane rejected the stream, or there is no plane. Screen reports it rather than sitting on black.
     #[must_use]
     pub fn stalled(&self) -> bool {
         !self.presenting() && self.started.elapsed() > PRESENT_DEADLINE
@@ -123,7 +124,9 @@ fn run(stop: &Arc<AtomicBool>, rx: &mpsc::Receiver<Command>, meta: HdrMeta, patt
         hevc::WIDTH as i32,
         hevc::HEIGHT as i32,
         NdlCodec::H265,
-        true,
+        // The short budget: this screen never routes real audio, it only needs the plane fed so
+        // NDL paces the pattern. An unconfirmed plane does that (see `NdlVideo::run_clock_plane`).
+        Some(ndl::AUDIO_PRIME_BUDGET),
     )?);
     let color = ColorInfo {
         primaries: ColorInfo::CP_BT2020,
@@ -142,7 +145,6 @@ fn run(stop: &Arc<AtomicBool>, rx: &mpsc::Receiver<Command>, meta: HdrMeta, patt
         .context("spawn HDR pattern clock plane")?;
 
     let result = feed(&video, stop, rx, meta, color, pattern);
-    // Releases the clock plane whether the feed ended cleanly or not.
     stop.store(true, Ordering::Relaxed);
     if let Some(clock) = clock {
         let _ = clock.join();
