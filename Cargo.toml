@@ -66,11 +66,10 @@ tracing-appender = "0.2"
 # rev and cargo builds two copies whose types do not unify — the shell would then reject the
 # `GamepadPref` this crate hands it. Re-pin all three together, to the next tag that carries them.
 punktfunk-core = { git = "https://git.unom.io/unom/punktfunk", rev = "6bf1412b9f923f1a706fcdbc68d8b5e51ebdc1f5", features = ["quic"] }
-# The shared console shell (design/webos-skia-console-port.md). `default-features = false` drops
-# the Vulkan overlay — this client owns its own GL surface — and `gl` asks Skia for the GLES
-# backend the panel exposes. pf-client-core lean carries the portable half the shell speaks:
-# `trust::Settings`, the menu vocabulary, the library model, deep links.
-pf-console-ui = { git = "https://git.unom.io/unom/punktfunk", rev = "6bf1412b9f923f1a706fcdbc68d8b5e51ebdc1f5", default-features = false, features = ["gl"] }
+# The portable half of the client stack: `trust::Settings` (the shared settings document this
+# client now persists), the menu vocabulary, the library model, deep links. Pure Rust with no
+# Skia and no SDL, so it builds on every host — `services::store::shared` and its tests need it
+# on the dev target too.
 pf-client-core = { git = "https://git.unom.io/unom/punktfunk", rev = "6bf1412b9f923f1a706fcdbc68d8b5e51ebdc1f5", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -104,19 +103,23 @@ sdl2 = { version = "0.38", default-features = false, features = ["ttf", "unsafe_
 opus = "0.3"
 # setpriority for video pump scheduling; explicit dep for libc::gettid calls.
 libc = "0.2"
-# The console host needs Skia directly — `Console::frame` draws into a `skia_safe::Canvas`, and
-# the host owns the `DirectContext` and the surface wrapping framebuffer 0. Linux-gated like
-# SDL2 so a macOS/Windows dev build stays free of it: pf-console-ui above is an empty crate off
-# Linux/Windows/Android and pulls no Skia there, and this must not undo that.
+# The shared console shell and its Skia backend, on the TV target ONLY.
 #
-# ⚠ rust-skia publishes NO armv7 archive for any OS. Ours is a release asset on
-# git.unom.io/unom/skia-binaries; the Taskfile points SKIA_BINARIES_URL at it. Without that,
-# skia-bindings does not fail — it silently builds Skia from source for an hour.
-# Default features stay ON deliberately: they carry `binary-cache` (the prebuilt fetch above)
-# and the jpeg/pdf codecs, and they are what make the archive key
-# `gl-jpegd-jpege-pdf-textlayout` — the one that exists. Turning them off here would be a no-op
-# anyway, since pf-console-ui takes them and cargo unions features, but it would read as though
-# a source build were intended.
+# 🛑 Narrower than `target_os = "linux"` on purpose. The `test` task builds for the HOST target,
+# which is also Linux, and the only prebuilt Skia archive keyed `gl-jpegd-jpege-pdf-textlayout`
+# that exists for us is the armv7 one — a host build would find no archive and silently compile
+# Skia from source for about an hour. Gating on the architecture keeps `task test` free of Skia
+# entirely, which is why `services::store::shared` deliberately depends on pf-client-core (no
+# Skia) rather than on the shell: its tests must run on the host.
+#
+# `default-features = false` on the shell drops the Vulkan overlay — this client owns its own GL
+# surface — and `gl` asks Skia for the GLES backend the panel exposes. skia-safe keeps its
+# DEFAULT features: they carry `binary-cache` (the prebuilt fetch) and the jpeg/pdf codecs, and
+# they are what make the key `gl-jpegd-jpege-pdf-textlayout` — the one that exists.
+[target.'cfg(all(target_os = "linux", target_arch = "arm"))'.dependencies]
+pf-console-ui = { git = "https://git.unom.io/unom/punktfunk", rev = "6bf1412b9f923f1a706fcdbc68d8b5e51ebdc1f5", default-features = false, features = ["gl"] }
+# `Console::frame` draws into a `skia_safe::Canvas`, and the host owns the `DirectContext` plus
+# the surface wrapping framebuffer 0.
 skia-safe = { version = "0.99", features = ["gl", "textlayout"] }
 
 [build-dependencies]
