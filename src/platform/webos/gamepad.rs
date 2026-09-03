@@ -73,6 +73,21 @@ fn type_for_name(name: &str) -> Option<crate::services::store::GamepadType> {
     }
 }
 
+/// Whether an SDL controller is really this TV's own remote rather than a game pad.
+///
+/// webOS presents the Magic Remote as a game controller — it enumerates as `Smart Remote RCU
+/// Input` — so anything that trusts SDL's device list reports a pad on a set where none is
+/// plugged in. That is not cosmetic in the shared shell: a non-empty pad list picks the
+/// button-glyph legend AND moves the home screen's Options and Settings off the d-pad onto X
+/// and Y, which a remote does not have.
+///
+/// Matched by name because SDL offers nothing else to tell them apart; both spellings are
+/// checked since the remote's product string has varied across webOS releases.
+pub fn is_tv_remote(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.contains("remote") || name.contains("rcu")
+}
+
 /// Declares pad `pad`'s kind to the host mid-session, for a controller plugged in AFTER the
 /// handshake: the session default was settled from whatever was attached at connect time, so a
 /// `DualSense` connected mid-stream would otherwise drive the host's default Xbox pad — wrong

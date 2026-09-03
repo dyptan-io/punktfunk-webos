@@ -278,9 +278,15 @@ pub(super) fn run(
             }
         }
 
+        // The controller SDL has open, unless it is the TV's own remote — webOS enumerates the
+        // Magic Remote as a game controller, and treating it as a pad would claim a pad that is
+        // not in the room. Its buttons still reach the shell, as keys.
+        let pad = controller
+            .as_ref()
+            .filter(|c| !crate::platform::webos::gamepad::is_tv_remote(&c.name()));
         // The pad through the shared synthesizer, so repeats, dead zone and hysteresis match
         // every other client rather than being re-invented here.
-        if let Some(pad) = controller.as_ref() {
+        if let Some(pad) = pad {
             sample = pad_sample(pad);
         }
         menu_out.clear();
@@ -373,14 +379,12 @@ pub(super) fn run(
         }
         let (w, h) = canvas.window().drawable_size();
         pads.clear();
-        // 🛑 `None` when nothing is plugged in, not the stored preference: this picks the
-        // GLYPH LEGEND, and claiming a pad on a remote-only TV would print button marks for
-        // buttons that are not in the room. It is also what the home screen reads to put
-        // Options and Settings on the d-pad instead of Y and X (`pads.is_empty()`).
-        let pad_pref = controller
-            .as_ref()
-            .map(|_| shared::gamepad_pref(store.snapshot().settings.gamepad_type));
-        if let (Some(pad), Some(pref)) = (controller.as_ref(), pad_pref) {
+        // 🛑 `None` unless a real pad is open, not the stored preference: this picks the GLYPH
+        // LEGEND, and claiming a pad prints button marks for buttons that are not in the room.
+        // It is also what the home screen reads to put Options and Settings on the d-pad
+        // instead of on Y and X (`pads.is_empty()`).
+        let pad_pref = pad.map(|_| shared::gamepad_pref(store.snapshot().settings.gamepad_type));
+        if let (Some(pad), Some(pref)) = (pad, pad_pref) {
             pads.push(pad_info(pad, pref));
         }
         let label = pads.first().map(|p| p.name.clone());
