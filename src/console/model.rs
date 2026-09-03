@@ -33,6 +33,12 @@ use crate::services::{budget, wol};
 /// itself is the slow part, not the interval.
 const SWEEP_EVERY: Duration = Duration::from_secs(10);
 
+/// How often [`Service::tick`] does its work. The desktop's service loop runs at this cadence on
+/// its own thread; here it shares the render loop, and rebuilding the rows means cloning the
+/// document and allocating a `Vec<HostRow>` — sixty times a second on a three-core TV, for a
+/// list that only changes when mDNS says so. Input is still handled every frame.
+const SERVICE_EVERY: Duration = Duration::from_millis(100);
+
 /// The wake loop's budget and cadence — the desktop's, so a host woken from the TV and from a
 /// laptop give up at the same moment.
 const WAKE_TIMEOUT: Duration = Duration::from_secs(90);
@@ -81,6 +87,8 @@ pub(crate) struct Service {
     rights: HashMap<String, PowerRights>,
     sweep: Option<Receiver<Swept>>,
     last_sweep: Option<Instant>,
+    /// When [`Self::tick`] last did its work — see [`SERVICE_EVERY`].
+    last_tick: Option<Instant>,
     games: Option<Receiver<GamesLoaded>>,
     /// Encoded poster bytes as they arrive. The shell decodes at the size it draws, so this
     /// deliberately does NOT go through `services::art`, which decodes to a card-sized pixmap
@@ -103,6 +111,7 @@ impl Service {
             rights: HashMap::new(),
             sweep: None,
             last_sweep: None,
+            last_tick: None,
             games: None,
             art: None,
             pair: None,
@@ -113,6 +122,15 @@ impl Service {
     /// One menu tick: fold in whatever the background answered, start a sweep if one is due,
     /// serve the shell's commands, and publish the rows.
     pub(crate) fn tick(&mut self) {
+        // Commands are the one thing that must not wait for the cadence: they are a button
+        // press, and the shell shows nothing until one is served.
+        for cmd in self.handles.bus.drain() {
+            self.handle(cmd);
+        }
+        if self.last_tick.is_some_and(|t| t.elapsed() < SERVICE_EVERY) {
+            return;
+        }
+        self.last_tick = Some(Instant::now());
         if let Some(discovery) = &mut self.discovery {
             for host in discovery.poll() {
                 self.discovered
@@ -127,9 +145,8 @@ impl Service {
         if self.last_sweep.is_none_or(|t| t.elapsed() >= SWEEP_EVERY) {
             self.start_sweep();
         }
-        for cmd in self.handles.bus.drain() {
-            self.handle(cmd);
-        }
+        // `set_hosts` bumps its generation only on a real change, so the shell redraws when the
+        // list moves rather than on this cadence.
         self.handles.console.set_hosts(self.rows());
     }
 
