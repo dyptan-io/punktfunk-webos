@@ -17,7 +17,7 @@
 
 use pf_client_core::trust;
 
-use crate::core::model::{AudioRoutePref, CodecPref, GamepadType, LogLevelOverride, Settings, ThemeChoice};
+use crate::core::model::{CodecPref, GamepadType, Settings};
 
 /// Prefix for rows only this client has. Namespaced so a future shared field of the same name
 /// cannot collide with what a TV persisted.
@@ -35,6 +35,38 @@ fn put<T: serde::Serialize>(t: &mut trust::Settings, name: &str, value: &T) {
     if let Ok(v) = serde_json::to_value(value) {
         t.extra.insert(key(name), v);
     }
+}
+
+/// Every field this client used to persist under its own name and now writes under [`P`].
+/// Seeing any of them UNPREFIXED is what identifies a document written before the move.
+const MOVED: &[&str] = &[
+    "hdr_peak_nits",
+    "hdr_frame_avg_nits",
+    "hdr_black_code",
+    "hdr_calibrated",
+    "log_level_override",
+    "show_logs",
+    "game_mode",
+    "audio_route",
+    "cursor_gestures",
+    "theme",
+    "stats_overlay",
+    "gamepad_type",
+    "cursor_capture",
+];
+
+/// Whether a `settings` object predates the shared schema.
+///
+/// 🛑 Not a `from_value` attempt: this client's `Settings` and `trust::Settings` both default
+/// every field, so BOTH parse almost anything and neither failing is a signal. The presence of
+/// an unprefixed moved key is, because the new shape can only ever write them under `webos.`.
+/// Getting this wrong loses a user's settings silently — the old object would parse as a shared
+/// one, its unrecognised keys would drift into `extra`, and the UI would show defaults.
+pub fn legacy_shape(settings: &serde_json::Value) -> bool {
+    let Some(map) = settings.as_object() else {
+        return false;
+    };
+    MOVED.iter().any(|k| map.contains_key(*k))
 }
 
 /// This client's settings as the shared document.
@@ -155,6 +187,8 @@ fn local_gamepad(name: &str) -> Option<GamepadType> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Named only by the fixtures below, so they would be unused imports in a normal build.
+    use crate::core::model::{AudioRoutePref, LogLevelOverride, ThemeChoice};
 
     /// Every field survives the trip. This is the test that matters: the two UIs read the same
     /// file through this pair, so a field that does not round-trip is one the gamepad shell
@@ -207,6 +241,52 @@ mod tests {
         assert_eq!((s.width, s.height, s.refresh_hz), (1920, 1080, 60));
         assert_eq!(s.codec, CodecPref::H264);
         assert_eq!(s.theme, Settings::default().theme);
+    }
+
+    /// The discriminator that protects a real user's file. A document this client wrote before
+    /// the move must be recognised as legacy, and one it writes after must not be.
+    #[test]
+    fn tells_the_two_shapes_apart() {
+        let legacy = serde_json::to_value(Settings {
+            theme: ThemeChoice::Funk,
+            ..Settings::default()
+        })
+        .expect("encode");
+        assert!(legacy_shape(&legacy), "this client's own shape is legacy");
+
+        let moved = serde_json::to_value(to_shared(&Settings::default())).expect("encode");
+        assert!(!legacy_shape(&moved), "the shared shape is not legacy");
+
+        // A document from another client has neither the moved keys nor the prefix.
+        let foreign = serde_json::to_value(trust::Settings::default()).expect("encode");
+        assert!(!legacy_shape(&foreign), "a foreign document is not legacy");
+    }
+
+    /// A legacy object read through `Settings`, re-encoded shared, and read back must keep
+    /// every value — that is the whole migration, and it runs once against a real file.
+    #[test]
+    fn migrates_a_legacy_document_without_loss() {
+        let before = Settings {
+            width: 3840,
+            height: 2160,
+            refresh_hz: 60,
+            bitrate_kbps: 60_000,
+            hdr_enabled: true,
+            hdr_peak_nits: 700,
+            hdr_calibrated: true,
+            codec: CodecPref::Hevc,
+            gamepad_type: GamepadType::SwitchPro,
+            audio_route: AudioRoutePref::NdlOpus,
+            theme: ThemeChoice::Funk,
+            game_mode: true,
+            ..Settings::default()
+        };
+        let on_disk = serde_json::to_value(before).expect("encode legacy");
+        assert!(legacy_shape(&on_disk));
+
+        let parsed: Settings = serde_json::from_value(on_disk).expect("read legacy");
+        let after = from_shared(&to_shared(&parsed));
+        assert_eq!(after, before);
     }
 
     /// `av1` is a codec this client cannot decode; it must not present as a selected option.

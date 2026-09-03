@@ -47,7 +47,7 @@ pub fn load() -> Loaded {
     // — or the file is missing entirely, which still needs migrating, since pairing a host wrote
     // `known-hosts.json` without ever writing settings.
     let mut state = match read_document() {
-        Some(doc) if doc.get("settings").is_some() => serde_json::from_value(doc).unwrap_or_default(),
+        Some(doc) if doc.get("settings").is_some() => from_document(doc),
         Some(doc) => legacy::migrate(serde_json::from_value(doc).unwrap_or_default()),
         None => legacy::migrate(Settings::default()),
     };
@@ -142,8 +142,32 @@ fn migrate_collections(state: &mut Persisted) {
     }
 }
 
+/// The document, with its `settings` object read out of the shared schema into this client's
+/// own shape (see [`shared`]). A pre-shared object is converted here once; the next [`save`]
+/// writes it back in the shared schema.
+fn from_document(mut doc: Value) -> Persisted {
+    let object = doc.get("settings").cloned().unwrap_or(Value::Null);
+    let settings = if shared::legacy_shape(&object) {
+        tracing::info!("settings.json predates the shared schema — converting on this load");
+        serde_json::from_value(object).unwrap_or_default()
+    } else {
+        shared::from_shared(&serde_json::from_value(object).unwrap_or_default())
+    };
+    // Put this client's shape back so the rest of the document (known hosts, the selected row,
+    // the version stamp) deserializes exactly as it always did.
+    match serde_json::to_value(settings) {
+        Ok(v) => doc["settings"] = v,
+        Err(e) => tracing::warn!("could not re-encode settings: {e:#}"),
+    }
+    serde_json::from_value(doc).unwrap_or_default()
+}
+
 pub fn save(state: &Persisted) -> Result<()> {
-    let json = serde_json::to_string_pretty(state).context("serialize app state")?;
+    let mut doc = serde_json::to_value(state).context("serialize app state")?;
+    // The one place the settings object leaves this client in punktfunk's shape. Every other
+    // key stays as it was — only `settings` is shared.
+    doc["settings"] = serde_json::to_value(shared::to_shared(&state.settings)).context("serialize shared settings")?;
+    let json = serde_json::to_string_pretty(&doc).context("render app state")?;
     crate::services::atomic::write(&path(), &json, "settings.json")
 }
 
@@ -158,8 +182,12 @@ pub fn persisted_log_level() -> LogLevelOverride {
         return LogLevelOverride::default();
     };
     let settings = doc.get("settings").unwrap_or(&doc);
+    // Both shapes: the shared schema keeps this client's own rows under a `webos.` prefix, and
+    // a document written before the move still has it bare. Reading only one of them would
+    // silently start every launch at the default level instead of the chosen one.
     settings
-        .get("log_level_override")
+        .get("webos.log_level_override")
+        .or_else(|| settings.get("log_level_override"))
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default()
 }
