@@ -151,11 +151,24 @@ pub enum ExpRow {
     /// advertising one TV's numbers to every TV. Experimental because the measurement is by eye
     /// and the patterns run on the video plane outside a session.
     HdrCalibration,
+    /// Rumble from the pad's `0xD1` coil lane (`session::pad_audio`). On a libScePad title
+    /// (Spider-Man, GTA V Enhanced…) it is the ONLY vibration there is — those games drive the
+    /// coils and never the classic motors. Here rather than on the main list because it is on by
+    /// default and wants no attention, and because the lane is verified on one panel so far.
+    PadHaptics,
+    /// The pad's own speaker, on either transport. Same reasoning as [`Self::PadHaptics`].
+    PadSpeaker,
 }
 
 /// Order is display order. `AudioProcessing` stays at index 1 so its dropdown's `(Screen, row)`
 /// tile key does not move.
-pub const EXP_ROWS: [ExpRow; 3] = [ExpRow::GameMode, ExpRow::AudioProcessing, ExpRow::HdrCalibration];
+pub const EXP_ROWS: [ExpRow; 5] = [
+    ExpRow::GameMode,
+    ExpRow::AudioProcessing,
+    ExpRow::HdrCalibration,
+    ExpRow::PadHaptics,
+    ExpRow::PadSpeaker,
+];
 
 /// Display position of [`ExpRow::AudioProcessing`] — the row a dropdown can hang off, which is
 /// what `DropdownState::row` names.
@@ -234,7 +247,13 @@ pub(crate) fn exp_row_lock(row: ExpRow, settings: &Settings, rooted: Option<bool
         (ExpRow::GameMode, Some(false)) => Some(ExpRowLock::NotRooted),
         (ExpRow::AudioProcessing, _) if audio_routes().len() < 2 => Some(ExpRowLock::SoftwareOnly),
         (ExpRow::HdrCalibration, _) if !settings.hdr_enabled || !video_caps().hdr => Some(ExpRowLock::HdrOff),
-        (ExpRow::GameMode, Some(true)) | (ExpRow::AudioProcessing, _) | (ExpRow::HdrCalibration, _) => None,
+        // The pad rows never lock: both default on, and a pad that cannot play a lane simply
+        // never has it declared (`pad_audio::caps_for`) — nothing for the user to be told.
+        (ExpRow::GameMode, Some(true))
+        | (ExpRow::AudioProcessing, _)
+        | (ExpRow::HdrCalibration, _)
+        | (ExpRow::PadHaptics, _)
+        | (ExpRow::PadSpeaker, _) => None,
     }
 }
 

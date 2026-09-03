@@ -56,7 +56,17 @@ Hybrid software/GPU: `tiny_skia` rasterizes tiles, SDL2 composites. Redraw-on-ch
 - HDR mastering metadata can change mid-session — drain `next_hdr_meta` every frame.
 - **`NDL_DirectVideoSetHDRInfo` forces panel into HDR mode on *any* call** (OLED65CX, webOS 5): ignores SDR `transfer`/`primaries` triplet, emits HDR infoframe regardless, so SDR/H.264 stream showed in HDR picture mode. Fix: `ndl::v2::set_color_info` no-ops when `meta` is `None` (SDR) — only genuine HDR mastering metadata reaches NDL. Cost: NDL can no longer fix a bitstream's missing VUI colour info; SDR relies on bitstream VUI. HDR also gated to HEVC end-to-end (`session::connect`: `apply_hdr = host_hdr && codec==H265`; explicit H.264 pick drops HDR caps + hides Settings toggle).
 
-## DualSense feedback: Bluetooth service, not hidraw
+## DualSense feedback: hidraw when wired, the Bluetooth service otherwise
+
+**A wired pad DOES get `/dev/hidraw0`**, `root:jailer` and read-write — the group the app runs in,
+verified from inside the app on a G5 (webOS 10.3, non-rooted): `DualSense feedback active over USB
+(/dev/hidraw0)`. The earlier "the jail exposes no hidraw at all" was probed with no pad plugged in,
+and `hid-playstation` only creates a node for a device that exists. There is no `/sys/class/hidraw`
+in the jail, so the node is identified by asking it (`HIDIOCGRAWINFO`), not by walking sysfs. A
+wired pad takes the 48-byte `0x02` report with **no CRC** and no throttle — one syscall per write —
+carrying the same 47-byte common block the Bluetooth `0x31` does, which is why every effect works
+on both. Open question worth an experiment: whether a *Bluetooth* pad also gets a node now, since
+that would retire the whole Luna route below.
 
 Adaptive triggers work on **non-rooted** TV, but not through SDL. Verified end-to-end on G5 (webOS 10.3, dev-mode install, `DualSense` over Bluetooth): trigger resistance, section walls, lightbar colour all confirmed on real hardware.
 
@@ -67,9 +77,51 @@ Adaptive triggers work on **non-rooted** TV, but not through SDL. Verified end-t
 - LG backported `hid-playstation` to kernel 5.4, so pad binds as three input devices (pad/motion/touchpad) sharing one `U: Uniq=` MAC — where `dualsense::find_address` reads it.
 - **Rumble does not use this path**: pad's event node advertises `EV_FF`, group-writable by `compositor` (app's uid is in it), so rumble goes through SDL's evdev force feedback, working for any pad. Reports in `dualsense.rs` deliberately never set compatible-vibration valid-flag, so paths can't fight.
 - `hid/internal/*` is undocumented vendor surface — feature-detected, failing soft, never assumed.
-- **Feedback sends must be throttled, or video plane goes black.** Each send forks/execs `luna-send-pub`, copying page tables of a process holding SDL, decoder + buffers. A Steam/Gamescope host *animates* the `DualSense` lightbar, so unthrottled sender spawned dozens of processes/sec on 2-3 core TV — observed failure was **black panel with frame counter climbing, `dropped=0`, `backlog=0`**: decode thread is priority-boosted so it kept running while compositor never presented (audio underruns the other tell). `dualsense.rs` drops identical states, spaces rest by `MIN_SEND_INTERVAL`. Don't assume host feedback is human-paced; lightbar alone is not.
+- **Spawned sends must be throttled, or video plane goes black.** The fallback route forks/execs `luna-send-pub` per send, copying page tables of a process holding SDL, decoder + buffers. A Steam/Gamescope host *animates* the `DualSense` lightbar, so an unthrottled spawner produced a **black panel with frame counter climbing, `dropped=0`, `backlog=0`**: decode thread is priority-boosted so it kept running while compositor never presented. `dualsense.rs` drops identical states and spaces the rest by `MIN_SEND_INTERVAL` (250 ms) on that route.
+- **In-process LS2 works, from the app's binary path only** (`platform::webos::ls2`, verified G5/webOS 10.3): `LSRegister(<app id>)` succeeds when the calling executable is `…/applications/<appid>/bin/punktfunk-webos` and `bluetooth2` methods reply in 1–3 ms; the identical binary anywhere else gets `Invalid permissions` — the hub keys permissions on the exe path, and the dev-mode certificate grants that app the `public` group `sendData` sits in. `LSRegisterApplicationService` is refused even there. `libluna-service2.so.3` + `libglib-2.0.so.0` are dlopened, so a refusal degrades to the spawn route (16 ms vs 250 ms spacing).
+- **Seeing Luna replies from the dev-mode ssh jail is impossible**: no `/dev/ptmx` (so `script`/`ssh -tt` fail) and `luna-send-pub` writes nothing without a tty, even to a file. Probe from inside the app, or with a small LS2 binary *copied over the app's own binary* (`rm` + `cp` — the installed file is root-owned 755 but its dir is group-writable). That trick also installs a package when npm `ares-install` fails on `rm -rf /media/developer/temp` (root-owned): call `com.webos.appInstallService/dev/install` `{"id":"com.ares.defaultName","ipkUrl":"/media/developer/temp/x.ipk","subscribe":true}` from the app identity.
 
 Host side: a game only emits trigger effects when it sees a `DualSense`, so pad kind in handshake decides whether this feature does anything. Settings' **Controller** row (`store::GamepadType`) defaults to `Automatic`, which **mirrors attached pad** (`gamepad::detect_type`) rather than sending wire `GamepadPref::Auto` — that wire value means "host decides", and host decides Xbox 360, which is why a `DualSense` first showed as Xbox pad with no effects. Resolution happens per session (`runtime::resolve_gamepad_type`), deliberately doesn't write back, so stored preference keeps meaning "match my pad". Host env `PUNKTFUNK_TEST_FEEDBACK` makes host send scripted lightbar/LED/trigger burst — use to test without a game.
+
+## DualSense audio over Bluetooth: sniff mode is the whole problem
+
+The pad's speaker and coils take Opus / s8-PCM over the same HID output plane (reports `0x32`/`0x36`/`0x39`, see `dualsense.rs` and the planning doc). Every layout sounded choppy until `device/internal/stopSniff` was called for the pad: **the TV keeps the HID link in sniff mode**, so output reports leave in bursts at the anchor points and the pad's audio buffer starves in between — it then replays stale buffer content, which is what "frames out of order" sounded like. `stopSniff`/`startSniff` sit in the `public` group; call stop when the audio lane opens and start when it closes. The coil lane alone masked this: a buzz with periodic holes still feels like a buzz.
+
+**The two take different payloads.** `stopSniff` wants the address alone; `startSniff` wants HCI
+Sniff Mode's parameters and refuses anything else with `errorCode 144`, a schema error that names
+nothing. The working shape, found by sending candidates tagged and reading which was refused:
+
+```json
+{"address":"…","minInterval":96,"maxInterval":124,"attempt":4,"timeout":1}
+```
+
+Intervals are 0.625 ms slots and bound how long the pad waits to transmit, so they track the ~77 ms
+anchor the TV's own policy used — the pad drives this app's UI between sessions, and a slower
+power-saving interval would show up as input lag there. Report a refusal from the loop that CAUSED
+it: replies are asynchronous and `REPLIES` is process-wide, so an undispatched one surfaces ~11 ms
+into the next session and reads as its fault.
+
+Those two are the **only** sniff-related methods in the whole `bluetooth2` API (`/usr/share/luna-service2/api-permissions.d/com.webos.service.bluetooth2.api.json`) — there is no link-policy or QoS call, so nothing persistent can be set and a re-assert is the only lever. Do not re-assert on a timer: sniff is a link-IDLE state and a lane at 94 reports/s never lets the link idle, so `stopSniff` rides the edge out of an idle lane (2 s floor, since the host gates audio on silence). An earlier 500 ms poll cost two hub round-trips a second for nothing.
+
+**Feed the pad at its own clock, never faster.** One report per 10.667 ms, and the tick must land on the next interval in the *future* — advancing by one interval lets a tick whose work overran fire again at once, and each catch-up report is one the pad has no room for. Measured 110 reports/s against the pad's 93.75 with speech breaking up audibly; the surplus carries the silence frame, because the host feeds exactly 48 kHz and the ring cannot fill it. Two reports per tick belong to the pre-fill alone: keyed on ring depth they never stop, since depth after the pre-fill is clock drift, not backlog.
+
+## Pad audio (`0xD1`): both lanes on a Bluetooth pad
+
+`session::pad_audio` declares `CAP_HAPTICS` (`set_pad_audio_caps` **before** the `GamepadArrival`, and only toward a `HOST_CAP_PAD_AUDIO` host — an older host reads arrival flags as the bare pad index) and decodes the coil lane into a rumble `Envelope` the main loop applies through the same evdev route. **While coil frames arrive the wire rumble plane is drained but not applied** (`pump_feedback_once`): the host forwards a title's classic rumble too, and the kernel's rumble report also sets `HAPTICS_SELECT`, which mutes real coils — the arbitration every other client does by evidence. **Verified against a real libScePad title (Spider-Man, 2026-09-03).** Both lanes ran over a live
+1440p session: coil frames with real content (envelope peak 0.10-0.12 in gameplay), speaker frames
+alongside, and **not one wire-rumble command applied for the whole run** — a title's classic rumble
+correctly yields to its own coils. A game's own rumble still works when no coil frames are arriving,
+so claiming the lane does not cost a pad its motors. The pad speaker plays what the title mixes for
+it and no more: the chain is unity gain end to end and `SPEAKER_VOLUME` already sits at `0x64`, the
+top of the range the pad honours, so "quiet" is the title's mix, not headroom we are leaving.
+
+⚠ `Envelope::active()` only asks whether coil frames ARRIVE, not whether they carry anything, and
+it is what suppresses the wire rumble plane. Spider-Man streams real content so it never bit, but a
+title streaming near-silence would mute a pad's motors for its whole run and give nothing back.
+
+The speaker lane is declared too, but **only for a Bluetooth pad** (`find_address`): the `0x36` report over the Luna bus is its one transport, and a USB pad has no `Uniq` to find. Verified on a G5 against a Linux host: speech through the pad speaker is continuous, a sustained pure tone is rougher (every Opus frame seam speech would mask).
+
+Jail facts for the USB route (probed from the dev-mode ssh jail, `jail_app.conf` says the same for apps): **no `/dev/bus/usb`** anywhere, so usbfs/libusb is out; **`/dev/snd` is mounted rw** and the app's uid is in `audio`, PulseAudio (`/var/run/pulse/native`) answers `pactl`. Whether a wired pad's 4-channel USB-audio card appears there is untested (no USB pad was at hand).
 
 ## Known platform limitations (don't retry)
 

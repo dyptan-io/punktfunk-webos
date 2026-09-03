@@ -82,6 +82,9 @@ pub struct ConnectParams {
     pub codec: CodecPref,
     pub gamepad_type: GamepadType,
     pub cursor_capture: bool,
+    /// Pad-audio render bits (`session::pad_audio::CAP_*`); non-zero advertises
+    /// `CLIENT_CAP_PAD_AUDIO`. The per-pad declaration rides the arrival, not the handshake.
+    pub pad_audio_caps: u8,
     pub audio_route: crate::services::store::AudioRoutePref,
     /// The panel volume advertised to the host and used until host metadata arrives.
     pub display_hdr: quic::HdrMeta,
@@ -206,10 +209,14 @@ fn dial(params: &ConnectParams, negotiated: &Negotiated) -> Result<NativeClient>
         negotiated.preferred_codec,
         negotiated.display_hdr,
         // client_caps: see `store::Settings::cursor_capture` for the on/off split.
-        if params.cursor_capture {
+        (if params.cursor_capture {
             0
         } else {
             quic::CLIENT_CAP_CURSOR
+        }) | if params.pad_audio_caps != 0 {
+            quic::CLIENT_CAP_PAD_AUDIO
+        } else {
+            0
         },
         // Slice-progressive delivery: AU prefixes reach the decoder while the rest is still on the
         // wire, so a frame no longer waits for its own last datagram (`session::stage`'s `AuParts`).

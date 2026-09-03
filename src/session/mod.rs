@@ -20,6 +20,7 @@
 //! the SDL objects (`runtime::session_ext`).
 pub mod audio;
 mod connect;
+pub mod pad_audio;
 mod pipeline;
 mod priority;
 pub mod probe;

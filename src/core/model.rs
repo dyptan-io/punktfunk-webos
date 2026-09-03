@@ -927,6 +927,12 @@ pub struct Settings {
     /// anyone having to find this setting); pick a kind explicitly to override that. Takes
     /// effect on the next stream, since it rides the handshake.
     pub gamepad_type: GamepadType,
+    /// `DualSense` audio haptics — the coil lane of the `0xD1` pad-audio plane, rendered as
+    /// rumble on this client (`session::pad_audio`). Off = the lane is not declared to the host.
+    pub pad_haptics: bool,
+    /// The pad-speaker lane, declared only for a Bluetooth pad — the `0x36` report over the Luna
+    /// bus is its one transport, so a USB pad leaves it off however this reads.
+    pub pad_speaker: bool,
     /// Let the TV capture the pointer for the host in-stream. On by default — most cards are
     /// games, where a relative pointer is what the game expects; each host's Desktop card
     /// overrides it back off (see [`desktop_capture_override`]).
@@ -983,6 +989,8 @@ impl Default for Settings {
             log_level_override: LogLevelOverride::Info,
             show_logs: false,
             gamepad_type: GamepadType::Auto,
+            pad_haptics: true,
+            pad_speaker: true,
             cursor_capture: true,
             game_mode: false,
             audio_route: AudioRoutePref::default(),
