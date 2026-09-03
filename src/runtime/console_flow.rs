@@ -114,6 +114,8 @@ pub(super) fn run(
     let mut menu_out: Vec<MenuEvent> = Vec::new();
     let mut last_input = Instant::now();
     let mut home_held = false;
+    let mut exit_held = false;
+    let mut green_held = false;
     // Where the Magic Remote's pointer last was. SDL's wheel event carries no position, and
     // the pump cannot be asked for one from inside its own `poll_iter`.
     let mut pointer_at = (0.0f32, 0.0f32);
@@ -135,6 +137,28 @@ pub(super) fn run(
         if home_key_fired(&mut home_held) {
             crate::platform::webos::luna::launch_home();
         }
+        // A held/root-level Back arrives as the discrete EXIT key, not as a long Back — the
+        // classic menus quit on it, so this does too rather than being the one screen where
+        // the gesture does nothing.
+        if exit_gesture_fired(&mut exit_held) {
+            tracing::info!("console: EXIT gesture — quitting app");
+            break 'ui UiOutcome::Quit(exit_plan(&service, identity));
+        }
+        // Green is polled (it is a scancode with no keycode), Red arrives as a keycode in the
+        // loop below. Both exist to make the shell's Secondary/Tertiary REACHABLE from a Magic
+        // Remote at all: the library screen puts Collections on Secondary and Options — the
+        // whole host menu — on Tertiary, and unlike the home screen it has no d-pad fallback.
+        let green =
+            crate::platform::webos::input::webos_scancode_down(crate::platform::webos::input::WEBOS_GREEN_SCANCODE);
+        if green && !green_held {
+            last_input = Instant::now();
+            console.menu(MenuEvent::Tertiary, InputSource::Keys);
+        }
+        green_held = green;
+        // webOS is documented to hand back a drawable that is not the window it was asked for
+        // (handoff trap 10), while SDL reports pointer events in WINDOW coordinates. The shell
+        // hit-tests in surface pixels, so the two have to be reconciled before it sees them.
+        let scale = pointer_scale(canvas);
 
         for event in events.poll_iter() {
             use sdl2::event::Event;
@@ -176,10 +200,23 @@ pub(super) fn run(
                         tracing::info!("console: Blue — back to the classic menus");
                         break 'ui leave_for_classic(&store);
                     }
+                    // Red is the remote's Secondary — see the Green note above for why the
+                    // colour keys carry these at all. `!repeat` so a held key fires once.
+                    if !repeat && k.into_i32() == crate::platform::webos::input::WEBOS_RED_KEYCODE {
+                        console.menu(MenuEvent::Secondary, InputSource::Keys);
+                        continue;
+                    }
                     let shift = keymod.intersects(sdl2::keyboard::Mod::LSHIFTMOD | sdl2::keyboard::Mod::RSHIFTMOD);
                     // While a field is being edited the shell wants keys, not menu moves —
                     // an arrow has to walk the caret rather than the row under it.
                     if console.editing() {
+                        // The remote's number pad types into the field. Fed as TEXT rather
+                        // than through SDL's text input, which on webOS raises the SYSTEM
+                        // on-screen keyboard — over the one the shell draws itself.
+                        if let Some(digit) = crate::platform::webos::input::digit_key_value(k) {
+                            console.text(&digit.to_string());
+                            continue;
+                        }
                         if let Some(key) = editing_key(k) {
                             console.key(key, shift, repeat);
                             continue;
@@ -198,18 +235,19 @@ pub(super) fn run(
                 }
                 Event::MouseMotion { x, y, .. } => {
                     last_input = Instant::now();
-                    pointer_at = (x as f32, y as f32);
+                    pointer_at = scale.at(x, y);
                     console.pointer(PointerInput::Move {
-                        x: x as f32,
-                        y: y as f32,
+                        x: pointer_at.0,
+                        y: pointer_at.1,
                     });
                 }
                 Event::MouseButtonDown { x, y, mouse_btn, .. } => {
                     last_input = Instant::now();
                     if let Some(button) = pointer_button(mouse_btn) {
+                        pointer_at = scale.at(x, y);
                         console.pointer(PointerInput::Down {
-                            x: x as f32,
-                            y: y as f32,
+                            x: pointer_at.0,
+                            y: pointer_at.1,
                             button,
                             // The Magic Remote is a real pointer, never a finger — its press
                             // acts immediately rather than waiting for a lift.
@@ -220,9 +258,10 @@ pub(super) fn run(
                 Event::MouseButtonUp { x, y, mouse_btn, .. } => {
                     last_input = Instant::now();
                     if let Some(button) = pointer_button(mouse_btn) {
+                        pointer_at = scale.at(x, y);
                         console.pointer(PointerInput::Up {
-                            x: x as f32,
-                            y: y as f32,
+                            x: pointer_at.0,
+                            y: pointer_at.1,
                             button,
                         });
                     }
@@ -333,10 +372,16 @@ pub(super) fn run(
             std::thread::sleep(IDLE_FRAME_STEP);
         }
         let (w, h) = canvas.window().drawable_size();
-        let pad_pref = shared::gamepad_pref(store.snapshot().settings.gamepad_type);
         pads.clear();
-        if let Some(pad) = controller.as_ref() {
-            pads.push(pad_info(pad, pad_pref));
+        // 🛑 `None` when nothing is plugged in, not the stored preference: this picks the
+        // GLYPH LEGEND, and claiming a pad on a remote-only TV would print button marks for
+        // buttons that are not in the room. It is also what the home screen reads to put
+        // Options and Settings on the d-pad instead of Y and X (`pads.is_empty()`).
+        let pad_pref = controller
+            .as_ref()
+            .map(|_| shared::gamepad_pref(store.snapshot().settings.gamepad_type));
+        if let (Some(pad), Some(pref)) = (controller.as_ref(), pad_pref) {
+            pads.push(pad_info(pad, pref));
         }
         let label = pads.first().map(|p| p.name.clone());
         {
@@ -347,7 +392,7 @@ pub(super) fn run(
                 // margin to keep chrome out of.
                 &Viewport::plain(w, h),
                 label.as_deref(),
-                Some(pad_pref),
+                pad_pref,
                 &pads,
             );
         }
@@ -506,6 +551,30 @@ fn pad_info(pad: &GameController, pref: punktfunk_core::config::GamepadPref) -> 
         detail: String::new(),
         forwarded: false,
         rumble: false,
+    }
+}
+
+/// Window pixels to surface pixels. One is what SDL reports pointer events in, the other is
+/// what the shell hit-tests and what Skia drew — and webOS is documented to hand back a
+/// drawable that is not the window that was asked for. Both are 1080p on the sets seen so far,
+/// which is exactly why a mismatch would be silent.
+struct PointerScale {
+    x: f32,
+    y: f32,
+}
+
+impl PointerScale {
+    fn at(&self, x: i32, y: i32) -> (f32, f32) {
+        (x as f32 * self.x, y as f32 * self.y)
+    }
+}
+
+fn pointer_scale(canvas: &sdl2::render::Canvas<sdl2::video::Window>) -> PointerScale {
+    let (win_w, win_h) = canvas.window().size();
+    let (draw_w, draw_h) = canvas.window().drawable_size();
+    PointerScale {
+        x: draw_w as f32 / win_w.max(1) as f32,
+        y: draw_h as f32 / win_h.max(1) as f32,
     }
 }
 
