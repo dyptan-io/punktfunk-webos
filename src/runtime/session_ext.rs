@@ -4,6 +4,7 @@
 //! teardown), kept here rather than in `session` because every one of them is shaped by what the
 //! loop asks for, not by how the session works.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -156,6 +157,11 @@ pub(crate) struct OverlayInfo {
 /// open, cannot starve rendering and input for a tick.
 const FEEDBACK_DRAIN_BUDGET: usize = 32;
 
+/// Sampling counter for the applied-rumble log. "It always runs at full level" is the usual
+/// report, and nothing on this path could say whether the levels arrived that way or the pad's
+/// force feedback dropped the magnitude — so sample what is actually written to the motors.
+static RUMBLE_APPLIED: AtomicU32 = AtomicU32::new(0);
+
 impl Connected {
     /// Drains the host→client gamepad feedback planes (non-blocking) and applies them to the
     /// physical pad. Call once per main-loop tick.
@@ -208,6 +214,17 @@ impl Connected {
                 //
                 // Errors here are the common "this pad has no rumble motors" case, not a fault:
                 // logging per command would spam a tick loop, and there is no recovery to attempt.
+                let n = RUMBLE_APPLIED.fetch_add(1, Ordering::Relaxed) + 1;
+                if n == 1 || n % 30 == 0 {
+                    tracing::debug!(
+                        "rumble applied #{n}: low={} high={} lt={} rt={} backstop={}ms",
+                        cmd.low,
+                        cmd.high,
+                        cmd.left_trigger,
+                        cmd.right_trigger,
+                        cmd.backstop_ms
+                    );
+                }
                 let _ = pad.set_rumble(cmd.low, cmd.high, cmd.backstop_ms);
                 // Dropping the trigger pair on a pad without those motors is the correct degrade;
                 // folding it into the handles would turn a racing title's continuous trigger stream
