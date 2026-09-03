@@ -29,7 +29,6 @@ fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
     };
     match lock {
         menu::RowLock::HdrNeedsHevc => "HDR is not supported by H.264".to_string(),
-        menu::RowLock::NeedsDualSense => "Connect a DualSense to use the controller's own audio".to_string(),
         menu::RowLock::NoHdr => format!("HDR is not supported by {}", source()),
         menu::RowLock::OneCodec => format!("H.264 is the only codec supported by {}", source()),
         menu::RowLock::StereoOnly => format!("Stereo is the only layout supported by {}", source()),
@@ -112,17 +111,6 @@ pub(crate) fn rows(
         )
         .with_subtext_opt(
             dualsense_limited.then(|| ui::widgets::RowSubtext::caution("Limited support by your WebOS version")),
-        ),
-        menu::SettingsRow::PadHaptics => FocusRow::toggle(
-            crate::app::view::icons::ICON_TOUCH,
-            "Controller haptics",
-            settings.pad_haptics,
-        ),
-        // Shares the Audio row's icon because that is what it is — the pad's second output.
-        menu::SettingsRow::PadSpeaker => FocusRow::toggle(
-            crate::app::view::icons::ICON_SIGNAL,
-            "Controller speaker",
-            settings.pad_speaker,
         ),
         menu::SettingsRow::Cursor => FocusRow::action(crate::app::view::icons::ICON_MOUSE, "Cursor"),
         menu::SettingsRow::Theme => FocusRow::dropdown(
