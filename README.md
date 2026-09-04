@@ -45,8 +45,12 @@ video decode, and webOS packaging.
   A per-host network speed test measures over the real data plane and applies a recommended rate.
 - **Audio** — stereo, 5.1 or 7.1, decoded on the TV.
 - **Library** — the host's game library, custom collections and ordering.
-- **Per-game overrides** — any game can override the global resolution, frame rate, bitrate, codec,
-  HDR, audio or controller settings.
+- **Per-game settings** — any game can override the global resolution, frame rate, bitrate, codec,
+  HDR, audio or controller settings. Each one is a punktfunk settings profile, so the
+  controller UI can list them and bind one to a cover.
+- **Two interfaces** — these cursor menus, built for the Magic Remote, and punktfunk's shared
+  controller UI, the same one the desktop and Android clients draw. It takes over while a game
+  pad is connected; Settings ▸ Controller-optimized UI chooses whether and when.
 - **Input** — Magic Remote pointer, gamepads, USB keyboard and mouse. Pointer capture for games,
   absolute pointing for the desktop, gestures.
 - **DualSense** — adaptive triggers, lightbar, player LEDs, touchpad, gyro and rumble over
