@@ -24,7 +24,7 @@ use super::dl;
 /// Registered bus name, tried first. SAM registers the running app under its id, so inside the
 /// launched app this is "already exists" and the handle is registered anonymously instead — the
 /// hub grants the dev-mode `public` group by executable path either way (both verified on-device).
-const BUS_NAME: &CStr = c"io.dyptan.punktfunk.webos";
+const BUS_NAME: &CStr = c"io.unom.punktfunk.client-webos";
 const LS2_LIB: &CStr = c"libluna-service2.so.3";
 const GLIB_LIB: &CStr = c"libglib-2.0.so.0";
 

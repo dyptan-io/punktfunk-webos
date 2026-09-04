@@ -188,7 +188,7 @@ fn generate_third_party_notices(manifest_dir: &str) {
     lines.push("THIRD-PARTY SOFTWARE NOTICES".to_string());
     lines.push("=".repeat(76));
     lines.push(String::new());
-    lines.push("punktfunk-webos (https://github.com/dyptan-io/punktfunk-webos) is licensed under".to_string());
+    lines.push("punktfunk-webos (https://github.com/punktfunk/client-webos) is licensed under".to_string());
     lines.push("MIT OR Apache-2.0, matching upstream punktfunk (https://git.unom.io/unom/punktfunk).".to_string());
     lines.push("The app links the third-party Rust crates listed below, and bundles or embeds the".to_string());
     lines.push("non-Rust components listed first. Each is distributed under its own permissive".to_string());

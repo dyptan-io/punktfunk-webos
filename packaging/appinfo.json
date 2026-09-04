@@ -1,7 +1,7 @@
 {
-    "id": "io.dyptan.punktfunk.webos",
+    "id": "io.unom.punktfunk.client-webos",
     "version": "0.0.1",
-    "vendor": "dyptan.io",
+    "vendor": "unom.io",
     "type": "native",
     "main": "bin/punktfunk-webos",
     "title": "Punktfunk",

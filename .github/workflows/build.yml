@@ -78,7 +78,7 @@ jobs:
       - name: Upload .ipk artifact
         uses: actions/upload-artifact@v7
         with:
-          name: io.dyptan.punktfunk.webos
+          name: io.unom.punktfunk.client-webos
           path: dist/*.ipk
           # Job hand-off only; release runs get the durable copy attached to the release.
           retention-days: 7
@@ -89,5 +89,5 @@ jobs:
       contents: write
     uses: ./.github/workflows/webosbrew.yml
     with:
-      artifact: io.dyptan.punktfunk.webos
+      artifact: io.unom.punktfunk.client-webos
       release_tag: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
