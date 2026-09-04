@@ -34,10 +34,11 @@ const IDLE_FRAME_STEP: Duration = Duration::from_millis(16);
 
 /// Whether this launch should draw the shared shell rather than this client's own menus.
 ///
-/// Read from disk on every menu entry rather than cached, because the old menus' Experimental
-/// row writes it and the flip is meant to land the moment you leave that screen.
-pub(super) fn wanted() -> bool {
-    store::load().state.settings.console_ui
+/// Read from disk on every menu entry rather than cached, because either UI's own switch writes
+/// it and the flip is meant to land the moment you leave that screen. `pad_connected` is the
+/// other half: under the default "With a controller" mode, plugging one in IS the switch.
+pub(super) fn wanted(pad_connected: bool) -> bool {
+    store::load().state.settings.gamepad_ui_active(pad_connected)
 }
 
 /// Run the shell until it commits a launch or asks to leave.
@@ -73,9 +74,9 @@ pub(super) fn run(
     let opts = ConsoleOptions {
         device_name: "webOS TV".into(),
         deck: false,
-        // True as a fact — this client does have another UI to fall back to. Inert today: the
-        // row that reads it (`RowId::GamepadUi`) is Android-only in the shell's `row_on`, which
-        // is why the way back is the Blue button below.
+        // This client does have another UI to fall back to, and the shell's own
+        // "Controller-optimized UI" row is gated on saying so — turning it off there is the
+        // way back to the cursor menus.
         fallback_ui: true,
         store: Some(store.clone()),
         platform: Platform::WebOS,
@@ -100,13 +101,9 @@ pub(super) fn run(
             return Ok(leave_for_classic(&store));
         }
     };
-    handles.console.set_notice(notice.unwrap_or_else(|| {
-        // ponytail: the only way back to the classic menus until the shell grows a webOS row
-        // for it — `GamepadUi` toggles Android's TOUCH shell and means nothing here (see the
-        // handoff's "Decisions still owed"). Announced rather than hidden: an undiscoverable
-        // escape from a preview UI is the same as no escape.
-        "Preview shell — the Blue button returns to the classic menus".into()
-    }));
+    if let Some(notice) = notice {
+        handles.console.set_notice(notice);
+    }
 
     let mut nav = MenuNav::new();
     let mut sample = MenuSample::default();
@@ -195,11 +192,6 @@ pub(super) fn run(
                     ..
                 } => {
                     last_input = Instant::now();
-                    // See the notice above.
-                    if k.into_i32() == crate::platform::webos::input::WEBOS_BLUE_KEYCODE {
-                        tracing::info!("console: Blue — back to the classic menus");
-                        break 'ui leave_for_classic(&store);
-                    }
                     // Red is the remote's Secondary — see the Green note above for why the
                     // colour keys carry these at all. `!repeat` so a held key fires once.
                     if !repeat && k.into_i32() == crate::platform::webos::input::WEBOS_RED_KEYCODE {
@@ -379,11 +371,20 @@ pub(super) fn run(
         }
         let (w, h) = canvas.window().drawable_size();
         pads.clear();
+        // The switch, watched the way the cursor menus watch theirs: the shell's own
+        // "Controller-optimized UI" row writes it, and under "With a controller" an unplugged
+        // pad withdraws it without writing anything. Plain `Reenter` — `leave_for_classic`
+        // would turn the switch off, and a pad going flat is not the user saying "off".
+        let state = store.snapshot();
+        if !state.settings.gamepad_ui_active(pad.is_some()) {
+            tracing::info!("console: the controller UI no longer applies — back to the cursor menus");
+            break 'ui UiOutcome::Reenter;
+        }
         // 🛑 `None` unless a real pad is open, not the stored preference: this picks the GLYPH
         // LEGEND, and claiming a pad prints button marks for buttons that are not in the room.
         // It is also what the home screen reads to put Options and Settings on the d-pad
         // instead of on Y and X (`pads.is_empty()`).
-        let pad_pref = pad.map(|_| shared::gamepad_pref(store.snapshot().settings.gamepad_type));
+        let pad_pref = pad.map(|_| shared::gamepad_pref(state.settings.gamepad_type));
         if let (Some(pad), Some(pref)) = (pad, pad_pref) {
             pads.push(pad_info(pad, pref));
         }
@@ -434,9 +435,13 @@ fn bring_up<'a>(
 }
 
 /// Turn the console off in the document, so the next menu entry lands on the classic menus.
+/// Hand the menus back and turn the switch off, for the cases where this shell cannot run at
+/// all. A user who turned it off in the shell's own row has already written `false`, and a pad
+/// being unplugged must NOT write anything — the switch stays on, [`wanted`] simply stops
+/// agreeing until the next pad arrives.
 fn leave_for_classic(store: &Arc<ConsoleStore>) -> UiOutcome {
     store.edit(|state| {
-        state.settings.console_ui = false;
+        state.settings.gamepad_ui = false;
         true
     });
     // Not a quit: `UiOutcome::Quit` ends the app. The streaming loop's menu loop re-enters

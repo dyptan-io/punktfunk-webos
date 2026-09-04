@@ -150,7 +150,7 @@ pub(super) fn run_inner() -> Result<()> {
         // Which of the two menus this entry draws. Asked per entry, not once, because that is
         // what makes the flip live: either side can write the setting and the other picks it
         // up on the next return here.
-        let ui = if console_flow::wanted() {
+        let ui = if console_flow::wanted(crate::platform::webos::gamepad::any_pad_connected(&game_controller)) {
             console_flow::run(
                 &mut canvas,
                 &mut console_gl,

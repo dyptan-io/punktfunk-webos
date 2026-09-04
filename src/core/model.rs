@@ -966,11 +966,42 @@ pub struct Settings {
     /// applies the moment it is picked rather than on the next launch.
     pub theme: ThemeChoice,
     /// Draw the shared gamepad shell (`pf-console-ui`) instead of this client's own menus.
-    /// Read once per menu entry, so a flip lands on the next return to the menu.
+    /// WHEN it takes over is [`Settings::gamepad_ui_mode`]; this is whether it may at all.
     ///
-    /// Persisted in the shared document like everything else, but namespaced `webos.`: the
-    /// shell is the second presentation of one file, not a second file.
-    pub console_ui: bool,
+    /// Stored under the shell's own unprefixed key rather than a `webos.` namespace: the
+    /// shell's Settings rows read and write these very keys, so the two UIs edit one setting
+    /// instead of two that have to be kept in step.
+    pub gamepad_ui: bool,
+    /// When [`Settings::gamepad_ui`] actually fronts the app. Read per menu entry, so a change
+    /// — or a pad appearing — lands on the next return to the menu.
+    pub gamepad_ui_mode: GamepadUiMode,
+}
+
+/// When the shared shell takes the menus over. Mirrors Android's `gamepad_ui_mode`, and
+/// serializes to the same two strings the shell's own row stores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GamepadUiMode {
+    /// Only while a real game pad is attached. A Magic Remote is not one — see
+    /// `platform::webos::gamepad::any_pad_connected`.
+    #[default]
+    Connected,
+    /// Whenever the switch is on, pad or no pad.
+    Always,
+}
+
+impl GamepadUiMode {
+    /// Display order, and the dropdown's option list.
+    pub const ALL: [Self; 2] = [Self::Connected, Self::Always];
+
+    /// The row's collapsed value. Worded as the other clients word it, so a player who moves
+    /// between a TV and a phone reads the same two answers.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Connected => "With a controller",
+            Self::Always => "Always",
+        }
+    }
 }
 
 impl Default for Settings {
@@ -1002,14 +1033,25 @@ impl Default for Settings {
             audio_route: AudioRoutePref::default(),
             cursor_gestures: false,
             theme: ThemeChoice::default(),
-            // Off: the shell is a preview, and the menus this client shipped are the ones
-            // every screen is reachable from (see `console`'s module doc).
-            console_ui: false,
+            // On, taking over only while a pad is attached — the cross-client default, and the
+            // reason both UIs ship: a pad in hand wants the console, a Magic Remote wants the
+            // cursor menus this client was built for.
+            gamepad_ui: true,
+            gamepad_ui_mode: GamepadUiMode::Connected,
         }
     }
 }
 
 impl Settings {
+    /// Whether the shared shell should be fronting the app right now.
+    ///
+    /// The same rule Android's `gamepadUiActive` applies, minus its `tv` term: that term makes
+    /// an Android TV console-only whatever the mode says, and here it would defeat the whole
+    /// setting — every webOS set is a TV, and the cursor UI is the one a remote wants.
+    pub fn gamepad_ui_active(&self, pad_connected: bool) -> bool {
+        self.gamepad_ui && (self.gamepad_ui_mode == GamepadUiMode::Always || pad_connected)
+    }
+
     /// Normalise to what the active backend can present (`core::caps`), plus the one
     /// cross-field rule: HDR needs HEVC, so an explicit H.264 pick turns it off. Called on
     /// load, so the document never holds a *set* value whose row the UI has just hidden or
