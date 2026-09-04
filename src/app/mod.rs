@@ -142,6 +142,10 @@ pub struct App {
     /// The stored settings object's fields this UI does not model, carried so a save from here
     /// does not reset them — see [`store::Persisted::shared_base`].
     shared_base: pf_client_core::trust::Settings,
+    /// The settings-profile catalog ([`store::Persisted::profiles`]). Held rather than re-read
+    /// because [`App::persist`] rebuilds the whole document from these fields, so anything not
+    /// here is dropped on the next save.
+    pub(crate) profiles: Vec<pf_client_core::profiles::StreamProfile>,
     /// Last tick time (for real-time scroll easing, not frame-count based).
     last_tick: Option<Instant>,
 }
@@ -238,6 +242,7 @@ impl App {
             known_hosts,
             selected_host,
             version: _,
+            profiles,
             shared_base,
         } = loaded;
         let entries = known_entries(&known_hosts);
@@ -278,6 +283,7 @@ impl App {
             keyboard_shown: false,
             identity,
             shared_base,
+            profiles,
             last_tick: None,
         };
         // Restore the last-active sidebar host (if it's still known and paired)
@@ -791,6 +797,7 @@ impl App {
             // Always this build's version: whatever wrote the document last is what a future
             // migration needs to know, and that is now us.
             version: Some(store::VERSION.to_string()),
+            profiles: self.profiles.clone(),
             // Carried, never rebuilt: this UI models a subset of the stored schema, and
             // dropping the rest here would reset the gamepad shell's own rows every time
             // anything on this side was saved. See [`store::Persisted::shared_base`].

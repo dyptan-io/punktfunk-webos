@@ -21,6 +21,8 @@ pub(super) fn migrate(settings: Settings) -> Persisted {
         known_hosts,
         selected_host: None,
         version: None,
+        // Nothing to carry: profiles arrived with the shared schema, which this shape predates.
+        profiles: Vec::new(),
         // A pre-consolidation document predates the shared schema entirely, so there is
         // nothing of another client's to carry.
         shared_base: pf_client_core::trust::Settings::default(),

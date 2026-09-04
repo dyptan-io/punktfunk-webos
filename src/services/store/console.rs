@@ -84,12 +84,17 @@ impl SettingsStore for ConsoleStore {
         self.writer.save(snapshot);
     }
 
-    /// Empty: this client has no named-profile catalog. Its per-game overrides live on the host
-    /// record (`KnownHost::games`), which is a different model from punktfunk's profiles — see
-    /// `core::model::SettingsOverride`. Reporting none is honest; inventing ids the rest of this
-    /// client cannot resolve would not be.
+    /// The document's catalog, in display order. Non-empty as soon as one game has its own
+    /// settings: giving a game an override IS creating a profile here (`shared::bind_game_
+    /// overrides`), which is what lets a TV with no desktop app beside it fill this list at all.
     fn profiles(&self) -> Vec<(String, String)> {
-        Vec::new()
+        self.state
+            .lock()
+            .expect(POISONED)
+            .profiles
+            .iter()
+            .map(|p| (p.id.clone(), p.name.clone()))
+            .collect()
     }
 
     fn known_hosts(&self) -> trust::KnownHosts {

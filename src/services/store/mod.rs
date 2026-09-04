@@ -18,9 +18,9 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 pub use crate::core::model::{
-    desktop_capture_override, new_host_collections, new_host_games, upsert_known_host, AudioRoutePref, CodecPref,
-    Collection, ExitAction, GamepadType, GamepadUiMode, KnownHost, LogLevelOverride, OverrideField, Persisted,
-    Settings, SettingsOverride, DESKTOP_PIN_ID,
+    merge_for_game, new_host_collections, upsert_known_host, AudioRoutePref, CodecPref, Collection, ExitAction,
+    GamepadType, GamepadUiMode, KnownHost, LogLevelOverride, OverrideField, Persisted, Settings, SettingsOverride,
+    DESKTOP_PIN_ID,
 };
 pub use crate::services::paths::app_dir;
 pub use identity::load_or_create_identity;
@@ -70,18 +70,11 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Brings [`Persisted::version`] up to this build's, and returns whether it had to — which is
 /// how the UI knows this release is running here for the first time.
 ///
-/// A document with *no* version predates the field, so it also gets
-/// [`desktop_capture_override`] bootstrapped onto its hosts; one that carries any version was
-/// written by a build that applied that default when each host was added.
-///
-/// Written synchronously so it happens once — `StateWriter`'s baseline is taken after this, and
-/// an unstamped document that never gets saved would seed again on every launch.
+/// Written synchronously so it happens once — `StateWriter`'s baseline is taken after this,
+/// and an unstamped document that never gets saved would stamp again on every launch.
 fn stamp_version(state: &mut Persisted) -> bool {
     if state.version.as_deref() == Some(VERSION) {
         return false;
-    }
-    if state.version.is_none() {
-        seed_desktop_capture(state);
     }
     state.version = Some(VERSION.to_string());
     if let Err(e) = save(state) {
@@ -92,32 +85,11 @@ fn stamp_version(state: &mut Persisted) -> bool {
     true
 }
 
-/// Puts [`desktop_capture_override`] on every host whose Desktop card is pinned and
-/// which carries no overrides yet. Reads the *legacy* pin, so it must run before
-/// [`migrate_collections`] — a document with no version is one that still has pins.
-///
-/// A host that already overrides something is left alone — the user has found the feature and
-/// this must not talk over them.
-fn seed_desktop_capture(state: &mut Persisted) {
-    let Some(capture) = desktop_capture_override(&state.settings) else {
-        return;
-    };
-    for host in &mut state.known_hosts {
-        let untouched = host.games.values().all(|g| g.over.is_empty());
-        if !untouched || host.games.get(DESKTOP_PIN_ID).is_none_or(|g| g.legacy_pin.is_none()) {
-            continue;
-        }
-        host.edit_overrides(DESKTOP_PIN_ID, |over| over.cursor_capture = Some(capture));
-        tracing::info!("seeded Desktop cursor-capture override on {}", host.name);
-    }
-}
-
 /// Gives every host that predates collections the vector it now needs: its old pins, in pin
 /// order, as one "Pinned" collection, then the dynamic Library entry — which is exactly the
 /// grid it was already drawing. A host with no pins gets Library alone.
 ///
-/// Runs after [`stamp_version`], whose `seed_desktop_capture` is the last reader of the legacy
-/// pin. One-shot in practice, since the first save writes `collections` and stops serializing
+/// The last reader of the legacy pin. One-shot in practice, since the first save writes `collections` and stops serializing
 /// `pin` — but idempotent regardless: a host that already has the vector is skipped.
 fn migrate_collections(state: &mut Persisted) {
     for host in &mut state.known_hosts {
