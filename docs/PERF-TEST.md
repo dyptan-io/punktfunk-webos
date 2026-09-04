@@ -45,13 +45,18 @@ shell library: 412 frames in 10.0s — cpu p50 3.1ms p90 6.8ms p99 22.4ms max 41
   it, so this is what the app spends, not what the panel imposes. A 60 Hz frame is 16.7 ms:
   p99 above that is a visible stutter, p50 above it is the lag you reported.
 - **art N decoded (M at codec scale)** — covers decoded in that interval. `M` well short of `N`
-  means most art is arriving in a shape the codec's own downscale cannot help with, which is a
-  different problem from the panel being slow.
+  means most art is arriving in a shape the codec's own downscale cannot help with — PNG and
+  WebP have no cheap scaled decode, and on the CX run that was every cover.
+  **These decodes now happen on the fetch thread**, so their cost is no longer inside the frame
+  times above. A high `art … total` beside a low `cpu p99` is the intended shape: the covers
+  still cost what they cost, but the shelf no longer stops for them.
 - **total / mean / worst** — what those decodes cost. `worst` is the whole run's worst, not the
   interval's: one bad cover is usually what a stutter is.
 
-The question the numbers answer: **is the shelf's cost the covers?** Compare `art … total`
-against the interval. 210 ms of decoding inside 10 s is 2% and not your problem; 4 s of it is.
+The question the numbers answer: **is the shelf's cost the covers?** It was, on the first CX
+run — 88-95 ms each, all of it in the frame loop, p99 164 ms against a p50 of 19 ms. Now that
+decoding has moved off that thread, `cpu p99` should sit near `p90`. If it does not, the cost is
+somewhere else and worth saying so.
 
 ## What to send
 
