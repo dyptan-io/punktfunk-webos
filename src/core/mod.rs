@@ -3,6 +3,7 @@ pub mod errors;
 pub mod event;
 pub mod media;
 pub mod model;
+pub mod perf;
 pub mod pq;
 pub mod screen;
 

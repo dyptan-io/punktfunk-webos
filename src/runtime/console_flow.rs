@@ -17,6 +17,7 @@ use pf_console_ui::{Console, ConsoleEntry, ConsoleHandles, ConsoleOptions, Input
 
 use super::*;
 use crate::console::Service;
+use crate::core::perf::{ArtSnapshot, Perf};
 use crate::services::store::console::ConsoleStore;
 use crate::services::store::{shared, StateWriter};
 
@@ -93,6 +94,7 @@ pub(super) fn run(
         });
         ConsoleEntry::Library(Box::new(row))
     });
+    let opened_on_a_shelf = matches!(entry, ConsoleEntry::Library(_));
     let mut console = match Console::new(opts, entry, &handles) {
         Ok(console) => console,
         // Same reasoning as the GL bring-up above — most likely the font build.
@@ -105,6 +107,11 @@ pub(super) fn run(
         handles.console.set_notice(notice);
     }
 
+    // What this panel costs, for the log Diagnostics ▸ Send logs carries — see `core::perf`.
+    // Labelled by where the shell came up: entering on a shelf is the case that loads art, and
+    // the case the CX reports as slow.
+    let mut perf = Perf::new();
+    perf.mark(if opened_on_a_shelf { "library" } else { "home" });
     let mut nav = MenuNav::new();
     let mut sample = MenuSample::default();
     let mut pads: Vec<PadInfo> = Vec::new();
@@ -366,8 +373,10 @@ pub(super) fn run(
         }
 
         // Draw.
+        let mut idled = Duration::ZERO;
         if last_input.elapsed() >= IDLE_AFTER {
             std::thread::sleep(IDLE_FRAME_STEP);
+            idled = IDLE_FRAME_STEP;
         }
         let (w, h) = canvas.window().drawable_size();
         pads.clear();
@@ -402,6 +411,13 @@ pub(super) fn run(
             );
         }
         console_gl.flush();
+        // Before the swap: `gl_swap_window` blocks on vsync, and a frame time that includes it
+        // measures the panel's refresh rate rather than what this build costs. The idle step
+        // comes off for the same reason — it is this loop waiting on purpose, not work.
+        let cpu = frame_start.elapsed().saturating_sub(idled);
+        if let Some(report) = perf.frame(cpu, art_snapshot()) {
+            tracing::info!("{}", report.line());
+        }
         canvas.window().gl_swap_window();
 
         let elapsed = frame_start.elapsed();
@@ -410,11 +426,26 @@ pub(super) fn run(
         }
     };
 
+    if let Some(report) = perf.finish(art_snapshot()) {
+        tracing::info!("{}", report.line());
+    }
     service.stop();
     // Covers and glyph atlases go back before the stream takes the GPU; the context and its
     // compiled shaders stay, so coming back here is a re-upload rather than a cold start.
     console_gl.release_resources();
     Ok(outcome)
+}
+
+/// The shell's cover-art counters in `core::perf`'s shape. The conversion is the only thing
+/// this gate carries; every decision about them is host-tested in that module.
+fn art_snapshot() -> ArtSnapshot {
+    let a = pf_console_ui::art_stats();
+    ArtSnapshot {
+        decoded: a.decoded,
+        total_us: a.total_us,
+        max_us: a.max_us,
+        native_scaled: a.native_scaled,
+    }
 }
 
 /// Bring up (or reuse) the shell's GL context and make it current. Split out so the caller can
