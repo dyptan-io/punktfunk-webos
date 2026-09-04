@@ -1,5 +1,5 @@
 {
-    "id": "io.punktfunk.webos",
+    "id": "io.unom.punktfunk.client-webos",
     "version": "0.0.1",
     "vendor": "dyptan.io",
     "type": "native",

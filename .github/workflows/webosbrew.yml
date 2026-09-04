@@ -17,7 +17,7 @@ on:
       artifact:
         description: Name of the artifact holding the built .ipk
         required: true
-        default: io.punktfunk.webos
+        default: io.unom.punktfunk.client-webos
         type: string
       release_tag:
         description: Release tag to attach the .ipk and manifest to (empty = no release)

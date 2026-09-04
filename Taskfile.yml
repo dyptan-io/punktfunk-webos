@@ -30,7 +30,7 @@ includes:
       RUST_IMAGE: '{{.RUST_IMAGE}}'
 
 vars:
-  APP_ID: io.punktfunk.webos
+  APP_ID: io.unom.punktfunk.client-webos
   TV_DEVICE: webos-tv
   SSH_KEY: '{{.SSH_KEY | default "$HOME/.ssh/id_rsa"}}'
   RELEASE_LTO: '{{.RELEASE_LTO | default "thin"}}'

@@ -450,7 +450,7 @@ pub fn spawn_clock_plane(
 /// Overridable for dev builds. NDL keys its session on the caller's app id, so a mismatch fails
 /// the load.
 pub fn app_id() -> String {
-    std::env::var("APPID").unwrap_or_else(|_| "io.punktfunk.webos".into())
+    std::env::var("APPID").unwrap_or_else(|_| "io.unom.punktfunk.client-webos".into())
 }
 
 /// Process-wide NDL teardown — call once at exit, after every decode session has dropped.
