@@ -26,12 +26,13 @@ fn upload_spinner(
 /// Clamped to caps afterwards exactly like a global value, so an override a TV can't
 /// satisfy degrades instead of reaching the wire.
 fn launch_settings(app: &App, target: &crate::core::model::ConnectTarget) -> crate::services::store::Settings {
-    use crate::services::store::{SettingsOverride, DESKTOP_PIN_ID};
+    use crate::services::store::{shared, DESKTOP_PIN_ID};
     let id = target.launch.as_deref().unwrap_or(DESKTOP_PIN_ID);
-    let over = app
+    let bound = app
         .known_host(&target.host, target.port)
-        .map_or_else(SettingsOverride::default, |h| h.overrides(id));
-    let mut settings = over.merge_into(app.settings_ui.settings);
+        .and_then(|h| h.game_profile(id));
+    let over = shared::game_overrides(&app.profiles, bound);
+    let mut settings = crate::services::store::merge_for_game(&over, app.settings_ui.settings, id);
     settings.clamp_to_caps();
     settings
 }

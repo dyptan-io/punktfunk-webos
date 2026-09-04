@@ -7,7 +7,7 @@ use crate::app::nav::ScreenKey;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
-use crate::services::store::{Settings, SettingsOverride};
+use crate::services::store::{self, shared, Settings, SettingsOverride};
 
 /// What the per-game settings screen is editing. Set alongside `Screen::Settings(Game)`
 /// and cleared on the way out, so `Some` and the screen being up mean the same thing.
@@ -33,14 +33,13 @@ impl App {
         let Some(host) = self.library.selected_host.clone() else {
             return;
         };
-        let over = self
-            .known_host(&host.0, host.1)
-            .map_or_else(SettingsOverride::default, |h| h.overrides(pin_id));
+        let bound = self.known_host(&host.0, host.1).and_then(|h| h.game_profile(pin_id));
+        let over = shared::game_overrides(&self.profiles, bound);
         self.settings_ui.game_settings = Some(GameSettingsState {
             host,
             pin_id: pin_id.to_string(),
             title: title.to_string(),
-            merged: over.merge_into(self.settings_ui.settings).presentable(),
+            merged: store::merge_for_game(&over, self.settings_ui.settings, pin_id).presentable(),
             over,
         });
         self.nav.set_cursor(ScreenKey::Settings, 0);
@@ -90,19 +89,28 @@ impl App {
         };
         let merged = gs.merged;
         edit(&mut gs.over, &merged);
-        gs.merged = gs.over.merge_into(global).presentable();
+        gs.merged = store::merge_for_game(&gs.over, global, &gs.pin_id).presentable();
     }
 
-    /// Writes the edited override back onto the host record and persists. Called on the way
+    /// Writes the edited override back as this game's profile and persists. Called on the way
     /// out, like the global screen's single save per visit.
+    ///
+    /// The catalog and the host record move together: the profile is written (or dropped)
+    /// first, then the binding is pointed at whatever came back, so the record can never name
+    /// an id the catalog does not hold.
     pub(crate) fn persist_game_settings(&mut self) {
         let Some(gs) = self.settings_ui.game_settings.take() else {
             return;
         };
+        let bound = self
+            .known_host(&gs.host.0, gs.host.1)
+            .and_then(|h| h.game_profile(&gs.pin_id))
+            .map(str::to_string);
+        let id = shared::bind_game_overrides(&mut self.profiles, bound.as_deref(), &gs.title, &gs.over);
         let Some(known) = self.known_host_mut(&gs.host.0, gs.host.1) else {
             return;
         };
-        known.edit_overrides(&gs.pin_id, |over| *over = gs.over);
+        known.bind_game_profile(&gs.pin_id, id);
         self.persist();
     }
 }
@@ -144,7 +152,9 @@ impl App {
     /// Whether `pin_id` carries any settings override on the selected host — what puts the
     /// amber dot in front of its card title, before anything is held.
     pub(crate) fn game_has_overrides(&self, pin_id: &str) -> bool {
+        // The binding alone is the answer: a profile that overrides nothing is deleted on the
+        // way out, so a bound game always has something to show a dot for.
         self.selected_known_host()
-            .is_some_and(|h| !h.overrides(pin_id).is_empty())
+            .is_some_and(|h| h.game_profile(pin_id).is_some())
     }
 }

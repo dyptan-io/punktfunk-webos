@@ -454,12 +454,13 @@ fn leave_for_classic(store: &Arc<ConsoleStore>) -> UiOutcome {
 /// reading the store rather than `App`.
 fn launch_settings(state: &store::Persisted, addr: &str, port: u16, launch: Option<&str>) -> store::Settings {
     let id = launch.unwrap_or(store::DESKTOP_PIN_ID);
-    let over = state
+    let bound = state
         .known_hosts
         .iter()
         .find(|h| h.host == addr && h.port == port)
-        .map_or_else(store::SettingsOverride::default, |h| h.overrides(id));
-    let mut settings = over.merge_into(state.settings);
+        .and_then(|h| h.game_profile(id));
+    let over = shared::game_overrides(&state.profiles, bound);
+    let mut settings = store::merge_for_game(&over, state.settings, id);
     settings.clamp_to_caps();
     settings
 }

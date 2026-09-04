@@ -245,10 +245,14 @@ impl Service {
             actions: self.rights.get(&key).copied().map(power_rows).unwrap_or_default(),
             pin: None,
             bound_profile: None,
-            // Empty for the same reason `ConsoleStore::profiles` is: no catalog on this client
-            // yet, so nothing could be bound to a title. Fills in with the catalog, not before —
-            // a binding to an id nothing resolves would draw a checkmark that means nothing.
-            game_profiles: Default::default(),
+            // Title id → profile id, straight off the record: the bind screen only compares
+            // these against the catalog it was handed, and a dangling one resolves to nothing
+            // there exactly as it does at launch.
+            game_profiles: h
+                .games
+                .iter()
+                .filter_map(|(id, g)| g.profile.clone().map(|p| (id.clone(), p)))
+                .collect(),
             key,
         }
     }
@@ -294,14 +298,24 @@ impl Service {
             // grants and rumble tests are Android's `InputDevice` API.
             ConsoleCmd::OpenPlatformScreen { id } => tracing::info!("console: no platform screen {id} on webOS"),
             ConsoleCmd::PadAction { action, .. } => tracing::info!("console: no pad action {action} on webOS"),
-            // Presentation and binding for a profile catalog this client does not have. Logged
-            // rather than silently dropped: the row that raised it should not exist, so seeing
-            // one in a log says the catalog stopped being empty.
+            // Bind (or clear) one title's profile — the shell's "Settings profile…" row on a
+            // cover. The host half of the key is what addresses the record; the catalog itself
+            // is only ever written by the per-game screen, so an id naming nothing is refused
+            // rather than stored.
+            ConsoleCmd::BindProfile {
+                key,
+                game: Some(game),
+                profile_id,
+            } => self.bind_game_profile(&key, &game, profile_id),
+            // Pinned profile CARDS, and binding a whole host's default: neither is a surface
+            // this client draws. Logged rather than dropped — the rows that raise them are the
+            // shell's, so one in a log says a screen appeared that this arm has not caught up
+            // with.
             ConsoleCmd::SetPin { profile_id, .. }
             | ConsoleCmd::BindProfile {
                 profile_id: Some(profile_id),
                 ..
-            } => tracing::warn!("console: profile {profile_id} on a client with no catalog"),
+            } => tracing::warn!("console: no surface for profile {profile_id} on this client"),
             // Three commands with nothing to do here, each for its own reason:
             // - `RefreshRunning`: no `/api/v1/status` client, so the running set stays empty
             //   and every Resume badge stays off — exactly how the shell draws a host too old
@@ -310,6 +324,33 @@ impl Service {
             // - `SetClipboard`: `KnownHost` carries no clipboard flag and the stream has no
             //   clipboard lane to gate, so the toggle would be a control that does nothing.
             ConsoleCmd::RefreshRunning { .. } | ConsoleCmd::BindProfile { .. } | ConsoleCmd::SetClipboard { .. } => {}
+        }
+    }
+
+    /// Point one title at a catalog profile, or clear it. Refuses an id the catalog does not
+    /// hold: the record must never name a profile nothing resolves, and the shell can only
+    /// offer ids it was handed, so one that misses means the two went out of step.
+    fn bind_game_profile(&self, key: &str, game: &str, profile_id: Option<String>) {
+        let changed = self.store.edit(|state| {
+            if let Some(id) = &profile_id {
+                if !state.profiles.iter().any(|p| p.id == *id) {
+                    tracing::warn!(%id, "console: bind to a profile this document does not hold");
+                    return false;
+                }
+            }
+            let Some(i) = shared::find_known(&state.known_hosts, key) else {
+                tracing::warn!(%key, "console: profile bind for an unknown host");
+                return false;
+            };
+            let host = &mut state.known_hosts[i];
+            if host.game_profile(game).map(str::to_string) == profile_id {
+                return false;
+            }
+            host.bind_game_profile(game, profile_id);
+            true
+        });
+        if changed {
+            self.handles.console.set_hosts(self.rows());
         }
     }
 
@@ -438,7 +479,6 @@ impl Service {
             }
         };
         tracing::info!("console: paired with {}:{}", outcome.addr, outcome.port);
-        let settings = self.store.snapshot().settings;
         let key = shared::host_key(&shared::hex(fingerprint), &outcome.addr, outcome.port);
         self.store.edit(|state| {
             store::upsert_known_host(
@@ -453,7 +493,6 @@ impl Service {
                     os: outcome.os,
                     // Only reaches a genuinely new host — `upsert_known_host` keeps an existing
                     // record's overrides and collections.
-                    games: store::new_host_games(&settings),
                     collections: Some(store::new_host_collections()),
                     ..KnownHost::default()
                 },
@@ -468,7 +507,6 @@ impl Service {
     // ---- the host list -----------------------------------------------------------------
 
     fn save_host(&mut self, name: String, addr: String, port: u16) {
-        let settings = self.store.snapshot().settings;
         self.store.edit(|state| {
             // Keyed by address, not fingerprint: a hand-typed host has none yet, so an
             // fp-keyed upsert would collide every one of them onto the same record.
@@ -481,7 +519,6 @@ impl Service {
                     name: if name.is_empty() { addr.clone() } else { name },
                     host: addr,
                     port,
-                    games: store::new_host_games(&settings),
                     collections: Some(store::new_host_collections()),
                     ..KnownHost::default()
                 });
