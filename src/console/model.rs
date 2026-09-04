@@ -90,10 +90,10 @@ pub(crate) struct Service {
     /// When [`Self::tick`] last did its work — see [`SERVICE_EVERY`].
     last_tick: Option<Instant>,
     games: Option<Receiver<GamesLoaded>>,
-    /// Encoded poster bytes as they arrive. The shell decodes at the size it draws, so this
-    /// deliberately does NOT go through `services::art`, which decodes to a card-sized pixmap
-    /// for the old UI's tiny-skia compositor.
-    art: Option<Receiver<(String, Vec<u8>)>>,
+    /// Covers as they arrive, decoded on the fetch thread where possible — see [`spawn_art`].
+    /// Deliberately NOT through `services::art`, which decodes to a card-sized pixmap for the
+    /// old UI's tiny-skia compositor.
+    art: Option<Receiver<(String, ArtItem)>>,
     pair: Option<Receiver<PairOutcome>>,
     /// Set for the wake worker to see; taking it is how a cancel or a second wake stops it.
     wake_cancel: Option<Arc<AtomicBool>>,
@@ -408,7 +408,13 @@ impl Service {
         self.note_reachable(&loaded.host, loaded.port, true);
         self.handles.library.set_games(to_model(&games));
         self.handles.library.set_stale(Stale::No);
-        self.art = Some(spawn_art(loaded.host, loaded.mgmt_port, self.identity.clone(), games));
+        self.art = Some(spawn_art(
+            loaded.host,
+            loaded.mgmt_port,
+            self.identity.clone(),
+            games,
+            self.handles.library.clone(),
+        ));
     }
 
     fn drain_art(&mut self) {
@@ -416,8 +422,11 @@ impl Service {
         // Bounded per tick: a warm host answers faster than the panel refreshes, and draining
         // the whole channel here would hold the frame for as long as art keeps arriving.
         for _ in 0..8 {
-            let Ok((id, bytes)) = rx.try_recv() else { return };
-            self.handles.library.push_art(id, bytes);
+            let Ok((id, item)) = rx.try_recv() else { return };
+            match item {
+                ArtItem::Decoded(poster) => self.handles.library.push_decoded(id, poster),
+                ArtItem::Encoded(bytes) => self.handles.library.push_art(id, bytes),
+            }
         }
     }
 
@@ -800,12 +809,26 @@ fn spawn_wake(handles: ConsoleHandles, row: HostRow, macs: Vec<String>, then_con
 
 /// Fetch every title's poster in the background, encoded. One agent for the whole run, so the
 /// covers cost one mTLS handshake rather than one each.
+/// A cover on its way to the shelf: decoded here where there is a thread to spare, or still
+/// encoded when this one could not do it.
+enum ArtItem {
+    Decoded(pf_console_ui::DecodedPoster),
+    Encoded(Vec<u8>),
+}
+
+/// Fetch every game's cover, and decode it here rather than on the thread that draws.
+///
+/// A full-size PNG cover costs ~90 ms on a CX — five frames — and the shelf used to stop for
+/// each one. This thread is already waiting on the network, so the work lands where nothing is
+/// watching. The shelf publishes the size it caches at; before it has drawn once there is no
+/// size to decode to, and those few covers go over encoded as they always did.
 fn spawn_art(
     addr: String,
     mgmt: u16,
     identity: (String, String),
     games: Vec<GameEntry>,
-) -> Receiver<(String, Vec<u8>)> {
+    library: pf_console_ui::LibraryShared,
+) -> Receiver<(String, ArtItem)> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("punktfunk-webos-console-art".into())
@@ -821,8 +844,12 @@ fn spawn_art(
                 for path in candidates.into_iter().flatten() {
                     match library::fetch_art(&agent, &addr, mgmt, path) {
                         Ok(bytes) => {
+                            let item = library
+                                .art_scale()
+                                .and_then(|k| pf_console_ui::decode_poster_off_thread(&bytes, k))
+                                .map_or(ArtItem::Encoded(bytes), ArtItem::Decoded);
                             // A closed channel means the shelf moved on; stop fetching for it.
-                            if tx.send((game.id.clone(), bytes)).is_err() {
+                            if tx.send((game.id.clone(), item)).is_err() {
                                 return;
                             }
                             break;
@@ -851,6 +878,11 @@ fn to_model(games: &[GameEntry]) -> Vec<LibraryGame> {
             launcher: false,
             icon: g.icon.clone().unwrap_or_default(),
             platform: None,
+            // Catalog detail the desktop's `GameEntry` carries and this client's does not, so
+            // it is reported absent rather than guessed — the same rule as `launcher` above.
+            developer: None,
+            year: None,
+            genres: Vec::new(),
             // Host state, and this client never asks for it — see `ConsoleCmd::RefreshRunning`.
             running: false,
         })
