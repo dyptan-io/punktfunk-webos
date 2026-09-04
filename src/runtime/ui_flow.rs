@@ -67,6 +67,9 @@ pub(super) fn run_ui_flow(
     let mut app = App::new(identity.clone());
     // Re-poll pad type (ControllerDeviceAdded fires once per connect, not per menu entry).
     app.set_gamepad_type(gamepad::detect_type(game_controller));
+    // Seeded here for the same reason: the hotplug events fire once per connect, and this
+    // entry may follow one. Refreshed on both arms below.
+    let mut pad_connected = gamepad::any_pad_connected(game_controller);
     // GPU tile cache (render loop's, not App's). Recreated per menu entry.
     let mut tiles = crate::ui::cache::TileStore::new();
     // Upload spinner frames upfront (avoids lazy allocation stall during first spin cycle).
@@ -181,11 +184,12 @@ pub(super) fn run_ui_flow(
             open_quit_dialog(&mut quit_dialog, &mut input, &app);
             dirty = true;
         }
-        // The flip, watched rather than signalled: the Experimental row writes the setting and
-        // this hands the menu over. `app` drops on return, and its `StateWriter` flushes and
-        // joins in `Drop` — so the value is on disk before the menu loop re-reads it.
-        if app.settings_ui.settings.console_ui {
-            tracing::info!("gamepad shell turned on — handing the menu over");
+        // The flip, watched rather than signalled: the Settings row writes the switch, and a
+        // pad arriving satisfies the default mode without anyone writing anything. `app` drops
+        // on return, and its `StateWriter` flushes and joins in `Drop` — so the value is on
+        // disk before the menu loop re-reads it.
+        if app.settings_ui.settings.gamepad_ui_active(pad_connected) {
+            tracing::info!("controller UI applies — handing the menu over");
             app.persist();
             text_input.stop();
             return Ok(UiOutcome::Reenter);
@@ -298,6 +302,7 @@ pub(super) fn run_ui_flow(
                     return Ok(quit(&app));
                 }
                 Event::ControllerDeviceAdded { which, .. } => {
+                    pad_connected = gamepad::any_pad_connected(game_controller);
                     if controller.is_none() {
                         match game_controller.open(which) {
                             Ok(c) => {
@@ -313,6 +318,7 @@ pub(super) fn run_ui_flow(
                     continue;
                 }
                 Event::ControllerDeviceRemoved { .. } => {
+                    pad_connected = gamepad::any_pad_connected(game_controller);
                     *controller = None;
                     // Re-poll rather than clearing: another pad may still be attached.
                     app.set_gamepad_type(gamepad::detect_type(game_controller));

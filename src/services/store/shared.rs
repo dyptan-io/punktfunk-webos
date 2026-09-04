@@ -28,17 +28,30 @@ fn key(name: &str) -> String {
 }
 
 fn get<T: serde::de::DeserializeOwned>(t: &trust::Settings, name: &str) -> Option<T> {
-    t.extra
-        .get(&key(name))
-        .cloned()
-        .and_then(|v| serde_json::from_value(v).ok())
+    get_raw(t, &key(name))
 }
 
 fn put<T: serde::Serialize>(t: &mut trust::Settings, name: &str, value: &T) {
+    put_raw(t, key(name), value);
+}
+
+/// The same, under a key spelled exactly as given — for rows this client SHARES with the shell
+/// rather than owns. [`P`] would hide such a row from the shell's own Settings screen, which
+/// reads the unprefixed name, and the two UIs would then be editing two settings that merely
+/// look alike.
+fn get_raw<T: serde::de::DeserializeOwned>(t: &trust::Settings, key: &str) -> Option<T> {
+    t.extra.get(key).cloned().and_then(|v| serde_json::from_value(v).ok())
+}
+
+fn put_raw<T: serde::Serialize>(t: &mut trust::Settings, key: String, value: &T) {
     if let Ok(v) = serde_json::to_value(value) {
-        t.extra.insert(key(name), v);
+        t.extra.insert(key, v);
     }
 }
+
+/// The console-vs-cursor pair, spelled as `pf_console_ui`'s own settings rows spell it.
+const GAMEPAD_UI_KEY: &str = "gamepad_ui_enabled";
+const GAMEPAD_UI_MODE_KEY: &str = "gamepad_ui_mode";
 
 /// Every field this client used to persist under its own name and now writes under [`P`].
 /// Seeing any of them UNPREFIXED is what identifies a document written before the move.
@@ -117,7 +130,8 @@ pub fn to_shared(base: &trust::Settings, s: &Settings) -> trust::Settings {
     put(&mut t, "audio_route", &s.audio_route);
     put(&mut t, "cursor_gestures", &s.cursor_gestures);
     put(&mut t, "theme", &s.theme);
-    put(&mut t, "console_ui", &s.console_ui);
+    put_raw(&mut t, GAMEPAD_UI_KEY.to_string(), &s.gamepad_ui);
+    put_raw(&mut t, GAMEPAD_UI_MODE_KEY.to_string(), &s.gamepad_ui_mode);
     t
 }
 
@@ -155,7 +169,8 @@ pub fn from_shared(t: &trust::Settings) -> Settings {
         audio_route: get(t, "audio_route").unwrap_or(d.audio_route),
         cursor_gestures: get(t, "cursor_gestures").unwrap_or(d.cursor_gestures),
         theme: get(t, "theme").unwrap_or(d.theme),
-        console_ui: get(t, "console_ui").unwrap_or(d.console_ui),
+        gamepad_ui: get_raw(t, GAMEPAD_UI_KEY).unwrap_or(d.gamepad_ui),
+        gamepad_ui_mode: get_raw(t, GAMEPAD_UI_MODE_KEY).unwrap_or(d.gamepad_ui_mode),
     }
 }
 
@@ -294,7 +309,7 @@ fn local_gamepad(name: &str) -> Option<GamepadType> {
 mod tests {
     use super::*;
     // Named only by the fixtures below, so they would be unused imports in a normal build.
-    use crate::core::model::{AudioRoutePref, LogLevelOverride, ThemeChoice};
+    use crate::core::model::{AudioRoutePref, GamepadUiMode, LogLevelOverride, ThemeChoice};
 
     /// Every field survives the trip. This is the test that matters: the two UIs read the same
     /// file through this pair, so a field that does not round-trip is one the gamepad shell
@@ -324,7 +339,8 @@ mod tests {
             audio_route: AudioRoutePref::NdlOpus,
             cursor_gestures: true,
             theme: ThemeChoice::Funk,
-            console_ui: true,
+            gamepad_ui: false,
+            gamepad_ui_mode: GamepadUiMode::Always,
         };
         assert_eq!(
             from_shared(&to_shared(&trust::Settings::default(), &s)),
@@ -375,6 +391,74 @@ mod tests {
         );
         // And this client's own prefixed rows are still written alongside them.
         assert!(written.extra.contains_key("webos.theme"));
+    }
+
+    /// The console-vs-cursor pair is the one thing this client must NOT namespace: the shared
+    /// shell's own Settings rows read these exact key names, so a `webos.` prefix would leave
+    /// the two UIs editing settings that merely look alike — the switch would appear to do
+    /// nothing from whichever side you were not on.
+    #[test]
+    fn the_controller_ui_pair_is_stored_under_the_shells_own_keys() {
+        let s = Settings {
+            gamepad_ui: false,
+            gamepad_ui_mode: GamepadUiMode::Always,
+            ..Settings::default()
+        };
+        let written = to_shared(&trust::Settings::default(), &s);
+        assert_eq!(
+            written.extra.get("gamepad_ui_enabled"),
+            Some(&serde_json::Value::Bool(false)),
+        );
+        assert_eq!(
+            written.extra.get("gamepad_ui_mode"),
+            Some(&serde_json::Value::String("always".to_string())),
+            "the mode's stored spelling is the shell's, not this enum's debug name"
+        );
+        assert!(!written.extra.contains_key("webos.gamepad_ui_enabled"));
+        // A value the shell wrote reads straight back — the same file, one setting.
+        let mut shell_wrote = trust::Settings::default();
+        shell_wrote
+            .extra
+            .insert("gamepad_ui_enabled".to_string(), serde_json::Value::Bool(true));
+        shell_wrote.extra.insert(
+            "gamepad_ui_mode".to_string(),
+            serde_json::Value::String("connected".to_string()),
+        );
+        let mine = from_shared(&shell_wrote);
+        assert!(mine.gamepad_ui);
+        assert_eq!(mine.gamepad_ui_mode, GamepadUiMode::Connected);
+    }
+
+    /// The rule the flip runs on, both directions. Mirrors Android's `gamepadUiActive` minus
+    /// its `tv` term — every webOS set is a TV, so that term would make the mode meaningless.
+    #[test]
+    fn the_controller_ui_applies_only_when_the_switch_and_the_mode_agree() {
+        let connected = Settings {
+            gamepad_ui: true,
+            gamepad_ui_mode: GamepadUiMode::Connected,
+            ..Settings::default()
+        };
+        assert!(connected.gamepad_ui_active(true), "a pad is what that mode waits for");
+        assert!(
+            !connected.gamepad_ui_active(false),
+            "and with none, the cursor menus keep the screen"
+        );
+
+        let always = Settings {
+            gamepad_ui_mode: GamepadUiMode::Always,
+            ..connected
+        };
+        assert!(always.gamepad_ui_active(false), "no pad needed under Always");
+
+        // The switch is the outer gate: off means off under either mode.
+        for mode in GamepadUiMode::ALL {
+            let off = Settings {
+                gamepad_ui: false,
+                gamepad_ui_mode: mode,
+                ..Settings::default()
+            };
+            assert!(!off.gamepad_ui_active(true), "{mode:?} must not survive the switch");
+        }
     }
 
     /// A document another client wrote has none of our `webos.` keys; we must read its shared

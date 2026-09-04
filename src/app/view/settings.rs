@@ -39,6 +39,8 @@ fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
             menu::audio_route_label(AudioRoutePref::NdlOpus),
         ),
         menu::RowLock::NoGamepad => "Connect a controller to your TV".to_string(),
+        menu::RowLock::NoShell => "This build has no controller UI".to_string(),
+        menu::RowLock::ConsoleOff => "Turn the controller UI on to choose when".to_string(),
     }
 }
 
@@ -113,6 +115,21 @@ pub(crate) fn rows(
             dualsense_limited.then(|| ui::widgets::RowSubtext::caution("Limited support by your WebOS version")),
         ),
         menu::SettingsRow::Cursor => FocusRow::action(crate::app::view::icons::ICON_MOUSE, "Cursor"),
+        // Says which UI, not "shell": the choice a user is making here is between the menus
+        // they are looking at and the ones a pad drives.
+        menu::SettingsRow::GamepadUi => FocusRow::toggle(
+            crate::app::view::icons::ICON_GAMEPAD,
+            "Controller-optimized UI",
+            settings.gamepad_ui,
+        )
+        .with_subtext(ui::widgets::RowSubtext::hint(
+            "Menus built for a pad, in place of these",
+        )),
+        menu::SettingsRow::GamepadUiMode => FocusRow::dropdown(
+            crate::app::view::icons::ICON_GAMEPAD,
+            "Show it",
+            settings.gamepad_ui_mode.label(),
+        ),
         menu::SettingsRow::Theme => FocusRow::dropdown(
             crate::app::view::icons::ICON_PALETTE,
             "Theme",

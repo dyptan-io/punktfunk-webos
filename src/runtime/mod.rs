@@ -319,7 +319,9 @@ mod console_flow {
     /// No shell on this target.
     pub(super) struct ConsoleGl;
 
-    pub(super) fn wanted() -> bool {
+    /// Takes the pad state the real one reads, so the two signatures cannot drift apart —
+    /// only this build's answer is const.
+    pub(super) fn wanted(_pad_connected: bool) -> bool {
         false
     }
 
