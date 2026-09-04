@@ -10,7 +10,7 @@ Low-latency desktop and game streaming for LG webOS.
 * **Audio.** Stereo, 5.1 or 7.1 (webOS 5+), decoded in software or offloaded to media pipeline.
 * **Per-game overrides.** Any game can override the global resolution, frame rate, bitrate, codec, HDR, audio or controller settings.
 * **Input.** Magic Remote pointer, gamepads, USB keyboard and mouse. Cursor capture for games or absolute for the desktop, gestures.
-* **DualSense.** Adaptive triggers, lightbar, player LEDs, touchpad, gyro and rumble over Bluetooth.
+* **DualSense.** Adaptive triggers, lightbar, player LEDs, touchpad, gyro, speakers and haptics over Bluetooth or wired.
 * **Host power.** Wake-on-LAN, and configurable host power management for sleep or full shut down.
 * **Game mode (rooted TVs).** Switches picture and sound to Game mode while streaming, and restores the previous settings on exit.
 * **Pairing.** Hosts are found on your network automatically, or added by IP.
@@ -20,7 +20,7 @@ Some features are limited on older webOS versions:
 
 * **Spatial Audio.** 5.1 and 7.1 are only available on webOS 5+.
 * **HEVC and HDR** are only available on webOS 5+.
-* **DualSense.** Rumble, triggers, haptics, gyro and lightbar are only available on webOS 11+.
+* **DualSense.** Haptics, triggers, speakers, touchpad, gyro and lightbar are only available on webOS 10+.
 
 Needs a [punktfunk](https://git.unom.io/unom/punktfunk) host running on your PC — see the
 [host setup guide](https://git.unom.io/unom/punktfunk#readme) to get started.

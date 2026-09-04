@@ -20,10 +20,10 @@ Targets webOS 5.x+ (developed and verified live on an **LG CX, webOS 5.6**), pac
 `.ipk`. Built directly on the upstream `punktfunk-core` crate (a pinned git dependency — see
 `Cargo.toml`).
 
-Built on the [punktfunk](https://git.unom.io/unom/punktfunk) project by **Enrico Bühler
-([unom](https://unom.io))** — all credit for the protocol, FEC/crypto core, and host implementation
-belongs there. This repo is only the webOS-specific client: an SDL2 UI, NDL DirectMedia hardware
-video decode, and webOS packaging.
+The app is originally developed by [dyptan.io](https://dyptan.io) and donated to
+[punktfunk](https://github.com/punktfunk) organization. Built on the [punktfunk](https://git.unom.io/unom/punktfunk)
+project by **Enrico Bühler ([unom](https://unom.io))** — all credit for the protocol and host implementation belongs there.
+This repo is only the webOS-specific client: an SDL2 UI, NDL DirectMedia hardware video decode, and webOS packaging.
 
 <details>
 <summary><b>Screenshots</b></summary>
@@ -49,17 +49,19 @@ video decode, and webOS packaging.
   HDR, audio or controller settings.
 - **Input** — Magic Remote pointer, gamepads, USB keyboard and mouse. Pointer capture for games,
   absolute pointing for the desktop, gestures.
-- **DualSense** — adaptive triggers, lightbar, player LEDs, touchpad, gyro and rumble over
-  Bluetooth (see the note below).
+- **DualSense** — adaptive triggers, lightbar, player LEDs, touchpad, gyro, speakers and haptics over
+  Bluetooth and wired (see the note below).
 - **Hosts** — LAN discovery (mDNS) or add a host by IP; PIN pairing with persisted trust, per-host settings.
 - **Host power** — Wake-on-LAN starts a sleeping host from the TV, and a paired host can be put to
   sleep or shut down on exit when it grants those rights.
 - **Game mode (rooted TVs)** — optional setting that switches picture and sound to Game mode while
   streaming and restores the previous settings on exit.
 
-> **Controller feedback needs newer webOS version.** Rumble, DualSense triggers, haptics and lightbar all
-> rely on the kernel's `hid-playstation` driver, which LG ships only on latest webOS versions 24+.
-> On webOS 5.x (e.g. the CX) the pad still works as an *input*, but no feedback reaches it.
+> **Controller advanced features need newer webOS version.** Haptics, triggers, speakers, touchpad, and
+> lightbar all rely on the kernel's `hid-playstation` driver, which LG ships only on webOS versions 10+.
+> On webOS 5.x (e.g. the CX) the pad still works as an *input*, but no feedback reaches it. The app
+> supports wired controller connection, which means that [DS5Dongle](https://github.com/awalol/DS5Dongle)
+> connected to the TV can provide even better performance.
 
 ## Installing
 
