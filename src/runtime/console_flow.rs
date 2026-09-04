@@ -334,6 +334,10 @@ pub(super) fn run(
                         }
                     }
                 }
+                // Nothing to swap to: this client reveals its stream by LEAVING the console
+                // loop, so the hold ends when the launch commits rather than on this ask. The
+                // action exists for a host that keeps the console and its stream side by side.
+                OverlayAction::ShowStream => {}
                 OverlayAction::CancelConnect => {
                     // Dropping the handle IS the cancel: the worker runs to completion and
                     // drops the `Connected` it built, which tears the session down cleanly —
