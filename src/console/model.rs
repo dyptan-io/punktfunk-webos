@@ -190,6 +190,7 @@ impl Service {
                 actions: Vec::new(),
                 pin: None,
                 bound_profile: None,
+                game_profiles: Default::default(),
             })
             .collect();
         extra.sort_by(|a, b| a.name.cmp(&b.name));
@@ -244,6 +245,10 @@ impl Service {
             actions: self.rights.get(&key).copied().map(power_rows).unwrap_or_default(),
             pin: None,
             bound_profile: None,
+            // Empty for the same reason `ConsoleStore::profiles` is: no catalog on this client
+            // yet, so nothing could be bound to a title. Fills in with the catalog, not before —
+            // a binding to an id nothing resolves would draw a checkmark that means nothing.
+            game_profiles: Default::default(),
             key,
         }
     }
