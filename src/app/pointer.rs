@@ -247,6 +247,12 @@ impl App {
             // so the pointer can pick action-vs-Cancel, not just confirm whatever the D-pad
             // last focused. `confirm_subtitle` is `None` for the variants with no buttons up
             // (a Wake with no MAC, a test still running), which reads as nothing to hover.
+            screen if crate::app::draw::ported(screen) => {
+                let Some(i) = self.dialog_layout(screen_w, screen_h).and_then(|l| l.button_at(x, y)) else {
+                    return HoverChange::NONE;
+                };
+                HoverChange::row(self.set_confirm_focused(i))
+            }
             Screen::ForgetHost
             | Screen::SendLogs
             | Screen::Wake
@@ -440,6 +446,9 @@ impl App {
     }
 
     fn hover_close_at(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> bool {
+        if let Some(layout) = self.dialog_layout(screen_w, screen_h) {
+            return self.set_hover_close(layout.on_close(x, y));
+        }
         let Some(card) = self.modal_card_rect(screen_w, screen_h, fonts) else {
             // Home draws no close button, but `hover_close` is only ever set true by a
             // modal branch — without clearing it on the way back to Home it stayed stuck

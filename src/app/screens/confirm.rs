@@ -15,6 +15,26 @@ use crate::ui::theme::palette;
 use crate::ui::widgets::ConfirmButton;
 use std::borrow::Cow;
 
+/// What a button means, which is what colours it: the palette's error red for a loss, the
+/// accent for the thing the dialog exists to do, and plain text for Cancel.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Tone {
+    Danger,
+    Primary,
+    Plain,
+}
+
+impl Tone {
+    /// The old palette's colour for this tone, for the two cards still drawn as tiles.
+    fn color(self) -> Color {
+        match self {
+            Self::Danger => palette().error,
+            Self::Primary => palette().accent_bright,
+            Self::Plain => palette().text,
+        }
+    }
+}
+
 impl App {
     /// The nav half of a confirm dialog's event handling, the counterpart to
     /// `list_nav_event`: Left/Right trade the two buttons and arm the focus pop, reporting
@@ -36,7 +56,7 @@ impl App {
 pub(crate) struct Button {
     pub icon: Option<&'static str>,
     pub label: Cow<'static, str>,
-    pub color: Color,
+    pub tone: Tone,
 }
 
 /// An open confirm dialog, as data: what its card says, and what its two buttons are.
@@ -46,10 +66,10 @@ pub(crate) struct Confirm {
 }
 
 impl Confirm {
-    fn new(
+    pub(crate) fn new(
         icon: Option<&'static str>,
         label: impl Into<Cow<'static, str>>,
-        color: Color,
+        tone: Tone,
         cancel: &'static str,
         subtitle: String,
     ) -> Self {
@@ -59,12 +79,12 @@ impl Confirm {
                 Button {
                     icon,
                     label: label.into(),
-                    color,
+                    tone,
                 },
                 Button {
                     icon: None,
                     label: Cow::Borrowed(cancel),
-                    color: palette().text,
+                    tone: Tone::Plain,
                 },
             ],
         }
@@ -75,7 +95,7 @@ impl Confirm {
         std::array::from_fn(|i| ConfirmButton {
             icon: self.buttons[i].icon,
             label: &self.buttons[i].label,
-            color: self.buttons[i].color,
+            color: self.buttons[i].tone.color(),
         })
     }
 }
@@ -90,11 +110,17 @@ impl App {
     /// reachable — which is what four `expect`/`unreachable!` in `prepare_modal` used to
     /// assert by hand.
     pub(crate) fn confirm_of(&self) -> Option<Confirm> {
-        Some(match self.nav.screen {
+        self.confirm_for(self.nav.screen)
+    }
+
+    /// [`confirm_of`](Self::confirm_of) for any screen, not only the one the cursor is on:
+    /// a card fading out is drawn from the same descriptor after the cursor has moved on.
+    pub(crate) fn confirm_for(&self, screen: Screen) -> Option<Confirm> {
+        Some(match screen {
             Screen::ForgetHost => Confirm::new(
                 Some(view::icons::ICON_DELETE),
                 "Forget",
-                palette().error,
+                Tone::Danger,
                 "Cancel",
                 view::forget::subtitle(self.host_menu_host_name().unwrap_or_default()),
             ),
@@ -103,7 +129,7 @@ impl App {
                 Confirm::new(
                     Some(view::icons::ICON_DELETE),
                     "Remove",
-                    palette().error,
+                    Tone::Danger,
                     "Cancel",
                     view::collections::remove_subtitle(name, games),
                 )
@@ -111,14 +137,14 @@ impl App {
             Screen::ResetHdrCalibration => Confirm::new(
                 Some(view::icons::ICON_DELETE),
                 "Clear",
-                palette().error,
+                Tone::Danger,
                 "Cancel",
                 view::hdrcalibration::RESET_SUBTITLE.to_string(),
             ),
             Screen::ResetGameSettings => Confirm::new(
                 Some(view::icons::ICON_DELETE),
                 "Reset",
-                palette().error,
+                Tone::Danger,
                 "Cancel",
                 view::resetgame::subtitle(&self.settings_ui.game_settings.as_ref()?.title),
             ),
@@ -126,14 +152,14 @@ impl App {
                 Some(view::icons::ICON_SEND),
                 "Send",
                 // The same red as Forget: both are consequential.
-                palette().error,
+                Tone::Danger,
                 "Cancel",
                 view::sendlogs::SUBTITLE.to_string(),
             ),
             Screen::Wake => Confirm::new(
                 Some(view::icons::ICON_POWER),
                 "Wake host",
-                palette().accent_bright,
+                Tone::Primary,
                 "Cancel",
                 view::wake::status_text(self.screens.wake.as_ref().filter(|w| !w.mac.is_empty())?),
             ),
@@ -145,7 +171,7 @@ impl App {
                 Confirm::new(
                     Some(view::icons::ICON_SIGNAL),
                     view::speedtest::apply_label(view::speedtest::recommendation(state)),
-                    palette().accent_bright,
+                    Tone::Primary,
                     // "Close" rather than "Cancel": the test has already run, so there is
                     // nothing left to call off.
                     "Close",

@@ -10,7 +10,6 @@ pub(crate) mod about;
 pub(crate) mod addhost;
 pub(crate) mod cardmenu;
 pub(crate) mod collections;
-pub(crate) mod confirm;
 pub(crate) mod controllersettings;
 pub(crate) mod cursorsettings;
 pub(crate) mod diagnostics;

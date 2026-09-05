@@ -154,6 +154,10 @@ impl App {
         let Some((_, left)) = closing.filter(|_| screen_changed) else {
             return;
         };
+        // A card drawn on the kit fades out from state, not from pixels (`App::draw_modals`).
+        if crate::app::draw::ported(left) {
+            return;
+        }
         let Some(shell) = tiles.get(tile::MODAL).cloned() else {
             return;
         };
@@ -463,7 +467,7 @@ impl App {
             ..
         } = ctx;
         let (screen_w, screen_h) = (size.w, size.h);
-        let modal_open = !matches!(self.nav.screen, Screen::Home);
+        let modal_open = !matches!(self.nav.screen, Screen::Home) && !crate::app::draw::ported(self.nav.screen);
         // Every modal's shell only reacts to *content* changes — not to
         // `content_dirty`, which is also `true` on plain focus movement (see
         // `ModalShellKey`'s docs). `AddHost` has no `ModalShellKey` variant
@@ -528,6 +532,8 @@ impl App {
                 // the descriptor that proves the arm reachable is the same value it draws
                 // from, so an arm cannot assert its way past a `None` any more.
                 let tile = match self.nav.screen {
+                    // Drawn on the kit, focus and all (`app::draw`).
+                    screen if crate::app::draw::ported(screen) => None,
                     // The scrolling row lists: one focused row re-rendered on its own tile,
                     // over the cropped strip the rest of the list is baked into.
                     screen @ (Screen::Settings(_) | Screen::Collections) => {

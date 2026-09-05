@@ -5,6 +5,7 @@
 //! and `view` (geometry + draw-list building). Keeping them under `app` lets `ui`/`core`
 //! stay dependency leaves — neither reaches back into `App`.
 pub(crate) mod assets;
+pub(crate) mod draw;
 pub(crate) mod grid;
 pub(crate) mod hero;
 pub(crate) mod hosts;
@@ -148,6 +149,9 @@ pub struct App {
     pub(crate) profiles: Vec<pf_client_core::profiles::StreamProfile>,
     /// Last tick time (for real-time scroll easing, not frame-count based).
     last_tick: Option<Instant>,
+    /// The console kit's Geist, for the screens drawn on it (`app::draw`). Owned here
+    /// because the pointer hit tests measure with it too, not only the frame.
+    pub(crate) fonts: pf_console_ui::theme::Fonts,
 }
 
 /// What a finished background pairing/request-access ceremony reports back —
@@ -230,7 +234,7 @@ impl App {
         self.settings_ui.slider_drag = false;
     }
 
-    pub fn new(identity: (String, String)) -> Self {
+    pub fn new(identity: (String, String), fonts: pf_console_ui::theme::Fonts) -> Self {
         let store::Loaded {
             state: loaded,
             new_build,
@@ -285,6 +289,7 @@ impl App {
             shared_base,
             profiles,
             last_tick: None,
+            fonts,
         };
         // Restore the last-active sidebar host (if it's still known and paired)
         // so relaunching the app lands back on its game grid.
@@ -310,6 +315,13 @@ impl App {
         // `restyle`, because the cache snapshots the palette it rasterizes in.
         std::thread::spawn(crate::app::assets::spinner_frames);
         app
+    }
+
+    /// Publish the kit's palette for this frame from the shared document's `ui_palette` —
+    /// the same row every gamepad surface reads, so the two UIs cannot differ in colour.
+    pub(crate) fn apply_ink(&self) {
+        let palette = pf_console_ui::library::palette(&self.shared_base.ui_palette);
+        pf_console_ui::theme::set_ink(pf_console_ui::theme::Ink::of(palette));
     }
 
     /// Name of the host whichever host-scoped modal (Forget, Host power settings) is acting on.
