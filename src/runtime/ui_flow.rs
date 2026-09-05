@@ -36,6 +36,15 @@ fn launch_settings(app: &App, target: &crate::core::model::ConnectTarget) -> cra
     settings
 }
 
+/// Shown once per launch on Home. This build carries the retired `io.dyptan.punktfunk.webos`
+/// id; the Homebrew Channel treats the renamed package as a different app, so updates only
+/// reach users who install that one.
+const END_OF_LIFE_NOTICE: &str =
+    "This package no longer receives updates \u{2014} install \"punktfunk\" from the Homebrew Channel to keep updating.";
+
+/// One notice per process, not one per return to the menu.
+static END_OF_LIFE_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Runs the UI (host list -> pairing -> settings) until the user confirms a
 /// connect target or the system asks the app to close (`None`). A plain
 /// function, not a closure — a closure capturing `canvas`/`events` by
@@ -76,6 +85,10 @@ pub(super) fn run_ui_flow(
     // Status from last connect attempt (sticky so reload progress doesn't erase it).
     if initial_status.is_some() {
         app.set_home_status(initial_status, true);
+    } else if !END_OF_LIFE_SHOWN.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        // Final release under the old package id: this install can never be updated in
+        // place, so say so once, on the first menu after launch.
+        app.set_home_status(Some(END_OF_LIFE_NOTICE.to_string()), true);
     }
     // Toast widget (same as stream loop). Shown once as Home re-appears.
     let mut notif = crate::ui::widgets::Notification::new();
