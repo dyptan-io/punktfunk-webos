@@ -386,7 +386,10 @@ impl App {
                             None => RowSpec::field("No controller detected", String::new(), "Connect one to your TV"),
                         },
                         Row::Version => RowSpec::field("Punktfunk", store::VERSION.to_string(), ""),
-                        Row::LogLevel => RowSpec::choice("Log level", menu::log_level_label(core.log_level_override())),
+                        Row::LogLevel => RowSpec::choice(
+                            "Log level",
+                            menu::log_level_label(crate::logger::current_level_override()),
+                        ),
                         Row::ShowLogs => RowSpec::toggle("Show logs", core.show_logs()),
                         Row::SendLogs => RowSpec::action(
                             if self.send_logs_host_ready() {
@@ -524,7 +527,7 @@ impl App {
         match row {
             Row::Editing => self.step_scope(delta),
             Row::LogLevel => {
-                let cur = menu::log_level_dropdown_current_index(self.settings_ui.settings.log_level_override());
+                let cur = menu::log_level_dropdown_current_index(crate::logger::current_level_override());
                 let next = menu::cycle_index(cur, menu::LOG_LEVEL_OPTIONS.len(), delta >= 0);
                 self.settings_ui
                     .settings

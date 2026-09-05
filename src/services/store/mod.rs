@@ -50,7 +50,6 @@ pub fn load() -> Loaded {
     // — or the file is missing entirely, which still needs migrating, since pairing a host wrote
     // `known-hosts.json` without ever writing settings.
     let mut state = read_document().map_or_else(Persisted::default, from_document);
-    apply_launch_overrides(&mut state);
     let new_build = stamp_version(&mut state);
     // A document written on a more capable TV can hold HEVC, HDR and 7.1 on a device with none
     // of them — leaving a *set* value whose row the UI hides.
@@ -92,9 +91,10 @@ pub fn save(state: &Persisted) -> Result<()> {
     crate::services::atomic::write(&path(), &json, "settings.json")
 }
 
-/// Just the persisted log level, for `logger`'s startup filter. Not [`load`]: that migrates, and
-/// this runs before the subscriber exists, so the migration's log lines would be dropped. Reads
-/// either document shape.
+/// The level `logger` starts at: the `TELEMETRY_LEVEL` launch override (`task deploy
+/// TELEMETRY=...`) when set, else the persisted one. The override lives in the logger only —
+/// Diagnostics reads `logger::current_level_override` — so it never reaches the document. Not
+/// [`load`]: this runs before the subscriber exists. Reads either document shape.
 pub fn persisted_log_level() -> LogLevelOverride {
     if let Some(level) = crate::logger::launch_level_override() {
         return level;
@@ -107,19 +107,4 @@ pub fn persisted_log_level() -> LogLevelOverride {
         .get("webos.log_level_override")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default()
-}
-
-/// `task deploy TELEMETRY=...` dev convenience: `TELEMETRY_LEVEL` picks the level this launch
-/// starts at (and what Diagnostics displays), overriding whatever was last persisted — see
-/// `logger::launch_level_override`. Absent, the persisted value stands (Info on a fresh install).
-///
-/// [`StateWriter`]'s baseline is taken after this, so a launch that only overrides the level writes
-/// nothing. It is NOT otherwise held out of the document, though: the override lands in `App`'s
-/// [`Settings`], so the next unrelated save persists it and a later plain launch starts at the
-/// overridden level. Pre-dates the consolidation; fixing it means separating the level the logger
-/// runs at from the one Diagnostics displays and saves.
-fn apply_launch_overrides(state: &mut Persisted) {
-    if let Some(level) = crate::logger::launch_level_override() {
-        state.settings.set_log_level_override(level);
-    }
 }
