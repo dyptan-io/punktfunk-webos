@@ -189,7 +189,9 @@ pub(super) fn run_ui_flow(
         // pad arriving satisfies the default mode without anyone writing anything. `app` drops
         // on return, and its `StateWriter` flushes and joins in `Drop` — so the value is on
         // disk before the menu loop re-reads it.
-        if app.settings_ui.settings.gamepad_ui_active(pad_connected) {
+        // `CONSOLE_UI_BUILT` first: off the TV target `console_flow::wanted` is const-false, so
+        // handing the menu over there would bounce straight back here and spin the menu loop.
+        if crate::app::menu::CONSOLE_UI_BUILT && app.settings_ui.settings.gamepad_ui_active(pad_connected) {
             tracing::info!("controller UI applies — handing the menu over");
             app.persist();
             text_input.stop();
