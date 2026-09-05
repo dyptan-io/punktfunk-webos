@@ -14,6 +14,7 @@ use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::model::HdrDisplay;
 use crate::core::screen::Screen;
+use crate::core::settings::TvSettings;
 pub(crate) use crate::platform::webos::hdr_pattern::Playback;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -212,7 +213,7 @@ impl App {
     /// that reads "not calibrated" while still advertising a measured volume is the worst of
     /// both, since nothing on screen would say where those numbers came from.
     fn clear_hdr_calibration(&mut self) {
-        let default = crate::core::model::Settings::default();
+        let default = crate::core::settings::default_document();
         self.settings_ui.settings.set_hdr_display(default.hdr_display(), false);
         // The button that opened this dialog is gone with the measurement, so the focus it held
         // has to go back to the row itself.

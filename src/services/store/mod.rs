@@ -8,6 +8,7 @@
 pub mod console;
 mod identity;
 mod legacy;
+mod legacy_settings;
 pub mod shared;
 mod writer;
 
@@ -18,10 +19,12 @@ use serde_json::Value;
 
 pub use crate::core::model::{
     new_host_collections, upsert_known_host, AudioRoutePref, CodecPref, Collection, ExitAction, GamepadType, KnownHost,
-    LogLevelOverride, Persisted, Settings, DESKTOP_PIN_ID,
+    LogLevelOverride, Persisted, DESKTOP_PIN_ID,
 };
+pub use crate::core::settings::TvSettings;
 pub use crate::services::paths::app_dir;
 pub use identity::load_or_create_identity;
+pub use pf_client_core::trust::Settings;
 pub use writer::StateWriter;
 
 fn path() -> PathBuf {
@@ -50,8 +53,8 @@ pub fn load() -> Loaded {
     // `known-hosts.json` without ever writing settings.
     let mut state = match read_document() {
         Some(doc) if doc.get("settings").is_some() => from_document(doc),
-        Some(doc) => legacy::migrate(serde_json::from_value(doc).unwrap_or_default()),
-        None => legacy::migrate(Settings::default()),
+        Some(doc) => legacy::migrate(legacy::upgrade(&serde_json::from_value(doc).unwrap_or_default())),
+        None => legacy::migrate(crate::core::settings::default_document()),
     };
     apply_launch_overrides(&mut state);
     let new_build = stamp_version(&mut state);
@@ -121,35 +124,19 @@ fn migrate_collections(state: &mut Persisted) {
 /// writes it back in the shared schema.
 fn from_document(mut doc: Value) -> Persisted {
     let object = doc.get("settings").cloned().unwrap_or(Value::Null);
-    // The shared object as stored, kept whole. Everything this client does not model rides
-    // back out on the next save through it — see [`Persisted::shared_base`]. A legacy document
-    // has no such fields, so it carries nothing.
-    let mut shared_base = pf_client_core::trust::Settings::default();
-    let settings = if shared::legacy_shape(&object) {
+    if legacy::legacy_shape(&object) {
         tracing::info!("settings.json predates the shared schema — converting on this load");
-        serde_json::from_value(object).unwrap_or_default()
-    } else {
-        shared_base = serde_json::from_value(object).unwrap_or_default();
-        shared::from_shared(&shared_base)
-    };
-    // Put this client's shape back so the rest of the document (known hosts, the selected row,
-    // the version stamp) deserializes exactly as it always did.
-    match serde_json::to_value(settings) {
-        Ok(v) => doc["settings"] = v,
-        Err(e) => tracing::warn!("could not re-encode settings: {e:#}"),
+        let upgraded = legacy::upgrade(&serde_json::from_value(object).unwrap_or_default());
+        match serde_json::to_value(upgraded) {
+            Ok(v) => doc["settings"] = v,
+            Err(e) => tracing::warn!("could not re-encode settings: {e:#}"),
+        }
     }
-    Persisted {
-        shared_base,
-        ..serde_json::from_value(doc).unwrap_or_default()
-    }
+    serde_json::from_value(doc).unwrap_or_default()
 }
 
 pub fn save(state: &Persisted) -> Result<()> {
-    let mut doc = serde_json::to_value(state).context("serialize app state")?;
-    // The one place the settings object leaves this client in punktfunk's shape. Every other
-    // key stays as it was — only `settings` is shared.
-    doc["settings"] = serde_json::to_value(shared::to_shared(&state.shared_base, &state.settings))
-        .context("serialize shared settings")?;
+    let doc = serde_json::to_value(state).context("serialize app state")?;
     let json = serde_json::to_string_pretty(&doc).context("render app state")?;
     crate::services::atomic::write(&path(), &json, "settings.json")
 }
@@ -186,6 +173,6 @@ pub fn persisted_log_level() -> LogLevelOverride {
 /// runs at from the one Diagnostics displays and saves.
 fn apply_launch_overrides(state: &mut Persisted) {
     if let Some(level) = crate::logger::launch_level_override() {
-        state.settings.log_level_override = level;
+        state.settings.set_log_level_override(level);
     }
 }

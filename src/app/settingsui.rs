@@ -4,7 +4,7 @@
 //! Settings screen writes to. The rest is the editing surface around it: which per-game override
 //! is open, the dropdown overlay and its fade, and whether the bitrate slider is being dragged.
 
-use crate::services::store::Settings;
+use pf_client_core::trust::Settings;
 
 pub(crate) struct SettingsUi {
     pub(crate) settings: Settings,

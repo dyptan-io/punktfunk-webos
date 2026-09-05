@@ -699,108 +699,6 @@ impl HdrDisplay {
     }
 }
 
-/// Stream settings: resolution/framerate/bitrate/HDR/codec, plus the input and diagnostics
-/// toggles the Settings screens expose.
-///
-/// `serde(default)` on the container, so every field falls back to [`Settings::default`] when a
-/// settings.json written by an older build doesn't carry it — adding a field needs nothing else.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Settings {
-    pub width: u32,
-    pub height: u32,
-    /// Refresh rate (30/60/120) — sent to the host as the exact wire `Mode.refresh_hz`.
-    pub refresh_hz: u32,
-    /// [`BITRATE_AUTOMATIC`] (`punktfunk_core`'s own client-side AIMD bitrate controller) or a
-    /// fixed [`BITRATE_MIN_KBPS`]..=[`BITRATE_MAX_KBPS`], adjusted via the settings slider.
-    pub bitrate_kbps: u32,
-    pub hdr_enabled: bool,
-    /// The measured panel volume — see [`HdrDisplay`]. The defaults are the values this client
-    /// shipped hardcoded for every TV (an LG CX's), so an uncalibrated set behaves exactly as it
-    /// always has.
-    pub hdr_peak_nits: u16,
-    pub hdr_frame_avg_nits: u16,
-    /// See [`HdrDisplay::black_code`]. The default is the code nearest the 0.0005 nits this
-    /// client used to send.
-    pub hdr_black_code: u16,
-    /// Whether the user has actually run the calibration. It gates one behaviour beyond the
-    /// numbers: a calibrated panel pins its own volume on the decoder and stops applying the
-    /// host's per-content mastering metadata, since re-tone-mapping to the content would undo
-    /// the measurement (see `session::pump`).
-    pub hdr_calibrated: bool,
-    /// Preferred session codec — see [`CodecPref`].
-    pub codec: CodecPref,
-    /// Whether the in-stream stats overlay (resolution/codec, measured fps, drops,
-    /// decoder feed time) is drawn in the top-right corner during a stream. Off by
-    /// default; takes effect on the next stream.
-    pub stats_overlay: bool,
-    /// Requested audio channel count: 2 (stereo), 6 (5.1) or 8 (7.1). The host clamps to
-    /// what it can actually capture, and the *resolved* count drives the decoder and
-    /// playback layout — `audio.rs` has always handled up to 8; only the request was
-    /// pinned at stereo.
-    pub audio_channels: u8,
-    /// On-device log verbosity — see [`LogLevelOverride`]. Persisted, so a user's
-    /// choice in Diagnostics survives restarts (fresh install defaults to `Info`);
-    /// applied live via `logger::set_level_override` the moment it's changed. A
-    /// `TELEMETRY_LEVEL` launch (`logger::launch_level_override`) still overrides
-    /// the persisted value for that run — see `store::load`.
-    pub log_level_override: LogLevelOverride,
-    /// Diagnostics' "Show logs" toggle, applied at startup (`App::new`). Distinct
-    /// from the Yellow-button overlay cycle (`runtime`'s log-overlay state), which
-    /// stays ephemeral and never writes here.
-    pub show_logs: bool,
-    /// Which controller the host presents to the game — see [`GamepadType`]. Defaults to
-    /// `Auto`, which mirrors the attached pad (so a `DualSense` gets adaptive triggers without
-    /// anyone having to find this setting); pick a kind explicitly to override that. Takes
-    /// effect on the next stream, since it rides the handshake.
-    pub gamepad_type: GamepadType,
-    /// `DualSense` audio haptics — the coil lane of the `0xD1` pad-audio plane, rendered as
-    /// rumble on this client (`session::pad_audio`). Off = the lane is not declared to the host.
-    pub pad_haptics: bool,
-    /// The pad-speaker lane, declared only for a Bluetooth pad — the `0x36` report over the Luna
-    /// bus is its one transport, so a USB pad leaves it off however this reads.
-    pub pad_speaker: bool,
-    /// Let the TV capture the pointer for the host in-stream. On by default — most cards are
-    /// games, where a relative pointer is what the game expects; each host's Desktop card
-    /// overrides it back off (see [`desktop_capture_override`]).
-    ///
-    /// On: local cursor hidden, relative `MouseMove` deltas sent (absolute coords stop at the
-    /// panel edge), host draws the only cursor. Off: absolute `MouseMoveAbs`, and `CLIENT_CAP_CURSOR` tells a
-    /// capable host to stop compositing its own so the local pointer stays visible — otherwise
-    /// two cursors or none. Only the mouse follows this flag — a USB keyboard is grabbed either
-    /// way, or the compositor sees modifiers and fights the host pointer. Takes effect next stream.
-    pub cursor_capture: bool,
-    /// Ask the TV to switch to its Game picture mode for the duration of a stream (the
-    /// app-plane stand-in for HDMI ALLM — see `platform::webos::game_mode`). Off by default;
-    /// unverified on non-rooted installs, so it rides the Experimental screen. Applied at
-    /// stream start (SDR "game" / HDR "hdrGame" per the negotiated colour path) and reverted
-    /// on stream exit.
-    pub game_mode: bool,
-    /// Where this session's audio is decoded and played — see [`AudioRoutePref`]. Takes effect on
-    /// the next stream, and caps the channel layouts the Audio row offers.
-    ///
-    /// **No route decides whether NDL's audio plane exists** — every accepted V2 load has one,
-    /// since NDL only paces the picture against a fed plane. The routes differ in what RIDES it:
-    /// `run_clock_plane`'s silent metronome, or the host's Opus.
-    pub audio_route: AudioRoutePref,
-    /// Resolve the Magic Remote's OK button into left click / right click / drag by how long
-    /// it's held (see `platform::webos::mouse::RemoteButtons`). Off by default — with it
-    /// off, OK stays the plain immediate left click it has always been, since a remote with
-    /// no working Red button then has no other way to left-click. Off also means no added
-    /// wait on the release.
-    pub cursor_gestures: bool,
-    /// Draw the shared gamepad shell (`pf-console-ui`) instead of this client's own menus.
-    /// WHEN it takes over is [`Settings::gamepad_ui_mode`]; this is whether it may at all.
-    ///
-    /// Stored under the shell's own unprefixed key rather than a `webos.` namespace: the
-    /// shell's Settings rows read and write these very keys, so the two UIs edit one setting
-    /// instead of two that have to be kept in step.
-    pub gamepad_ui: bool,
-    /// When [`Settings::gamepad_ui`] actually fronts the app. Read per menu entry, so a change
-    /// — or a pad appearing — lands on the next return to the menu.
-    pub gamepad_ui_mode: GamepadUiMode,
-}
-
 /// When the shared shell takes the menus over. Mirrors Android's `gamepad_ui_mode`, and
 /// serializes to the same two strings the shell's own row stores.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -812,142 +710,6 @@ pub enum GamepadUiMode {
     Connected,
     /// Whenever the switch is on, pad or no pad.
     Always,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            width: 3840,
-            height: 2160,
-            refresh_hz: 60,
-            // Automatic: a fixed number, however carefully picked (aurora-tv's own
-            // moonlight-tv wiki calls ~35-40 Mbps the practical sweet spot for this decode
-            // path), never adapts to a link that degrades mid-session the way punktfunk's
-            // own client-side AIMD controller does — see [`BITRATE_AUTOMATIC`].
-            bitrate_kbps: 0,
-            hdr_enabled: true,
-            hdr_peak_nits: 800,
-            hdr_frame_avg_nits: 150,
-            hdr_black_code: 68,
-            hdr_calibrated: false,
-            stats_overlay: false,
-            codec: CodecPref::Auto,
-            audio_channels: 2,
-            log_level_override: LogLevelOverride::Info,
-            show_logs: false,
-            gamepad_type: GamepadType::Auto,
-            pad_haptics: true,
-            pad_speaker: true,
-            cursor_capture: true,
-            game_mode: false,
-            audio_route: AudioRoutePref::default(),
-            cursor_gestures: false,
-            // On, taking over only while a pad is attached — the cross-client default, and the
-            // reason both UIs ship: a pad in hand wants the console, a Magic Remote wants the
-            // cursor menus this client was built for.
-            gamepad_ui: true,
-            gamepad_ui_mode: GamepadUiMode::Connected,
-        }
-    }
-}
-
-impl Settings {
-    /// Whether the shared shell should be fronting the app right now.
-    ///
-    /// The same rule Android's `gamepadUiActive` applies, minus its `tv` term: that term makes
-    /// an Android TV console-only whatever the mode says, and here it would defeat the whole
-    /// setting — every webOS set is a TV, and the cursor UI is the one a remote wants.
-    pub fn gamepad_ui_active(&self, pad_connected: bool) -> bool {
-        self.gamepad_ui && (self.gamepad_ui_mode == GamepadUiMode::Always || pad_connected)
-    }
-
-    /// Normalise to what the active backend can present (`core::caps`), plus the one
-    /// cross-field rule: HDR needs HEVC, so an explicit H.264 pick turns it off. Called on
-    /// load, so the document never holds a *set* value whose row the UI has just hidden or
-    /// locked. `session::connect` clamps the wire regardless.
-    ///
-    /// Neither this nor [`Settings::presentable`] ever rewrites an override: one a current
-    /// global pick shadows stays in the document, unused, and applies again once it doesn't.
-    pub fn clamp_to_caps(&mut self) {
-        self.clamp(true);
-    }
-
-    fn clamp(&mut self, log: bool) {
-        // Only ever narrows, so `log` gating a line can't gate a mutation with it.
-        macro_rules! note {
-            ($($arg:tt)*) => { if log { tracing::info!($($arg)*); } };
-        }
-        let caps = crate::core::caps::video_caps();
-        // Before the HDR rules below: which codec is in force is what decides them.
-        let codecs = caps.codec_prefs();
-        if !codecs.contains(&self.codec) {
-            note!(
-                "settings: {:?} isn't offerable on this video backend — using {:?}",
-                self.codec,
-                codecs[0],
-            );
-            self.codec = codecs[0];
-        }
-        if self.hdr_enabled && !caps.hdr {
-            note!("settings: HDR isn't presentable on this video backend — turning it off");
-            self.hdr_enabled = false;
-        }
-        if self.hdr_enabled && self.codec == CodecPref::H264 {
-            // Mirrors `session::connect`'s own gate and `menu::RowLock::HdrNeedsHevc`: a
-            // session pinned to H.264 never resolves HDR. Reachable through the merge, where
-            // a game's HDR override can meet a global codec pick made after it.
-            note!("settings: HDR needs HEVC — an explicit H.264 pick turns it off");
-            self.hdr_enabled = false;
-        }
-        if !AudioRoutePref::available(caps).contains(&self.audio_route) {
-            note!(
-                "settings: {:?} audio needs NDL's audio plane, which this backend has none of — using Software",
-                self.audio_route,
-            );
-            self.audio_route = AudioRoutePref::Software;
-        }
-        // The decoder-wide ceiling, and nothing else. `audio_channels` is a PREFERENCE — "5.1
-        // where it can play" — which the route's own limit and the TV's current Sound Out narrow
-        // per session, not in the document (see `session::connect`'s `Negotiated::clamp`).
-        // Rewriting it from either would lose the preference the moment a receiver was unplugged.
-        if self.audio_channels > caps.max_channels {
-            note!(
-                "settings: {} audio channels is more than this client can decode ({}) — clamping",
-                self.audio_channels,
-                caps.max_channels,
-            );
-            self.audio_channels = caps.max_channels;
-        }
-        // Snapped rather than merely clamped: the sliders move on a lattice, and a value off it
-        // (a hand-edited settings.json, or a range that narrowed between builds) would leave a
-        // thumb sitting between two stops.
-        self.hdr_peak_nits = HDR_PEAK.snap(u32::from(self.hdr_peak_nits)) as u16;
-        self.hdr_frame_avg_nits = HDR_FRAME_AVG.snap(u32::from(self.hdr_frame_avg_nits)) as u16;
-        // A full field can never out-run a small window on any panel; believing otherwise would
-        // advertise a volume no display has.
-        self.hdr_frame_avg_nits = self.hdr_frame_avg_nits.min(self.hdr_peak_nits);
-        self.hdr_black_code = HDR_BLACK.snap(u32::from(self.hdr_black_code)) as u16;
-    }
-
-    /// The panel volume to advertise — see [`HdrDisplay`].
-    #[must_use]
-    pub fn hdr_display(&self) -> HdrDisplay {
-        HdrDisplay {
-            peak_nits: self.hdr_peak_nits,
-            frame_avg_nits: self.hdr_frame_avg_nits,
-            black_code: self.hdr_black_code,
-        }
-    }
-
-    /// The one writer of the stored volume: the three measured fields move together with the
-    /// flag that says where they came from, so a set can never advertise numbers nothing on
-    /// screen would explain.
-    pub fn set_hdr_display(&mut self, display: HdrDisplay, calibrated: bool) {
-        self.hdr_peak_nits = display.peak_nits;
-        self.hdr_frame_avg_nits = display.frame_avg_nits;
-        self.hdr_black_code = display.black_code;
-        self.hdr_calibrated = calibrated;
-    }
 }
 
 /// Everything this app persists, as one document — `settings.json`, written by
@@ -963,7 +725,8 @@ impl Settings {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Persisted {
-    pub settings: Settings,
+    #[serde(default = "crate::core::settings::default_document")]
+    pub settings: pf_client_core::trust::Settings,
     pub known_hosts: Vec<KnownHost>,
     /// The sidebar host row the user last had active — so relaunching lands back on its game
     /// grid instead of an unfocused sidebar. `(host, port)`, not an index: `known_hosts` order
@@ -983,18 +746,6 @@ pub struct Persisted {
     /// fill this: opening a game's settings and changing a row creates the profile.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub profiles: Vec<StreamProfile>,
-    /// The stored settings object exactly as it was last read, so the fields this client does
-    /// not model survive a save.
-    ///
-    /// The shared schema is much wider than [`Settings`] — the gamepad shell alone writes a
-    /// palette, a library view and its own layout prefs, and other clients write more. Writing
-    /// the document back from [`Settings`] alone would reset every one of them on the next
-    /// save from EITHER UI, which on the shell reads as a setting that will not stick.
-    ///
-    /// `serde(skip)`: it is not a key of its own, it IS the settings object — reconstructed on
-    /// load (`services::store::from_document`) and merged over on save.
-    #[serde(skip)]
-    pub shared_base: pf_client_core::trust::Settings,
 }
 
 /// Cover-art paths for a title (host-relative, fetched via mTLS). Cards prefer

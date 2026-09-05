@@ -9,6 +9,7 @@ use sdl2::controller::GameController;
 use crate::app::hero::Connect;
 use crate::app::{App, HomeFocus, Screen};
 use crate::core::event::MenuEvent;
+use crate::core::settings::TvSettings;
 use crate::platform::webos::cursor;
 use crate::platform::webos::gamepad;
 use crate::platform::webos::keyboard;
@@ -22,7 +23,7 @@ use crate::session;
 struct ConnectOutcome {
     handle: std::thread::JoinHandle<Result<session::Connected>>,
     settings: store::Settings,
-    /// Whether the user's pick was `Automatic` — `settings.gamepad_type` has already been
+    /// Whether the user's pick was `Automatic` — `settings.gamepad_type()` has already been
     /// resolved against the attached pad, so this is the only thing left that says a pad
     /// hotplugged mid-stream should re-decide the kind rather than keep the session default.
     gamepad_auto: bool,
@@ -53,12 +54,12 @@ fn resolve_gamepad_type(
     mut settings: store::Settings,
     game_controller: &sdl2::GameControllerSubsystem,
 ) -> store::Settings {
-    if settings.gamepad_type != store::GamepadType::Auto {
+    if settings.gamepad_type() != store::GamepadType::Auto {
         return settings;
     }
     if let Some(detected) = gamepad::detect_type(game_controller) {
         tracing::info!("controller Automatic → {detected:?} (mirroring the attached pad)");
-        settings.gamepad_type = detected;
+        settings.set_gamepad_type(detected);
     }
     settings
 }
@@ -105,15 +106,15 @@ fn spawn_connect(
                 // A pinned host is reachable now or off, so a long budget would only hold the
                 // black launch scrim. Waiting on an operator is the pairing flow's job.
                 timeout: crate::services::budget::PROBE,
-                codec: settings.codec,
-                gamepad_type: settings.gamepad_type,
-                cursor_capture: settings.cursor_capture,
+                codec: settings.codec_pref(),
+                gamepad_type: settings.gamepad_type(),
+                cursor_capture: settings.cursor_capture(),
                 // `true` deliberately, whatever is attached right now: this is the SESSION-level
                 // cap, and the host advertises `HOST_CAP_PAD_AUDIO` only in reply to it. A pad
                 // plugged in later re-declares per-pad through `set_pad_audio_caps`, but only
                 // inside a session that claimed the cap up front — probing here would cost hotplug.
                 pad_audio_caps: crate::session::pad_audio::caps_for(&settings, true),
-                audio_route: settings.audio_route,
+                audio_route: settings.audio_route(),
                 display_hdr: settings.hdr_display().hdr_meta(),
             })
             // Flagged before the handle is joined, so the loading screen can stop waiting
@@ -269,8 +270,9 @@ pub fn run() -> Result<()> {
 /// `Option<ConnectOutcome>` used to say this, with `None` meaning "quit" — but the quit case
 /// now carries something, and a sentinel that carries a payload wants a name.
 enum UiOutcome {
-    /// A launch was committed; the stream loop takes it from here.
-    Launch(ConnectOutcome),
+    /// A launch was committed; the stream loop takes it from here. Boxed: the shared settings
+    /// document inside is hundreds of bytes and the other two arms carry almost nothing.
+    Launch(Box<ConnectOutcome>),
     /// The user (or the OS) asked to close the app, carrying the selected host's exit action
     /// UNFIRED — see [`ConnectOutcome::exit_plan`] for why nothing runs it here.
     Quit(Option<crate::services::power::ExitPlan>),
