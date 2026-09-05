@@ -283,8 +283,7 @@ impl ConfirmDialog {
     /// answer, not the caller's.
     pub(super) fn draw(
         &mut self,
-        compositor: &mut Compositor,
-        texture_creator: &sdl2::render::TextureCreator<sdl2::video::WindowContext>,
+        sink: &mut dyn crate::ui::render::TileSink,
         fonts: &crate::ui::text::Fonts<'_>,
         screen: crate::ui::render::Size,
         blurrable: bool,
@@ -318,7 +317,7 @@ impl ConfirmDialog {
                 &mut self.tc,
                 fonts,
             )?;
-            compositor.upload(texture_creator, tile::DISCONNECT_DIALOG, &shell, false)?;
+            sink.upload(tile::DISCONNECT_DIALOG, &shell, false)?;
         }
         let (card, content) = crate::ui::tiles::confirm_dialog_layout(w, h, fonts, self.subtitle);
         let btn_rect = crate::ui::widgets::confirm_button_rect(content, focus);
@@ -333,7 +332,7 @@ impl ConfirmDialog {
                 &mut self.tc,
                 fonts,
             )?;
-            compositor.upload(texture_creator, tile::DISCONNECT_FOCUS_BUTTON, &tile, false)?;
+            sink.upload(tile::DISCONNECT_FOCUS_BUTTON, &tile, false)?;
         }
         // Same open/close motion as the `App`'s `Screen` modals (see `compose_modal`):
         // the shared rise, same curve in both directions, no scale.

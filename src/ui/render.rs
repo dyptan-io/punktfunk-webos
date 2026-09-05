@@ -289,6 +289,15 @@ impl FrostPane {
 
 pub type DrawList = Vec<DrawCmd>;
 
+/// Where a rasterized tile goes to be drawn. The two loops draw the same overlays (the toast,
+/// the confirm dialog, the log tail) onto different backends — the menu's Skia images and the
+/// stream's SDL textures — and this is the one call those overlays make.
+///
+/// `opaque` says the tile covers every pixel it occupies, which lets a backend skip blending.
+pub trait TileSink {
+    fn upload(&mut self, tile: TileId, pm: &crate::ui::painter::Painter, opaque: bool) -> anyhow::Result<()>;
+}
+
 /// A width/height pair, no position — the screen's, for layout code that only needs the
 /// extent it is laying out into.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

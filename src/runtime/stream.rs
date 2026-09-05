@@ -107,8 +107,9 @@ pub(super) fn run_inner() -> Result<()> {
     let texture_creator = canvas.texture_creator();
     tracing::info!("window + canvas created (renderer: {})", canvas.info().name);
 
-    // Pre-stream UI backend: tiny-skia rasterizes cached widget tiles, GPU composites them
-    // each frame — see `compositor.rs`.
+    // The stream's overlays (stats, log tail, disconnect dialog, toast): tiny-skia rasterizes
+    // them, SDL's renderer composites over the transparent window — see `compositor.rs`. The
+    // menus draw on the console's GL context instead (`console_gl` below).
     let mut compositor = Compositor::new();
 
     let mut events = sdl.event_pump().map_err(|e| anyhow::anyhow!("event pump: {e}"))?;
@@ -163,8 +164,7 @@ pub(super) fn run_inner() -> Result<()> {
         } else {
             run_ui_flow(
                 &mut canvas,
-                &mut compositor,
-                &texture_creator,
+                &mut console_gl,
                 &mut events,
                 &game_controller,
                 &mut controller,
@@ -756,8 +756,10 @@ pub(super) fn run_inner() -> Result<()> {
                 // shared command list.
                 let mut cmds = Vec::new();
                 disconnect.draw(
-                    &mut compositor,
-                    &texture_creator,
+                    &mut SdlTiles {
+                        compositor: &mut compositor,
+                        creator: &texture_creator,
+                    },
                     &fonts,
                     crate::ui::render::Size::new(display_mode.w as u32, display_mode.h as u32),
                     // Not blurrable: NDL video is on a hardware plane below this surface.
@@ -989,8 +991,10 @@ pub(super) fn run_inner() -> Result<()> {
                     }
                 }
                 toast.draw(
-                    &mut compositor,
-                    &texture_creator,
+                    &mut SdlTiles {
+                        compositor: &mut compositor,
+                        creator: &texture_creator,
+                    },
                     (&fonts, &mut overlay_text),
                     &notif_frame,
                     display_mode.w,
