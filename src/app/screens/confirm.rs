@@ -81,18 +81,6 @@ impl Confirm {
 }
 
 impl App {
-    /// The open confirm dialog, or `None` — on a screen that isn't one, and on the two whose
-    /// buttons aren't up yet: a Wake with no MAC on record is a button-less message, and a
-    /// speed test still running has nothing to apply.
-    ///
-    /// That `None` is load-bearing beyond the geometry: it is what says the dialog is not
-    /// showing buttons, so a caller holding a `Some` has already proved the arm it is in is
-    /// reachable — which is what four `expect`/`unreachable!` in `prepare_modal` used to
-    /// assert by hand.
-    pub(crate) fn confirm_of(&self) -> Option<Confirm> {
-        self.confirm_for(self.nav.screen)
-    }
-
     /// [`confirm_of`](Self::confirm_of) for any screen, not only the one the cursor is on:
     /// a card fading out is drawn from the same descriptor after the cursor has moved on.
     pub(crate) fn confirm_for(&self, screen: Screen) -> Option<Confirm> {

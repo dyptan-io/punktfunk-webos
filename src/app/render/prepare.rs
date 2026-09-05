@@ -20,7 +20,7 @@ impl App {
             crate::app::draw::home::raw_image(
                 hero.width,
                 hero.height,
-                crate::app::render::skia::RawFormat::Rgb565,
+                crate::app::draw::home::RawFormat::Rgb565,
                 &hero.pixels,
             )
         });

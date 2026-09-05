@@ -15,9 +15,8 @@ use skia_safe::{
     MipmapMode, Paint, RRect, Rect, SamplingOptions, TileMode,
 };
 
-use super::{c4, line_h, sk, Frame};
+use super::{line_h, panel, sk, Frame};
 use crate::app::grid::{Entrance, GridLayout};
-use crate::app::render::skia::RawFormat;
 use crate::app::state::cardmenu::CardMenuRow;
 use crate::app::{hero, view, App, HomeFocus, Screen, CARD_GROWTH, LAUNCH_GROWTH, STATUS_BG_PAD};
 use crate::core::model::GameEntry;
@@ -73,6 +72,31 @@ fn rr(r: Rect) -> RRect {
     RRect::new_rect_xy(r, CARD_RADIUS, CARD_RADIUS)
 }
 
+/// A raw upload's pixel layout: the hero's decoded art, the dissolve masks, the app icon.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RawFormat {
+    Rgb565,
+    /// Straight alpha, R first in memory.
+    Rgba8888,
+}
+
+impl RawFormat {
+    fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Rgb565 => 2,
+            Self::Rgba8888 => 4,
+        }
+    }
+
+    fn info(self, w: u32, h: u32) -> ImageInfo {
+        let (ct, at) = match self {
+            Self::Rgb565 => (skia_safe::ColorType::RGB565, skia_safe::AlphaType::Opaque),
+            Self::Rgba8888 => (skia_safe::ColorType::RGBA8888, skia_safe::AlphaType::Unpremul),
+        };
+        ImageInfo::new((w as i32, h as i32), ct, at, None)
+    }
+}
+
 /// A Skia image over straight-alpha RGBA8 or RGB565 pixels, copied once.
 pub(crate) fn raw_image(w: u32, h: u32, format: RawFormat, pixels: &[u8]) -> Option<Image> {
     let row_bytes = w as usize * format.bytes_per_pixel();
@@ -82,15 +106,9 @@ pub(crate) fn raw_image(w: u32, h: u32, format: RawFormat, pixels: &[u8]) -> Opt
     images::raster_from_data(&format.info(w, h), Data::new_copy(pixels), row_bytes)
 }
 
-/// A cover from the library's decoded art, which is premultiplied RGBA8 at card size.
-pub(crate) fn cover_image(pm: &tiny_skia::Pixmap) -> Option<Image> {
-    let info = ImageInfo::new(
-        (pm.width() as i32, pm.height() as i32),
-        skia_safe::ColorType::RGBA8888,
-        skia_safe::AlphaType::Premul,
-        None,
-    );
-    images::raster_from_data(&info, Data::new_copy(pm.data()), pm.width() as usize * 4)
+/// A cover from the library's decoded art, straight RGBA8 at card size.
+pub(crate) fn cover_image(art: &crate::services::art::CardArt) -> Option<Image> {
+    raw_image(art.width, art.height, RawFormat::Rgba8888, &art.pixels)
 }
 
 fn app_icon() -> Option<&'static Image> {
@@ -192,9 +210,9 @@ impl App {
 
     fn draw_sidebar(&self, f: &Frame<'_>) {
         let c = f.canvas;
-        let panel = Rect::from_xywh(0.0, 0.0, SIDEBAR_W as f32, f.h);
+        let panel_rect = Rect::from_xywh(0.0, 0.0, SIDEBAR_W as f32, f.h);
         // Opaque on every look, glass included: a lit edge against the grid reads as a seam.
-        c.draw_rect(panel, &theme::fill(c4(ui::theme::palette().panel)));
+        c.draw_rect(panel_rect, &theme::fill(panel()));
         let mut x = SIDEBAR_PAD as f32;
         if let Some(icon) = app_icon() {
             let at = Rect::from_xywh(x, HEADER_Y, MARK_SIDE, MARK_SIDE);
@@ -282,11 +300,7 @@ impl App {
                 // Badged onto the icon's corner: a presence dot on the thing it describes.
                 if let Some(online) = self.entry_online(entry) {
                     let (cx, cy) = (icon.right - 1.0, icon.bottom - 2.0);
-                    c.draw_circle(
-                        (cx, cy),
-                        PRESENCE_DOT / 2.0 + 2.0,
-                        &theme::fill(c4(ui::theme::palette().panel)),
-                    );
+                    c.draw_circle((cx, cy), PRESENCE_DOT / 2.0 + 2.0, &theme::fill(panel()));
                     let tone = if online { theme::ONLINE_GREEN } else { theme::fg(0.35) };
                     c.draw_circle((cx, cy), PRESENCE_DOT / 2.0, &theme::fill(tone));
                 }
@@ -327,7 +341,8 @@ impl App {
         let visible = view::home::visible_cards(available_wi, layout, scroll, f.h as i32, pad);
         // A held card's collection dims to the scrim's level while its order is unwritten.
         let unfixed = self.reordering_slots(layout);
-        let dimmed = 1.0 - f32::from(ui::theme::palette().scrim.a) / 255.0;
+        // The modal scrim's strength: half.
+        let dimmed = 0.5;
         let now = Instant::now();
         for idx in visible {
             if Some(idx) == focused {
@@ -680,8 +695,12 @@ mod tests {
         let b = face_for("Portal");
         assert_eq!(a, b);
         assert!(app_icon().is_some());
-        let pm = tiny_skia::Pixmap::new(3, 4).unwrap();
-        assert!(cover_image(&pm).is_some());
+        let art = crate::services::art::CardArt {
+            width: 3,
+            height: 4,
+            pixels: vec![0; 48],
+        };
+        assert!(cover_image(&art).is_some());
         assert!(raw_image(2, 2, RawFormat::Rgb565, &[0; 8]).is_some());
         assert!(raw_image(2, 2, RawFormat::Rgb565, &[0; 7]).is_none());
     }

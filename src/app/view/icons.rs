@@ -37,3 +37,5 @@ pub const ICON_MOUSE: &str = "\u{E323}";
 pub const ICON_TOUCH: &str = "\u{E913}";
 /// Material `drag_indicator` — the grip that puts a row into drag mode.
 pub const ICON_REORDER: &str = "\u{E945}";
+/// A dialog's close / stop action.
+pub const ICON_CLOSE: &str = "\u{E5CD}";

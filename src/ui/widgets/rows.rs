@@ -1,7 +1,6 @@
 //! `FocusRow`/`RowKind`: what a list row says. Drawn by the console kit's list through
 //! `app::draw::list::row_spec`; this is the app-side description the screens build.
 use crate::ui::focus::Dir;
-use crate::ui::render::Color;
 
 /// How a focus row's right-hand control behaves — every row list in the app shares
 /// [`FocusRows`]' single implementation, see its docs.
@@ -53,12 +52,8 @@ pub struct FocusRow {
     /// action a row wants *before* its label rather than after it (a collection's drag
     /// handle), so the grip sits where the eye starts the row.
     pub leading_button: bool,
-    /// A small dot in the row's right gutter, in this colour — what marks a row as differing
-    /// from whatever it inherits (a per-game settings override, say). Purely an indicator:
-    /// not focusable, not clickable, carrying no action; what it means, and how it goes away,
-    /// is the caller's business. `None` (the default) draws nothing and leaves the row's
-    /// control the width the dot would have taken.
-    pub mark: Option<Color>,
+    /// A dot in the row's gutter: the row differs from what it inherits.
+    pub marked: bool,
     /// Keep the [`mark`](Self::mark) gutter clear even though this row wears no dot — what
     /// [`align_values`] sets on a list where some *other* row does, so one marked row does
     /// not pull its own value 32px left of its neighbours'.
@@ -104,7 +99,7 @@ impl FocusRow {
             trailing: &[],
             value_reserve: 0,
             leading_button: false,
-            mark: None,
+            marked: false,
             mark_reserve: false,
             subtext: None,
         }
@@ -155,8 +150,8 @@ impl FocusRow {
     }
 
     /// Puts a [`FocusRow::mark`] dot in this row's right gutter.
-    pub fn marked(mut self, color: Color) -> Self {
-        self.mark = Some(color);
+    pub fn marked(mut self) -> Self {
+        self.marked = true;
         self
     }
 
@@ -182,7 +177,7 @@ impl FocusRow {
 /// stops wherever its own row's buttons and dot leave off, so one odd row out looks ragged.
 pub fn align_values(rows: &mut [FocusRow]) {
     let widest = rows.iter().map(|r| r.trailing.len()).max().unwrap_or(0);
-    let any_marked = rows.iter().any(|r| r.mark.is_some());
+    let any_marked = rows.iter().any(|r| r.marked);
     for row in rows {
         row.value_reserve = widest;
         row.mark_reserve = any_marked;

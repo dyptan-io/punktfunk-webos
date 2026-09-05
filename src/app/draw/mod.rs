@@ -162,6 +162,7 @@ pub(crate) fn lucide_for(material: &str) -> Option<&'static str> {
         x if x == m::ICON_MOUSE => "mouse",
         x if x == m::ICON_TOUCH => "pointer",
         x if x == m::ICON_REORDER => "grip-vertical",
+        x if x == m::ICON_CLOSE => "x",
         _ => return None,
     })
 }
@@ -171,14 +172,34 @@ pub(crate) fn sk(r: ui::render::Rect) -> Rect {
     Rect::from_xywh(r.x() as f32, r.y() as f32, r.width() as f32, r.height() as f32)
 }
 
-/// One of the app's colours as Skia's, for the surfaces still on the old palette.
-pub(crate) fn c4(c: ui::render::Color) -> skia_safe::Color4f {
-    skia_safe::Color4f::new(
-        f32::from(c.r) / 255.0,
-        f32::from(c.g) / 255.0,
-        f32::from(c.b) / 255.0,
-        f32::from(c.a) / 255.0,
-    )
+/// The frame's ground: the shared palette's own, flat. The console draws an aurora field
+/// over the same colour; a pointer UI with a grid of covers wants it quiet.
+pub(crate) fn ground() -> skia_safe::Color4f {
+    let (r, g, b) = pf_console_ui::library::palette(&current_palette()).ground;
+    skia_safe::Color4f::new(r as f32, g as f32, b as f32, 1.0)
+}
+
+/// The sidebar's opaque panel: the ground lifted a step toward the accent.
+pub(crate) fn panel() -> skia_safe::Color4f {
+    theme::card_face(0.12)
+}
+
+thread_local! {
+    static PALETTE: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// The palette id `App::apply_ink` last published, for [`ground`].
+pub(crate) fn set_current_palette(id: &str) {
+    PALETTE.with(|p| {
+        let mut p = p.borrow_mut();
+        if *p != id {
+            *p = id.to_string();
+        }
+    });
+}
+
+fn current_palette() -> String {
+    PALETTE.with(|p| p.borrow().clone())
 }
 
 /// A Skia rect as the app's integer one, for the hit tests.

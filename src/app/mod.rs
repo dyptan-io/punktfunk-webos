@@ -282,9 +282,6 @@ impl App {
         if app.settings_ui.settings.show_logs {
             crate::runtime::set_log_overlay_enabled(true);
         }
-        // Same call the Experimental toggle makes, so the persisted value and a live flip take
-        // exactly the same path into `ui::theme`.
-        app.restyle();
         app
     }
 
@@ -292,6 +289,7 @@ impl App {
     /// the same row every gamepad surface reads, so the two UIs cannot differ in colour.
     pub(crate) fn apply_ink(&self) {
         let palette = pf_console_ui::library::palette(&self.shared_base.ui_palette);
+        crate::app::draw::set_current_palette(palette.id);
         pf_console_ui::theme::set_ink(pf_console_ui::theme::Ink::of(palette));
     }
 
@@ -491,11 +489,10 @@ impl App {
         }
         for item in loaded {
             match item {
-                crate::services::art::ArtLoaded::Card { game_id, pixmap } => {
-                    // Layout is unchanged by art arriving — queue a repaint of just that
-                    // card's tile (see `grid_cards_dirty`) rather than a full layer rebuild.
+                crate::services::art::ArtLoaded::Card { game_id, art } => {
+                    // Layout is unchanged by art arriving: only that card's cover is rebuilt.
                     self.render.grid.cards_dirty.push(game_id.clone());
-                    self.library.art.insert(game_id, pixmap);
+                    self.library.art.insert(game_id, art);
                 }
                 crate::services::art::ArtLoaded::Hero { game_id, image } => {
                     // One that's no longer of use (focus moved on) is let go of in the
@@ -547,7 +544,7 @@ impl App {
     /// dispatch: `main.rs`'s Back handling on Home (a no-op there, but routed
     /// through here so the policy lives in one place) and a modal's close (X)
     /// button click (`handle_mouse_click`'s `hover_close` branch below).
-    pub fn back(&mut self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<ConnectTarget> {
+    pub fn back(&mut self, screen_w: u32, screen_h: u32) -> Option<ConnectTarget> {
         // Back steps focus out of the game grid (and the ⋯ column) back onto the
         // host sidebar first. Only a Back from the sidebar itself is a no-op here
         // — the menu loop turns that into the quit dialog.
@@ -570,7 +567,7 @@ impl App {
             return None;
         }
         // Every modal decides for itself where Back goes.
-        self.handle_menu_event(MenuEvent::Back, screen_w, screen_h, fonts)
+        self.handle_menu_event(MenuEvent::Back, screen_w, screen_h)
     }
 
     /// Advances every live animation one tick — the eased scroll, the focus pop,

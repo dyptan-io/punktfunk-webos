@@ -90,15 +90,13 @@ ureq = { version = "3", features = ["rustls-no-provider", "rustls-webpki-roots"]
 # aws-lc-rs also carries ML-KEM, so the QUIC/mgmt handshakes get post-quantum key exchange.
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
-# Pre-stream UI rendering (software rasterizer); png-format off (already-decoded buffers only).
-tiny-skia = { version = "0.12", default-features = false, features = ["std"] }
 
 # Linux-only (webOS cross target + dev boxes); macOS/Windows build with stub in main.rs.
 # Only genuinely platform-linked crates live here (SDL2, opus C lib, libc).
 [target.'cfg(target_os = "linux")'.dependencies]
-# ttf: SDL2_ttf + freetype on-device; text renders in Geist font. unsafe_textures
-# lets GPU compositor cache textures without TextureCreator lifetime.
-sdl2 = { version = "0.38", default-features = false, features = ["ttf", "unsafe_textures"] }
+# Window, events, pads and the GL context the console kit draws on. No `ttf`: text is the
+# kit's own (Skia + Geist), and nothing rasterizes on the CPU any more.
+sdl2 = { version = "0.38", default-features = false }
 # Opus decode (platform::webos::audio); explicit dep despite being transitive via punktfunk-core.
 opus = "0.3"
 # setpriority for video pump scheduling; explicit dep for libc::gettid calls.

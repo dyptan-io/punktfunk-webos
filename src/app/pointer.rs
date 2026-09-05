@@ -51,7 +51,7 @@ impl HoverChange {
 impl App {
     /// Handed to `SDL_SetTextInputRect` by the render loop. `None` off the text forms, which
     /// are the only screens that take text input at all.
-    pub fn address_field_rect(&self, screen_w: u32, screen_h: u32, _fonts: &ui::text::Fonts) -> Option<Rect> {
+    pub fn address_field_rect(&self, screen_w: u32, screen_h: u32) -> Option<Rect> {
         let form = self.text_form()?;
         let l = crate::app::draw::form::layout(
             &self.fonts,
@@ -69,14 +69,7 @@ impl App {
     /// whether that changed anything visible — Magic Remote pointer mode fires
     /// `MouseMotion` continuously while moving, so callers redraw only when this is
     /// `true` rather than on every event.
-    pub fn handle_mouse_motion(
-        &mut self,
-        x: i32,
-        y: i32,
-        screen_w: u32,
-        screen_h: u32,
-        fonts: &ui::text::Fonts,
-    ) -> bool {
+    pub fn handle_mouse_motion(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32) -> bool {
         // A press already landed on a slider track (see `handle_mouse_click`) — every motion
         // until release drags that thumb, rather than re-hit-testing the row list under a
         // pointer that may have wandered off it.
@@ -84,7 +77,7 @@ impl App {
             self.drag_slider(x);
             return true;
         }
-        let focus = self.hover_focus_at(x, y, screen_w, screen_h, fonts);
+        let focus = self.hover_focus_at(x, y, screen_w, screen_h);
         // Parity with the D-pad: a hover that moves modal focus to another row replays the
         // focus-pop zoom (and shows the new row's caption). Home drives its own `focus_anim`
         // instead, so it's excluded. An open dropdown is excluded too — hover there only
@@ -97,28 +90,13 @@ impl App {
         focus.any || close_changed
     }
 
-    /// Button index under `(x, y)` for a two-button confirm modal with `subtitle`, or
-    /// `None` off both buttons — every confirm modal's hover arm shares this, against the
-    /// same `confirm_dialog_layout` geometry the modal is drawn with.
-    pub(crate) fn confirm_button_at(
-        screen_w: u32,
-        screen_h: u32,
-        fonts: &ui::text::Fonts,
-        subtitle: &str,
-        x: i32,
-        y: i32,
-    ) -> Option<usize> {
-        let (_, content) = ui::tiles::confirm_dialog_layout(screen_w, screen_h, fonts, subtitle);
-        ui::tiles::confirm_button_at(content, x, y)
-    }
-
     /// Moves the positional focus/selection onto whatever interactive element sits
     /// under the pointer, so the Magic Remote's pointer highlights elements on hover
     /// exactly where a click would land. Returns whether the selection actually
     /// moved. Hovering empty space (gaps, row padding, the area between rows) leaves
     /// the current selection put rather than clearing it, so a resting pointer never
     /// fights the D-pad.
-    fn hover_focus_at(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> HoverChange {
+    fn hover_focus_at(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32) -> HoverChange {
         match self.nav.screen {
             // The held card's submenu takes hover whole, like an open dropdown does — the
             // grid behind it must not steal focus out from under an open menu.
@@ -251,20 +229,6 @@ impl App {
                 };
                 HoverChange::row(self.set_confirm_focused(i))
             }
-            Screen::ForgetHost
-            | Screen::SendLogs
-            | Screen::Wake
-            | Screen::SpeedTest
-            | Screen::RemoveCollection
-            | Screen::ResetHdrCalibration => {
-                let Some(subtitle) = self.confirm_subtitle() else {
-                    return HoverChange::NONE;
-                };
-                let Some(i) = Self::confirm_button_at(screen_w, screen_h, fonts, &subtitle, x, y) else {
-                    return HoverChange::NONE;
-                };
-                HoverChange::row(self.set_confirm_focused(i))
-            }
             // No positional focus to move: single-card info/entry modals (AddHost,
             // EditHost, About) and Settings with a dropdown open.
             _ => HoverChange::NONE,
@@ -302,21 +266,14 @@ impl App {
 
     /// A pointer click confirms whatever's currently hovered/focused, or triggers
     /// Back if the modal's close (X) button itself is what's hovered.
-    pub fn handle_mouse_click(
-        &mut self,
-        x: i32,
-        y: i32,
-        screen_w: u32,
-        screen_h: u32,
-        fonts: &ui::text::Fonts,
-    ) -> Option<ConnectTarget> {
+    pub fn handle_mouse_click(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32) -> Option<ConnectTarget> {
         // Re-sync the close-button hover to the click's own position first — a
         // MouseButtonDown can carry a slightly different (x, y) than the last
         // MouseMotion (the physical button press can jostle the remote a little).
-        self.handle_mouse_motion(x, y, screen_w, screen_h, fonts);
+        self.handle_mouse_motion(x, y, screen_w, screen_h);
         if self.render.hover_close {
             // Same "what Back means here" as everywhere else — see `back`'s docs.
-            return self.back(screen_w, screen_h, fonts);
+            return self.back(screen_w, screen_h);
         }
         // Unlike hover, a click DOES move `home_focus`/`settings_focused` — fresh at
         // the click's own position, so it confirms what was actually clicked rather
@@ -458,6 +415,6 @@ impl App {
                 return None
             }
         }
-        self.press(screen_w, screen_h, fonts)
+        self.press(screen_w, screen_h)
     }
 }

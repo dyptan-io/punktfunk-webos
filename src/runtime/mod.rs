@@ -7,17 +7,14 @@ use punktfunk_core::config::Mode;
 use sdl2::controller::GameController;
 
 use crate::app::hero::Connect;
-use crate::app::render::tile;
 use crate::app::{App, HomeFocus, Screen};
 use crate::core::event::MenuEvent;
-use crate::platform::webos::compositor::{Compositor, SdlTiles};
 use crate::platform::webos::cursor;
 use crate::platform::webos::gamepad;
 use crate::platform::webos::keyboard;
 use crate::platform::webos::mouse;
 use crate::services::store;
 use crate::session;
-use crate::ui::render::DrawCmd;
 
 /// A launch handed from the menu to the streaming loop: the connect thread (started early to
 /// overlap the animation), the settings it was started with, and how much of the first-frame
@@ -179,7 +176,7 @@ fn cycle_log_overlay() {
         }
         LogOverlayState::Live => {
             let mut snap = frozen_log_lines().lock().unwrap_or_else(PoisonError::into_inner);
-            *snap = crate::logger::recent_lines(crate::ui::tiles::LOG_OVERLAY_LINES);
+            *snap = crate::logger::recent_lines(overlay::LOG_LINES);
             drop(snap);
             // Nothing reads the ring while frozen — stop capturing so logging threads
             // (the video pump above all) drop back to a single atomic load per event.
@@ -208,7 +205,7 @@ pub(crate) fn set_log_overlay_enabled(enabled: bool) {
 fn log_overlay_lines() -> Option<Vec<String>> {
     match log_overlay_state() {
         LogOverlayState::Off => None,
-        LogOverlayState::Live => Some(crate::logger::recent_lines(crate::ui::tiles::LOG_OVERLAY_LINES)),
+        LogOverlayState::Live => Some(crate::logger::recent_lines(overlay::LOG_LINES)),
         LogOverlayState::Frozen => Some(
             frozen_log_lines()
                 .lock()
@@ -291,14 +288,10 @@ enum StreamOutcome {
     ReturnToMenu,
 }
 
-/// Cap for the debug overlays' text cache. Their lines are mostly unique, so this bounds a
-/// cache that exists for reuse *between consecutive rebuilds* rather than for permanence.
-const OVERLAY_TEXT_CAP: usize = 256;
-
 mod input;
+mod overlay;
 mod session_ext;
 mod stream;
-mod toast;
 mod ui_flow;
 use input::*;
 use stream::run_inner;

@@ -66,15 +66,6 @@ impl App {
         })
     }
 
-    /// The subtitle of the open two-button confirm modal — the string its card height and
-    /// button-row rect are both measured from, so one value drives the whole dialog.
-    ///
-    /// `None` on any other screen, and on the two confirm screens whose buttons aren't up
-    /// yet (see [`App::confirm_of`](crate::app::screens::confirm)).
-    pub(crate) fn confirm_subtitle(&self) -> Option<String> {
-        self.confirm_of().map(|c| c.subtitle)
-    }
-
     /// Moves the open confirm dialog's focus onto button `index`, reporting whether it
     /// actually moved — the hover/click contract every focus setter here follows.
     pub(crate) fn set_confirm_focused(&mut self, index: usize) -> bool {

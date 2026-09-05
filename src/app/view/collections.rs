@@ -121,7 +121,7 @@ pub(crate) fn rows(host: &KnownHost, holding: Option<usize>) -> Vec<FocusRow> {
                 _ => row,
             };
             if holding == Some(i) || (holding.is_none() && library == Some(i)) {
-                row.marked(ui::theme::palette().accent)
+                row.marked()
             } else {
                 row
             }

@@ -67,7 +67,6 @@ const MOVED: &[&str] = &[
     "game_mode",
     "audio_route",
     "cursor_gestures",
-    "theme",
     "stats_overlay",
     "gamepad_type",
     "cursor_capture",
@@ -125,7 +124,6 @@ pub fn to_shared(base: &trust::Settings, s: &Settings) -> trust::Settings {
     put(&mut t, "game_mode", &s.game_mode);
     put(&mut t, "audio_route", &s.audio_route);
     put(&mut t, "cursor_gestures", &s.cursor_gestures);
-    put(&mut t, "theme", &s.theme);
     put_raw(&mut t, GAMEPAD_UI_KEY.to_string(), &s.gamepad_ui);
     put_raw(&mut t, GAMEPAD_UI_MODE_KEY.to_string(), &s.gamepad_ui_mode);
     t
@@ -158,7 +156,6 @@ pub fn from_shared(t: &trust::Settings) -> Settings {
         game_mode: get(t, "game_mode").unwrap_or(d.game_mode),
         audio_route: get(t, "audio_route").unwrap_or(d.audio_route),
         cursor_gestures: get(t, "cursor_gestures").unwrap_or(d.cursor_gestures),
-        theme: get(t, "theme").unwrap_or(d.theme),
         gamepad_ui: get_raw(t, GAMEPAD_UI_KEY).unwrap_or(d.gamepad_ui),
         gamepad_ui_mode: get_raw(t, GAMEPAD_UI_MODE_KEY).unwrap_or(d.gamepad_ui_mode),
     }
@@ -328,7 +325,7 @@ fn local_gamepad(name: &str) -> Option<GamepadType> {
 mod tests {
     use super::*;
     // Named only by the fixtures below, so they would be unused imports in a normal build.
-    use crate::core::model::{AudioRoutePref, GamepadUiMode, LogLevelOverride, ThemeChoice};
+    use crate::core::model::{AudioRoutePref, GamepadUiMode, LogLevelOverride};
 
     /// Every field survives the trip. This is the test that matters: the two UIs read the same
     /// file through this pair, so a field that does not round-trip is one the gamepad shell
@@ -357,7 +354,6 @@ mod tests {
             game_mode: true,
             audio_route: AudioRoutePref::NdlOpus,
             cursor_gestures: true,
-            theme: ThemeChoice::Funk,
             gamepad_ui: false,
             gamepad_ui_mode: GamepadUiMode::Always,
         };
@@ -409,7 +405,7 @@ mod tests {
             "another client's namespaced rows ride through untouched"
         );
         // And this client's own prefixed rows are still written alongside them.
-        assert!(written.extra.contains_key("webos.theme"));
+        assert!(written.extra.contains_key("webos.game_mode"));
     }
 
     /// The console-vs-cursor pair is the one thing this client must NOT namespace: the shared
@@ -495,18 +491,13 @@ mod tests {
         let s = from_shared(&t);
         assert_eq!((s.width, s.height, s.refresh_hz), (1920, 1080, 60));
         assert_eq!(s.codec, CodecPref::H264);
-        assert_eq!(s.theme, Settings::default().theme);
     }
 
     /// The discriminator that protects a real user's file. A document this client wrote before
     /// the move must be recognised as legacy, and one it writes after must not be.
     #[test]
     fn tells_the_two_shapes_apart() {
-        let legacy = serde_json::to_value(Settings {
-            theme: ThemeChoice::Funk,
-            ..Settings::default()
-        })
-        .expect("encode");
+        let legacy = serde_json::to_value(Settings { ..Settings::default() }).expect("encode");
         assert!(legacy_shape(&legacy), "this client's own shape is legacy");
 
         let moved = serde_json::to_value(to_shared(&trust::Settings::default(), &Settings::default())).expect("encode");
@@ -532,7 +523,6 @@ mod tests {
             codec: CodecPref::Hevc,
             gamepad_type: GamepadType::SwitchPro,
             audio_route: AudioRoutePref::NdlOpus,
-            theme: ThemeChoice::Funk,
             game_mode: true,
             ..Settings::default()
         };

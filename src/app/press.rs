@@ -14,13 +14,7 @@ impl App {
     /// Routes one `MenuEvent` to the open screen — the single dispatch table, which
     /// `press`, `back` and the runtime's event pump all come through. `Some` only when
     /// the event launched a stream.
-    pub(crate) fn handle_menu_event(
-        &mut self,
-        ev: MenuEvent,
-        screen_w: u32,
-        screen_h: u32,
-        _fonts: &ui::text::Fonts,
-    ) -> Option<ConnectTarget> {
+    pub(crate) fn handle_menu_event(&mut self, ev: MenuEvent, screen_w: u32, screen_h: u32) -> Option<ConnectTarget> {
         // Anything but a confirm moves focus or closes the screen, so a dip still running
         // from an earlier press belongs to a widget that is no longer under the cursor.
         if ev != MenuEvent::Confirm {
@@ -56,12 +50,12 @@ impl App {
     /// The action runs immediately; the dip is retired afterwards rather than gated
     /// beforehand, because whether a button opens anything is the screen handler's
     /// business and a list of which ones do would be one more thing to keep in step.
-    pub(crate) fn press(&mut self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<ConnectTarget> {
+    pub(crate) fn press(&mut self, screen_w: u32, screen_h: u32) -> Option<ConnectTarget> {
         let before = self.nav.screen;
         if self.pressable() {
             self.render.press.arm();
         }
-        let launched = self.handle_menu_event(MenuEvent::Confirm, screen_w, screen_h, fonts);
+        let launched = self.handle_menu_event(MenuEvent::Confirm, screen_w, screen_h);
         if self.nav.screen != before || launched.is_some() {
             self.render.press.take();
         }
