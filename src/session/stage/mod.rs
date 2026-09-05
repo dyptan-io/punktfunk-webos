@@ -63,7 +63,8 @@ pub enum SinkResult {
     /// Fed to the decoder. `decode_us` is the latency figure for the host's ABR
     /// controller, present only when the sink was built with `report_decode_latency`.
     Presented { decode_us: Option<u32> },
-    /// Skipped — still frozen, waiting for a re-anchor.
+    /// Nothing reached the decoder — frozen, or the play was refused — and no keyframe request
+    /// is due yet.
     Held,
     /// Skipped or failed, and the throttle allows asking the host for a keyframe now.
     NeedKeyframe,
@@ -319,13 +320,6 @@ impl VideoStage {
             self.au_base_ns = None;
             return SinkResult::Held;
         };
-        // Only a completed AU is a frame — a session feeding pieces would otherwise count one
-        // picture several times, and the overlay reads this figure as pictures per second.
-        if partial {
-            self.parts_fed += 1;
-        } else {
-            self.frames += 1;
-        }
         let flags = FrameFlags {
             reanchor: frame.reanchor,
             recovery_mark: frame.recovery_mark,
@@ -334,10 +328,19 @@ impl VideoStage {
             partial,
         };
         let result = self.feed(frame.data, frame.pts_ns, flags);
-        // The piece never reached the decoder (a hold swallowed it, an error refused it, the
-        // decoder is gone), so the AU cannot be completed. Forgetting it costs the rest of one AU;
-        // keeping it would eventually feed a frame with a hole in it.
-        if !matches!(result, SinkResult::Presented { .. }) {
+        if matches!(result, SinkResult::Presented { .. }) {
+            // Counted once the decoder took it, never on arrival: the overlay reads `frames` as
+            // pictures per second, and a held delivery is not one. Only a completed AU is a
+            // picture — pieces would count one several times.
+            if partial {
+                self.parts_fed += 1;
+            } else {
+                self.frames += 1;
+            }
+        } else {
+            // The piece never reached the decoder (a hold swallowed it, an error refused it, the
+            // decoder is gone), so the AU cannot be completed. Forgetting it costs the rest of
+            // one AU; keeping it would eventually feed a frame with a hole in it.
             self.parts.drop_open();
             // The AU this was accumulating for will never complete, so it must not be added to
             // whatever AU comes next — nor may its stamp be repeated onto one.
@@ -388,23 +391,26 @@ impl VideoStage {
             self.au_feed_us = 0;
         }
 
-        let (decode_us, failed_keyframe) = match play_result {
-            Ok(()) if flags.partial => (None, false),
+        match play_result {
+            Ok(()) if flags.partial => SinkResult::Presented { decode_us: None },
             Ok(()) => {
                 // NDL exposes no decoded-output callback. Its render-buffer depth is presentation
                 // lead, not decoder latency, and feeding it into ABR created false learned caps at
                 // 4K120. `play` duration is the only measured decoder-pressure signal available:
                 // when input backpressures, it rises naturally.
-                let decode_us = self.cfg.report_decode_latency.then_some(au_feed_us);
-                (decode_us, false)
+                SinkResult::Presented {
+                    decode_us: self.cfg.report_decode_latency.then_some(au_feed_us),
+                }
             }
-            Err(e) => (None, self.on_play_error(&e, &flags, base_ns)),
-        };
-
-        if failed_keyframe {
-            SinkResult::NeedKeyframe
-        } else {
-            SinkResult::Presented { decode_us }
+            // A refused piece was not presented whatever the throttle says; `Held` keeps the
+            // caller's AU bookkeeping honest where a request is not due yet.
+            Err(e) => {
+                if self.on_play_error(&e, &flags, base_ns) {
+                    SinkResult::NeedKeyframe
+                } else {
+                    SinkResult::Held
+                }
+            }
         }
     }
 
@@ -508,9 +514,11 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
-    /// A decoder that takes pieces, accepts everything, and reports whatever depth the test sets.
+    /// A decoder that takes pieces, accepts everything (or refuses everything as not loaded), and
+    /// reports whatever depth the test sets.
     struct FakeSink {
         depth: Cell<Option<u32>>,
+        refuse: bool,
     }
 
     // `Cell` is `!Sync`; the trait wants `Send` only and the test never shares it.
@@ -526,6 +534,9 @@ mod tests {
             }
         }
         fn feed(&self, _au: &[u8], _pts_ns: u64) -> anyhow::Result<()> {
+            if self.refuse {
+                return Err(NotReady.into());
+            }
             Ok(())
         }
         fn queue_depth(&self) -> Option<u32> {
@@ -534,10 +545,15 @@ mod tests {
     }
 
     fn stage(depth: Option<u32>) -> VideoStage {
+        stage_on(FakeSink {
+            depth: Cell::new(depth),
+            refuse: false,
+        })
+    }
+
+    fn stage_on(sink: FakeSink) -> VideoStage {
         VideoStage::new(
-            Box::new(FakeSink {
-                depth: Cell::new(depth),
-            }),
+            Box::new(sink),
             Arc::new(StreamStats::default()),
             SinkConfig {
                 stream_hz: 60,
@@ -610,5 +626,33 @@ mod tests {
             SinkResult::Presented { .. }
         ));
         assert!(!s.holding(), "the next AU must not read the resumed one as lost");
+    }
+
+    /// `frames` is pictures the decoder took: a held delivery is not one, and neither is a
+    /// refused play — which reports `Held`, not `Presented`, while its request is throttled.
+    #[test]
+    fn only_a_fed_picture_counts() {
+        let mut s = stage();
+        assert!(matches!(
+            s.submit(&frame(1, None, false, true)),
+            SinkResult::NeedKeyframe
+        ));
+        assert_eq!(s.frames(), 0, "held on arrival");
+        assert!(matches!(
+            s.submit(&frame(2, None, true, false)),
+            SinkResult::Presented { .. }
+        ));
+        assert_eq!(s.frames(), 1);
+
+        let mut r = stage_on(FakeSink {
+            depth: Cell::new(None),
+            refuse: true,
+        });
+        assert!(matches!(
+            r.submit(&frame(1, None, false, false)),
+            SinkResult::NeedKeyframe
+        ));
+        assert!(matches!(r.submit(&frame(2, None, false, false)), SinkResult::Held));
+        assert_eq!(r.frames(), 0, "refused twice");
     }
 }
