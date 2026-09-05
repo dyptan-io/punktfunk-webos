@@ -22,6 +22,8 @@ use crate::session;
 /// budget the loading screen has already spent.
 struct ConnectOutcome {
     handle: std::thread::JoinHandle<Result<session::Connected>>,
+    /// What was dialled, kept so a lost link can be dialled again (`stream`'s reconnect).
+    target: crate::app::ConnectTarget,
     settings: store::Settings,
     /// Whether the user's pick was `Automatic` — `settings.gamepad_type()` has already been
     /// resolved against the attached pad, so this is the only thing left that says a pad
