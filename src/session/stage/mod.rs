@@ -632,7 +632,7 @@ mod tests {
     /// refused play — which reports `Held`, not `Presented`, while its request is throttled.
     #[test]
     fn only_a_fed_picture_counts() {
-        let mut s = stage();
+        let mut s = stage(None);
         assert!(matches!(
             s.submit(&frame(1, None, false, true)),
             SinkResult::NeedKeyframe
