@@ -93,13 +93,6 @@ pub fn simple_modal_card(screen_w: u32, screen_h: u32, content_height: impl FnOn
     modal_card_rect(screen_w, screen_h, SIMPLE_MODAL_WIDTH_FRAC, height)
 }
 
-/// A button-less modal sized to its header and standard bottom padding.
-pub fn message_modal_card(screen_w: u32, screen_h: u32, fonts: &Fonts, subtitle: &str) -> Rect {
-    simple_modal_card(screen_w, screen_h, |probe| {
-        (modal_header_end_y(fonts, probe, subtitle) + 32) as u32
-    })
-}
-
 pub fn modal_close_rect(card_rect: Rect) -> Rect {
     const SIZE: u32 = 44;
     const MARGIN: i32 = 20;

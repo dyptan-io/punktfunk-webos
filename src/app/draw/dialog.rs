@@ -7,7 +7,7 @@
 
 use pf_console_ui::icons::{by_name, draw_icon};
 use pf_console_ui::theme::{self, PanelStroke, W};
-use skia_safe::{Color4f, Contains, Point, RRect, Rect};
+use skia_safe::{Canvas, Color4f, Contains, Point, RRect, Rect};
 
 use pf_console_ui::theme::Fonts;
 
@@ -60,6 +60,15 @@ impl Layout {
 
 /// The card and everything on it, centred on a `fw`×`fh` frame.
 pub(crate) fn layout(fonts: &Fonts, fw: f32, fh: f32, k: f32, subtitle: &str) -> Layout {
+    layout_with(fonts, fw, fh, k, subtitle, true)
+}
+
+/// [`layout`] for a card with nothing to press: title, body and the close mark.
+pub(crate) fn message_layout(fonts: &Fonts, fw: f32, fh: f32, k: f32, subtitle: &str) -> Layout {
+    layout_with(fonts, fw, fh, k, subtitle, false)
+}
+
+fn layout_with(fonts: &Fonts, fw: f32, fh: f32, k: f32, subtitle: &str, buttons: bool) -> Layout {
     let w = (fw * WIDTH_FRAC).round();
     let inner_w = w - 2.0 * PAD * k;
     let body = wrap(
@@ -72,7 +81,8 @@ pub(crate) fn layout(fonts: &Fonts, fw: f32, fh: f32, k: f32, subtitle: &str) ->
     let title_h = line_h(TITLE_SIZE * f64::from(k)) as f32;
     let body_line = line_h(BODY_SIZE * f64::from(k)) as f32;
     let body_h = body_line * body.len() as f32;
-    let h = (PAD + TITLE_GAP + BODY_GAP + BUTTON_H + PAD) * k + title_h + body_h;
+    let button_row = if buttons { BODY_GAP + BUTTON_H } else { 0.0 };
+    let h = (PAD + TITLE_GAP + button_row + PAD) * k + title_h + body_h;
     let card = Rect::from_xywh(((fw - w) / 2.0).round(), ((fh - h) / 2.0).round(), w, h.round());
     let title_baseline = card.top + PAD * k + title_h * 0.8;
     let body_top = card.top + PAD * k + title_h + TITLE_GAP * k;
@@ -116,9 +126,47 @@ pub(crate) fn draw(
     alpha: f32,
     dy: f32,
 ) {
+    let l = layout(f.fonts, f.w, f.h, f.k, &confirm.subtitle);
+    draw_on(f, &l, title, confirm.body_tone(), motion, alpha, dy, |c, k| {
+        draw_buttons(f, c, k, &l, confirm, focus, motion);
+    });
+}
+
+/// A card with no buttons: what a wake with no address on record, or a speed test still
+/// running, shows.
+pub(crate) fn draw_message(
+    f: &Frame<'_>,
+    title: &str,
+    body: &str,
+    tone: Color4f,
+    hover_close: bool,
+    alpha: f32,
+    dy: f32,
+) {
+    let l = message_layout(f.fonts, f.w, f.h, f.k, body);
+    let motion = Motion {
+        focus_anim: None,
+        press: ui::animation::Press::default(),
+        hover_close,
+    };
+    draw_on(f, &l, title, tone, Some(&motion), alpha, dy, |_, _| {});
+}
+
+/// The glass, title, body and close mark every dialog shares; `rest` draws what sits under
+/// the body inside the same layer.
+#[allow(clippy::too_many_arguments)]
+fn draw_on(
+    f: &Frame<'_>,
+    l: &Layout,
+    title: &str,
+    body_tone: Color4f,
+    motion: Option<&Motion>,
+    alpha: f32,
+    dy: f32,
+    rest: impl FnOnce(&Canvas, f32),
+) {
     let c = f.canvas;
     let k = f.k;
-    let l = layout(f.fonts, f.w, f.h, k, &confirm.subtitle);
     c.save();
     c.translate((0.0, dy));
     c.save_layer_alpha_f(Some(l.card), alpha);
@@ -143,7 +191,7 @@ pub(crate) fn draw(
             f64::from(l.body_top + body_line * (i as f32 + 0.8)),
             W::Regular,
             BODY_SIZE * f64::from(k),
-            theme::fg(0.72),
+            body_tone,
         );
     }
     // Close mark, lit under the pointer.
@@ -158,6 +206,20 @@ pub(crate) fn draw(
             theme::fg(if hover_close { 1.0 } else { 0.5 }),
         );
     }
+    rest(c, k);
+    c.restore();
+    c.restore();
+}
+
+fn draw_buttons(
+    f: &Frame<'_>,
+    c: &Canvas,
+    k: f32,
+    l: &Layout,
+    confirm: &Confirm,
+    focus: usize,
+    motion: Option<&Motion>,
+) {
     for (i, button) in confirm.buttons.iter().enumerate() {
         let focused = i == focus;
         // The focused button pops and dips on the same clocks a tile did.
@@ -220,6 +282,17 @@ fn ui_rect_to_sk(r: ui::render::Rect) -> Rect {
     super::sk(r)
 }
 
+impl Confirm {
+    /// What the body is drawn in.
+    pub(crate) fn body_tone(&self) -> Color4f {
+        if self.failed {
+            theme::ERROR
+        } else {
+            theme::fg(0.72)
+        }
+    }
+}
+
 fn with_alpha(c: Color4f, a: f32) -> Color4f {
     Color4f::new(c.r, c.g, c.b, a)
 }
@@ -240,6 +313,8 @@ pub(crate) fn title_of(screen: Screen) -> Option<&'static str> {
         Screen::RemoveCollection => view::collections::REMOVE_TITLE,
         Screen::ResetHdrCalibration => view::hdrcalibration::RESET_TITLE,
         Screen::DeleteProfile => view::profile::DELETE_TITLE,
+        Screen::Wake => "Wake this host?",
+        Screen::SpeedTest => view::speedtest::TITLE,
         _ => return None,
     })
 }
@@ -252,8 +327,36 @@ impl App {
         if !super::ported(screen) {
             return None;
         }
-        let confirm = self.confirm_for(screen)?;
-        Some(layout(&self.fonts, w as f32, h as f32, scale(h), &confirm.subtitle))
+        let (fw, fh, k) = (w as f32, h as f32, scale(h));
+        match self.confirm_for(screen) {
+            Some(confirm) => Some(layout(&self.fonts, fw, fh, k, &confirm.subtitle)),
+            None => {
+                let (_, body, _) = self.message_card(screen)?;
+                Some(message_layout(&self.fonts, fw, fh, k, &body))
+            }
+        }
+    }
+
+    /// The buttonless card a screen shows while it has nothing to confirm: title, body and
+    /// the body's tone. Wake without an address on record; a speed test still running.
+    pub(crate) fn message_card(&self, screen: Screen) -> Option<(&'static str, String, Color4f)> {
+        match screen {
+            Screen::Wake => {
+                let wake = self.screens.wake.as_ref()?;
+                Some(("Host unreachable", view::wake::status_text(wake), theme::fg(0.72)))
+            }
+            Screen::SpeedTest => {
+                let state = self.screens.speed_test.as_ref();
+                let failed = matches!(state, Some(crate::app::state::speedtest::SpeedTestState::Failed(_)));
+                let tone = if failed { theme::ERROR } else { theme::fg(0.72) };
+                Some((
+                    view::speedtest::TITLE,
+                    view::speedtest::status(state, &self.screens.speed_test_name),
+                    tone,
+                ))
+            }
+            _ => None,
+        }
     }
 }
 
