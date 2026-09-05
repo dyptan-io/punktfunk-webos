@@ -244,7 +244,8 @@ impl pf_console_ui::SettingsStore for PageStore {
 
 impl App {
     pub(crate) fn open_settings_page(&mut self) {
-        self.screens.settings_page.column = false;
+        // The page column takes focus first; OK or Right on a page moves into its rows.
+        self.screens.settings_page.column = true;
         self.nav.enter(Screen::SettingsPage, 0);
         if self.screens.settings_page.page == Page::Display {
             self.jobs.root_probe_owed = self.hosts.rooted.is_none() && self.jobs.rooted.is_none();
@@ -465,23 +466,15 @@ impl App {
             return;
         };
         match ev {
-            // Left reaches the page column from every row but a slider, whose track is the one
-            // control where Left visibly means "less". Everything else steps with Right and
-            // cycles with OK, so the column is never more than one press away.
-            MenuEvent::Left if self.settings_row_is_slider(cursor) => self.step_row(row, -1, false),
-            MenuEvent::Left | MenuEvent::Back => self.screens.settings_page.column = true,
+            // Left and Right step the row; Back is the way back to the page column, and the
+            // column's own Back is the way out.
+            MenuEvent::Left => self.step_row(row, -1, false),
             MenuEvent::Right => self.step_row(row, 1, false),
+            MenuEvent::Back => self.screens.settings_page.column = true,
             MenuEvent::Confirm => self.activate_row(row),
             MenuEvent::Secondary => self.clear_override(row),
             MenuEvent::Up | MenuEvent::Down => {}
         }
-    }
-
-    /// Whether row `cursor` of the open page is a slider — the one row Left adjusts.
-    pub(crate) fn settings_row_is_slider(&self, cursor: usize) -> bool {
-        self.settings_page_specs()
-            .get(cursor)
-            .is_some_and(|spec| matches!(spec.control, pf_console_ui::widgets::Control::Slider(_)))
     }
 
     pub(crate) fn show_page(&mut self, page: Page) {

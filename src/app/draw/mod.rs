@@ -442,11 +442,6 @@ impl App {
         }
         let len = self.row_count();
         let cursor = self.nav.cursor(crate::app::nav::ScreenKey::of(screen));
-        // On a settings row Left leaves for the page column unless the row is a slider, so
-        // the value must not slip as if it had stepped.
-        if ev == E::Left && screen == Screen::SettingsPage && !self.settings_row_is_slider(cursor) {
-            return;
-        }
         let kit = match ev {
             E::Up => K::Move(MenuDir::Up),
             E::Down => K::Move(MenuDir::Down),
