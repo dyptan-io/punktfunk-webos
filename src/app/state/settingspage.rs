@@ -19,7 +19,8 @@ use crate::app::nav::ScreenKey;
 use crate::app::{menu, App};
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
-use crate::services::store::{self, shared};
+use crate::core::settings::TvSettings;
+use crate::services::store;
 
 /// The page map. Labels are the desktop shells'; marks are the six the desktop's nav uses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -252,7 +253,7 @@ impl App {
 
     /// The document this scope edits: the global one, or the profile's overlay applied to it.
     fn scope_settings(&self) -> trust::Settings {
-        let global = shared::to_shared(&self.shared_base, &self.settings_ui.settings);
+        let global = self.settings_ui.settings.clone();
         match &self.screens.settings_page.scope {
             Scope::Global => global,
             Scope::Profile(id) => self
@@ -299,7 +300,7 @@ impl App {
             .map(|kind| pf_client_core::menu_nav::PadInfo {
                 name: format!("{kind:?}"),
                 key: "0".into(),
-                pref: shared::gamepad_pref(kind),
+                pref: crate::core::settings::gamepad_pref(kind),
                 steam_virtual: false,
                 battery: None,
                 detail: String::new(),
@@ -325,7 +326,7 @@ impl App {
                 }
                 let shown = match row {
                     Row::Kit(id) => engine::row_on(id, pf_console_ui::Platform::WebOS) && engine::row_applies(id, ctx),
-                    Row::ResetHdr => self.settings_ui.settings.hdr_calibrated,
+                    Row::ResetHdr => self.settings_ui.settings.hdr_calibrated(),
                     _ => true,
                 };
                 if shown {
@@ -342,7 +343,7 @@ impl App {
         let overlay = self.scope_profile().map(|p| p.overrides.clone());
         let rows = self.settings_page_rows();
         let profiles: Vec<(String, String)> = self.profiles.iter().map(|p| (p.id.clone(), p.name.clone())).collect();
-        let core = self.settings_ui.settings;
+        let core = self.settings_ui.settings.clone();
         self.with_engine(&mut settings, |ctx| {
             rows.iter()
                 .map(|&(row, header)| {
@@ -359,7 +360,7 @@ impl App {
                         }
                         Row::Editing => RowSpec::choice("Editing", self.scope_label()),
                         Row::GameMode => {
-                            let spec = RowSpec::toggle("Game mode", core.game_mode)
+                            let spec = RowSpec::toggle("Game mode", core.game_mode())
                                 .with_note("Asks the TV to switch its picture mode for the stream");
                             match self.hosts.rooted {
                                 Some(true) => spec,
@@ -384,8 +385,8 @@ impl App {
                             None => RowSpec::field("No controller detected", String::new(), "Connect one to your TV"),
                         },
                         Row::Version => RowSpec::field("Punktfunk", store::VERSION.to_string(), ""),
-                        Row::LogLevel => RowSpec::choice("Log level", menu::log_level_label(core.log_level_override)),
-                        Row::ShowLogs => RowSpec::toggle("Show logs", core.show_logs),
+                        Row::LogLevel => RowSpec::choice("Log level", menu::log_level_label(core.log_level_override())),
+                        Row::ShowLogs => RowSpec::toggle("Show logs", core.show_logs()),
                         Row::SendLogs => RowSpec::action(
                             if self.send_logs_host_ready() {
                                 "Send logs to the host"
@@ -416,7 +417,7 @@ impl App {
 
     /// The TV's own reason a shared row is fixed here — caps the handshake narrows, a pad that
     /// is not in the room. The console's engine gates on platform; this gates on the set.
-    fn tv_lock(&self, id: RowId, core: &store::Settings) -> Option<String> {
+    fn tv_lock(&self, id: RowId, core: &trust::Settings) -> Option<String> {
         let row = match id {
             RowId::Hdr => menu::SettingsRow::Hdr,
             RowId::Codec => menu::SettingsRow::Codec,
@@ -501,8 +502,8 @@ impl App {
                 }
             }
             Row::ShowLogs => {
-                let on = !self.settings_ui.settings.show_logs;
-                self.settings_ui.settings.show_logs = on;
+                let on = !self.settings_ui.settings.show_logs();
+                self.settings_ui.settings.set_show_logs(on);
                 crate::runtime::set_log_overlay_enabled(on);
                 self.persist();
             }
@@ -522,10 +523,12 @@ impl App {
         match row {
             Row::Editing => self.step_scope(delta),
             Row::LogLevel => {
-                let cur = menu::log_level_dropdown_current_index(self.settings_ui.settings.log_level_override);
+                let cur = menu::log_level_dropdown_current_index(self.settings_ui.settings.log_level_override());
                 let next = menu::cycle_index(cur, menu::LOG_LEVEL_OPTIONS.len(), delta >= 0);
-                self.settings_ui.settings.log_level_override = menu::LOG_LEVEL_OPTIONS[next];
-                crate::logger::set_level_override(self.settings_ui.settings.log_level_override);
+                self.settings_ui
+                    .settings
+                    .set_log_level_override(menu::LOG_LEVEL_OPTIONS[next]);
+                crate::logger::set_level_override(self.settings_ui.settings.log_level_override());
                 self.persist();
             }
             Row::Kit(id) => {
@@ -545,10 +548,9 @@ impl App {
     fn write_scope(&mut self, before: &trust::Settings, after: &trust::Settings) {
         match self.screens.settings_page.scope.clone() {
             Scope::Global => {
-                let mut core = shared::from_shared(after);
-                core.clamp_to_caps();
-                self.settings_ui.settings = core;
-                self.shared_base = shared::to_shared(after, &core);
+                let mut document = after.clone();
+                document.clamp_to_caps();
+                self.settings_ui.settings = document;
                 self.persist();
             }
             Scope::Profile(id) => {
@@ -598,7 +600,9 @@ impl App {
         if self.hosts.rooted != Some(true) {
             return;
         }
-        self.settings_ui.settings.game_mode = !self.settings_ui.settings.game_mode;
+        self.settings_ui
+            .settings
+            .set_game_mode(!self.settings_ui.settings.game_mode());
         self.persist();
     }
 
@@ -632,8 +636,8 @@ impl App {
     /// again, and every stream start would keep paying for luna calls that can only fail.
     fn settle_rooted(&mut self, rooted: bool) {
         self.hosts.rooted = Some(rooted);
-        if !rooted && self.settings_ui.settings.game_mode {
-            self.settings_ui.settings.game_mode = false;
+        if !rooted && self.settings_ui.settings.game_mode() {
+            self.settings_ui.settings.set_game_mode(false);
             self.persist();
         }
     }

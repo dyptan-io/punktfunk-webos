@@ -33,6 +33,7 @@ use crate::core::event::MenuEvent;
 use crate::core::model;
 pub use crate::core::model::ConnectTarget;
 pub use crate::core::screen::{HomeFocus, PairingFocus, Screen};
+use crate::core::settings::TvSettings;
 use crate::services::discovery::Discovery;
 use crate::services::library::GameEntry;
 use crate::services::store::{self, KnownHost};
@@ -122,9 +123,6 @@ pub struct App {
     /// webOS on-screen keyboard up (moves address form from under panel).
     pub(crate) keyboard_shown: bool,
     pub(crate) identity: (String, String),
-    /// The stored settings object's fields this UI does not model, carried so a save from here
-    /// does not reset them — see [`store::Persisted::shared_base`].
-    shared_base: pf_client_core::trust::Settings,
     /// The settings-profile catalog ([`store::Persisted::profiles`]). Held rather than re-read
     /// because [`App::persist`] rebuilds the whole document from these fields, so anything not
     /// here is dropped on the next save.
@@ -221,7 +219,6 @@ impl App {
             selected_host,
             version: _,
             profiles,
-            shared_base,
         } = loaded;
         let entries = known_entries(&known_hosts);
 
@@ -260,7 +257,6 @@ impl App {
             detected_gamepad_type: None,
             keyboard_shown: false,
             identity,
-            shared_base,
             profiles,
             last_tick: None,
             fonts,
@@ -279,7 +275,7 @@ impl App {
             }
         }
         // Applies the persisted "Show logs" preference to the otherwise-ephemeral overlay.
-        if app.settings_ui.settings.show_logs {
+        if app.settings_ui.settings.show_logs() {
             crate::runtime::set_log_overlay_enabled(true);
         }
         app
@@ -288,7 +284,7 @@ impl App {
     /// Publish the kit's palette for this frame from the shared document's `ui_palette` —
     /// the same row every gamepad surface reads, so the two UIs cannot differ in colour.
     pub(crate) fn apply_ink(&self) {
-        let palette = pf_console_ui::library::palette(&self.shared_base.ui_palette);
+        let palette = pf_console_ui::library::palette(&self.settings_ui.settings.ui_palette);
         crate::app::draw::set_current_palette(palette.id);
         pf_console_ui::theme::set_ink(pf_console_ui::theme::Ink::of(palette));
     }
@@ -665,17 +661,13 @@ impl App {
     /// The document as this App holds it right now.
     pub(crate) fn persisted(&self) -> store::Persisted {
         store::Persisted {
-            settings: self.settings_ui.settings,
+            settings: self.settings_ui.settings.clone(),
             known_hosts: self.hosts.known.clone(),
             selected_host: self.library.selected_host.clone(),
             // Always this build's version: whatever wrote the document last is what a future
             // migration needs to know, and that is now us.
             version: Some(store::VERSION.to_string()),
             profiles: self.profiles.clone(),
-            // Carried, never rebuilt: this UI models a subset of the stored schema, and
-            // dropping the rest here would reset the gamepad shell's own rows every time
-            // anything on this side was saved. See [`store::Persisted::shared_base`].
-            shared_base: self.shared_base.clone(),
         }
     }
 
@@ -684,10 +676,10 @@ impl App {
     /// whatever is actually attached rather than for the word itself.
     pub(crate) fn dualsense_limited(&self) -> bool {
         let settings = &self.settings_ui.settings;
-        let effective = if settings.gamepad_type == store::GamepadType::Auto {
+        let effective = if settings.gamepad_type() == store::GamepadType::Auto {
             self.detected_gamepad_type.unwrap_or_default()
         } else {
-            settings.gamepad_type
+            settings.gamepad_type()
         };
         effective.is_dualsense() && !crate::platform::webos::dualsense::hid_playstation_bound()
     }

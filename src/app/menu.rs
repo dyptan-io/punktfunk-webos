@@ -4,6 +4,7 @@
 
 use crate::core::caps::video_caps;
 use crate::core::event::MenuEvent;
+use crate::core::settings::TvSettings;
 use crate::services::store::{AudioRoutePref, CodecPref, ExitAction, GamepadType, LogLevelOverride, Settings};
 use crate::ui::focus::Dir;
 
@@ -159,7 +160,7 @@ pub(crate) fn row_lock(row: SettingsRow, settings: &Settings, detected: Option<G
     let caps = video_caps();
     match row {
         SettingsRow::Hdr if !caps.hdr => Some(RowLock::NoHdr),
-        SettingsRow::Hdr if settings.codec == CodecPref::H264 => Some(RowLock::HdrNeedsHevc),
+        SettingsRow::Hdr if settings.codec_pref() == CodecPref::H264 => Some(RowLock::HdrNeedsHevc),
         SettingsRow::Codec if caps.codec_prefs().len() < 2 => Some(RowLock::OneCodec),
         // Device before route: where the client itself decodes stereo only, no audio-processing
         // pick could widen it, and naming one would send the user somewhere that cannot help.
@@ -169,7 +170,7 @@ pub(crate) fn row_lock(row: SettingsRow, settings: &Settings, detected: Option<G
         SettingsRow::GamepadUi | SettingsRow::GamepadUiMode if !CONSOLE_UI_BUILT => Some(RowLock::NoShell),
         // The mode decides nothing while the switch above it is off. Greyed, not hidden: the
         // dependency is the point, and it sits directly under the row that lifts it.
-        SettingsRow::GamepadUiMode if !settings.gamepad_ui => Some(RowLock::ConsoleOff),
+        SettingsRow::GamepadUiMode if !settings.gamepad_ui() => Some(RowLock::ConsoleOff),
         _ => None,
     }
 }
@@ -209,7 +210,7 @@ const AUDIO_CHANNELS: [(u8, &str); 3] = [(2, "Stereo"), (6, "5.1 surround"), (8,
 /// can put on a speaker (`AudioRoutePref::max_channels`). Not filtered by the TV's current
 /// Sound Out: that one changes under a running app and is applied per session instead.
 pub fn audio_channel_options(settings: &Settings) -> &'static [(u8, &'static str)] {
-    channel_options_up_to(settings.audio_route.max_channels(video_caps()))
+    channel_options_up_to(settings.audio_route().max_channels(video_caps()))
 }
 
 /// The prefix of [`AUDIO_CHANNELS`] a `max`-channel ceiling leaves.

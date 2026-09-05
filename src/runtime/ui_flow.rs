@@ -1,6 +1,7 @@
 use super::overlay::{self, ConfirmAction, ConfirmDialog, Notification};
 use super::*;
 use crate::console::ConsoleGl;
+use crate::core::settings::TvSettings;
 use crate::services::store::ExitAction;
 use crate::ui::render::Size;
 
@@ -204,9 +205,9 @@ pub(super) fn run_ui_flow(
                         .unwrap_or_else(|| store::DESKTOP_PIN_ID.to_string()),
                 ));
                 let mut settings = app.launch_settings(&target);
-                let gamepad_auto = settings.gamepad_type == store::GamepadType::Auto;
+                let gamepad_auto = settings.gamepad_type() == store::GamepadType::Auto;
                 settings = resolve_gamepad_type(settings, game_controller);
-                let handle = spawn_connect(identity.clone(), target, settings)?;
+                let handle = spawn_connect(identity.clone(), target, settings.clone())?;
                 connect_handle = Some((handle, settings, gamepad_auto));
             }
         }
@@ -440,7 +441,7 @@ pub(super) fn run_ui_flow(
     // stay, so the next entry is not a cold start.
     gl.release_resources();
     Ok(match connect_handle {
-        Some((handle, settings, gamepad_auto)) => UiOutcome::Launch(ConnectOutcome {
+        Some((handle, settings, gamepad_auto)) => UiOutcome::Launch(Box::new(ConnectOutcome {
             handle,
             settings,
             gamepad_auto,
@@ -448,7 +449,7 @@ pub(super) fn run_ui_flow(
             // Carried into the stream so a Quit from there honours it too — that path never
             // comes back through this loop.
             exit_plan: app.exit_plan(),
-        }),
+        })),
         None => quit(&app),
     })
 }

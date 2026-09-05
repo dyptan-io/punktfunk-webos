@@ -1,5 +1,6 @@
 use super::overlay::{self, ConfirmAction, ConfirmDialog};
 use super::*;
+use crate::core::settings::TvSettings;
 use crate::platform::webos::device;
 use crate::platform::webos::input::{
     webos_scancode_down as key_down, WEBOS_BLUE_KEYCODE, WEBOS_EXIT_SCANCODE, WEBOS_GREEN_SCANCODE,
@@ -166,7 +167,7 @@ pub(super) fn run_inner() -> Result<()> {
             first_frame_deadline,
             exit_plan,
         } = match ui {
-            UiOutcome::Launch(outcome) => outcome,
+            UiOutcome::Launch(outcome) => *outcome,
             UiOutcome::Quit(plan) => break 'menu plan,
             // The flip: re-enter and read the setting again.
             UiOutcome::Reenter => continue 'menu,
@@ -210,7 +211,7 @@ pub(super) fn run_inner() -> Result<()> {
         // Local pointer hidden unless "Cursor capture" is off — otherwise it and the host's own
         // forwarded-position cursor read as "the pointer doesn't match the mouse".
         let mut cursor = cursor::Cursor::new(sdl.mouse());
-        cursor.set_captured(settings.cursor_capture);
+        cursor.set_captured(settings.cursor_capture());
         cursor.flush(canvas.window());
 
         // `None` when the session decodes audio somewhere other than here (punktfunk's NDL Opus
@@ -250,7 +251,7 @@ pub(super) fn run_inner() -> Result<()> {
         };
         // Experimental: Game picture/sound mode, app-plane stand-in for HDMI ALLM. Best-effort;
         // reverted on stream exit. See `game_mode`.
-        let restore_tv_modes = if settings.game_mode {
+        let restore_tv_modes = if settings.game_mode() {
             crate::platform::webos::game_mode::enter(connected.hdr())
         } else {
             Vec::new()
@@ -272,8 +273,8 @@ pub(super) fn run_inner() -> Result<()> {
         let mut pad_audio_thread = None;
         if let Some(envelope) = &haptics {
             connected.client.set_pad_audio_caps(0, pad_audio_caps);
-            if settings.gamepad_type.is_dualsense() {
-                if let Some(ev) = gamepad::arrival_event(settings.gamepad_type, 0, pad_audio_caps) {
+            if settings.gamepad_type().is_dualsense() {
+                if let Some(ev) = gamepad::arrival_event(settings.gamepad_type(), 0, pad_audio_caps) {
                     for _ in 0..ARRIVAL_SENDS {
                         connected.send_input(&ev);
                     }
@@ -294,10 +295,10 @@ pub(super) fn run_inner() -> Result<()> {
         };
         // See `open_ds_feedback`. The envelope rides along so a Bluetooth pad plays the coil lane
         // itself (tier A); it is harmless on the spawn route, which never claims it.
-        let mut ds_feedback = open_ds_feedback(settings.gamepad_type, haptics.clone());
+        let mut ds_feedback = open_ds_feedback(settings.gamepad_type(), haptics.clone());
         // The pad kind the host currently builds for pad 0: the handshake default until a
         // controller plugged in mid-stream declares another one.
-        let mut declared_pad = settings.gamepad_type;
+        let mut declared_pad = settings.gamepad_type();
 
         let mut scroll_acc = mouse::ScrollAccumulator::default();
         // Every button the client synthesizes rather than forwards: the remote's OK gestures and
@@ -309,7 +310,7 @@ pub(super) fn run_inner() -> Result<()> {
         // the compositor sees Ctrl/Alt/Shift and warps its pointer mid-click; mouse nodes follow
         // Capture: on = exclusive relative grab, off = compositor keeps the pointer to aim with.
         let input = connected.input();
-        let hid = crate::platform::webos::evdev::HidInput::start(true, settings.cursor_capture, move |report| {
+        let hid = crate::platform::webos::evdev::HidInput::start(true, settings.cursor_capture(), move |report| {
             use crate::platform::webos::evdev::HidReport;
             match report {
                 HidReport::Input(ev) => input.send(ev),
@@ -327,7 +328,7 @@ pub(super) fn run_inner() -> Result<()> {
         // every counter the overlay is the only reader of. Seeded here; from the first tick on it
         // is DERIVED from the fade below rather than set alongside the toggle, so there is one
         // writer and no second copy of the state to keep in step.
-        let mut stats_enabled = settings.stats_overlay;
+        let mut stats_enabled = settings.stats_overlay();
         connected.stats().set_diagnostics(stats_enabled);
         // Fades in/out on the same curve as the toast below — see `ModalFade::visibility_alpha`.
         let mut stats_fade = crate::ui::fade::ModalFade::<()>::overlay();
@@ -389,7 +390,7 @@ pub(super) fn run_inner() -> Result<()> {
                 connected.disconnect_quit();
                 break 'running StreamOutcome::Quit;
             }
-            if settings.cursor_capture
+            if settings.cursor_capture()
                 && !hid_device_seen
                 && hid
                     .as_ref()
@@ -588,7 +589,7 @@ pub(super) fn run_inner() -> Result<()> {
                             // Relative only for the remote alone: SDL's warp emulation is off
                             // whenever the evdev reader owns motion, so the remote sends
                             // absolute — also the better fit for a device the user aims.
-                            let relative = settings.cursor_capture && !hid_device_seen;
+                            let relative = settings.cursor_capture() && !hid_device_seen;
                             let ev = if relative {
                                 mouse::move_relative_event(xrel, yrel)
                             } else {
@@ -618,11 +619,11 @@ pub(super) fn run_inner() -> Result<()> {
                         x,
                         y,
                         ..
-                    } if !hid_clicks && settings.cursor_gestures => buttons.ok_press(x, y),
+                    } if !hid_clicks && settings.cursor_gestures() => buttons.ok_press(x, y),
                     Event::MouseButtonUp {
                         mouse_btn: sdl2::mouse::MouseButton::Left,
                         ..
-                    } if !hid_clicks && settings.cursor_gestures => buttons.ok_release(|ev| connected.send_input(ev)),
+                    } if !hid_clicks && settings.cursor_gestures() => buttons.ok_release(|ev| connected.send_input(ev)),
                     Event::MouseButtonDown { mouse_btn, .. } if !hid_clicks => {
                         if let Some(ev) = mouse::button_event(mouse_btn, true) {
                             connected.send_input(&ev);
@@ -712,7 +713,7 @@ pub(super) fn run_inner() -> Result<()> {
             // to aim with. Recaptured on dismiss. The evdev reader releases its grabs for the
             // same window in either Capture mode — the dialog needs the remote's keys as much
             // as its pointer, and holding a grab would only leave a HID device dead meanwhile.
-            let want_captured = settings.cursor_capture && !disconnect.is_open();
+            let want_captured = settings.cursor_capture() && !disconnect.is_open();
             if want_captured != cursor.is_captured() {
                 cursor.set_captured(want_captured);
             }

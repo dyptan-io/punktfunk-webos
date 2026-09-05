@@ -18,6 +18,7 @@ use pf_console_ui::{Console, ConsoleEntry, ConsoleHandles, ConsoleOptions, Input
 use super::*;
 use crate::console::Service;
 use crate::core::perf::{ArtSnapshot, Perf};
+use crate::core::settings::TvSettings;
 use crate::services::store::console::ConsoleStore;
 use crate::services::store::{shared, StateWriter};
 
@@ -365,7 +366,7 @@ pub(super) fn run(
         // failure goes back to the menu with the reason, exactly as the old flow does.
         if connect.as_ref().is_some_and(|(h, ..)| h.is_finished()) {
             let (handle, settings, gamepad_auto) = connect.take().expect("just checked");
-            break 'ui UiOutcome::Launch(ConnectOutcome {
+            break 'ui UiOutcome::Launch(Box::new(ConnectOutcome {
                 handle,
                 settings,
                 gamepad_auto,
@@ -373,7 +374,7 @@ pub(super) fn run(
                 // streaming loop starts the first-frame wait fresh.
                 first_frame_deadline: None,
                 exit_plan: exit_plan(&service, identity),
-            });
+            }));
         }
 
         // Draw.
@@ -401,13 +402,13 @@ pub(super) fn run(
         // printing the host's Xbox default over a DualSense. An explicit pick still wins:
         // someone who chose a pad kind wants its glyphs whatever is attached.
         let pad_pref = pad.map(|_| {
-            let stored = state.settings.gamepad_type;
+            let stored = state.settings.gamepad_type();
             let kind = if stored == store::GamepadType::Auto {
                 crate::platform::webos::gamepad::detect_type(game_controller).unwrap_or(stored)
             } else {
                 stored
             };
-            shared::gamepad_pref(kind)
+            crate::core::settings::gamepad_pref(kind)
         });
         if let (Some(pad), Some(pref)) = (pad, pad_pref) {
             pads.push(pad_info(pad, pref));
@@ -487,7 +488,7 @@ pub(super) fn bring_up<'a>(
 /// agreeing until the next pad arrives.
 fn leave_for_classic(store: &Arc<ConsoleStore>) -> UiOutcome {
     store.edit(|state| {
-        state.settings.gamepad_ui = false;
+        state.settings.set_gamepad_ui(false);
         true
     });
     // Not a quit: `UiOutcome::Quit` ends the app. The streaming loop's menu loop re-enters
@@ -518,7 +519,7 @@ fn start_launch(
         .or_else(|| shared::parse_fp(fp_hex))
         .context("that host isn't paired with this TV yet")?;
     let mut settings = shared::launch_settings(&state, addr, port, launch.as_deref(), None);
-    let gamepad_auto = settings.gamepad_type == store::GamepadType::Auto;
+    let gamepad_auto = settings.gamepad_type() == store::GamepadType::Auto;
     settings = resolve_gamepad_type(settings, game_controller);
     let target = crate::app::ConnectTarget {
         host: addr.to_string(),
@@ -526,7 +527,7 @@ fn start_launch(
         fingerprint,
         launch,
     };
-    let handle = spawn_connect(identity.clone(), target, settings)?;
+    let handle = spawn_connect(identity.clone(), target, settings.clone())?;
     Ok((handle, settings, gamepad_auto))
 }
 
