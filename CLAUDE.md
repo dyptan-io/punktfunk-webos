@@ -75,10 +75,12 @@ are exhaustive over `Screen`, so the compiler asks.
 - **The kit's list widget mirrors `nav`'s cursor, never the reverse.** `App::kit_list_visual`
   feeds it the event for the look (recoil, dip, slip); the meaning is the App's handler.
 - **NDL is `dlopen`'d, never linked** — a `DT_NEEDED` breaks webOS 4 startup before `main`.
-- **`settings.json` stores a schema wider than `Settings`.** It is `pf_client_core::trust::
-  Settings`, shared with every other client, and this one models a subset — so
-  `Persisted::shared_base` carries the rest and `shared::to_shared` writes over it. Rebuilding
-  the object from `Settings` alone resets the gamepad shell's own rows on the next save.
+- **`settings.json` is the shared schema, stored whole.** Settings are `pf_client_core::
+  trust::Settings` (this TV's rows under `webos.*`, read through `core::settings::TvSettings`)
+  and each host is `trust::KnownHost` flattened into `core::model::KnownHost` (plan D8). Never
+  rebuild either from parts: a field this client does not model is another client's, and
+  dropping it resets that client's row on the next save. There is no migration path — a
+  document this build cannot read is replaced by defaults.
 - **A test behind the arm gate never runs**: `task test` builds the host target, and an armv7
   test binary cannot execute on a runner. Real logic goes in `services::store::shared`
   (ungated, tested); only glue goes behind the gate.
