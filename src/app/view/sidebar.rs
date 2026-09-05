@@ -5,7 +5,7 @@ use crate::ui;
 use crate::ui::render::Rect;
 
 /// Where the host rows start: under the 40 px mark and its title (plan D7).
-pub const TOP_Y: i32 = 120;
+pub const TOP_Y: i32 = 172;
 
 /// Every nav position's rect, in order: the host rows and "+ Add host" stacked from
 /// [`TOP_Y`], then "Settings" pinned to the bottom of the panel — a spacer slot between

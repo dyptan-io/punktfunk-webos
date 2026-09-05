@@ -9,10 +9,9 @@ use std::time::Instant;
 use pf_console_ui::icons::{by_name, draw_icon};
 use pf_console_ui::theme::{self, PanelStroke, W};
 use pf_console_ui::{launcher_icons, os_marks};
-use skia_safe::canvas::SaveLayerRec;
 use skia_safe::{
-    image_filters, images, BlendMode, BlurStyle, ClipOp, Color4f, Data, FilterMode, Image, ImageInfo, MaskFilter,
-    MipmapMode, Paint, RRect, Rect, SamplingOptions, TileMode,
+    images, BlendMode, BlurStyle, ClipOp, Color4f, Data, FilterMode, Image, ImageInfo, MaskFilter, MipmapMode, Paint,
+    RRect, Rect, SamplingOptions,
 };
 
 use super::{line_h, panel, sk, Frame};
@@ -31,9 +30,10 @@ const VALUE: f32 = 20.0;
 const TITLE: f32 = 40.0;
 const CAPTION: f32 = 14.0;
 pub(crate) const CARD_RADIUS: f32 = 10.0;
-/// Plan D7: a 40 px mark beside the sidebar's title, in place of the wordmark band.
-const MARK_SIDE: f32 = 40.0;
-const HEADER_Y: f32 = 44.0;
+/// Plan D7: the app mark top left, the "Hosts" title under it, in place of the wordmark band.
+const MARK_SIDE: f32 = 64.0;
+const HEADER_Y: f32 = 28.0;
+const HEADER_GAP: f32 = 14.0;
 const HEADER_SIZE: f32 = 26.0;
 const SIDEBAR_ICON: f32 = 30.0;
 const SIDEBAR_ICON_PAD: f32 = 20.0;
@@ -190,7 +190,7 @@ impl App {
         let c = f.canvas;
         c.save_layer_alpha_f(Some(block), alpha);
         // Square-cornered: a full-width cut across the bottom edge, not a card.
-        theme::panel(c, block, 0.0, None, PanelStroke::Plain(0.0), f.k);
+        c.draw_rect(block, &theme::fill(super::surface()));
         let max_w = available_w - 2.0 * view::home::GRID_PAD as f32;
         let lines = super::wrap(f.fonts, text, W::Medium, size, f64::from(max_w));
         let shown = lines.len().min(2);
@@ -214,18 +214,17 @@ impl App {
         let panel_rect = Rect::from_xywh(0.0, 0.0, SIDEBAR_W as f32, f.h);
         // Opaque on every look, glass included: a lit edge against the grid reads as a seam.
         c.draw_rect(panel_rect, &theme::fill(panel()));
-        let mut x = SIDEBAR_PAD as f32;
+        let x = SIDEBAR_PAD as f32;
         if let Some(icon) = app_icon() {
             let at = Rect::from_xywh(x, HEADER_Y, MARK_SIDE, MARK_SIDE);
             c.draw_image_rect_with_sampling_options(icon, None, at, linear(), &Paint::default());
-            x += MARK_SIDE + 14.0;
         }
         let size = px(f, HEADER_SIZE);
         f.fonts.draw(
             c,
             "Hosts",
             f64::from(x),
-            f64::from(HEADER_Y + MARK_SIDE / 2.0) + size * 0.36,
+            f64::from(HEADER_Y + MARK_SIDE + HEADER_GAP) + size * 0.8,
             W::SemiBold,
             size,
             theme::fg(1.0),
@@ -506,19 +505,8 @@ impl App {
         c.save();
         c.clip_rrect(rr(r), ClipOp::Intersect, true);
         c.clip_rect(window, ClipOp::Intersect, true);
-        // Glass over the art: the backdrop blurred, then the panel's tint.
-        if let Some(blur) = image_filters::blur((super::GLASS_BLUR, super::GLASS_BLUR), TileMode::Clamp, None, None) {
-            c.save_layer(&SaveLayerRec::default().bounds(&window).backdrop(&blur));
-            c.restore();
-        }
-        theme::panel(
-            c,
-            window.with_outset((CARD_RADIUS, 0.0)),
-            0.0,
-            None,
-            PanelStroke::Plain(0.0),
-            1.0,
-        );
+        // An opaque strip over the art, the same face every card wears.
+        c.draw_rect(window, &theme::fill(super::surface()));
         let overridden = self.game_is_bound(pin_id);
         let size = px(f, VALUE);
         let title_top = window.top;

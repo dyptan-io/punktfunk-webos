@@ -448,6 +448,7 @@ impl App {
                     self.show_page(Page::ALL[next]);
                 }
                 MenuEvent::Right | MenuEvent::Confirm => self.screens.settings_page.column = false,
+                // Back from the page column is the way out; from the rows it is the way here.
                 MenuEvent::Back => self.leave_settings_page(),
                 MenuEvent::Left | MenuEvent::Secondary => {}
             }
@@ -464,16 +465,23 @@ impl App {
             return;
         };
         match ev {
-            MenuEvent::Left if matches!(row, Row::Kit(_) | Row::Editing | Row::LogLevel) => {
-                self.step_row(row, -1, false)
-            }
-            MenuEvent::Left => self.screens.settings_page.column = true,
+            // Left reaches the page column from every row but a slider, whose track is the one
+            // control where Left visibly means "less". Everything else steps with Right and
+            // cycles with OK, so the column is never more than one press away.
+            MenuEvent::Left if self.settings_row_is_slider(cursor) => self.step_row(row, -1, false),
+            MenuEvent::Left | MenuEvent::Back => self.screens.settings_page.column = true,
             MenuEvent::Right => self.step_row(row, 1, false),
             MenuEvent::Confirm => self.activate_row(row),
             MenuEvent::Secondary => self.clear_override(row),
-            MenuEvent::Back => self.leave_settings_page(),
             MenuEvent::Up | MenuEvent::Down => {}
         }
+    }
+
+    /// Whether row `cursor` of the open page is a slider — the one row Left adjusts.
+    pub(crate) fn settings_row_is_slider(&self, cursor: usize) -> bool {
+        self.settings_page_specs()
+            .get(cursor)
+            .is_some_and(|spec| matches!(spec.control, pf_console_ui::widgets::Control::Slider(_)))
     }
 
     pub(crate) fn show_page(&mut self, page: Page) {
