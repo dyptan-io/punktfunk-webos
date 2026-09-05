@@ -1,3 +1,4 @@
+use super::overlay::{self, ConfirmAction, ConfirmDialog};
 use super::*;
 use crate::platform::webos::device;
 use crate::platform::webos::input::{
@@ -63,7 +64,6 @@ pub(super) fn run_inner() -> Result<()> {
     // and a pad's touchpad must not be one at all (`mouse::is_touch_emulated`).
     sdl2::hint::set("SDL_TOUCH_MOUSE_EVENTS", "0");
     let sdl = sdl2::init().map_err(|e| anyhow::anyhow!("SDL_Init: {e}"))?;
-    let ttf = sdl2::ttf::init().map_err(|e| anyhow::anyhow!("SDL_ttf init: {e}"))?;
     let video = sdl.video().map_err(|e| anyhow::anyhow!("SDL video subsystem: {e}"))?;
     let game_controller = sdl
         .game_controller()
@@ -104,31 +104,15 @@ pub(super) fn run_inner() -> Result<()> {
         .accelerated()
         .build()
         .map_err(|e| anyhow::anyhow!("create canvas: {e}"))?;
-    let texture_creator = canvas.texture_creator();
     tracing::info!("window + canvas created (renderer: {})", canvas.info().name);
-
-    // The stream's overlays (stats, log tail, disconnect dialog, toast): tiny-skia rasterizes
-    // them, SDL's renderer composites over the transparent window — see `compositor.rs`. The
-    // menus draw on the console's GL context instead (`console_gl` below).
-    let mut compositor = Compositor::new();
 
     let mut events = sdl.event_pump().map_err(|e| anyhow::anyhow!("event pump: {e}"))?;
 
     let identity = store::load_or_create_identity().context("load_or_create_identity")?;
 
-    // Sized for a 10-foot TV viewing distance.
-    let typefaces = crate::platform::webos::text_sdl::Typefaces {
-        text: crate::app::assets::geist,
-        icon: crate::app::assets::ICON_FONT_BYTES,
-    };
-    let text_raster = crate::platform::webos::text_sdl::SdlTextRaster::new(&ttf, display_mode.h as u32, &typefaces)?;
-    let fonts = crate::ui::text::Fonts {
-        raster: &text_raster,
-        label: crate::ui::text::FontId::Label,
-        value: crate::ui::text::FontId::Value,
-        icon: crate::ui::text::FontId::Icon,
-        caption: crate::ui::text::FontId::Caption,
-    };
+    // The overlays' fonts: the kit's, the same faces every screen draws with.
+    let overlay_fonts = pf_console_ui::theme::build_fonts().context("overlay fonts")?;
+    let display = (display_mode.w as u32, display_mode.h as u32);
 
     // Owned above the loop, not re-declared per iteration: `ControllerDeviceAdded` fires only
     // once per physical (re)connection, so a pad opened earlier must carry across screens.
@@ -169,7 +153,6 @@ pub(super) fn run_inner() -> Result<()> {
                 &mut controller,
                 &identity,
                 display_mode,
-                &fonts,
                 menu_status.take(),
                 menu_toast.take(),
             )?
@@ -223,12 +206,7 @@ pub(super) fn run_inner() -> Result<()> {
         // `hide()` unmaps the surface entirely, silently breaking the Magic Remote's pointer
         // forwarding since Wayland has nowhere left to route motion. aurora-tv never hides its
         // window either — stays mapped, cleared fully transparent so the video shows through.
-        canvas.set_draw_color(sdl2::pixels::Color::RGBA(0, 0, 0, 0));
-        canvas.clear();
-        canvas.present();
-        // Release UI GPU textures before the stream takes the GPU; re-populated on menu return.
-        tracing::debug!("releasing all compositor textures for stream handoff");
-        compositor.clear_all();
+        overlay::wipe(&mut console_gl, &canvas, &overlay_fonts)?;
         // Local pointer hidden unless "Cursor capture" is off — otherwise it and the host's own
         // forwarded-position cursor read as "the pointer doesn't match the mouse".
         let mut cursor = cursor::Cursor::new(sdl.mouse());
@@ -369,20 +347,16 @@ pub(super) fn run_inner() -> Result<()> {
         let mut text_input = TextInputController::new(canvas.window().subsystem().text_input());
         // Transient toasts. `overlay_was_active` catches the fade-out edge so the canvas gets
         // wiped once; `stats_dst`/`log_dst` recomposite each frame at their own slower cadence.
-        let mut notif = crate::ui::widgets::Notification::new();
-        let mut toast = super::toast::Toast::default();
+        let mut notif = overlay::Notification::new();
         // Edge-detects `stats.holding` (freeze-until-reanchor — see `session::pump`'s video pump) so a
         // packet-loss stall surfaces as a toast even with the stats overlay off, same signal the
         // overlay's "Beat" line already reads.
         let mut was_holding = false;
         let mut overlay_was_active = false;
-        // The two overlays' own rasterized-text cache, long-lived and separate from anything
-        // the menu owns: their content is dynamic (a log tail, per-frame figures), so it must
-        // not settle into the UI cache — and rebuilding at ~2Hz from an empty map, as this
-        // used to, threw away every glyph run the previous rebuild had already rasterized.
-        let mut overlay_text = crate::ui::text::TextCache::with_capacity(OVERLAY_TEXT_CAP);
-        let mut stats_dst: Option<crate::ui::render::Rect> = None;
-        let mut log_dst: Option<crate::ui::render::Rect> = None;
+        // The stats card's lines and the log tail, rebuilt on their 500 ms cadence and drawn
+        // as they stand on every overlay frame between.
+        let mut stats_lines: Vec<String> = Vec::new();
+        let mut log_lines: Vec<String> = Vec::new();
         let mut stats_built_at: Option<Instant> = None;
         let mut overlay_last: Option<Instant> = None;
         let mut overlay_prev_frames: u64 = 0;
@@ -393,11 +367,9 @@ pub(super) fn run_inner() -> Result<()> {
         let mut disconnect = ConfirmDialog::new(
             "Stop streaming?",
             "The stream will end and you'll return to the menu.",
-            crate::ui::widgets::confirm_buttons(
-                Some(crate::ui::theme::icons().close),
-                "Stop streaming",
-                crate::ui::theme::palette().error,
-            ),
+            Some(crate::app::view::icons::ICON_CLOSE),
+            "Stop streaming",
+            crate::app::screens::confirm::Tone::Danger,
         );
         // Gamepad routes to the disconnect dialog — see `DisconnectChord`.
         let mut chord = DisconnectChord::default();
@@ -506,7 +478,7 @@ pub(super) fn run_inner() -> Result<()> {
                     }
                     // Dialog open: navigate it only, don't forward input to the host.
                     _ if disconnect.is_open() => {
-                        match disconnect.handle_event(&event, display_mode.w as u32, display_mode.h as u32, &fonts) {
+                        match disconnect.handle_event(&event, &overlay_fonts, display.0, display.1) {
                             Some(ConfirmAction::Confirmed) => {
                                 tracing::info!("disconnecting to menu");
                                 client_initiated_disconnect = true;
@@ -751,25 +723,18 @@ pub(super) fn run_inner() -> Result<()> {
             // ticks, used below to skip the stats overlay for exactly those ticks.
             let dialog_frame = disconnect.frame();
             if dialog_frame.is_some() {
-                // Own clear/present pass over the punch-through video, unlike the menu's
-                // shared command list.
-                let mut cmds = Vec::new();
-                disconnect.draw(
-                    &mut SdlTiles {
-                        compositor: &mut compositor,
-                        creator: &texture_creator,
+                // Own pass over the punch-through video: the dialog alone, on a transparent
+                // clear (NDL video is on a hardware plane below this surface, so no blur).
+                overlay::frame(
+                    &mut console_gl,
+                    &canvas,
+                    &overlay_fonts,
+                    display,
+                    overlay::TRANSPARENT,
+                    |f| {
+                        disconnect.draw(f);
                     },
-                    &fonts,
-                    crate::ui::render::Size::new(display_mode.w as u32, display_mode.h as u32),
-                    // Not blurrable: NDL video is on a hardware plane below this surface.
-                    false,
-                    &mut cmds,
                 )?;
-                canvas.set_blend_mode(sdl2::render::BlendMode::None);
-                canvas.set_draw_color(sdl2::pixels::Color::RGBA(0, 0, 0, 0));
-                canvas.clear();
-                compositor.present(&mut canvas, &cmds)?;
-                canvas.present();
             } else if disconnect.tick() {
                 // Close-fade just finished. Confirmed Disconnect: break now, nothing to wipe
                 // since the pre-stream UI takes the canvas next.
@@ -777,11 +742,7 @@ pub(super) fn run_inner() -> Result<()> {
                     break 'running outcome;
                 }
                 // Cancel/Back: wipe the last frame so it doesn't stick over the video.
-                canvas.set_draw_color(sdl2::pixels::Color::RGBA(0, 0, 0, 0));
-                canvas.clear();
-                canvas.present();
-                canvas.clear();
-                canvas.present();
+                overlay::wipe(&mut console_gl, &canvas, &overlay_fonts)?;
             }
             // Audio drains on its own threads either way now — the software path on
             // `session::pump`'s feed thread into SDL's audio callback, the offloaded path on
@@ -794,7 +755,11 @@ pub(super) fn run_inner() -> Result<()> {
             //
             // `log_overlay_lines()` deferred to the throttled block below, not called every
             // ~2ms tick — it locks the same mutex log writes contend on ~500x/s.
-            let notif_frame = if dialog_frame.is_none() { notif.frame() } else { None };
+            let notif_frame = if dialog_frame.is_none() {
+                notif.frame().map(|(t, a)| (t.to_string(), a))
+            } else {
+                None
+            };
             let notif_active = notif_frame.is_some();
             // Fade in/out on the toast's curve instead of cutting instantly; `visibility_alpha`
             // keeps returning `Some` through the close fade after the toggle itself flips off.
@@ -806,12 +771,8 @@ pub(super) fn run_inner() -> Result<()> {
             let log_alpha = log_fade.visibility_alpha(log_overlay_on);
             let overlay_active = stats_alpha.is_some() || log_alpha.is_some() || notif_active;
             if overlay_was_active && !overlay_active {
-                // Nothing else clears this canvas — the faded-out tile would stick otherwise.
-                canvas.set_draw_color(sdl2::pixels::Color::RGBA(0, 0, 0, 0));
-                canvas.clear();
-                canvas.present();
-                canvas.clear();
-                canvas.present();
+                // Nothing else clears this window — the faded-out card would stick otherwise.
+                overlay::wipe(&mut console_gl, &canvas, &overlay_fonts)?;
             }
             overlay_was_active = overlay_active;
             // A fade in flight needs frequent frames; steady-state stats/log are fine at ~2Hz.
@@ -823,7 +784,6 @@ pub(super) fn run_inner() -> Result<()> {
             };
             if overlay_active && dialog_frame.is_none() && overlay_last.is_none_or(|t| t.elapsed() >= redraw_interval) {
                 overlay_last = Some(Instant::now());
-                let mut cmds: Vec<DrawCmd> = Vec::new();
                 // Content stays on a 500ms cadence even when a toast fade runs the loop faster.
                 if stats_enabled && stats_built_at.is_none_or(|t| t.elapsed() >= Duration::from_millis(500)) {
                     stats_built_at = Some(Instant::now());
@@ -931,81 +891,31 @@ pub(super) fn run_inner() -> Result<()> {
                     if let Some(line) = cpu_mem_line {
                         lines.push(line);
                     }
-                    match crate::ui::rasterize(
-                        crate::ui::tiles::StatsOverlayTile {
-                            lines: &lines,
-                            hint: "Press green button to hide this overlay",
-                        },
-                        &mut overlay_text,
-                        &fonts,
-                    ) {
-                        Ok(tile) => {
-                            let (tw, th) = (tile.width(), tile.height());
-                            compositor.upload(&texture_creator, tile::STATS_OVERLAY, &tile, false)?;
-                            stats_dst = Some(crate::ui::render::Rect::new(
-                                display_mode.w - tw as i32 - 24,
-                                24,
-                                tw,
-                                th,
-                            ));
-                        }
-                        Err(e) => tracing::warn!("stats overlay render failed: {e:#}"),
-                    }
+                    stats_lines = lines;
                 }
-                if let Some(alpha) = stats_alpha {
-                    if let Some(dst) = stats_dst {
-                        cmds.push(DrawCmd::Tex {
-                            tile: tile::STATS_OVERLAY,
-                            dst,
-                            alpha: (alpha * 255.0) as u8,
-                        });
-                    }
-                }
-                // `None` during fade-out once the toggle flips Off — the fade keeps
-                // recompositing the last uploaded tile via `log_dst`.
+                // `None` during fade-out once the toggle flips Off — the fade keeps drawing
+                // the last lines read.
                 if let Some(lines) = log_overlay_lines() {
-                    match crate::ui::rasterize(
-                        crate::ui::tiles::LogOverlayTile {
-                            screen_w: display_mode.w as u32,
-                            lines: &lines,
-                        },
-                        &mut overlay_text,
-                        &fonts,
-                    ) {
-                        Ok(tile) => {
-                            let (tw, th) = (tile.width(), tile.height());
-                            compositor.upload(&texture_creator, tile::LOG_OVERLAY, &tile, false)?;
-                            log_dst = Some(crate::ui::render::Rect::new(0, display_mode.h - th as i32, tw, th));
+                    log_lines = lines;
+                }
+                overlay::frame(
+                    &mut console_gl,
+                    &canvas,
+                    &overlay_fonts,
+                    display,
+                    overlay::TRANSPARENT,
+                    |f| {
+                        if let Some(alpha) = stats_alpha {
+                            overlay::stats(f, &stats_lines, "Press green button to hide this overlay", alpha);
                         }
-                        Err(e) => tracing::warn!("log overlay render failed: {e:#}"),
-                    }
-                }
-                if let Some(alpha) = log_alpha {
-                    if let Some(dst) = log_dst {
-                        cmds.push(DrawCmd::Tex {
-                            tile: tile::LOG_OVERLAY,
-                            dst,
-                            alpha: (alpha * 255.0) as u8,
-                        });
-                    }
-                }
-                toast.draw(
-                    &mut SdlTiles {
-                        compositor: &mut compositor,
-                        creator: &texture_creator,
+                        if let Some(alpha) = log_alpha {
+                            overlay::log(f, &log_lines, alpha);
+                        }
+                        if let Some((text, alpha)) = &notif_frame {
+                            overlay::toast(f, text, *alpha);
+                        }
                     },
-                    (&fonts, &mut overlay_text),
-                    &notif_frame,
-                    display_mode.w,
-                    &mut cmds,
                 )?;
-                if !cmds.is_empty() {
-                    canvas.set_blend_mode(sdl2::render::BlendMode::None);
-                    canvas.set_draw_color(sdl2::pixels::Color::RGBA(0, 0, 0, 0));
-                    canvas.clear();
-                    compositor.present(&mut canvas, &cmds)?;
-                    canvas.present();
-                }
             }
             // The decoder is gone for this load (`core::media::VideoSink::is_dead`, set by the
             // pump). The transport is still healthy, so nothing below would ever end the session

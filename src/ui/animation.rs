@@ -1,4 +1,4 @@
-use crate::ui::render::{Rect, RectF};
+use crate::ui::render::Rect;
 use std::time::{Duration, Instant};
 
 /// How long a focused widget takes to pop to its zoomed size.
@@ -77,26 +77,6 @@ impl Press {
 
     fn offset(self) -> f32 {
         PRESS_DROP * (1.0 - anim_frac(self.0, PRESS_POP))
-    }
-}
-
-/// Subpixel counterpart for whole-texture row tiles, avoiding stepped 2% zooms.
-pub fn focus_row_tile_rect_f(rect: Rect, focus_anim: Option<Instant>, press: Press) -> RectF {
-    let mut dst = focus_row_scaled_rect(rect, focus_anim);
-    dst.y += press.offset();
-    dst
-}
-
-fn focus_row_scaled_rect(rect: Rect, focus_anim: Option<Instant>) -> RectF {
-    let base = rect.inflate(crate::ui::tiles::ROW_TILE_PAD);
-    let scale = zoom_scale(anim_frac(focus_anim, FOCUS_POP), FOCUS_GROWTH);
-    let w = base.width() as f32 * scale;
-    let h = base.height() as f32 * scale;
-    RectF {
-        x: base.x() as f32 + (base.width() as f32 - w) / 2.0,
-        y: base.y() as f32 + (base.height() as f32 - h) / 2.0,
-        w,
-        h,
     }
 }
 

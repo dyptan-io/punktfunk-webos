@@ -19,16 +19,20 @@ pub fn nav_rows(row_count: usize, screen_h: u32) -> Vec<Rect> {
         ui::widgets::SIDEBAR_W - 2 * ui::widgets::SIDEBAR_PAD as u32,
         (screen_h as i32 - ui::widgets::SIDEBAR_PAD - TOP_Y).max(0) as u32,
     );
-    let above = row_count.saturating_sub(1);
-    let slots = std::iter::repeat_n(ui::layout::Constraint::Length(ui::widgets::SIDEBAR_ROW_H), above).chain([
-        ui::layout::Constraint::Fill(1),
-        ui::layout::Constraint::Length(ui::widgets::SIDEBAR_ROW_H),
-    ]);
-    let mut rects = ui::layout::Layout::vertical(slots)
-        .gap(ui::widgets::SIDEBAR_ROW_GAP)
-        .split(column);
-    rects.remove(above);
-    rects.truncate(row_count);
+    let row_h = ui::widgets::SIDEBAR_ROW_H;
+    let stride = row_h as i32 + ui::widgets::SIDEBAR_ROW_GAP;
+    let mut rects: Vec<Rect> = (0..row_count.saturating_sub(1))
+        .map(|i| Rect::new(column.x(), column.y() + i as i32 * stride, column.width(), row_h))
+        .collect();
+    if row_count > 0 {
+        // The last position (Settings) is pinned to the panel's bottom.
+        rects.push(Rect::new(
+            column.x(),
+            column.bottom() - row_h as i32,
+            column.width(),
+            row_h,
+        ));
+    }
     rects
 }
 

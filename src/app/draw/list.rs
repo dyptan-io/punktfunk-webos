@@ -186,7 +186,7 @@ pub(crate) fn row_spec(row: &FocusRow) -> RowSpec {
         spec.adjustable = false;
     }
     spec.danger = row.danger;
-    spec.dot = row.mark.is_some();
+    spec.dot = row.marked;
     spec.icon = lucide_for(row.icon);
     spec.note = row.subtext.as_ref().map(|s| s.text.clone());
     spec

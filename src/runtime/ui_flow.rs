@@ -1,8 +1,8 @@
+use super::overlay::{self, ConfirmAction, ConfirmDialog, Notification};
 use super::*;
-use crate::app::render::skia::SkiaTiles;
 use crate::console::ConsoleGl;
 use crate::services::store::ExitAction;
-use crate::ui::render::{Size, TileSink};
+use crate::ui::render::Size;
 
 /// Runs the UI (host list -> pairing -> settings) until the user confirms a
 /// connect target or the system asks the app to close (`None`). A plain
@@ -10,9 +10,8 @@ use crate::ui::render::{Size, TileSink};
 /// reference would hold that borrow for as long as the closure value exists,
 /// which conflicts with using them again in the streaming loop right after.
 ///
-/// Draws on the console's GL context (`console::gl`), the same one the shell uses: the tiles
-/// the CPU raster path still builds go up as Skia images (`app::render::skia`), and every
-/// screen ported to the console kit draws straight onto the canvas.
+/// Draws on the console's GL context (`console::gl`), the same one the shell uses: every
+/// screen draws itself on the kit (`app::draw`), the overlays too (`runtime::overlay`).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_ui_flow(
     canvas: &mut sdl2::render::Canvas<sdl2::video::Window>,
@@ -22,7 +21,6 @@ pub(super) fn run_ui_flow(
     controller: &mut Option<GameController>,
     identity: &(String, String),
     display_mode: sdl2::video::DisplayMode,
-    fonts: &crate::ui::text::Fonts,
     initial_status: Option<String>,
     initial_toast: Option<String>,
 ) -> Result<UiOutcome> {
@@ -46,15 +44,12 @@ pub(super) fn run_ui_flow(
     // Seeded here for the same reason: the hotplug events fire once per connect, and this
     // entry may follow one. Refreshed on both arms below.
     let mut pad_connected = gamepad::any_pad_connected(game_controller);
-    // Tile cache (render loop's, not App's) and the images drawn from it. Both per menu entry.
-    let mut images = SkiaTiles::new();
     // Status from last connect attempt (sticky so reload progress doesn't erase it).
     if initial_status.is_some() {
         app.set_home_status(initial_status, true);
     }
-    // Toast widget (same as stream loop). Shown once as Home re-appears.
-    let mut notif = crate::ui::widgets::Notification::new();
-    let mut toast = super::toast::Toast::default();
+    // Toast (same as the stream loop). Shown once as Home re-appears.
+    let mut notif = Notification::new();
     if let Some(msg) = initial_toast {
         notif.show(msg);
     }
@@ -92,23 +87,16 @@ pub(super) fn run_ui_flow(
     let mut yellow_held = false;
     let mut home_held = false;
     let mut log_overlay_last: Option<Instant> = None;
-    // The two overlays' own rasterized-text cache, long-lived and separate from anything
-    // the menu owns: their content is dynamic (a log tail, per-frame figures), so it must
-    // not settle into the UI cache — and rebuilding at ~2Hz from an empty map, as this
-    // used to, threw away every glyph run the previous rebuild had already rasterized.
-    let mut overlay_text = crate::ui::text::TextCache::with_capacity(OVERLAY_TEXT_CAP);
-    // Cache last overlay tile size for idle frames (no re-render if size stable).
-    let mut log_overlay_dims: Option<(u32, u32)> = None;
+    // The log tail's lines, refreshed on the ~2Hz cadence rather than read per frame.
+    let mut log_lines: Option<Vec<String>> = None;
     // `quit_dialog_was_active` catches the close-fade's final frame so it gets one last
     // redraw-on-change tick to wipe the dialog off the menu.
     let mut quit_dialog = ConfirmDialog::new(
         "Quit app?",
         "Punktfunk will close and you'll return to the webOS home screen.",
-        crate::ui::widgets::confirm_buttons(
-            Some(crate::ui::theme::icons().close),
-            "Quit",
-            crate::ui::theme::palette().error,
-        ),
+        Some(crate::app::view::icons::ICON_CLOSE),
+        "Quit",
+        crate::app::screens::confirm::Tone::Danger,
     );
     let mut exit_held = false;
     // Controller routes to the quit dialog the same way it routes to the disconnect
@@ -172,7 +160,7 @@ pub(super) fn run_ui_flow(
         if app.launch_anim.is_none() {
             if let Some(ev) = input.nav_repeat_due() {
                 dirty = true;
-                match dispatch_menu_event(&mut app, ev, display_mode, fonts) {
+                match dispatch_menu_event(&mut app, ev, display_mode) {
                     EventAction::Next => {}
                     EventAction::Launch => break 'ui,
                 }
@@ -312,7 +300,7 @@ pub(super) fn run_ui_flow(
             // The quit dialog owns input while open — navigate it only, don't let the
             // event reach the menu underneath (same split as the streaming loop).
             if quit_dialog.is_open() {
-                match quit_dialog.handle_event(&event, display_mode.w as u32, display_mode.h as u32, fonts) {
+                match quit_dialog.handle_event(&event, &kit_fonts, display_mode.w as u32, display_mode.h as u32) {
                     Some(ConfirmAction::Confirmed) => {
                         tracing::info!("quit confirmed from menu");
                         return Ok(quit(&app));
@@ -334,7 +322,7 @@ pub(super) fn run_ui_flow(
                 dirty = true;
                 continue;
             }
-            match handle_ui_event(&mut app, event, &mut input, display_mode, fonts, &mut dirty) {
+            match handle_ui_event(&mut app, event, &mut input, display_mode, &mut dirty) {
                 EventAction::Next => {}
                 EventAction::Launch => break 'ui,
             }
@@ -352,7 +340,7 @@ pub(super) fn run_ui_flow(
             }
         }
         let rect = wants_text.then(|| {
-            app.address_field_rect(display_mode.w as u32, display_mode.h as u32, fonts)
+            app.address_field_rect(display_mode.w as u32, display_mode.h as u32)
                 .map(|r| sdl2::rect::Rect::new(r.x(), r.y(), r.width(), r.height()))
         });
         text_input.set_active(wants_text, rect.flatten());
@@ -373,7 +361,7 @@ pub(super) fn run_ui_flow(
         }
         // Polled every tick like the streaming loop's toast, not gated behind
         // `content_dirty` — its own fade needs frames regardless of anything else.
-        let notif_frame = notif.frame();
+        let notif_frame = notif.frame().map(|(t, a)| (t.to_string(), a));
         // The dip has played out (see `App::press`) — the tile springs back.
         if app.poll_press() {
             dirty = true;
@@ -401,61 +389,14 @@ pub(super) fn run_ui_flow(
         // Advance per-tick app state (card size, modal fades) exactly once before drawing.
         app.advance_frame(display_mode.w as u32);
         app.prepare_frame(Size::new(display_mode.w as u32, display_mode.h as u32));
-        // The overlays still drawn as tiles (log overlay, toast, quit dialog) go on this list.
-        let mut cmds = Vec::new();
-        // Appended into the same single draw list/present as the rest of the
-        // screen — this loop has no separate overlay pass (see the streaming
-        // loop's `tile::LOG_OVERLAY` handling for why that one differs).
-        //
-        // Text is only re-rendered/re-uploaded when `log_overlay_due` (~2Hz) —
-        // otherwise every animation tick (scroll, focus pop, hover) while the
-        // overlay is on would re-rasterize and re-upload it on every single
-        // frame instead of twice a second, which is what made the menu feel
-        // laggy with the overlay enabled (the streaming loop already gated
-        // this correctly; this one didn't).
-        if let Some(lines) = log_overlay_lines() {
-            if log_overlay_due {
-                log_overlay_last = Some(Instant::now());
-                match crate::ui::rasterize(
-                    crate::ui::tiles::LogOverlayTile {
-                        screen_w: display_mode.w as u32,
-                        lines: &lines,
-                    },
-                    &mut overlay_text,
-                    fonts,
-                ) {
-                    Ok(tile) => {
-                        log_overlay_dims = Some((tile.width(), tile.height()));
-                        images.upload(tile::LOG_OVERLAY, &tile, false)?;
-                    }
-                    Err(e) => tracing::warn!("log overlay render failed: {e:#}"),
-                }
-            }
-            if let Some((tw, th)) = log_overlay_dims {
-                cmds.push(DrawCmd::Tex {
-                    tile: tile::LOG_OVERLAY,
-                    dst: crate::ui::render::Rect::new(0, display_mode.h - th as i32, tw, th),
-                    alpha: 0xff,
-                });
-            }
+        // The log tail's text is read on the 500 ms cadence; between reads the last lines
+        // are drawn as they were, so an animating menu does not lock the log per frame.
+        if log_overlay_due {
+            log_overlay_last = Some(Instant::now());
+            log_lines = log_overlay_lines();
+        } else if log_overlay_state() == LogOverlayState::Off {
+            log_lines = None;
         }
-        toast.draw(
-            &mut images,
-            (fonts, &mut overlay_text),
-            &notif_frame,
-            display_mode.w,
-            &mut cmds,
-        )?;
-        // Quit dialog overlay, appended to this loop's single command list rather than
-        // getting its own present (unlike the stream, which draws over the video plane).
-        quit_dialog.draw(
-            &mut images,
-            fonts,
-            crate::ui::render::Size::new(display_mode.w as u32, display_mode.h as u32),
-            // Blurrable: this loop's backdrop is the framebuffer.
-            true,
-            &mut cmds,
-        )?;
         // The frame, on the GL context. Layout is in `display_mode` units; the drawable is
         // documented to differ from the window on webOS (handoff trap 10), so it is scaled
         // rather than assumed equal.
@@ -463,29 +404,29 @@ pub(super) fn run_ui_flow(
         {
             let surface = gl.surface(dw, dh)?;
             let c = surface.canvas();
-            let bg = app.frame_clear_color();
-            c.clear(skia_safe::Color4f::new(
-                f32::from(bg.r) / 255.0,
-                f32::from(bg.g) / 255.0,
-                f32::from(bg.b) / 255.0,
-                f32::from(bg.a) / 255.0,
-            ));
+            c.clear(app.frame_clear_color());
             c.reset_matrix();
             c.scale((
                 dw as f32 / display_mode.w.max(1) as f32,
                 dh as f32 / display_mode.h.max(1) as f32,
             ));
-            // Home under the tile modals, the ported modals over them, the launch transition
-            // over everything (`app::draw`).
+            // Home, the modals, the launch transition, then the overlays (`app::draw`,
+            // `runtime::overlay`).
             app.apply_ink();
             kit_fonts.begin_frame();
             let dt = last_frame.elapsed().as_secs_f64().min(0.1);
             last_frame = Instant::now();
             let frame = crate::app::draw::Frame::new(c, &kit_fonts, display_mode.w as u32, display_mode.h as u32);
             app.draw_home(&frame);
-            images.present(c, &cmds);
             app.draw_modals(&frame, dt);
             app.draw_launch(&frame);
+            if let Some(lines) = &log_lines {
+                overlay::log(&frame, lines, 1.0);
+            }
+            if let Some((text, alpha)) = &notif_frame {
+                overlay::toast(&frame, text, *alpha);
+            }
+            quit_dialog.draw(&frame);
         }
         gl.flush();
         canvas.window().gl_swap_window();
@@ -495,9 +436,8 @@ pub(super) fn run_ui_flow(
         }
     }
     text_input.stop();
-    // Images and atlases go back before a stream takes the GPU; the context and its compiled
-    // shaders stay, so the next entry is a re-upload rather than a cold start.
-    drop(images);
+    // Atlases go back before a stream takes the GPU; the context and its compiled shaders
+    // stay, so the next entry is not a cold start.
     gl.release_resources();
     Ok(match connect_handle {
         Some((handle, settings, gamepad_auto)) => UiOutcome::Launch(ConnectOutcome {

@@ -89,17 +89,14 @@ impl GridReveal {
     /// Unlike hero backdrop (erases to uncover video), grid composites as ordinary alpha texture
     /// because it has nothing to fall back to (cards are only content).
     pub fn dissolve_mask(&mut self, now: Instant) -> (u32, u32, &[u8]) {
-        let bg = crate::ui::theme::palette().bg;
+        let g = crate::app::draw::ground();
+        let bg = [(g.r * 255.0) as u8, (g.g * 255.0) as u8, (g.b * 255.0) as u8];
         let elapsed = self
             .dissolve_since
             .map_or(f32::MAX, |t| now.saturating_duration_since(t).as_secs_f32());
-        crate::ui::animation::diagonal_mask(
-            &mut self.mask,
-            [bg.r, bg.g, bg.b],
-            crate::app::GRID_REVEAL_WAVE,
-            elapsed,
-            |revealed| 1.0 - revealed,
-        );
+        crate::ui::animation::diagonal_mask(&mut self.mask, bg, crate::app::GRID_REVEAL_WAVE, elapsed, |revealed| {
+            1.0 - revealed
+        });
         (crate::ui::animation::MASK_W, crate::ui::animation::MASK_H, &self.mask)
     }
 

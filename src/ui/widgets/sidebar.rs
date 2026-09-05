@@ -2,7 +2,7 @@
 //! row with optional selection tint, and the ⋯ actions button a row can carry.
 //!
 //! This app's own host list is `app::view::sidebar`, which composes these.
-use crate::ui::prelude::*;
+use crate::ui::render::Rect;
 
 // Sized for a 10-foot TV viewing distance, not a desktop/phone screen.
 pub const SIDEBAR_W: u32 = 460;

@@ -61,11 +61,11 @@ impl App {
     /// Transparent over the video plane: NDL is an *underlay*, and the menu's opaque
     /// background is what normally hides it. Clearing transparent instead leaves the graphics
     /// plane carrying only what is drawn over the picture.
-    pub(crate) fn frame_clear_color(&self) -> crate::ui::render::Color {
+    pub(crate) fn frame_clear_color(&self) -> skia_safe::Color4f {
         if self.video_underlay() {
-            crate::ui::render::Color::RGBA(0, 0, 0, 0)
+            skia_safe::Color4f::new(0.0, 0.0, 0.0, 0.0)
         } else {
-            crate::ui::theme::palette().bg
+            crate::app::draw::ground()
         }
     }
 }

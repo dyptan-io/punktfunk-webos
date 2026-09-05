@@ -41,3 +41,5 @@ pub const ICON_VIBRATION: &str = "\u{E62D}";
 pub const ICON_VOLUME: &str = "\u{E050}";
 /// Material `drag_indicator` — the grip that puts a row into drag mode.
 pub const ICON_REORDER: &str = "\u{E945}";
+/// A dialog's close / stop action.
+pub const ICON_CLOSE: &str = "\u{E5CD}";
