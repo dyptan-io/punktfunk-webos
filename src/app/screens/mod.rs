@@ -60,7 +60,7 @@ pub(crate) const fn over_video(screen: Screen) -> bool {
 pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
     match screen {
         Screen::Settings(_) | Screen::Collections => true,
-        // Three rows never need a viewport, so the Controller screen is a plain list modal.
+        // Five rows never need a viewport, so the Controller screen is a plain list modal.
         Screen::ControllerSettings(_)
         | Screen::Home
         | Screen::Pairing

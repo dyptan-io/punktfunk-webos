@@ -35,5 +35,9 @@ pub const ICON_GAMEPAD: &str = "\u{E338}";
 pub const ICON_PALETTE: &str = "\u{E40A}";
 pub const ICON_MOUSE: &str = "\u{E323}";
 pub const ICON_TOUCH: &str = "\u{E913}";
+/// Material `vibration` — the pad's haptic coils.
+pub const ICON_VIBRATION: &str = "\u{E62D}";
+/// Material `volume_up` — the pad's own speaker.
+pub const ICON_VOLUME: &str = "\u{E050}";
 /// Material `drag_indicator` — the grip that puts a row into drag mode.
 pub const ICON_REORDER: &str = "\u{E945}";

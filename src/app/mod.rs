@@ -802,13 +802,9 @@ impl App {
     /// caution the Controller row carries. The *effective* kind, so `Auto` answers for
     /// whatever is actually attached rather than for the word itself.
     pub(crate) fn dualsense_limited(&self) -> bool {
-        let settings = self.settings_target();
-        let effective = if settings.gamepad_type == store::GamepadType::Auto {
-            self.detected_gamepad_type.unwrap_or_default()
-        } else {
-            settings.gamepad_type
-        };
-        effective.is_dualsense() && !crate::platform::webos::dualsense::hid_playstation_bound()
+        menu::effective_gamepad(self.settings_target(), self.detected_gamepad_type)
+            .is_some_and(store::GamepadType::is_dualsense)
+            && !crate::platform::webos::dualsense::hid_playstation_bound()
     }
 
     /// This set's webOS major, for the row captions that name it. `None` where

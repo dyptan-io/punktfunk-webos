@@ -64,9 +64,10 @@ pub enum ModalFocusKey<'a> {
     /// (focused row, cursor-capture on, cursor-gestures on, which rows are overridden) — any
     /// change invalidates the tile.
     CursorSettingsRow(usize, bool, bool, SettingsOverride),
-    /// (focused row, pad kind, console switch, when it fronts, detected pad) — the focused
-    /// row is redrawn on its own tile, so every value its label can show is keyed here.
-    ControllerSettingsRow(usize, GamepadType, bool, GamepadUiMode, Option<GamepadType>),
+    /// (focused row, pad kind, its two lanes, console switch, when it fronts, detected pad,
+    /// whether the pad's lanes are locked) — the focused row is redrawn on its own tile, so
+    /// every value its label can show is keyed here.
+    ControllerSettingsRow(usize, GamepadType, bool, bool, bool, GamepadUiMode, Option<GamepadType>, bool),
     /// Which `Screen::SendLogs` button is focused (0 = Cancel, 1 = Send).
     SendLogsButton(usize),
     /// Which `Screen::RemoveCollection` button is focused (0 = Remove, 1 = Cancel).
@@ -175,9 +176,13 @@ pub enum ModalShellKey<'a> {
     /// which decides both the `Automatic` label and whether the row is locked.
     ControllerSettings {
         gamepad_type: GamepadType,
+        pad_haptics: bool,
+        pad_speaker: bool,
         gamepad_ui: bool,
         gamepad_ui_mode: GamepadUiMode,
         detected: Option<GamepadType>,
+        /// A hotplug or a kernel bind changes what the pad-lane rows are captioned with.
+        dualsense_limited: bool,
     },
     /// Fixed warning copy + two buttons — nothing screen-specific left to key on.
     SendLogs,
