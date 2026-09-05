@@ -132,41 +132,6 @@ pub(crate) fn glass_card(canvas: &Canvas, rect: Rect, corner: f32, k: f32) {
     theme::panel(canvas, rect, corner, None, PanelStroke::Gradient, k);
 }
 
-/// The Lucide mark for one of this app's Material glyphs (plan §5), for the screens drawn
-/// here while `view::icons` still speaks Material. Dies with that table in WP7.
-pub(crate) fn lucide_for(material: &str) -> Option<&'static str> {
-    use crate::app::view::icons as m;
-    Some(match material {
-        x if x == m::ICON_TV => "tv",
-        x if x == m::ICON_LOCK => "lock",
-        x if x == m::ICON_ADD => "plus",
-        x if x == m::ICON_SETTINGS => "settings",
-        x if x == m::ICON_MONITOR => "monitor",
-        x if x == m::ICON_SCHEDULE => "clock",
-        x if x == m::ICON_SIGNAL => "activity",
-        x if x == m::ICON_SUN => "sun",
-        x if x == m::ICON_POWER => "power",
-        x if x == m::ICON_DELETE => "trash-2",
-        x if x == m::ICON_EDIT => "pencil",
-        x if x == m::ICON_INFO => "info",
-        x if x == m::ICON_WRENCH => "wrench",
-        x if x == m::ICON_BUG => "bug",
-        x if x == m::ICON_CHART => "chart-column",
-        x if x == m::ICON_MEMORY => "cpu",
-        x if x == m::ICON_MOVIE => "film",
-        x if x == m::ICON_VISIBILITY => "eye",
-        x if x == m::ICON_SEND => "send",
-        x if x == m::ICON_CHECK => "check",
-        x if x == m::ICON_GAMEPAD => "gamepad-2",
-        x if x == m::ICON_PALETTE => "palette",
-        x if x == m::ICON_MOUSE => "mouse",
-        x if x == m::ICON_TOUCH => "pointer",
-        x if x == m::ICON_REORDER => "grip-vertical",
-        x if x == m::ICON_CLOSE => "x",
-        _ => return None,
-    })
-}
-
 /// An `ui::render::Rect` as Skia's.
 pub(crate) fn sk(r: ui::render::Rect) -> Rect {
     Rect::from_xywh(r.x() as f32, r.y() as f32, r.width() as f32, r.height() as f32)
