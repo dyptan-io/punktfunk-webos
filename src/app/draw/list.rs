@@ -11,7 +11,7 @@ use pf_console_ui::theme::{self, Fonts, W};
 use pf_console_ui::widgets::{MenuList, RowSpec, ROW_H};
 use skia_safe::{Contains, Point, Rect};
 
-use super::{glass_card, line_h, lucide_for, wrap, Frame};
+use super::{glass_card, line_h, wrap, Frame};
 use crate::ui::widgets::{FocusRow, RowKind};
 
 /// Card width as a share of the screen; the rows centre inside it at the kit's own width.
@@ -187,7 +187,7 @@ pub(crate) fn row_spec(row: &FocusRow) -> RowSpec {
     }
     spec.danger = row.danger;
     spec.dot = row.marked;
-    spec.icon = lucide_for(row.icon);
+    spec.icon = Some(row.icon);
     spec.note = row.subtext.as_ref().map(|s| s.text.clone());
     spec
 }

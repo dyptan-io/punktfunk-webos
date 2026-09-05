@@ -11,7 +11,7 @@ use skia_safe::{Canvas, Color4f, Contains, Point, RRect, Rect};
 
 use pf_console_ui::theme::Fonts;
 
-use super::{glass_card, line_h, lucide_for, scale, ui_rect, wrap, Frame};
+use super::{glass_card, line_h, scale, ui_rect, wrap, Frame};
 use crate::app::screens::confirm::{Confirm, Tone};
 use crate::app::view;
 use crate::app::App;
@@ -246,7 +246,7 @@ fn draw_buttons(
         }
         let color = if focused { tone } else { theme::fg(0.75) };
         let size = BODY_SIZE * f64::from(k);
-        let icon = button.icon.and_then(lucide_for).and_then(by_name);
+        let icon = button.icon.and_then(by_name);
         let icon_w = if icon.is_some() { (ICON_BOX + 8.0) * k } else { 0.0 };
         let label_w = f
             .fonts
