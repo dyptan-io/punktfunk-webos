@@ -1,20 +1,18 @@
 use super::*;
 use crate::app::render::ctx::RenderCtx;
+use crate::app::render::skia::{RawFormat, SkiaTiles};
+use crate::console::ConsoleGl;
 use crate::services::store::ExitAction;
-use crate::ui::render::Size;
+use crate::ui::render::{Size, TileSink};
 
-/// Uploads one rasterized spinner frame as `tile::spinner(idx)`'s texture.
-fn upload_spinner(
-    compositor: &mut Compositor,
-    texture_creator: &sdl2::render::TextureCreator<sdl2::video::WindowContext>,
-    idx: usize,
-) -> Result<()> {
+/// Uploads one rasterized spinner frame as `tile::spinner(idx)`'s image.
+fn upload_spinner(tiles: &mut SkiaTiles, idx: usize) -> Result<()> {
     let tile = tile::spinner(idx);
-    if compositor.has_tile(tile) {
+    if tiles.has_tile(tile) {
         return Ok(());
     }
     if let Some(frame) = crate::app::assets::spinner_frames().get(idx) {
-        compositor.upload(texture_creator, tile, frame, false)?;
+        tiles.upload(tile, frame, false)?;
     }
     Ok(())
 }
@@ -42,11 +40,14 @@ fn launch_settings(app: &App, target: &crate::core::model::ConnectTarget) -> cra
 /// function, not a closure — a closure capturing `canvas`/`events` by
 /// reference would hold that borrow for as long as the closure value exists,
 /// which conflicts with using them again in the streaming loop right after.
+///
+/// Draws on the console's GL context (`console::gl`), the same one the shell uses: the tiles
+/// the CPU raster path still builds go up as Skia images (`app::render::skia`), and every
+/// screen ported to the console kit draws straight onto the canvas.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_ui_flow(
     canvas: &mut sdl2::render::Canvas<sdl2::video::Window>,
-    compositor: &mut Compositor,
-    texture_creator: &sdl2::render::TextureCreator<sdl2::video::WindowContext>,
+    gl: &mut Option<ConsoleGl>,
     events: &mut sdl2::EventPump,
     game_controller: &sdl2::GameControllerSubsystem,
     controller: &mut Option<GameController>,
@@ -65,17 +66,20 @@ pub(super) fn run_ui_flow(
     // every 40ms spinner frame.
     const TICK_BUDGET: Duration = Duration::from_millis(16);
     canvas.window_mut().show();
+    // Both menus need it now; without a GL context there is nothing to draw with.
+    let gl = console_flow::bring_up(gl, canvas).context("menu: GL host")?;
     let mut app = App::new(identity.clone());
     // Re-poll pad type (ControllerDeviceAdded fires once per connect, not per menu entry).
     app.set_gamepad_type(gamepad::detect_type(game_controller));
     // Seeded here for the same reason: the hotplug events fire once per connect, and this
     // entry may follow one. Refreshed on both arms below.
     let mut pad_connected = gamepad::any_pad_connected(game_controller);
-    // GPU tile cache (render loop's, not App's). Recreated per menu entry.
+    // Tile cache (render loop's, not App's) and the images drawn from it. Both per menu entry.
     let mut tiles = crate::ui::cache::TileStore::new();
+    let mut images = SkiaTiles::new();
     // Upload spinner frames upfront (avoids lazy allocation stall during first spin cycle).
     for idx in 0..crate::ui::spinner::FRAMES {
-        upload_spinner(compositor, texture_creator, idx)?;
+        upload_spinner(&mut images, idx)?;
     }
     // Status from last connect attempt (sticky so reload progress doesn't erase it).
     if initial_status.is_some() {
@@ -446,31 +450,24 @@ pub(super) fn run_ui_flow(
             );
             app.prepare_tiles(&mut ctx)?
         };
-        // Free old textures before uploading new (reduce peak memory during scroll).
+        // Free old images before uploading new (reduce peak memory during scroll).
         for tile in std::mem::take(&mut app.render.evicted_tiles) {
-            compositor.drop_tile(tile);
+            images.drop_tile(tile);
         }
         // Two families upload from outside the tile store (the spinner's pre-rasterized
         // frames, the hero's raw decoded cover art); everything else is a tile the store
         // just built.
         for id in updated {
             if let Some(idx) = tile::spinner_index(id) {
-                upload_spinner(compositor, texture_creator, idx)?;
+                upload_spinner(&mut images, idx)?;
             } else if id == tile::HERO {
                 if let Some(hero) = app.render.hero.uploaded_image() {
-                    compositor.upload_raw(
-                        texture_creator,
-                        id,
-                        hero.width,
-                        hero.height,
-                        sdl2::pixels::PixelFormatEnum::RGB565,
-                        &hero.pixels,
-                    )?;
+                    images.upload_raw(id, hero.width, hero.height, RawFormat::Rgb565, &hero.pixels)?;
                 }
             } else if let Some(pm) = tiles.get(id) {
                 // The sidebar strip is the one tile that covers everything under it.
                 let opaque = id == tile::SIDEBAR;
-                compositor.upload(texture_creator, id, pm, opaque)?;
+                images.upload(id, pm, opaque)?;
             }
         }
         // The launch backdrop's dissolve: its mask is the one texture that changes every frame
@@ -478,26 +475,12 @@ pub(super) fn run_ui_flow(
         // content) — a few KB, for the second or so the wave runs.
         if app.render.hero.dissolving() {
             let (mw, mh, px) = app.render.hero.dissolve_mask(frame_start);
-            compositor.upload_raw(
-                texture_creator,
-                tile::HERO_MASK,
-                mw,
-                mh,
-                sdl2::pixels::PixelFormatEnum::ABGR8888,
-                px,
-            )?;
+            images.upload_raw(tile::HERO_MASK, mw, mh, RawFormat::Rgba8888, px)?;
         }
         // The grid's own reveal dissolve — same reasoning as the hero mask above.
         if app.render.grid.reveal.dissolving() {
             let (mw, mh, px) = app.render.grid.reveal.dissolve_mask(frame_start);
-            compositor.upload_raw(
-                texture_creator,
-                tile::GRID_REVEAL_MASK,
-                mw,
-                mh,
-                sdl2::pixels::PixelFormatEnum::ABGR8888,
-                px,
-            )?;
+            images.upload_raw(tile::GRID_REVEAL_MASK, mw, mh, RawFormat::Rgba8888, px)?;
         }
         let mut cmds = app.draw_list(&tiles, display_mode.w as u32, display_mode.h as u32, fonts);
         // Appended into the same single draw list/present as the rest of the
@@ -523,7 +506,7 @@ pub(super) fn run_ui_flow(
                 ) {
                     Ok(tile) => {
                         log_overlay_dims = Some((tile.width(), tile.height()));
-                        compositor.upload(texture_creator, tile::LOG_OVERLAY, &tile, false)?;
+                        images.upload(tile::LOG_OVERLAY, &tile, false)?;
                     }
                     Err(e) => tracing::warn!("log overlay render failed: {e:#}"),
                 }
@@ -536,37 +519,50 @@ pub(super) fn run_ui_flow(
                 });
             }
         }
-        toast.draw(
-            compositor,
-            texture_creator,
-            (fonts, &mut overlay_text),
-            &notif_frame,
-            display_mode.w,
-            &mut cmds,
-        )?;
+        toast.draw(&mut images, (fonts, &mut overlay_text), &notif_frame, display_mode.w, &mut cmds)?;
         // Quit dialog overlay, appended to this loop's single command list rather than
         // getting its own present (unlike the stream, which draws over the video plane).
         quit_dialog.draw(
-            compositor,
-            texture_creator,
+            &mut images,
             fonts,
             crate::ui::render::Size::new(display_mode.w as u32, display_mode.h as u32),
             // Blurrable: this loop's backdrop is the framebuffer.
             true,
             &mut cmds,
         )?;
-        canvas.set_blend_mode(sdl2::render::BlendMode::None);
-        let bg = app.frame_clear_color();
-        canvas.set_draw_color(sdl2::pixels::Color::RGBA(bg.r, bg.g, bg.b, bg.a));
-        canvas.clear();
-        compositor.present(canvas, &cmds)?;
-        canvas.present();
+        // The frame, on the GL context. Layout is in `display_mode` units; the drawable is
+        // documented to differ from the window on webOS (handoff trap 10), so it is scaled
+        // rather than assumed equal.
+        let (dw, dh) = canvas.window().drawable_size();
+        {
+            let surface = gl.surface(dw, dh)?;
+            let c = surface.canvas();
+            let bg = app.frame_clear_color();
+            c.clear(skia_safe::Color4f::new(
+                f32::from(bg.r) / 255.0,
+                f32::from(bg.g) / 255.0,
+                f32::from(bg.b) / 255.0,
+                f32::from(bg.a) / 255.0,
+            ));
+            c.reset_matrix();
+            c.scale((
+                dw as f32 / display_mode.w.max(1) as f32,
+                dh as f32 / display_mode.h.max(1) as f32,
+            ));
+            images.present(c, &cmds);
+        }
+        gl.flush();
+        canvas.window().gl_swap_window();
         let elapsed = frame_start.elapsed();
         if elapsed < TICK_BUDGET {
             std::thread::sleep(TICK_BUDGET - elapsed);
         }
     }
     text_input.stop();
+    // Images and atlases go back before a stream takes the GPU; the context and its compiled
+    // shaders stay, so the next entry is a re-upload rather than a cold start.
+    drop(images);
+    gl.release_resources();
     Ok(match connect_handle {
         Some((handle, settings, gamepad_auto)) => UiOutcome::Launch(ConnectOutcome {
             handle,

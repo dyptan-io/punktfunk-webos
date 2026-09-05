@@ -14,7 +14,7 @@ use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::{BlendMode, Canvas, ScaleMode, Texture, TextureCreator};
 use sdl2::video::{Window, WindowContext};
 
-use crate::ui::render::{Color, Corners, DrawCmd, FrostMask, FrostPane, Rect, TileId};
+use crate::ui::render::{Color, Corners, DrawCmd, FrostMask, FrostPane, Rect, TileId, TileSink};
 use crate::ui::theme::Glass;
 use crate::ui::Painter;
 
@@ -446,6 +446,19 @@ static RECIP_ALPHA: [u32; 256] = {
     table
 };
 
+/// The compositor as a [`TileSink`]: the texture creator travels with it, because SDL's
+/// `upload` needs one and the overlays that go through the sink do not know it.
+pub struct SdlTiles<'a> {
+    pub compositor: &'a mut Compositor,
+    pub creator: &'a TextureCreator<WindowContext>,
+}
+
+impl TileSink for SdlTiles<'_> {
+    fn upload(&mut self, tile: TileId, pm: &Painter, opaque: bool) -> Result<()> {
+        self.compositor.upload(self.creator, tile, pm, opaque)
+    }
+}
+
 impl Compositor {
     pub fn new() -> Self {
         Self {
@@ -515,51 +528,6 @@ impl Compositor {
         resolved
     }
 
-    /// Uploads already-decoded pixels to a GPU texture, replacing whatever `tile` held.
-    ///
-    /// Replaces rather than no-ops: a cached texture used to be taken as already correct, so
-    /// the one caller that reuses a tile id (the hero) had to `drop_tile` first, and any
-    /// future one that forgot would get last image's pixels and no error. The texture object
-    /// itself is still reused when the shape matches — same idiom as [`upload`](Self::upload).
-    ///
-    /// `format` is the caller's, not this module's — a straight-RGBA8 source and a 16-bit one
-    /// blend identically here, since a fade comes from the texture's alpha mod rather than from
-    /// its pixels. It is checked against `pixels` rather than trusted: a producer that changes
-    /// its encoding without its call site following would otherwise upload at the wrong pitch,
-    /// which shows up as a skewed texture and nothing else.
-    pub fn upload_raw(
-        &mut self,
-        creator: &TextureCreator<WindowContext>,
-        tile: TileId,
-        w: u32,
-        h: u32,
-        format: PixelFormatEnum,
-        pixels: &[u8],
-    ) -> Result<()> {
-        let pitch = w as usize * format.byte_size_per_pixel();
-        let expected = pitch * h as usize;
-        anyhow::ensure!(
-            pixels.len() == expected,
-            "upload {tile:?}: {} bytes for {w}x{h} {format:?} (want {expected})",
-            pixels.len(),
-        );
-        let shape = (w, h, format);
-        if self.tiles.get(&tile).map(|t| t.shape) != Some(shape) {
-            self.acquire(creator, tile, shape)?;
-        }
-        self.next_gen = self.next_gen.wrapping_add(1);
-        let gen = self.next_gen;
-        let entry = self.tiles.get_mut(&tile).expect("acquired above or already fresh");
-        entry.gen = gen;
-        entry.premultiplied = false;
-        entry
-            .texture
-            .update(None, pixels, pitch)
-            .map_err(|e| anyhow::anyhow!("upload raw: {e}"))?;
-        entry.texture.set_blend_mode(BlendMode::Blend);
-        Ok(())
-    }
-
     /// Creates/updates tile's texture from a rasterized painter. Opaque tiles upload directly
     /// and don't blend; the rest upload their premultiplied pixels as they are and let the
     /// blender account for it ([`premultiplied_blend`]), falling back to converting them to
@@ -625,10 +593,6 @@ impl Compositor {
         Ok(())
     }
 
-    pub fn has_tile(&self, tile: TileId) -> bool {
-        self.tiles.contains_key(&tile)
-    }
-
     /// Frees the blur chain when the look changed under it — the other half of
     /// [`clear_all`](Self::clear_all)'s job, for a switch that never enters a stream.
     ///
@@ -655,15 +619,6 @@ impl Compositor {
         }
         if let Some(frost) = self.frost.take() {
             frost.destroy();
-        }
-    }
-
-    /// Releases tile's GPU texture. Needed for windowed card tiles when they scroll out of
-    /// view; the texture goes to the pool for the row scrolling in to reuse, and is destroyed
-    /// outright once that is full.
-    pub fn drop_tile(&mut self, tile: TileId) {
-        if let Some(tile) = self.tiles.remove(&tile) {
-            self.release(tile);
         }
     }
 

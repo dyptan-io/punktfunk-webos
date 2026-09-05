@@ -3,8 +3,7 @@
 use anyhow::Result;
 
 use crate::app::render::tile;
-use crate::platform::webos::compositor::Compositor;
-use crate::ui::render::{DrawCmd, Rect};
+use crate::ui::render::{DrawCmd, Rect, TileSink};
 use crate::ui::text::{Fonts, TextCache};
 
 /// Distance from the top edge. Top-centre never overlaps the top-right stats panel or the
@@ -27,8 +26,7 @@ impl Toast {
     /// `frame` is `ui::widgets::Notification::frame()`'s output — `None` while no toast is up.
     pub fn draw(
         &mut self,
-        compositor: &mut Compositor,
-        texture_creator: &sdl2::render::TextureCreator<sdl2::video::WindowContext>,
+        sink: &mut dyn TileSink,
         (fonts, text_cache): (&Fonts, &mut TextCache),
         frame: &Option<(String, f32)>,
         display_w: i32,
@@ -39,7 +37,7 @@ impl Toast {
         };
         let (tw, th) = match &self.uploaded {
             Some((cached, w, h)) if cached == text => (*w, *h),
-            _ => match self.upload(compositor, texture_creator, fonts, text_cache, text) {
+            _ => match self.upload(sink, fonts, text_cache, text) {
                 Ok(dims) => dims,
                 Err(e) => {
                     tracing::warn!("toast render failed: {e:#}");
@@ -57,8 +55,7 @@ impl Toast {
 
     fn upload(
         &mut self,
-        compositor: &mut Compositor,
-        texture_creator: &sdl2::render::TextureCreator<sdl2::video::WindowContext>,
+        sink: &mut dyn TileSink,
         fonts: &Fonts,
         text_cache: &mut TextCache,
         text: &str,
@@ -72,7 +69,7 @@ impl Toast {
             fonts,
         )?;
         let dims = (tile.width(), tile.height());
-        compositor.upload(texture_creator, tile::NOTIFICATION, &tile, false)?;
+        sink.upload(tile::NOTIFICATION, &tile, false)?;
         self.uploaded = Some((text.to_string(), dims.0, dims.1));
         Ok(dims)
     }

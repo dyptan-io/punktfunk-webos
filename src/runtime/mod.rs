@@ -10,7 +10,7 @@ use crate::app::hero::Connect;
 use crate::app::render::tile;
 use crate::app::{App, HomeFocus, Screen};
 use crate::core::event::MenuEvent;
-use crate::platform::webos::compositor::Compositor;
+use crate::platform::webos::compositor::{Compositor, SdlTiles};
 use crate::platform::webos::cursor;
 use crate::platform::webos::gamepad;
 use crate::platform::webos::keyboard;

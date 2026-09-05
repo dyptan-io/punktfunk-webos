@@ -465,7 +465,7 @@ fn art_snapshot() -> ArtSnapshot {
 
 /// Bring up (or reuse) the shell's GL context and make it current. Split out so the caller can
 /// answer a failure by handing the screen back rather than by failing the app.
-fn bring_up<'a>(
+pub(super) fn bring_up<'a>(
     gl: &'a mut Option<ConsoleGl>,
     canvas: &sdl2::render::Canvas<sdl2::video::Window>,
 ) -> Result<&'a mut ConsoleGl> {
