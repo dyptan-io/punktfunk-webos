@@ -202,3 +202,24 @@ pub(crate) fn recommended_kbps(outcome: &ProbeOutcome) -> Option<u32> {
     let whole_mbps = (raw / 1000).max(1) * 1000;
     Some(whole_mbps.clamp(model::BITRATE_MIN_KBPS, model::BITRATE_MAX_KBPS))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 70 % of the goodput in whole Mbps, inside the slider's range; nothing under 2 Mbps.
+    #[test]
+    fn the_recommendation_is_seventy_percent_clamped_to_the_slider() {
+        let at = |kbps: u32| {
+            recommended_kbps(&ProbeOutcome {
+                throughput_kbps: kbps,
+                ..Default::default()
+            })
+        };
+        assert_eq!(at(1_999), None);
+        assert_eq!(at(100_000), Some(70_000));
+        assert_eq!(at(245_000), Some(171_000), "the G5's Wi-Fi ceiling");
+        assert_eq!(at(400_000), Some(model::BITRATE_MAX_KBPS));
+        assert_eq!(at(3_000), Some(model::BITRATE_MIN_KBPS));
+    }
+}

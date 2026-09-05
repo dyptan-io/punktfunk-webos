@@ -242,6 +242,48 @@ impl pf_console_ui::SettingsStore for PageStore {
     }
 }
 
+/// What one remote event does on the settings page, by where focus is. The page column is
+/// the way in (OK or Right) and out (Back); on the rows Left and Right step the value, and
+/// Back climbs to the column.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NavStep {
+    /// Move to the previous (−1) or next (+1) page.
+    Page(i32),
+    EnterRows,
+    ToColumn,
+    Leave,
+    Row(RowStep),
+    None,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RowStep {
+    Step(i32),
+    Activate,
+    Clear,
+}
+
+pub(crate) fn settings_nav(column: bool, ev: MenuEvent) -> NavStep {
+    if column {
+        return match ev {
+            MenuEvent::Up => NavStep::Page(-1),
+            MenuEvent::Down => NavStep::Page(1),
+            MenuEvent::Right | MenuEvent::Confirm => NavStep::EnterRows,
+            MenuEvent::Back => NavStep::Leave,
+            MenuEvent::Left | MenuEvent::Secondary => NavStep::None,
+        };
+    }
+    match ev {
+        MenuEvent::Left => NavStep::Row(RowStep::Step(-1)),
+        MenuEvent::Right => NavStep::Row(RowStep::Step(1)),
+        MenuEvent::Confirm => NavStep::Row(RowStep::Activate),
+        MenuEvent::Secondary => NavStep::Row(RowStep::Clear),
+        MenuEvent::Back => NavStep::ToColumn,
+        // Up and Down move the row cursor; the row itself does nothing with them.
+        MenuEvent::Up | MenuEvent::Down => NavStep::Row(RowStep::Step(0)),
+    }
+}
+
 impl App {
     pub(crate) fn open_settings_page(&mut self) {
         // The page column takes focus first; OK or Right on a page moves into its rows.
@@ -437,46 +479,39 @@ impl App {
     /// One menu event on the page. Left/Right on the column switch pages; on a row they step
     /// it. Confirm activates. Secondary clears an override in profile scope.
     pub(crate) fn handle_settings_page_event(&mut self, ev: MenuEvent) {
-        let rows = self.settings_page_rows();
-        let len = rows.len();
         let sp = &self.screens.settings_page;
-        if sp.column {
-            match ev {
-                MenuEvent::Up | MenuEvent::Down => {
-                    let i = sp.page.index();
-                    let next = if ev == MenuEvent::Up {
-                        i.saturating_sub(1)
-                    } else {
-                        (i + 1).min(Page::ALL.len() - 1)
-                    };
-                    self.show_page(Page::ALL[next]);
+        match settings_nav(sp.column, ev) {
+            NavStep::Page(delta) => {
+                let i = sp.page.index();
+                let next = if delta < 0 {
+                    i.saturating_sub(1)
+                } else {
+                    (i + 1).min(Page::ALL.len() - 1)
+                };
+                self.show_page(Page::ALL[next]);
+            }
+            NavStep::EnterRows => self.screens.settings_page.column = false,
+            NavStep::ToColumn => self.screens.settings_page.column = true,
+            NavStep::Leave => self.leave_settings_page(),
+            NavStep::Row(step) => {
+                if self.list_nav_event(ev) {
+                    return;
                 }
-                MenuEvent::Right | MenuEvent::Confirm => self.screens.settings_page.column = false,
-                // Back from the page column is the way out; from the rows it is the way here.
-                MenuEvent::Back => self.leave_settings_page(),
-                MenuEvent::Left | MenuEvent::Secondary => {}
+                let rows = self.settings_page_rows();
+                let cursor = self
+                    .nav
+                    .cursor(ScreenKey::SettingsPage)
+                    .min(rows.len().saturating_sub(1));
+                let Some(&(row, _)) = rows.get(cursor) else {
+                    return;
+                };
+                match step {
+                    RowStep::Step(delta) => self.step_row(row, delta, false),
+                    RowStep::Activate => self.activate_row(row),
+                    RowStep::Clear => self.clear_override(row),
+                }
             }
-            return;
-        }
-        if self.list_nav_event(ev) {
-            return;
-        }
-        let cursor = self.nav.cursor(ScreenKey::SettingsPage).min(len.saturating_sub(1));
-        let Some(&(row, _)) = rows.get(cursor) else {
-            if ev == MenuEvent::Back {
-                self.leave_settings_page();
-            }
-            return;
-        };
-        match ev {
-            // Left and Right step the row; Back is the way back to the page column, and the
-            // column's own Back is the way out.
-            MenuEvent::Left => self.step_row(row, -1, false),
-            MenuEvent::Right => self.step_row(row, 1, false),
-            MenuEvent::Back => self.screens.settings_page.column = true,
-            MenuEvent::Confirm => self.activate_row(row),
-            MenuEvent::Secondary => self.clear_override(row),
-            MenuEvent::Up | MenuEvent::Down => {}
+            NavStep::None => {}
         }
     }
 
@@ -676,5 +711,25 @@ impl App {
         self.jobs.rooted = None;
         self.settle_rooted(rooted);
         true
+    }
+}
+
+#[cfg(test)]
+mod nav_tests {
+    use super::*;
+
+    /// Column first: OK or Right enters the rows, Back leaves. On the rows Left and Right
+    /// step, Back climbs to the column, never out.
+    #[test]
+    fn back_climbs_one_level_and_only_the_column_leaves() {
+        assert_eq!(settings_nav(true, MenuEvent::Back), NavStep::Leave);
+        assert_eq!(settings_nav(true, MenuEvent::Confirm), NavStep::EnterRows);
+        assert_eq!(settings_nav(true, MenuEvent::Right), NavStep::EnterRows);
+        assert_eq!(settings_nav(true, MenuEvent::Left), NavStep::None);
+        assert_eq!(settings_nav(true, MenuEvent::Up), NavStep::Page(-1));
+        assert_eq!(settings_nav(false, MenuEvent::Back), NavStep::ToColumn);
+        assert_eq!(settings_nav(false, MenuEvent::Left), NavStep::Row(RowStep::Step(-1)));
+        assert_eq!(settings_nav(false, MenuEvent::Right), NavStep::Row(RowStep::Step(1)));
+        assert_eq!(settings_nav(false, MenuEvent::Confirm), NavStep::Row(RowStep::Activate));
     }
 }
