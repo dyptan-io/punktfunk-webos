@@ -19,9 +19,9 @@ host tools beyond Docker. Same image, mounts and cache volumes as the cross-buil
 through `toolchain:docker-run` like they do); SDL2, Xvfb, x11vnc and noVNC are apt-installed per
 run.
 
-- **Build with the `preview` profile** (release codegen, no LTO). `tiny_skia` rasterizes in
-  software; a `dev` build spends tens of ms a frame there and reads as input lag, on top of
-  llvmpipe and the VNC round trip. `PROFILE=dev` if the rebuild time matters more.
+- **Build with the `preview` profile** (release codegen, no LTO). A `dev` build of Skia's
+  callers reads as input lag on top of llvmpipe and the VNC round trip. `PROFILE=dev` if the
+  rebuild time matters more.
 - **No GPU and no mDNS.** llvmpipe means animation timing here is not the TV's, and Docker's
   "host" is the Linux VM, so `services::discovery` sees no LAN multicast — add hosts by hand.
   Unicast is unaffected, so a hand-entered host pairs and speed-tests for real.
@@ -31,18 +31,23 @@ run.
 
 ## UI rendering
 
-Hybrid software/GPU: `tiny_skia` rasterizes tiles, SDL2 composites. Redraw-on-change (no every-tick render). Key facts:
+Immediate mode on Skia over the shell's GL context (`console::gl`), drawn with the console kit
+(`pf_console_ui`) — the menus, the in-stream overlays and the gamepad shell alike. Redraw on
+change and while anything animates; the stream loop keeps its own 33 ms / 500 ms cadence for
+the overlays and clears transparent so NDL's plane shows through. Key facts:
 
-- **Never use `tiny_skia::Painter::draw_pixmap/fill_rect` for large areas** (~300ms full-screen). Use `pixmap.data_mut()` loop or `copy_from_slice`. Verify with on-device timing, never assume a call is cheap.
-- Tiles use premultiplied-alpha, and stay that way: `Compositor::upload` sets a composed
-  premultiplied blend mode (`SDL_ComposeCustomBlendMode(ONE, ONE_MINUS_SRC_ALPHA, …)`, supported
-  by the fork's GLES2 backend) instead of dividing alpha back out per pixel. The un-premultiply
-  fallback is still there for a renderer that refuses the mode — it is the path to suspect if a
-  tile's alpha looks wrong; `premultiplied texture blending: <bool>` in the log says which ran.
-- `FilterQuality::Nearest` + `anti_alias=false` are cheaper scan-conversion paths.
-- Fonts: Geist (OTF, embedded). Icons: Material Icons subset (~1.7 KB) — **subset, so new `ICON_*` codepoint needs font regenerated** (`assets/icons/NOTICE.md` has `pyftsubset` line + codepoint list). Assume Latin only.
-- **Scroll fade needs viewport to cut mid-row, else invisible.** Unfocused rows draw no own background, so a viewport ending on a row boundary has only card background in last pixels — fading `SIDEBAR_BG` into `SIDEBAR_BG` is a no-op; first attempt shipped rendering nothing. The settings viewport deliberately leaves a partial row for `SCROLL_FADE_H` to dissolve.
-- **Modal scrolling is pixel-based, offsets are row-based.** `scroll.offset` stays integral (focus logic + scrollbar defined in rows); the rendered crop is animated in pixels, eased like Home grid. Pixels also let last row sit flush at list end — `offset * stride` overshoots by peek strip. Anything positioned against the list (focus tile, dropdown anchor) **must** derive from same pixel offset: focus tile is focused row re-rendered, so anchoring to quantized row shows that row twice during scroll. Can also hang past viewport mid-glide, hence clip in `draw_list`.
+- **Covers are Skia images built from the art loader's RGBA buffers** (`app::draw::home`),
+  one copy when the art lands; Skia uploads on first draw and keeps the texture. The window
+  that requests and evicts them is `app::render::prepare_grid`.
+- **Text is the kit's**: Geist through Skia, shaped per frame. A string drawn every frame is
+  fine; a document (About) is wrapped once per width and kept.
+- **Glass over the menu is a backdrop blur** (`app::draw::glass_card`); over the stream there
+  is no framebuffer to blur, so the dialog is the kit's panel on a transparent clear.
+- **The drawable can differ from the display mode** on webOS (trap 10 in the port doc): every
+  frame scales the canvas from `display_mode` units to `drawable_size`, and every layout and hit
+  test works in display units.
+- **Icons are Lucide, by name** (`app::view::icons`), from the kit's table. A new mark is added
+  to `assets/lucide/` in `unom/punktfunk` and regenerated there, not here.
 
 ## Video decode (NDL DirectMedia)
 
