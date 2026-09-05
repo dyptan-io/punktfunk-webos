@@ -3,9 +3,8 @@
 //! - [`load`] / [`save`] read and write the whole [`Persisted`] document.
 //! - [`StateWriter`] is what the app actually saves through: off-thread, coalescing.
 //! - [`load_or_create_identity`] handles the PEM pair, which stays outside the document.
-// The shell's `SettingsStore`. Gated with pf-console-ui itself, which is an arm-only dependency
-// so `task test` never has to fetch a Skia archive for the host target (see Cargo.toml).
-#[cfg(all(target_os = "linux", target_arch = "arm"))]
+// The shell's `SettingsStore`. Gated with pf-console-ui itself (see Cargo.toml).
+#[cfg(target_os = "linux")]
 pub mod console;
 mod identity;
 mod legacy;
