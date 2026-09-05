@@ -42,6 +42,18 @@ pub(crate) struct Layout {
 }
 
 impl Layout {
+    /// The same card moved to sit `margin` above the frame's bottom edge: the HDR
+    /// calibration card, which must leave the test pattern above it in view.
+    pub fn at_bottom(mut self, fh: f32, margin: f32) -> Self {
+        let dy = (fh - margin - self.card.bottom).max(-self.card.top);
+        self.card.offset((0.0, dy));
+        self.close.offset((0.0, dy));
+        self.rows.offset((0.0, dy));
+        self.title_baseline += dy;
+        self.sub_top += dy;
+        self
+    }
+
     pub fn on_close(&self, x: i32, y: i32) -> bool {
         self.close.contains(Point::new(x as f32, y as f32))
     }
@@ -160,7 +172,6 @@ pub(crate) fn row_spec(row: &FocusRow) -> RowSpec {
     let mut spec = match row.kind {
         RowKind::Toggle => RowSpec::toggle(row.label.clone(), row.value == "On"),
         RowKind::Dropdown => RowSpec::choice(row.label.clone(), row.value.clone()),
-        RowKind::Slider => RowSpec::slider(row.label.clone(), row.value.clone(), row.fraction),
         RowKind::Action if row.value.is_empty() => RowSpec::action(row.label.clone(), true),
         // An action with a hint keeps its label at the leading edge, the hint dim on the right.
         RowKind::Action => RowSpec {
@@ -196,8 +207,6 @@ mod tests {
         assert_eq!(pick.control, Control::Value);
         assert!(!pick.enabled && !pick.adjustable);
         assert_eq!(pick.value.as_deref(), Some("Sleep"));
-        let slider = row_spec(&FocusRow::slider(icons::ICON_SIGNAL, "Bitrate", "40 Mb/s", 0.4));
-        assert!(matches!(slider.control, Control::Slider(f) if (f - 0.4).abs() < 1e-6));
         let forget = row_spec(&FocusRow::action(icons::ICON_DELETE, "Forget host").danger());
         assert!(forget.danger && forget.value.is_none());
         assert_eq!(forget.icon, Some("trash-2"));

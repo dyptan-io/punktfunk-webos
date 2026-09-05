@@ -1,4 +1,4 @@
-//! The plain list modals: Host menu, Host power, Diagnostics, Experimental, Cursor.
+//! The plain list screens: Host menu, Host power, HDR calibration.
 //!
 //! Each is a card holding one `FocusRow` per line, focused by row index. Their handlers all
 //! opened the same way — count the rows, move the cursor, arm the focus pop, return — and
@@ -10,30 +10,9 @@ use crate::app::view;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
-use crate::ui::widgets::FocusRow;
 use std::time::Instant;
 
 impl App {
-    /// The rows of whichever plain list modal is open, `None` on any other screen.
-    ///
-    /// The single table over this family: the row *tiles*, the focused-row tile and the
-    /// keyboard's row count all read it, so a screen cannot be listed by one and missed by
-    /// another (see `docs/APP-REWORK-PLAN.md` §1, P3).
-    pub(crate) fn list_modal_rows(&self) -> Option<Vec<FocusRow>> {
-        Some(match self.nav.screen {
-            Screen::HostMenu => self.host_menu_rows(),
-            Screen::HostPower => {
-                let (auto_send, exit_action, access) = self.host_power_view();
-                view::hostpower::rows(auto_send, exit_action, access)
-            }
-            Screen::HdrCalibration => {
-                let m = self.hdr_calibration_view()?;
-                view::hdrcalibration::rows(m.step, m.display)
-            }
-            _ => return None,
-        })
-    }
-
     /// How many rows the open list modal has — the count without the labels, for the paths
     /// that only navigate (see `app::view::hostmenu::Metrics` for why that matters).
     pub(crate) fn list_modal_row_count(&self) -> usize {
@@ -71,8 +50,8 @@ impl App {
     pub(crate) fn row_count(&self) -> usize {
         if self.nav.screen == Screen::SettingsPage {
             self.settings_page_rows().len()
-        } else if crate::app::screens::is_scroll_list(self.nav.screen) {
-            self.scroll_list_row_count()
+        } else if self.nav.screen == Screen::Collections {
+            self.collections_row_count()
         } else {
             self.list_modal_row_count()
         }

@@ -15,24 +15,16 @@ const PALETTE: Palette = Palette {
     panel: Color::RGB(0x1c, 0x15, 0x30),
     surface: Color::RGB(0x2b, 0x21, 0x48),
     accent: Color::RGB(0x6c, 0x5b, 0xf3),
-    accent_bright: Color::RGB(0xa7, 0x9f, 0xf8),
     text: Color::RGB(0xf5, 0xf5, 0xf5),
     muted: Color::RGB(0x9b, 0x94, 0xb8),
-    disabled: Color::RGB(0x5c, 0x57, 0x72),
     warning: Color::RGB(0xff, 0xc1, 0x07),
-    // Desaturated rather than a signal colour — it sits next to brand purple on every row.
-    caution: Color::RGB(0xd1, 0x84, 0x4a),
     error: Color::RGB(0xff, 0x6b, 0x6b),
     scrim: Color::RGBA(0x00, 0x00, 0x00, 0x80),
-    rule: Color::RGBA(0xff, 0xff, 0xff, 0x1e),
     glass_edge: Color::RGBA(0xff, 0xff, 0xff, 0x18),
 };
 
 /// Material Icons codepoints, from the bundled subset (`crate::assets`).
-const ICONS: Icons = Icons {
-    close: "\u{E5CD}",
-    chevron_down: "\u{E5C5}",
-};
+const ICONS: Icons = Icons { close: "\u{E5CD}" };
 
 /// Flat opaque panels. Costs no GPU memory and no render-target binds at all.
 pub const DEFAULT: Theme = Theme {

@@ -10,9 +10,6 @@ use crate::app::view;
 use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::screen::Screen;
-use crate::ui::render::Color;
-use crate::ui::theme::palette;
-use crate::ui::widgets::ConfirmButton;
 use std::borrow::Cow;
 
 /// What a button means, which is what colours it: the palette's error red for a loss, the
@@ -22,17 +19,6 @@ pub(crate) enum Tone {
     Danger,
     Primary,
     Plain,
-}
-
-impl Tone {
-    /// The old palette's colour for this tone, for the two cards still drawn as tiles.
-    fn color(self) -> Color {
-        match self {
-            Self::Danger => palette().error,
-            Self::Primary => palette().accent_bright,
-            Self::Plain => palette().text,
-        }
-    }
 }
 
 impl App {
@@ -91,15 +77,6 @@ impl Confirm {
                 },
             ],
         }
-    }
-
-    /// The widget-facing view of [`Self::buttons`] — borrowed, so nothing is copied per frame.
-    pub fn widgets(&self) -> [ConfirmButton<'_>; 2] {
-        std::array::from_fn(|i| ConfirmButton {
-            icon: self.buttons[i].icon,
-            label: &self.buttons[i].label,
-            color: self.buttons[i].tone.color(),
-        })
     }
 }
 

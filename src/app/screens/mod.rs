@@ -7,7 +7,6 @@
 pub(crate) mod confirm;
 pub(crate) mod list;
 pub(crate) mod rowbuttons;
-pub(crate) mod scrolllist;
 pub(crate) mod slots;
 
 use crate::core::screen::Screen;
@@ -49,35 +48,6 @@ pub(crate) const fn is_confirm(screen: Screen) -> bool {
 /// (see `render::compose`, and `runtime::ui_flow` for the transparent clear that goes with it).
 pub(crate) const fn over_video(screen: Screen) -> bool {
     matches!(screen, Screen::HdrCalibration)
-}
-
-/// Whether `screen` is a *scrolling* row list: a shell tile plus one tile per row, cropped to
-/// a viewport that scrolls under edge fades (see `view::scrolllist`). Same contract as
-/// [`is_confirm`].
-pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
-    match screen {
-        Screen::Collections => true,
-        // Three rows never need a viewport, so the Controller screen is a plain list modal.
-        Screen::Home
-        | Screen::Pairing
-        | Screen::AddHost
-        | Screen::Wake
-        | Screen::ForgetHost
-        | Screen::HostMenu
-        | Screen::EditHost
-        // About scrolls, but wrapped text rather than rows.
-        | Screen::About
-        | Screen::SpeedTest
-        | Screen::HostPower
-        | Screen::HdrCalibration
-        | Screen::SendLogs
-        | Screen::RenameCollection
-        | Screen::RemoveCollection
-        | Screen::ResetHdrCalibration
-        | Screen::SettingsPage
-        | Screen::RenameProfile
-        | Screen::DeleteProfile => false,
-    }
 }
 
 /// Whether `screen` is a plain list modal: a card holding one `FocusRow` per line, baked into

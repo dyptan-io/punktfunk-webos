@@ -16,7 +16,6 @@ pub(crate) mod home;
 pub(crate) mod hostpower;
 pub(crate) mod icons;
 pub(crate) mod profile;
-pub(crate) mod scrolllist;
 pub(crate) mod sendlogs;
 pub(crate) mod sidebar;
 pub(crate) mod speedtest;
