@@ -621,6 +621,23 @@ mod tests {
         assert!((scale(400) - 0.75).abs() < 1e-6);
     }
 
+    /// A focus move owes frames until every channel reaches its target, then none.
+    #[test]
+    fn the_focus_ease_settles_and_says_so() {
+        let mut e = FocusEase::default();
+        e.step(3, Some(1), 1.0 / 60.0);
+        assert_eq!(e.at(1), 1.0, "a fresh list snaps");
+        assert!(!e.animating());
+        e.step(3, Some(2), 1.0 / 60.0);
+        assert!(e.animating());
+        assert!(e.at(2) > 0.0 && e.at(2) < 1.0);
+        for _ in 0..120 {
+            e.step(3, Some(2), 1.0 / 60.0);
+        }
+        assert!(!e.animating());
+        assert_eq!((e.at(0), e.at(1), e.at(2)), (0.0, 0.0, 1.0));
+    }
+
     #[test]
     fn wrap_breaks_on_words_and_never_loses_one() {
         let fonts = theme::build_fonts().unwrap();
