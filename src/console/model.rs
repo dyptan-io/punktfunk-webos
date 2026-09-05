@@ -5,9 +5,9 @@
 //! carousel's rows current, and all of it runs on the menu thread's tick except the blocking
 //! parts, which go to a worker exactly as the desktop's `clients/session/src/console.rs` does.
 //!
-//! What this client cannot answer it says so about rather than faking: it has no profile
-//! catalog, no per-host clipboard flag and no platform-native screens, so those commands log
-//! and (where the shell is waiting on something) post a notice.
+//! What this client cannot answer it says so about rather than faking: it has no per-host
+//! clipboard flag and no platform-native screens, so those commands log and (where the shell
+//! is waiting on something) post a notice.
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -54,6 +54,15 @@ struct PairOutcome {
     mac: Vec<String>,
     os: String,
     result: Result<[u8; 32], String>,
+}
+
+/// A catalog profile as the shell's chip.
+fn chip(p: &pf_client_core::profiles::StreamProfile) -> pf_console_ui::ProfileChip {
+    pf_console_ui::ProfileChip {
+        id: p.id.clone(),
+        name: p.name.clone(),
+        accent: p.accent.clone(),
+    }
 }
 
 /// One host the sweep will ask about. A struct rather than a tuple because five fields in a
@@ -160,13 +169,39 @@ impl Service {
 
     // ---- the models the shell reads ---------------------------------------------------
 
-    /// The home carousel: saved hosts (most recently used first), then discovered-but-unsaved
-    /// ones. No pinned profile cards — this client has no profile catalog to pin (see
-    /// [`ConsoleStore::profiles`]).
+    /// The home carousel: saved hosts (most recently used first), each followed by its pinned
+    /// profile cards, then discovered-but-unsaved ones. A pinned card shares its host's live
+    /// state; its key rides the profile id behind a NUL, as the desktop's does.
     fn rows(&self) -> Vec<HostRow> {
         let state = self.store.snapshot();
-        let mut saved: Vec<HostRow> = state.known_hosts.iter().map(|h| self.saved_row(h)).collect();
-        saved.sort_by(|a, b| b.last_used.cmp(&a.last_used).then_with(|| a.name.cmp(&b.name)));
+        let catalog = pf_client_core::profiles::ProfilesFile {
+            version: pf_client_core::profiles::PROFILES_VERSION,
+            profiles: state.profiles.clone(),
+        };
+        let mut hosts: Vec<(HostRow, Vec<HostRow>)> = state
+            .known_hosts
+            .iter()
+            .map(|h| {
+                let mut row = self.saved_row(h);
+                row.bound_profile = h.profile_id.as_deref().and_then(|id| catalog.find_by_id(id)).map(chip);
+                let pins = h
+                    .resolved_pins(&catalog)
+                    .into_iter()
+                    .map(|p| HostRow {
+                        key: format!("{}\0{}", row.key, p.id),
+                        pin: Some(chip(p)),
+                        bound_profile: None,
+                        ..row.clone()
+                    })
+                    .collect();
+                (row, pins)
+            })
+            .collect();
+        hosts.sort_by(|(a, _), (b, _)| b.last_used.cmp(&a.last_used).then_with(|| a.name.cmp(&b.name)));
+        let mut saved: Vec<HostRow> = hosts
+            .into_iter()
+            .flat_map(|(row, pins)| std::iter::once(row).chain(pins))
+            .collect();
         let mut extra: Vec<HostRow> = self
             .discovered
             .iter()
@@ -307,23 +342,21 @@ impl Service {
                 game: Some(game),
                 profile_id,
             } => self.bind_game_profile(&key, &game, profile_id.as_deref()),
-            // Pinned profile CARDS, and binding a whole host's default: neither is a surface
-            // this client draws. Logged rather than dropped — the rows that raise them are the
-            // shell's, so one in a log says a screen appeared that this arm has not caught up
-            // with.
-            ConsoleCmd::SetPin { profile_id, .. }
-            | ConsoleCmd::BindProfile {
-                profile_id: Some(profile_id),
-                ..
-            } => tracing::warn!("console: no surface for profile {profile_id} on this client"),
-            // Three commands with nothing to do here, each for its own reason:
+            // The host's own default binding (`KnownHost::profile_id`); `None` clears it.
+            ConsoleCmd::BindProfile {
+                key,
+                game: None,
+                profile_id,
+            } => self.bind_host_profile(&key, profile_id),
+            // Presentation only: which profiles ride as cards behind the host's tile.
+            ConsoleCmd::SetPin { key, profile_id, pin } => self.set_pin(&key, profile_id, pin),
+            // Two commands with nothing to do here, each for its own reason:
             // - `RefreshRunning`: no `/api/v1/status` client, so the running set stays empty
             //   and every Resume badge stays off — exactly how the shell draws a host too old
             //   to answer it. Wiring one needs the status shape, not just another request.
-            // - `BindProfile` with no id: clearing a binding this client never had.
             // - `SetClipboard`: `KnownHost` carries no clipboard flag and the stream has no
             //   clipboard lane to gate, so the toggle would be a control that does nothing.
-            ConsoleCmd::RefreshRunning { .. } | ConsoleCmd::BindProfile { .. } | ConsoleCmd::SetClipboard { .. } => {}
+            ConsoleCmd::RefreshRunning { .. } | ConsoleCmd::SetClipboard { .. } => {}
         }
     }
 
@@ -350,6 +383,23 @@ impl Service {
             true
         });
         if changed {
+            self.handles.console.set_hosts(self.rows());
+        }
+    }
+
+    /// The host's default binding, through the shared edit; the carousel re-reads on a change.
+    fn bind_host_profile(&self, key: &str, profile_id: Option<String>) {
+        if self
+            .store
+            .edit(|state| shared::bind_host_profile(state, key, profile_id))
+        {
+            self.handles.console.set_hosts(self.rows());
+        }
+    }
+
+    /// A pinned card on or off, through the shared edit; the carousel re-reads on a change.
+    fn set_pin(&self, key: &str, profile_id: String, pin: bool) {
+        if self.store.edit(|state| shared::set_pin(state, key, profile_id, pin)) {
             self.handles.console.set_hosts(self.rows());
         }
     }

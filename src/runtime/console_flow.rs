@@ -311,7 +311,7 @@ pub(super) fn run(
                     fp_hex,
                     launch,
                     title,
-                    profile: _,
+                    profile,
                     request_access,
                 } => {
                     if request_access {
@@ -323,9 +323,17 @@ pub(super) fn run(
                             .set_notice("Pair this TV from the classic menus first".into());
                         continue;
                     }
-                    match start_launch(&store, identity, game_controller, &addr, port, &fp_hex, launch) {
+                    let want = Launch {
+                        addr,
+                        port,
+                        fp_hex,
+                        launch,
+                        profile,
+                    };
+                    let where_ = format!("{title} on {}:{}", want.addr, want.port);
+                    match start_launch(&store, identity, game_controller, want) {
                         Ok(started) => {
-                            tracing::info!("console: launching {title} on {addr}:{port}");
+                            tracing::info!("console: launching {where_}");
                             console.session_phase(SessionPhase::Connecting);
                             connect = Some(started);
                         }
@@ -496,37 +504,50 @@ fn leave_for_classic(store: &Arc<ConsoleStore>) -> UiOutcome {
     UiOutcome::Reenter
 }
 
+/// What the shell committed to launch: the host, a title or the desktop, and a one-off profile.
+struct Launch {
+    addr: String,
+    port: u16,
+    fp_hex: String,
+    launch: Option<String>,
+    profile: Option<String>,
+}
+
 /// Start the connect for a launch the shell committed.
 fn start_launch(
     store: &Arc<ConsoleStore>,
     identity: &(String, String),
     game_controller: &sdl2::GameControllerSubsystem,
-    addr: &str,
-    port: u16,
-    fp_hex: &str,
-    launch: Option<String>,
+    want: Launch,
 ) -> Result<(
     std::thread::JoinHandle<Result<session::Connected>>,
     store::Settings,
     bool,
 )> {
+    let Launch {
+        addr,
+        port,
+        fp_hex,
+        launch,
+        profile,
+    } = want;
     let state = store.snapshot();
     let fingerprint = state
         .known_hosts
         .iter()
         .find(|h| h.addr == addr && h.port == port)
         .and_then(crate::core::model::KnownHost::fingerprint)
-        .or_else(|| shared::parse_fp(fp_hex))
+        .or_else(|| shared::parse_fp(&fp_hex))
         .context("that host isn't paired with this TV yet")?;
-    let mut settings = shared::launch_settings(&state, addr, port, launch.as_deref(), None);
+    let mut settings = shared::launch_settings(&state, &addr, port, launch.as_deref(), profile.as_deref());
     let gamepad_auto = settings.gamepad_type() == store::GamepadType::Auto;
     settings = resolve_gamepad_type(settings, game_controller);
     let target = crate::app::ConnectTarget {
-        host: addr.to_string(),
+        host: addr,
         port,
         fingerprint,
         launch,
-        profile: None,
+        profile,
     };
     let handle = spawn_connect(identity.clone(), target, settings.clone())?;
     Ok((handle, settings, gamepad_auto))
