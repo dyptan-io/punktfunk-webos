@@ -129,25 +129,6 @@ impl Color {
         }
     }
 
-    /// `self` composited over `below` — source-over, straight alpha. Two constant layers
-    /// compose to one, so a surface built by stacking fills can be flattened into the single
-    /// fill that draws it.
-    #[must_use]
-    pub fn over(self, below: Self) -> Self {
-        let (sa, ba) = (f32::from(self.a) / 255.0, f32::from(below.a) / 255.0);
-        let a = sa + ba * (1.0 - sa);
-        if a <= 0.0 {
-            return Self::RGBA(0, 0, 0, 0);
-        }
-        let c = |s: u8, b: u8| ((f32::from(s) * sa + f32::from(b) * ba * (1.0 - sa)) / a) as u8;
-        Self {
-            r: c(self.r, below.r),
-            g: c(self.g, below.g),
-            b: c(self.b, below.b),
-            a: (a * 255.0) as u8,
-        }
-    }
-
     /// `self` with its alpha scaled by `f` — a fill riding a fade, without the caller
     /// unpacking the colour to reach one channel.
     #[must_use]
@@ -197,6 +178,7 @@ pub enum DrawCmd {
     /// video plane underneath the graphics plane: alpha-mod is per *blit*, so shaping a fade
     /// with it means splitting the image into pieces and showing their edges, where a mask
     /// stretched over the whole image is a continuous gradient.
+    #[allow(dead_code)] // The SDL compositor's arm, until the stream overlays move (WP6).
     Erase {
         tile: TileId,
         dst: Rect,
@@ -217,6 +199,7 @@ pub enum Corners {
     All,
     /// Bottom two only — a panel whose top edge is a straight cut across whatever it sits on
     /// (a card's title strip, the submenu grown out of it).
+    #[allow(dead_code)] // As `DrawCmd::Erase`.
     Bottom,
 }
 

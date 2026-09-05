@@ -48,7 +48,12 @@ pub(crate) fn layout(fw: f32, fh: f32, k: f32) -> Layout {
     let sub_baseline = card.top + PAD * k + title_h + sub_h * 0.8;
     let body_top = card.top + PAD * k + title_h + sub_h + HEADER_GAP * k;
     let stride = line_h(BODY_SIZE * f64::from(k)) as f32;
-    let body = Rect::from_xywh(card.left + PAD * k, body_top, w - 2.0 * PAD * k, card.bottom - PAD * k - body_top);
+    let body = Rect::from_xywh(
+        card.left + PAD * k,
+        body_top,
+        w - 2.0 * PAD * k,
+        card.bottom - PAD * k - body_top,
+    );
     let visible = ((body.height() / stride).floor() as usize).max(1);
     let close = Rect::from_xywh(
         card.right - (PAD * 0.6 + CLOSE_BOX) * k,
@@ -108,8 +113,24 @@ pub(crate) fn draw(
     c.save_layer_alpha_f(Some(l.card), alpha);
     glass_card(c, l.card, CORNER, k);
     let x = f64::from(l.card.left + PAD * k);
-    f.fonts.draw(c, title, x, f64::from(l.title_baseline), W::SemiBold, TITLE_SIZE * f64::from(k), theme::fg(1.0));
-    f.fonts.draw(c, subtitle, x, f64::from(l.sub_baseline), W::Regular, SUB_SIZE * f64::from(k), theme::fg(0.6));
+    f.fonts.draw(
+        c,
+        title,
+        x,
+        f64::from(l.title_baseline),
+        W::SemiBold,
+        TITLE_SIZE * f64::from(k),
+        theme::fg(1.0),
+    );
+    f.fonts.draw(
+        c,
+        subtitle,
+        x,
+        f64::from(l.sub_baseline),
+        W::Regular,
+        SUB_SIZE * f64::from(k),
+        theme::fg(0.6),
+    );
     if let Some(mark) = by_name("x") {
         draw_icon(
             c,
@@ -141,12 +162,23 @@ pub(crate) fn draw(
     // A thin track on the right says how far along the document the window is.
     if lines.len() > l.visible {
         let track = Rect::from_xywh(l.card.right - 12.0 * k, l.body.top, 4.0 * k, l.body.height());
-        c.draw_rrect(skia_safe::RRect::new_rect_xy(track, 2.0 * k, 2.0 * k), &theme::fill(theme::fg(0.12)));
+        c.draw_rrect(
+            skia_safe::RRect::new_rect_xy(track, 2.0 * k, 2.0 * k),
+            &theme::fill(theme::fg(0.12)),
+        );
         let frac = l.visible as f32 / lines.len() as f32;
         let at = scroll as f32 / (lines.len() - l.visible).max(1) as f32;
         let thumb_h = (track.height() * frac).max(24.0 * k);
-        let thumb = Rect::from_xywh(track.left, track.top + (track.height() - thumb_h) * at, track.width(), thumb_h);
-        c.draw_rrect(skia_safe::RRect::new_rect_xy(thumb, 2.0 * k, 2.0 * k), &theme::fill(theme::fg(0.45)));
+        let thumb = Rect::from_xywh(
+            track.left,
+            track.top + (track.height() - thumb_h) * at,
+            track.width(),
+            thumb_h,
+        );
+        c.draw_rrect(
+            skia_safe::RRect::new_rect_xy(thumb, 2.0 * k, 2.0 * k),
+            &theme::fill(theme::fg(0.45)),
+        );
     }
     c.restore();
     c.restore();

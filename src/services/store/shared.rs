@@ -648,7 +648,13 @@ mod tests {
 /// — one-off ?? per-title ?? host default, the shared resolver's own precedence — then the
 /// Desktop card's standing rule that pointer capture is off there (unless the profile sets
 /// the mouse mode), then this set's caps. The single merge point both menu loops call.
-pub fn launch_settings(state: &Persisted, addr: &str, port: u16, launch: Option<&str>, one_off: Option<&str>) -> Settings {
+pub fn launch_settings(
+    state: &Persisted,
+    addr: &str,
+    port: u16,
+    launch: Option<&str>,
+    one_off: Option<&str>,
+) -> Settings {
     let id = launch.unwrap_or(DESKTOP_PIN_ID);
     let host = state.known_hosts.iter().find(|h| h.host == addr && h.port == port);
     let per_title = host.and_then(|h| h.game_profile(id));
@@ -659,7 +665,9 @@ pub fn launch_settings(state: &Persisted, addr: &str, port: u16, launch: Option<
     };
     let profile = trust::resolve_profile(&catalog, bound, per_title, one_off);
     let global = to_shared(&state.shared_base, &state.settings);
-    let effective = profile.as_ref().map_or_else(|| global.clone(), |p| p.overrides.apply(&global));
+    let effective = profile
+        .as_ref()
+        .map_or_else(|| global.clone(), |p| p.overrides.apply(&global));
     let mut settings = from_shared(&effective);
     if id == DESKTOP_PIN_ID && profile.as_ref().is_none_or(|p| p.overrides.mouse_mode.is_none()) {
         settings.cursor_capture = false;
@@ -713,6 +721,9 @@ mod launch_tests {
 
         state.known_hosts[0].bind_game_profile("doom", Some("gone".into()));
         let dangling = launch_settings(&state, "10.0.0.2", 47989, Some("doom"), None);
-        assert_eq!(dangling.bitrate_kbps, 34_000, "a dangling title binding falls back to the host default");
+        assert_eq!(
+            dangling.bitrate_kbps, 34_000,
+            "a dangling title binding falls back to the host default"
+        );
     }
 }

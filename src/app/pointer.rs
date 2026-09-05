@@ -136,7 +136,7 @@ impl App {
             // The held card's submenu takes hover whole, like an open dropdown does — the
             // grid behind it must not steal focus out from under an open menu.
             Screen::Home if self.card_menu.is_some() => {
-                let Some(row) = self.card_menu_row_at(x, y, screen_w, fonts) else {
+                let Some(row) = self.card_menu_row_at(x, y, screen_w, screen_h) else {
                     return HoverChange::NONE;
                 };
                 let menu = self.card_menu.as_mut().expect("guarded by the arm");
@@ -185,7 +185,11 @@ impl App {
                 HoverChange::split(row_changed, button_changed)
             }
             Screen::SettingsPage => {
-                let l = crate::app::draw::settings::layout(screen_w as f32, screen_h as f32, crate::app::draw::scale(screen_h));
+                let l = crate::app::draw::settings::layout(
+                    screen_w as f32,
+                    screen_h as f32,
+                    crate::app::draw::scale(screen_h),
+                );
                 if let Some(i) = l.entry_at(x, y) {
                     let was = (self.screens.settings_page.page, self.screens.settings_page.column);
                     self.screens.settings_page.column = true;
@@ -212,8 +216,7 @@ impl App {
                 HoverChange::row(changed)
             }
             // Identical row-list geometry; only which focus field they carry differs.
-            Screen::HdrCalibration
-            => {
+            Screen::HdrCalibration => {
                 let Some((row, button)) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts) else {
                     return HoverChange::NONE;
                 };
@@ -259,8 +262,7 @@ impl App {
             | Screen::Wake
             | Screen::SpeedTest
             | Screen::RemoveCollection
-            | Screen::ResetHdrCalibration
-            => {
+            | Screen::ResetHdrCalibration => {
                 let Some(subtitle) = self.confirm_subtitle() else {
                     return HoverChange::NONE;
                 };
@@ -443,7 +445,7 @@ impl App {
                 if self.fix_card_position() {
                     return None;
                 }
-                if let Some(row) = self.card_menu_row_at(x, y, screen_w, fonts) {
+                if let Some(row) = self.card_menu_row_at(x, y, screen_w, screen_h) {
                     if let Some(menu) = self.card_menu.as_mut() {
                         menu.focus(row);
                     }
@@ -502,7 +504,11 @@ impl App {
                 }
             }
             Screen::SettingsPage => {
-                let l = crate::app::draw::settings::layout(screen_w as f32, screen_h as f32, crate::app::draw::scale(screen_h));
+                let l = crate::app::draw::settings::layout(
+                    screen_w as f32,
+                    screen_h as f32,
+                    crate::app::draw::scale(screen_h),
+                );
                 if let Some(i) = l.entry_at(x, y) {
                     self.show_page(crate::app::state::settingspage::Page::ALL[i]);
                     self.screens.settings_page.column = false;

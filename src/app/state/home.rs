@@ -340,8 +340,7 @@ impl App {
     /// Eased 0..=1 progress of pin id `id`'s arrival (see `tile::CardSlot::pop`)
     /// — 1.0, full size, for anything not animating.
     pub(crate) fn card_pop_frac(&self, id: &str) -> f32 {
-        let slot = self.render.grid.card_ids.slot(id).and_then(|slot| slot.pop);
-        crate::app::render::tile::entrance_progress(slot, std::time::Instant::now()).0
+        crate::app::grid::Entrance::progress_of(self.render.grid.arrivals.pop(id), std::time::Instant::now()).0
     }
 
     /// The largest useful `grid_scroll` for the current library/layout — 0 when
@@ -443,7 +442,6 @@ impl App {
         // Focus stays on the sidebar until `drain_games` has cards to land on: `navigate`
         // can't move off a key with no rect, so an empty grid would kill the d-pad.
         self.render.grid.focus_last = 0;
-        self.render.sidebar_dirty = true;
         self.render.grid.dirty = true;
         self.render.grid.scroll = 0;
         self.render.grid.scroll_target = 0;
@@ -623,7 +621,6 @@ impl App {
         });
         // Not `grid_dirty`: contents are unchanged, and dirtying rebuilds every card tile and
         // re-arms the loading spinner right as the zoom starts.
-        self.render.sidebar_dirty = true;
     }
 
     /// Takes the `ConnectTarget` `confirm_grid_card` armed, if any — the runtime's tick loop
@@ -654,7 +651,6 @@ impl App {
                 *i = sidebar_len - 1;
             }
         }
-        self.render.sidebar_dirty = true;
         self.render.grid.dirty = true;
     }
 }

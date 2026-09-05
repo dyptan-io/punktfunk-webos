@@ -49,16 +49,32 @@ impl Layout {
 
 /// The card for `rows` rows (`headers` of them carrying a group header) under a title and an
 /// optional subtitle, centred on a `fw`×`fh` frame.
-pub(crate) fn layout(fonts: &Fonts, fw: f32, fh: f32, k: f32, subtitle: Option<&str>, rows: usize, headers: usize) -> Layout {
+pub(crate) fn layout(
+    fonts: &Fonts,
+    fw: f32,
+    fh: f32,
+    k: f32,
+    subtitle: Option<&str>,
+    rows: usize,
+    headers: usize,
+) -> Layout {
     let w = (fw * WIDTH_FRAC).round();
     let inner_w = w - 2.0 * PAD * k;
     let title_h = line_h(TITLE_SIZE * f64::from(k)) as f32;
-    let sub = subtitle.map_or_else(Vec::new, |s| wrap(fonts, s, W::Regular, SUB_SIZE * f64::from(k), f64::from(inner_w)));
+    let sub = subtitle.map_or_else(Vec::new, |s| {
+        wrap(fonts, s, W::Regular, SUB_SIZE * f64::from(k), f64::from(inner_w))
+    });
     let sub_line = line_h(SUB_SIZE * f64::from(k)) as f32;
-    let sub_h = if sub.is_empty() { 0.0 } else { sub_line * sub.len() as f32 + TITLE_GAP * k };
+    let sub_h = if sub.is_empty() {
+        0.0
+    } else {
+        sub_line * sub.len() as f32 + TITLE_GAP * k
+    };
     let rows_h_full = (rows as f32 * (ROW_H as f32 + ROW_GAP) - ROW_GAP).max(0.0) * k + headers as f32 * HEADER_H * k;
     let head_h = PAD * k + title_h + sub_h + ROWS_GAP * k;
-    let rows_h = rows_h_full.min(fh - 2.0 * MARGIN * k - head_h - PAD * k).max(ROW_H as f32 * k);
+    let rows_h = rows_h_full
+        .min(fh - 2.0 * MARGIN * k - head_h - PAD * k)
+        .max(ROW_H as f32 * k);
     let h = head_h + rows_h + PAD * k;
     let card = Rect::from_xywh(((fw - w) / 2.0).round(), ((fh - h) / 2.0).round(), w, h.round());
     let title_baseline = card.top + PAD * k + title_h * 0.8;
@@ -207,16 +223,27 @@ mod tests {
                 shutdown: true,
             }),
         )
-            .iter()
-            .map(row_spec)
-            .collect();
+        .iter()
+        .map(row_spec)
+        .collect();
         let l = layout(&fonts, w as f32, h as f32, k, Some(hostpower::SUBTITLE), rows.len(), 0);
         let mut surface = skia_safe::surfaces::raster_n32_premul((w as i32, h as i32)).unwrap();
         let mut list = MenuList::new();
         for _ in 0..90 {
             surface.canvas().clear(Color4f::new(0.075, 0.063, 0.16, 1.0));
             let f = Frame::new(surface.canvas(), &fonts, w, h);
-            draw(&f, &mut list, &l, &hostpower::title("Gaming PC"), &rows, false, 1.0, 0.0, 1.0 / 60.0, true);
+            draw(
+                &f,
+                &mut list,
+                &l,
+                &hostpower::title("Gaming PC"),
+                &rows,
+                false,
+                1.0,
+                0.0,
+                1.0 / 60.0,
+                true,
+            );
         }
         if let Ok(dir) = std::env::var("PF_WEBOS_DUMP") {
             let png = surface
@@ -239,7 +266,10 @@ mod tests {
         let row_w = (620.0 * k).min(l.rows.width() - 48.0 * k);
         let row_right = l.rows.center_x() + row_w / 2.0;
         let knob = px(row_right - 16.0 * k - 10.0 * k, row0_cy);
-        assert!(knob.iter().all(|c| *c > 200), "knob at the right of an on switch: {knob:?}");
+        assert!(
+            knob.iter().all(|c| *c > 200),
+            "knob at the right of an on switch: {knob:?}"
+        );
         assert!(l.rows.bottom <= l.card.bottom && l.rows.top >= l.card.top);
     }
 

@@ -62,7 +62,13 @@ impl Layout {
 pub(crate) fn layout(fonts: &Fonts, fw: f32, fh: f32, k: f32, subtitle: &str) -> Layout {
     let w = (fw * WIDTH_FRAC).round();
     let inner_w = w - 2.0 * PAD * k;
-    let body = wrap(fonts, subtitle, W::Regular, BODY_SIZE * f64::from(k), f64::from(inner_w));
+    let body = wrap(
+        fonts,
+        subtitle,
+        W::Regular,
+        BODY_SIZE * f64::from(k),
+        f64::from(inner_w),
+    );
     let title_h = line_h(TITLE_SIZE * f64::from(k)) as f32;
     let body_line = line_h(BODY_SIZE * f64::from(k)) as f32;
     let body_h = body_line * body.len() as f32;
@@ -138,7 +144,7 @@ pub(crate) fn draw(
             W::Regular,
             BODY_SIZE * f64::from(k),
             theme::fg(0.72),
-            );
+        );
     }
     // Close mark, lit under the pointer.
     let hover_close = motion.is_some_and(|m| m.hover_close);
@@ -159,7 +165,10 @@ pub(crate) fn draw(
             (Some(m), true) => {
                 let base = ui_rect(l.buttons[i]);
                 let frac = ui::animation::anim_frac(m.focus_anim, ui::animation::FOCUS_POP);
-                ui_rect_to_sk(m.press.rect(ui::animation::zoom_rect(base, frac, ui::animation::FOCUS_GROWTH)))
+                ui_rect_to_sk(
+                    m.press
+                        .rect(ui::animation::zoom_rect(base, frac, ui::animation::FOCUS_GROWTH)),
+                )
             }
             _ => l.buttons[i],
         };
@@ -177,10 +186,20 @@ pub(crate) fn draw(
         let size = BODY_SIZE * f64::from(k);
         let icon = button.icon.and_then(lucide_for).and_then(by_name);
         let icon_w = if icon.is_some() { (ICON_BOX + 8.0) * k } else { 0.0 };
-        let label_w = f.fonts.measure(&button.label, W::Medium, size).min(rect.width() - icon_w - 16.0 * k);
+        let label_w = f
+            .fonts
+            .measure(&button.label, W::Medium, size)
+            .min(rect.width() - icon_w - 16.0 * k);
         let start = rect.center_x() - (icon_w + label_w) / 2.0;
         if let Some(icon) = icon {
-            draw_icon(c, icon, start + ICON_BOX * k / 2.0, rect.center_y(), ICON_BOX * k, color);
+            draw_icon(
+                c,
+                icon,
+                start + ICON_BOX * k / 2.0,
+                rect.center_y(),
+                ICON_BOX * k,
+                color,
+            );
         }
         f.fonts.draw_clipped(
             c,
@@ -281,10 +300,18 @@ mod tests {
                 .unwrap();
             std::fs::write(format!("{dir}/dialog-forget-{focus}.png"), png.as_bytes()).unwrap();
         }
-        let info = ImageInfo::new((W_PX as i32, H_PX as i32), ColorType::RGBA8888, AlphaType::Unpremul, None);
+        let info = ImageInfo::new(
+            (W_PX as i32, H_PX as i32),
+            ColorType::RGBA8888,
+            AlphaType::Unpremul,
+            None,
+        );
         let mut out = vec![0u8; (W_PX * H_PX * 4) as usize];
         assert!(surface.read_pixels(&info, &mut out, (W_PX * 4) as usize, (0, 0)));
-        (layout(&fonts, W_PX as f32, H_PX as f32, scale(H_PX), &confirm.subtitle), out)
+        (
+            layout(&fonts, W_PX as f32, H_PX as f32, scale(H_PX), &confirm.subtitle),
+            out,
+        )
     }
 
     fn px(buf: &[u8], x: f32, y: f32) -> [u8; 4] {
@@ -321,7 +348,10 @@ mod tests {
         let (l, a) = render(0);
         let ground = px(&a, 20.0, 20.0);
         let card = px(&a, l.card.left + 12.0, l.card.center_y());
-        assert!(card[0] > ground[0] && card[1] > ground[1], "card {card:?} over ground {ground:?}");
+        assert!(
+            card[0] > ground[0] && card[1] > ground[1],
+            "card {card:?} over ground {ground:?}"
+        );
         let forget = px(&a, l.buttons[0].left + 8.0, l.buttons[0].top + 8.0);
         let cancel = px(&a, l.buttons[1].left + 8.0, l.buttons[1].top + 8.0);
         assert!(forget[0] > cancel[0] + 12, "forget {forget:?} vs cancel {cancel:?}");

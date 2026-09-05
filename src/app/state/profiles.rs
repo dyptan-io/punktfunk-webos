@@ -9,8 +9,8 @@ use crate::app::state::settingspage::{Page, Scope};
 use crate::app::state::textfield::TextField;
 use crate::app::App;
 use crate::core::event::MenuEvent;
-use crate::core::screen::Screen;
 use crate::core::model::MAX_COLLECTION_NAME;
+use crate::core::screen::Screen;
 
 /// A name that is not yet in the catalog: the title itself, or the title with a counter.
 fn unique_name(catalog: &[StreamProfile], wanted: &str) -> String {
@@ -68,7 +68,11 @@ impl App {
         let Scope::Profile(id) = &self.screens.settings_page.scope else {
             return;
         };
-        let name = self.profiles.iter().find(|p| &p.id == id).map_or(String::new(), |p| p.name.clone());
+        let name = self
+            .profiles
+            .iter()
+            .find(|p| &p.id == id)
+            .map_or(String::new(), |p| p.name.clone());
         self.screens.profile_name = TextField::name(MAX_COLLECTION_NAME, &name);
         self.nav.screen = Screen::RenameProfile;
     }
@@ -136,7 +140,12 @@ impl App {
         let Scope::Profile(id) = &self.screens.settings_page.scope else {
             return (0, 0);
         };
-        let hosts = self.hosts.known.iter().filter(|h| h.profile_id.as_deref() == Some(id)).count();
+        let hosts = self
+            .hosts
+            .known
+            .iter()
+            .filter(|h| h.profile_id.as_deref() == Some(id))
+            .count();
         let titles = self
             .hosts
             .known
@@ -198,8 +207,17 @@ impl App {
     }
 
     /// The settings one launch runs with — `shared::launch_settings` over this App's document.
-    pub(crate) fn launch_settings(&self, target: &crate::core::model::ConnectTarget) -> crate::services::store::Settings {
+    pub(crate) fn launch_settings(
+        &self,
+        target: &crate::core::model::ConnectTarget,
+    ) -> crate::services::store::Settings {
         let state = self.persisted();
-        crate::services::store::shared::launch_settings(&state, &target.host, target.port, target.launch.as_deref(), None)
+        crate::services::store::shared::launch_settings(
+            &state,
+            &target.host,
+            target.port,
+            target.launch.as_deref(),
+            None,
+        )
     }
 }

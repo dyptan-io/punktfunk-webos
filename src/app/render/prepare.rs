@@ -16,108 +16,32 @@ use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
 use crate::app::screens::is_scroll_list;
 use crate::app::screens::rowbuttons::RowButton;
-use crate::app::{view, App, HomeFocus, Screen, SCROLL_INDICATOR_TILE_W};
+use crate::app::{view, App, Screen, SCROLL_INDICATOR_TILE_W};
 use crate::ui;
 use crate::ui::cache;
 use crate::ui::render::TileId;
 use crate::ui::Painter;
 
 impl App {
-    /// Sidebar family: the focus-free strip (rebuilt on content change) plus the
-    /// single focused-row overlay tile. Pushes any rebuilt tiles onto `updated`.
-    /// Extracted from `prepare_tiles` as a self-contained family (A2 staging).
-    fn prepare_sidebar(&mut self, ctx: &mut RenderCtx<'_>) -> Result<()> {
-        let RenderCtx {
-            tiles,
-            text: text_cache,
-            fonts,
-            screen,
-            updated,
-            ..
-        } = ctx;
-        let screen_h = screen.h;
-        // Kept on the `sidebar_dirty` flag rather than a content version: the strip is
-        // built from every entry plus its reachability, and hashing all of that once a
-        // frame would cost more than the flag the event side already maintains.
-        let styled_at = ui::theme::epoch();
-        if self.render.sidebar_dirty || self.render.sidebar_styled_at != styled_at || !tiles.contains(tile::SIDEBAR) {
-            let selected = self.sidebar_index_of_selected_host();
-            let entries = &self.hosts.entries;
-            let reach = self.reachability_list();
-            // Reuses the existing full-height strip as its own scratch surface — several MB
-            // that would otherwise be reallocated on every host list change.
-            // The outer condition has already decided this is stale, so the version just
-            // has to differ from the last one — `ensure_in_place` would otherwise see an
-            // unchanged `static_version` and skip the rebuild it was called to do.
-            self.render.sidebar_gen = self.render.sidebar_gen.wrapping_add(1);
-            tiles.ensure_in_place(
-                tile::SIDEBAR,
-                self.render.sidebar_gen,
-                || Painter::new(ui::widgets::SIDEBAR_W, screen_h),
-                |layer| {
-                    view::sidebar::draw(
-                        &mut ui::Canvas {
-                            painter: layer,
-                            text_cache,
-                            fonts,
-                            // The sidebar's own strip is the full panel height and a fixed width.
-                            screen_w: ui::widgets::SIDEBAR_W,
-                            screen_h,
-                        },
-                        entries,
-                        None,
-                        selected,
-                        &reach,
-                    )
-                },
-            )?;
-            self.render.sidebar_dirty = false;
-            self.render.sidebar_styled_at = styled_at;
-            tiles.remove(tile::FOCUS_ROW); // row content may have changed under it
-            updated.push(tile::SIDEBAR);
-        }
-        // One tile serves both sidebar focus states (see `render_focused_row_tile`).
-        let sidebar_focus = match self.home_focus {
-            HomeFocus::Sidebar(i) => Some((i, false)),
-            HomeFocus::SidebarMenu(i) => Some((i, true)),
-            HomeFocus::Grid(_) => None,
-        };
-        if let Some(key) = sidebar_focus {
-            let online = self.hosts.entries.get(key.0).and_then(|e| self.entry_online(e));
-            if tiles.ensure(tile::FOCUS_ROW, cache::version(&key), || {
-                ui::rasterize(
-                    view::sidebar::FocusedRowTile {
-                        entries: &self.hosts.entries,
-                        index: key.0,
-                        menu_focused: key.1,
-                        online,
-                    },
-                    text_cache,
-                    fonts,
-                )
-            })? {
-                updated.push(tile::FOCUS_ROW);
-            }
-        }
-        Ok(())
-    }
-
-    /// Uploads the launching game's hero art as `tile::HERO`, once, and starts its
-    /// fade-in clock. Gated on the launch having actually started: at ~1600px wide this
-    /// is a multi-MB texture, and putting one on the GPU for every card the user merely
-    /// scrolls past would undo the whole point of the windowed card cache.
-    fn prepare_hero(&mut self, ctx: &mut RenderCtx<'_>) {
-        let updated = &mut ctx.updated;
+    /// Builds the launching game's hero image, once, and starts its fade-in clock. Gated on
+    /// the launch having started: at ~1600px wide this is a multi-MB texture, and one for
+    /// every card scrolled past would undo the windowed cover cache.
+    fn prepare_hero(&mut self) {
         if self.launch_anim.is_none() {
             return;
         }
         let Some(id) = self.render.hero.pending_upload() else {
             return;
         };
-        // One hero slot: the upload replaces whatever it held (`Compositor::upload_raw`),
-        // reusing the texture when the two images happen to share a size.
         self.render.hero.mark_uploaded(id);
-        updated.push(tile::HERO);
+        self.render.hero_image = self.render.hero.uploaded_image().and_then(|hero| {
+            crate::app::draw::home::raw_image(
+                hero.width,
+                hero.height,
+                crate::app::render::skia::RawFormat::Rgb565,
+                &hero.pixels,
+            )
+        });
     }
 
     /// Copies the leaving modal's pixels aside so it can fade out while the entering one
@@ -505,8 +429,7 @@ impl App {
                     | Screen::SendLogs
                     | Screen::SpeedTest
                     | Screen::RemoveCollection
-                    | Screen::ResetHdrCalibration
-                    => match (self.confirm_of(), self.confirm_focused()) {
+                    | Screen::ResetHdrCalibration => match (self.confirm_of(), self.confirm_focused()) {
                         (Some(confirm), Some(i)) => {
                             let rect = Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &confirm.subtitle, i);
                             Some(ui::rasterize(
@@ -524,10 +447,7 @@ impl App {
                     // Every plain list modal: same tile, same geometry, built from whichever
                     // rows the screen lists. Only Diagnostics and Experimental can have a
                     // dropdown open, and only the host menu has a ⋯ to light.
-                    Screen::HostMenu
-                    | Screen::HostPower
-                    | Screen::HdrCalibration
-                    => {
+                    Screen::HostMenu | Screen::HostPower | Screen::HdrCalibration => {
                         let rows = self.list_modal_rows().unwrap_or_default();
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
                         self.list_modal_focused()
@@ -561,9 +481,7 @@ impl App {
                     | Screen::RenameProfile
                     | Screen::About
                     | Screen::SettingsPage
-                    | Screen::DeleteProfile => {
-                        None
-                    }
+                    | Screen::DeleteProfile => None,
                 };
                 if let Some(tile) = tile {
                     tiles.put(tile::MODAL_FOCUS, version, tile);
@@ -706,38 +624,9 @@ impl App {
     pub fn prepare_tiles(&mut self, ctx: &mut RenderCtx<'_>) -> Result<Vec<TileId>> {
         // The transition frame's cost is what decides whether the open fade is visible.
         let started = ctx.screen_changed.then(Instant::now);
-        let screen_w = ctx.screen.w;
 
-        self.prepare_sidebar(ctx)?;
-        self.prepare_grid(ctx)?;
-        self.prepare_hero(ctx);
-
-        // Status line block — built whenever `home_status` is set, independent of
-        // whether a host is selected (the "Send logs" result shows here too).
-        match &self.home_status {
-            Some(s) => {
-                if ctx.tiles.ensure(tile::STATUS, cache::version(s), || {
-                    let avail = screen_w.saturating_sub(ui::widgets::SIDEBAR_W);
-                    let max_w = avail.saturating_sub(2 * view::home::GRID_PAD as u32);
-                    ui::rasterize(
-                        ui::tiles::WrappedTextTile {
-                            font: ctx.fonts.label,
-                            text: s,
-                            max_w,
-                            color: ui::theme::palette().muted,
-                            line_gap: 6,
-                        },
-                        ctx.text,
-                        ctx.fonts,
-                    )
-                })? {
-                    ctx.updated.push(tile::STATUS);
-                }
-            }
-            None => {
-                ctx.tiles.remove(tile::STATUS);
-            }
-        }
+        self.prepare_grid(ctx.screen);
+        self.prepare_hero();
 
         self.prepare_modal(ctx)?;
         self.prepare_scroll(ctx)?;

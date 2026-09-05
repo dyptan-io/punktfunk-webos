@@ -17,7 +17,6 @@ pub(crate) mod nav;
 pub(crate) mod pointer;
 pub(crate) mod press;
 pub(crate) mod render;
-pub(crate) mod render_input;
 pub(crate) mod screens;
 pub(crate) mod settingsui;
 pub(crate) mod spinner;
@@ -68,7 +67,7 @@ pub(crate) const LIBRARY_STATUS_DELAY: Duration = Duration::from_secs(1);
 const SCROLL_INDICATOR_TILE_W: u32 = 10;
 
 /// Home status bar's vertical padding; box height is fixed at two text rows.
-const STATUS_BG_PAD: i32 = 12;
+pub(crate) const STATUS_BG_PAD: i32 = 12;
 
 /// WOL packet resend interval; silent-mode timeout before showing prompt.
 pub(crate) const WAKE_RETRY_INTERVAL: Duration = Duration::from_secs(60);
@@ -300,9 +299,6 @@ impl App {
         // Same call the Experimental toggle makes, so the persisted value and a live flip take
         // exactly the same path into `ui::theme`.
         app.restyle();
-        // Rasterizes the spinner's frames off the render thread (OnceLock warm-up). After
-        // `restyle`, because the cache snapshots the palette it rasterizes in.
-        std::thread::spawn(crate::app::assets::spinner_frames);
         app
     }
 
@@ -366,9 +362,6 @@ impl App {
         let before = self.hosts.entries.len();
         self.hosts.entries = entries;
         self.reanchor_sidebar_focus(before);
-        // The sidebar layer is a cached tile keyed by nothing but this flag (see `prepare_tiles`),
-        // so a rebuilt row list that doesn't set it leaves the previous host list on screen.
-        self.render.sidebar_dirty = true;
     }
 
     /// Keeps sidebar focus on the row the user is actually on after the host list changed
@@ -474,7 +467,6 @@ impl App {
         if sidebar_changed {
             // Rows were appended, so the utility rows have moved.
             self.reanchor_sidebar_focus(before);
-            self.render.sidebar_dirty = true;
         }
         sidebar_changed || grid_changed
     }

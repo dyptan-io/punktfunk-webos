@@ -369,17 +369,15 @@ impl App {
             | Screen::SendLogs
             | Screen::SpeedTest
             | Screen::RemoveCollection
-            | Screen::ResetHdrCalibration
-            => self
+            | Screen::ResetHdrCalibration => self
                 .confirm_subtitle()
                 .zip(self.confirm_focused())
                 .map(|(subtitle, i)| Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &subtitle, i)),
             // Every plain list modal: one geometry, measured off the `ModalScreen`
             // the painter draws, indexed by that screen's own focus cursor.
-            Screen::HostMenu
-            | Screen::HostPower
-            | Screen::HdrCalibration
-            => self.list_modal_focus_rect(screen_w, screen_h, fonts),
+            Screen::HostMenu | Screen::HostPower | Screen::HdrCalibration => {
+                self.list_modal_focus_rect(screen_w, screen_h, fonts)
+            }
             // No single focused widget: a text form is one always-active field, and About is
             // a scrolling document.
             Screen::Home

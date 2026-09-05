@@ -439,7 +439,11 @@ impl App {
             match ev {
                 MenuEvent::Up | MenuEvent::Down => {
                     let i = sp.page.index();
-                    let next = if ev == MenuEvent::Up { i.saturating_sub(1) } else { (i + 1).min(Page::ALL.len() - 1) };
+                    let next = if ev == MenuEvent::Up {
+                        i.saturating_sub(1)
+                    } else {
+                        (i + 1).min(Page::ALL.len() - 1)
+                    };
                     self.show_page(Page::ALL[next]);
                 }
                 MenuEvent::Right | MenuEvent::Confirm => self.screens.settings_page.column = false,
@@ -459,7 +463,9 @@ impl App {
             return;
         };
         match ev {
-            MenuEvent::Left if matches!(row, Row::Kit(_) | Row::Editing | Row::LogLevel) => self.step_row(row, -1, false),
+            MenuEvent::Left if matches!(row, Row::Kit(_) | Row::Editing | Row::LogLevel) => {
+                self.step_row(row, -1, false)
+            }
             MenuEvent::Left => self.screens.settings_page.column = true,
             MenuEvent::Right => self.step_row(row, 1, false),
             MenuEvent::Confirm => self.activate_row(row),

@@ -23,7 +23,6 @@ const PALETTE: Palette = Palette {
     // Desaturated rather than a signal colour — it sits next to brand purple on every row.
     caution: Color::RGB(0xd1, 0x84, 0x4a),
     error: Color::RGB(0xff, 0x6b, 0x6b),
-    ok: Color::RGB(0x5c, 0xd6, 0xa0),
     scrim: Color::RGBA(0x00, 0x00, 0x00, 0x80),
     rule: Color::RGBA(0xff, 0xff, 0xff, 0x1e),
     glass_edge: Color::RGBA(0xff, 0xff, 0xff, 0x18),
@@ -33,8 +32,6 @@ const PALETTE: Palette = Palette {
 const ICONS: Icons = Icons {
     close: "\u{E5CD}",
     chevron_down: "\u{E5C5}",
-    overflow: "\u{E5D3}",
-    pin: "\u{F10D}",
 };
 
 /// Flat opaque panels. Costs no GPU memory and no render-target binds at all.

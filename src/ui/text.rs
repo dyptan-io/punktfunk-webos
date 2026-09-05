@@ -12,7 +12,6 @@ use tiny_skia::Pixmap;
 pub enum FontWeight {
     Regular,
     Medium,
-    SemiBold,
 }
 
 /// App UI fonts: a `TextRaster` plus which loaded font each logical role maps to.
@@ -20,7 +19,6 @@ pub struct Fonts<'a> {
     pub raster: &'a dyn TextRaster,
     pub label: FontId,
     pub value: FontId,
-    pub title: FontId,
     pub icon: FontId,
     /// Smallest weight (stats overlay Green-button hint).
     pub caption: FontId,
@@ -244,24 +242,6 @@ impl Canvas<'_, '_> {
             MODAL_SUBTITLE_LINE_GAP,
         )
     }
-}
-
-/// Largest loaded font whose longest word in `text` fits `max_w` (smallest if none does).
-/// For wrapped blocks: wrapping never breaks inside a word, so one word wider than the box
-/// overflows at any fixed size.
-pub fn fitting_font(raster: &dyn TextRaster, text: &str, max_w: u32) -> FontId {
-    // Descending point size — see `SdlTextRaster::new`.
-    const LADDER: [FontId; 4] = [FontId::Title, FontId::Label, FontId::Value, FontId::Caption];
-    let longest_word = |f| {
-        text.split_whitespace()
-            .map(|w| raster.measure(f, w).0)
-            .max()
-            .unwrap_or(0)
-    };
-    LADDER
-        .into_iter()
-        .find(|&f| longest_word(f) <= max_w)
-        .unwrap_or(FontId::Caption)
 }
 
 /// Greedily word-wraps `text` into lines no wider than `max_w` px in `font` — for modal
