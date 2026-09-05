@@ -6,6 +6,7 @@ use pf_client_core::profiles::StreamProfile;
 use crate::core::caps::VideoCaps;
 
 /// Stream connection target.
+#[derive(Clone)]
 pub struct ConnectTarget {
     pub host: String,
     pub port: u16,

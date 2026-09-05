@@ -85,6 +85,7 @@ pub(super) fn run_ui_flow(
     // `run_inner` to join once the launch animation finishes.
     let mut connect_handle: Option<(
         std::thread::JoinHandle<Result<session::Connected>>,
+        crate::app::ConnectTarget,
         store::Settings,
         bool,
     )> = None;
@@ -214,8 +215,8 @@ pub(super) fn run_ui_flow(
                 let mut settings = app.launch_settings(&target);
                 let gamepad_auto = settings.gamepad_type() == store::GamepadType::Auto;
                 settings = resolve_gamepad_type(settings, game_controller);
-                let handle = spawn_connect(identity.clone(), target, settings.clone())?;
-                connect_handle = Some((handle, settings, gamepad_auto));
+                let handle = spawn_connect(identity.clone(), target.clone(), settings.clone())?;
+                connect_handle = Some((handle, target, settings, gamepad_auto));
             }
         }
         // Without a hero the screen is handed to the streaming loop at the end of the
@@ -227,7 +228,7 @@ pub(super) fn run_ui_flow(
             // `is_finished` is monotonic, so this needs no latch of its own.
             let connect = match connect_handle.as_ref() {
                 _ if CONNECT_FAILED.load(Ordering::Relaxed) => Connect::Failed,
-                Some((h, _, _)) if !h.is_finished() => Connect::Pending,
+                Some((h, ..)) if !h.is_finished() => Connect::Pending,
                 _ => Connect::Done,
             };
             // `presented`, not `presenting`: the hero's exit crossfades into the video plane,
@@ -448,8 +449,9 @@ pub(super) fn run_ui_flow(
     // stay, so the next entry is not a cold start.
     gl.release_resources();
     Ok(match connect_handle {
-        Some((handle, settings, gamepad_auto)) => UiOutcome::Launch(Box::new(ConnectOutcome {
+        Some((handle, target, settings, gamepad_auto)) => UiOutcome::Launch(Box::new(ConnectOutcome {
             handle,
+            target,
             settings,
             gamepad_auto,
             first_frame_deadline: app.render.hero.first_frame_deadline(),

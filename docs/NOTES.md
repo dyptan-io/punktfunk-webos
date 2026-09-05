@@ -727,6 +727,10 @@ Blind alleys, so they aren't re-tried:
 - Running our own capped probe instead does **not** work: `request_probe` completes, but `abr.set_ceiling` is only called from core's own probe path (gated on its `capacity_probe_deadline`), so ceiling never moves. No public bitrate/ceiling setter on `NativeClient`.
 - Pinning a fixed bitrate also disarms the probe, but costs mid-session adaptation entirely.
 
+## Reconnect
+
+A session that ends with `PunktfunkEndReason::Lost` (idle timeout, reset, network) is dialled again up to three times with the same target and settings, a toast up over the emptied plane; the host lingers a dropped session for exactly this. Back, the EXIT gesture or a quit gives a dial up. Any other end (game exited, host ended, host error, our own stop) goes to the menu as before. A session that streamed a minute earns the budget back.
+
 ## Network speed test quirks
 
 Burst is 320 Mbps / 3 s (not 3 Gbps / 5 s) — the UI thread shares a 3-core Cortex-A9, and an unbounded firehose starves the app. 320 still detects any ceiling that would change the clamped recommendation (>~285 Mbps). Probe must advertise `VIDEO_CAP_CHACHA20` like a real session (core's `bytes_received` increments *after* AEAD decrypt). **~245 Mbps airlink ceiling** measured on G5 Wi-Fi (MediaTek USB 2.0 Hi-Speed bus), nothing client code can raise. New flows sometimes black-hole 10-29 s (AP/driver setup), so `session::probe::run_speed_probe` waits for the first completed video frame (cap 35 s) before bursting — plane live, path warm.

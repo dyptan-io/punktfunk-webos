@@ -128,6 +128,7 @@ pub(super) fn run(
     // Connecting card, exactly as the old menus overlap it with the loading screen.
     let mut connect: Option<(
         std::thread::JoinHandle<Result<session::Connected>>,
+        crate::app::ConnectTarget,
         store::Settings,
         bool,
     )> = None;
@@ -373,9 +374,10 @@ pub(super) fn run(
         // The handshake landed (or failed): the streaming loop takes it from here, and a
         // failure goes back to the menu with the reason, exactly as the old flow does.
         if connect.as_ref().is_some_and(|(h, ..)| h.is_finished()) {
-            let (handle, settings, gamepad_auto) = connect.take().expect("just checked");
+            let (handle, target, settings, gamepad_auto) = connect.take().expect("just checked");
             break 'ui UiOutcome::Launch(Box::new(ConnectOutcome {
                 handle,
+                target,
                 settings,
                 gamepad_auto,
                 // The shell has no loading screen of its own to spend a budget on — the
@@ -521,6 +523,7 @@ fn start_launch(
     want: Launch,
 ) -> Result<(
     std::thread::JoinHandle<Result<session::Connected>>,
+    crate::app::ConnectTarget,
     store::Settings,
     bool,
 )> {
@@ -549,8 +552,8 @@ fn start_launch(
         launch,
         profile,
     };
-    let handle = spawn_connect(identity.clone(), target, settings.clone())?;
-    Ok((handle, settings, gamepad_auto))
+    let handle = spawn_connect(identity.clone(), target.clone(), settings.clone())?;
+    Ok((handle, target, settings, gamepad_auto))
 }
 
 /// What to do to the selected host on the way out. Same rule as `App::exit_plan`: the selected
