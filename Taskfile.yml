@@ -85,6 +85,10 @@ tasks:
       Run the unit tests on the HOST target. The armv7 cross build cannot execute on a runner,
       and `lint` only type-checks the tests — this is the only task that runs them. Needs native
       SDL2 (`libsdl2-dev`, `libsdl2-ttf-dev`); `docker:test` brings its own.
+    env:
+      # The host's Skia comes from rust-skia's own release: our mirror only carries the armv7
+      # archive that upstream does not build. Same version, same key, different host.
+      SKIA_BINARIES_URL: 'https://github.com/rust-skia/skia-binaries/releases/download/0.99.0/skia-binaries-{key}.tar.gz'
     cmds:
       - cargo test --bin punktfunk-webos
 

@@ -189,10 +189,10 @@ pub const EXP_ROWS: [ExpRow; 5] = [
     ExpRow::PadSpeaker,
 ];
 
-/// Whether this build links the shared shell at all. Only the armv7 TV target does — see
-/// Cargo.toml — so on every other target the row is listed and locked rather than missing,
-/// which keeps the screen's row indices the same everywhere.
-pub(crate) const CONSOLE_UI_BUILT: bool = cfg!(all(target_os = "linux", target_arch = "arm"));
+/// Whether this build links the shared shell at all. Every Linux target does (see Cargo.toml);
+/// elsewhere the row is listed and locked rather than missing, which keeps the screen's row
+/// indices the same everywhere.
+pub(crate) const CONSOLE_UI_BUILT: bool = cfg!(target_os = "linux");
 
 /// Display position of [`ExpRow::AudioProcessing`] — the row a dropdown can hang off, which is
 /// what `DropdownState::row` names.
