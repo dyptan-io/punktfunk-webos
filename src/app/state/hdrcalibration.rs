@@ -14,7 +14,7 @@ use crate::app::App;
 use crate::core::event::MenuEvent;
 use crate::core::model::HdrDisplay;
 use crate::core::screen::Screen;
-use crate::platform::webos::hdr_pattern::Playback;
+pub(crate) use crate::platform::webos::hdr_pattern::Playback;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) enum HdrStep {
@@ -246,15 +246,5 @@ impl App {
         let changed = now != hdr.seen;
         hdr.seen = now;
         changed
-    }
-
-    /// What the renderer draws while this screen is up: the step, the volume it has reached, and
-    /// whether the pattern feed has given up (which the card says instead of sitting on black).
-    pub(crate) fn hdr_calibration_view(&self) -> Option<view::hdrcalibration::Modal> {
-        self.screens.hdr.as_ref().map(|hdr| view::hdrcalibration::Modal {
-            step: hdr.step,
-            display: hdr.display,
-            stalled: hdr.playback.as_ref().is_none_or(Playback::stalled),
-        })
     }
 }

@@ -59,10 +59,6 @@ impl SkiaTiles {
         Self::default()
     }
 
-    pub fn drop_tile(&mut self, tile: TileId) {
-        self.images.remove(&tile);
-    }
-
     /// Draws `cmds` in order. A tile with no image is skipped: the loop uploads before it
     /// presents, so a miss is a tile evicted between the two, and the old compositor drew
     /// nothing for it too.
@@ -217,7 +213,7 @@ mod tests {
     fn tiles_with_square(color: [u8; 4]) -> SkiaTiles {
         let mut pm = Painter::new(4, 4);
         let straight = crate::ui::render::Color::RGBA(color[0], color[1], color[2], color[3]);
-        pm.fill_rect(Rect::new(0, 0, 4, 4), straight);
+        pm.fill_rounded_rect(Rect::new(0, 0, 4, 4), 0, straight);
         let mut tiles = SkiaTiles::new();
         tiles.upload(TileId(1), &pm, false).unwrap();
         tiles

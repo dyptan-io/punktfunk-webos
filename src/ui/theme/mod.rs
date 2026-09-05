@@ -53,25 +53,14 @@ pub struct Palette {
     pub surface: Color,
     /// Selection, fills, the primary button.
     pub accent: Color,
-    /// The focus glow and outline — a lighter [`Self::accent`], since it is drawn as light
-    /// rather than as a fill.
-    pub accent_bright: Color,
     /// Primary text.
     pub text: Color,
     /// Secondary text, unfocused icons.
     pub muted: Color,
-    /// A control that exists but cannot be changed here — dimmer than [`Self::muted`], which
-    /// is merely "not focused". Reads as inert next to a focused row's white label.
-    pub disabled: Color,
     pub warning: Color,
-    /// A muted caution caption — dimmer than [`Self::warning`], so it reads as a hint
-    /// rather than an alert.
-    pub caution: Color,
     pub error: Color,
     /// Dims the screen behind an open modal.
     pub scrim: Color,
-    /// Hairline rules inside a card.
-    pub rule: Color,
     /// The lit edge every raised surface is outlined with — a modal card, a dropdown's popup,
     /// a toast. One value so they read as cut from the same sheet; they had three different
     /// whites before anyone put them side by side.
@@ -106,8 +95,6 @@ pub struct Glass {
 pub struct Icons {
     /// A modal's close button.
     pub close: &'static str,
-    /// A dropdown row's open/closed affordance.
-    pub chevron_down: &'static str,
 }
 
 /// Every look on offer, in the order the Theme dropdown lists them — the single table, so

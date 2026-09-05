@@ -69,19 +69,6 @@ impl Rect {
         let (px, py) = p;
         px >= self.x && px < self.right() && py >= self.y && py < self.bottom()
     }
-
-    /// Overlap of `self` and `other`, or `None` if they don't intersect (matches
-    /// `sdl2::rect::Rect::intersection`).
-    pub fn intersection(&self, other: Self) -> Option<Self> {
-        let x1 = self.x.max(other.x);
-        let y1 = self.y.max(other.y);
-        let x2 = self.right().min(other.right());
-        let y2 = self.bottom().min(other.bottom());
-        if x2 <= x1 || y2 <= y1 {
-            return None;
-        }
-        Some(Self::new(x1, y1, (x2 - x1) as u32, (y2 - y1) as u32))
-    }
 }
 
 /// Float rectangle, for the one case where whole-pixel placement is too coarse: a pan
@@ -126,16 +113,6 @@ impl Color {
             g: lerp(self.g, other.g, t),
             b: lerp(self.b, other.b, t),
             a: self.a,
-        }
-    }
-
-    /// `self` with its alpha scaled by `f` — a fill riding a fade, without the caller
-    /// unpacking the colour to reach one channel.
-    #[must_use]
-    pub fn with_alpha_scaled(self, f: f32) -> Self {
-        Self {
-            a: (f32::from(self.a) * f.clamp(0.0, 1.0)) as u8,
-            ..self
         }
     }
 }

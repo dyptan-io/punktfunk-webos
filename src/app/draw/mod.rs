@@ -44,12 +44,17 @@ pub(crate) const fn ported(screen: Screen) -> bool {
             | Screen::Pairing
             | Screen::Wake
             | Screen::SpeedTest
+            | Screen::Collections
+            | Screen::HdrCalibration
     )
 }
 
 /// The ported screens that are a list card (`draw::list`) rather than a dialog.
 pub(crate) const fn is_list(screen: Screen) -> bool {
-    matches!(screen, Screen::HostMenu | Screen::HostPower)
+    matches!(
+        screen,
+        Screen::HostMenu | Screen::HostPower | Screen::Collections | Screen::HdrCalibration
+    )
 }
 
 /// What every draw fn takes.
@@ -282,16 +287,7 @@ impl App {
             let Some(card) = self.list_card(screen) else {
                 return;
             };
-            let headers = card.rows.iter().filter(|r| r.header.is_some()).count();
-            let l = list::layout(
-                f.fonts,
-                f.w,
-                f.h,
-                f.k,
-                card.subtitle.as_deref(),
-                card.rows.len(),
-                headers,
-            );
+            let l = self.list_layout(screen, &card, f.w, f.h, f.k);
             let hover_close = live && self.render.hover_close;
             let list = self.kit_list(screen);
             // The App's cursor is the one the handlers read; the widget's follows it.
@@ -351,8 +347,87 @@ impl App {
                         .collect(),
                 }
             }
+            Screen::Collections => {
+                let host = self.selected_known_host()?;
+                let cursor = self.nav.cursor(crate::app::nav::ScreenKey::Collections);
+                let dragging = self.screens.collections.dragging;
+                let lit = self.screens.row_button;
+                let mut rows: Vec<_> = self.collections_rows()?.iter().map(list::row_spec).collect();
+                // Every collection row can be picked up and carries rename (and remove, off
+                // the dynamic Library row); the add row is a plain action.
+                for (i, (spec, c)) in rows.iter_mut().zip(host.collections()).enumerate() {
+                    let on_row = i == cursor;
+                    let held = dragging == Some(i)
+                        || (on_row && lit == Some(crate::app::screens::rowbuttons::RowButton::Leading));
+                    *spec = std::mem::take(spec).with_handle(held).with_buttons(
+                        view::collections::trailing_marks(c.dynamic),
+                        on_row.then(|| lit?.trailing()).flatten(),
+                    );
+                    spec.icon = None;
+                }
+                ListCard {
+                    title: view::collections::heading(self.collections_target_held()).to_string(),
+                    subtitle: Some(self.collections_heading().to_string()),
+                    rows,
+                }
+            }
+            Screen::HdrCalibration => {
+                let hdr = self.screens.hdr.as_ref()?;
+                let stalled = hdr
+                    .playback
+                    .as_ref()
+                    .is_none_or(crate::app::state::hdrcalibration::Playback::stalled);
+                let lit = self
+                    .screens
+                    .row_button
+                    .and_then(crate::app::screens::rowbuttons::RowButton::trailing);
+                let row = pf_console_ui::widgets::RowSpec::slider(
+                    "",
+                    hdr.step.value_text(hdr.display),
+                    hdr.step.fraction(hdr.display),
+                )
+                .with_buttons(view::hdrcalibration::ACTION_MARKS, lit);
+                ListCard {
+                    title: hdr.step.label().to_string(),
+                    subtitle: Some(view::hdrcalibration::subtitle(hdr.step, stalled).to_string()),
+                    rows: vec![row],
+                }
+            }
             _ => return None,
         })
+    }
+
+    /// A ported list card's geometry. The HDR card sits at the bottom, under the pattern.
+    fn list_layout(&self, screen: Screen, card: &ListCard, fw: f32, fh: f32, k: f32) -> list::Layout {
+        let headers = card.rows.iter().filter(|r| r.header.is_some()).count();
+        let l = list::layout(
+            &self.fonts,
+            fw,
+            fh,
+            k,
+            card.subtitle.as_deref(),
+            card.rows.len(),
+            headers,
+        );
+        if screen == Screen::HdrCalibration {
+            l.at_bottom(fh, fh * crate::app::view::hdrcalibration::BOTTOM_MARGIN_FRAC)
+        } else {
+            l
+        }
+    }
+
+    /// The trailing button of the ported list under `(x, y)`, as `(row, button)`.
+    pub(crate) fn kit_list_button_at(&mut self, x: i32, y: i32) -> Option<(usize, usize)> {
+        let screen = self.nav.screen;
+        if !is_list(screen) {
+            return None;
+        }
+        let p = pf_console_ui::pointer::Pointer {
+            x: f64::from(x),
+            y: f64::from(y),
+            kind: pf_console_ui::pointer::PointerKind::Move,
+        };
+        self.kit_list(screen).button_at(p)
     }
 
     /// The kit widget's side of a menu event on a ported list screen: the recoil at an end,
@@ -439,16 +514,7 @@ impl App {
         }
         if is_list(screen) {
             let card = self.list_card(screen)?;
-            let headers = card.rows.iter().filter(|r| r.header.is_some()).count();
-            let l = list::layout(
-                &self.fonts,
-                w as f32,
-                h as f32,
-                scale(h),
-                card.subtitle.as_deref(),
-                card.rows.len(),
-                headers,
-            );
+            let l = self.list_layout(screen, &card, w as f32, h as f32, scale(h));
             return Some(l.on_close(x, y));
         }
         self.dialog_layout(w, h).map(|l| l.on_close(x, y))

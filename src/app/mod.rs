@@ -52,8 +52,6 @@ pub(crate) const GRID_REVEAL_WAVE: ui::animation::Wave = ui::animation::Wave {
     span: Duration::from_millis(380),
     fade: Duration::from_millis(420),
 };
-pub(crate) const SCROLL_INDICATOR_HOLD: Duration = Duration::from_millis(700);
-pub(crate) const SCROLL_INDICATOR_FADE: Duration = Duration::from_millis(350);
 /// How long a Home status line stays up at full opacity before it fades out. The fade
 /// itself is [`OVERLAY_FADE`], the same curve the toast notification leaves on. Every line here is
 /// ambient (a load result, a wake report, a launch error) and none of them stay true
@@ -63,9 +61,6 @@ pub(crate) const HOME_STATUS_LIFETIME: Duration = Duration::from_secs(15);
 /// How long a library fetch may run before its progress line is worth putting up — avoids
 /// flashing "Loading library…" for one frame on a fast fetch.
 pub(crate) const LIBRARY_STATUS_DELAY: Duration = Duration::from_secs(1);
-/// Wider than track for rounded caps not to clip.
-const SCROLL_INDICATOR_TILE_W: u32 = 10;
-
 /// Home status bar's vertical padding; box height is fixed at two text rows.
 pub(crate) const STATUS_BG_PAD: i32 = 12;
 
@@ -187,15 +182,6 @@ impl App {
         self.home_status_shown_at = status.is_some().then(Instant::now);
         self.home_status = status;
         self.home_status_sticky = sticky;
-    }
-
-    /// Open modal's scroll indicator (hold-then-fade like all self-expiring overlays).
-    pub(crate) fn scroll_indicator_alpha(&self) -> Option<f32> {
-        ui::fade::hold_alpha(
-            self.render.scroll.shown_at?,
-            SCROLL_INDICATOR_HOLD,
-            SCROLL_INDICATOR_FADE,
-        )
     }
 
     /// Status line opacity (same clock as toast, so lines leave screen identically).
@@ -597,10 +583,6 @@ impl App {
         self.last_tick = Some(now);
         let mut animating =
             ui::animation::ease_scroll(&mut self.render.grid.scroll, self.render.grid.scroll_target, dt);
-        // The scrolling modal's viewport, on the same ease-out as the grid. `scroll.offset`
-        // has already jumped to its new row; this is only the rendered crop catching up.
-        animating |=
-            ui::animation::ease_scroll(&mut self.render.modal.scroll_px, self.render.modal.scroll_target_px, dt);
         if let Some(t) = self.render.focus_anim {
             let duration = match self.home_focus {
                 HomeFocus::Grid(_) => ui::animation::CARD_FOCUS_POP,
@@ -661,12 +643,6 @@ impl App {
         {
             if self.home_status_alpha().is_none() {
                 self.set_home_status(None, false);
-            }
-            animating = true;
-        }
-        if self.render.scroll.shown_at.is_some() {
-            if self.scroll_indicator_alpha().is_none() {
-                self.render.scroll.shown_at = None;
             }
             animating = true;
         }
@@ -810,26 +786,6 @@ impl App {
         match self.grid_card_at(idx, columns) {
             Some(game) => game,
             None => unreachable!("idx filtered to a real card before building"),
-        }
-    }
-
-    /// The current position (0.0..=1.0, see `Painter::switch`) of a `Toggle`
-    /// row's switch given its settled state `target_on` — mid-slide while
-    /// `switch_anim` is in flight *for that same row and transition*, otherwise
-    /// settled at the endpoint. `row` is the focused row being rendered; the
-    /// slide only plays for the row that actually flipped, not a same-valued
-    /// neighbor focused mid-animation.
-    pub(crate) fn toggle_frac(&self, target_on: bool, row: usize) -> f32 {
-        match self.render.modal.switch_anim {
-            Some((t, from_on, anim_row)) if anim_row == row && from_on != target_on => {
-                let f = ui::animation::anim_frac(Some(t), ui::animation::FOCUS_POP);
-                if target_on {
-                    f
-                } else {
-                    1.0 - f
-                }
-            }
-            _ => f32::from(target_on),
         }
     }
 

@@ -80,13 +80,6 @@ impl Press {
     }
 }
 
-/// Focus tile position: focus pop zoom with press dip on top (every tile goes through this).
-/// A focused row/button tile includes transparent shadow padding around its layout rect.
-pub fn focus_row_tile_rect(rect: Rect, focus_anim: Option<Instant>, press: Press) -> Rect {
-    let dst = focus_row_scaled_rect(rect, focus_anim);
-    press.rect(Rect::new(dst.x as i32, dst.y as i32, dst.w as u32, dst.h as u32))
-}
-
 /// Subpixel counterpart for whole-texture row tiles, avoiding stepped 2% zooms.
 pub fn focus_row_tile_rect_f(rect: Rect, focus_anim: Option<Instant>, press: Press) -> RectF {
     let mut dst = focus_row_scaled_rect(rect, focus_anim);

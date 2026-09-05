@@ -20,11 +20,6 @@ fn center(within: Rect, width_frac: f32, height: u32, min_top: u32) -> Rect {
 }
 
 impl Painter {
-    /// Draws a hairline (`Theme::rule`) `width` px wide at `(x, y)`.
-    pub fn rule(&mut self, x: i32, y: i32, width: u32) {
-        self.fill_rect(Rect::new(x, y, width, 1), palette().rule);
-    }
-
     /// The modal card surface, opaque — for the in-stream dialogs, which have no frost
     /// beneath them to show through (the video is on a hardware plane below the SDL
     /// surface, so it is not in the framebuffer this composites into).

@@ -1,5 +1,4 @@
 use super::*;
-use crate::app::render::ctx::RenderCtx;
 use crate::app::render::skia::SkiaTiles;
 use crate::console::ConsoleGl;
 use crate::services::store::ExitAction;
@@ -48,7 +47,6 @@ pub(super) fn run_ui_flow(
     // entry may follow one. Refreshed on both arms below.
     let mut pad_connected = gamepad::any_pad_connected(game_controller);
     // Tile cache (render loop's, not App's) and the images drawn from it. Both per menu entry.
-    let mut tiles = crate::ui::cache::TileStore::new();
     let mut images = SkiaTiles::new();
     // Status from last connect attempt (sticky so reload progress doesn't erase it).
     if initial_status.is_some() {
@@ -64,7 +62,6 @@ pub(super) fn run_ui_flow(
     // lifetime so repeat draws of the same (font, text, color) reuse an
     // already-rasterized+premultiplied `Pixmap` instead of re-rasterizing
     // freetype glyphs on every ~60fps tick.
-    let mut text_cache = crate::ui::text::TextCache::new();
     let mut input = UiInput::default();
     // Owned handle (it just clones the video subsystem's refcount), so taking it
     // here doesn't hold a borrow on `canvas` for the rest of the loop.
@@ -121,7 +118,6 @@ pub(super) fn run_ui_flow(
     // One-shot: warm the modal text/shadow/freetype caches on the first idle tick
     // (Home already painted by then) so the first Settings/host-menu open doesn't
     // hitch on cold rasterization. Reset per menu entry — `text_cache` is too.
-    let mut prewarmed = false;
     'ui: loop {
         // Start of this tick, for the loop's own pacing against `TICK_BUDGET`.
         let frame_start = Instant::now();
@@ -389,10 +385,6 @@ pub(super) fn run_ui_flow(
         let log_overlay_due = log_overlay_state() != LogOverlayState::Off
             && log_overlay_last.is_none_or(|t| t.elapsed() >= Duration::from_millis(500));
         if !dirty && !animating && !log_overlay_due {
-            if !prewarmed {
-                prewarmed = true;
-                app.prewarm_modal_caches(&mut text_cache, fonts, display_mode.w as u32, display_mode.h as u32)?;
-            }
             // Blocked on the event queue rather than asleep for the rest of the budget:
             // nothing on this branch is animating, so the next thing that can change a pixel
             // is an SDL event, and waiting for it both wakes the SoC less often and drops the
@@ -405,31 +397,12 @@ pub(super) fn run_ui_flow(
             }
             continue;
         }
-        let content_dirty = dirty;
         dirty = false;
-        // Advance per-tick app state (card size, modal fades) exactly once before compose.
-        let screen_changed = app.advance_frame(display_mode.w as u32);
-        let updated = {
-            let mut ctx = RenderCtx::new(
-                &mut tiles,
-                &mut text_cache,
-                fonts,
-                Size::new(display_mode.w as u32, display_mode.h as u32),
-                content_dirty,
-                screen_changed,
-            );
-            app.prepare_tiles(&mut ctx)?
-        };
-        // Free old images before uploading new (reduce peak memory during scroll).
-        for tile in std::mem::take(&mut app.render.evicted_tiles) {
-            images.drop_tile(tile);
-        }
-        for id in updated {
-            if let Some(pm) = tiles.get(id) {
-                images.upload(id, pm, false)?;
-            }
-        }
-        let mut cmds = app.draw_list(&tiles, display_mode.w as u32, display_mode.h as u32, fonts);
+        // Advance per-tick app state (card size, modal fades) exactly once before drawing.
+        app.advance_frame(display_mode.w as u32);
+        app.prepare_frame(Size::new(display_mode.w as u32, display_mode.h as u32));
+        // The overlays still drawn as tiles (log overlay, toast, quit dialog) go on this list.
+        let mut cmds = Vec::new();
         // Appended into the same single draw list/present as the rest of the
         // screen — this loop has no separate overlay pass (see the streaming
         // loop's `tile::LOG_OVERLAY` handling for why that one differs).

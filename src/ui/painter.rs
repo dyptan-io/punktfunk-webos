@@ -126,34 +126,6 @@ impl Painter {
         }
     }
 
-    /// Wraps an already-rasterized pixmap — for a tile whose pixels come from a shape
-    /// renderer rather than from drawing calls (the modal shadow's nine-slice atlas).
-    pub fn from_pixmap(pixmap: Pixmap) -> Self {
-        Self { pixmap, origin: (0, 0) }
-    }
-
-    /// `new(width, height)`, but reusing `recycled`'s pixmap when it is already that size —
-    /// wiped, since a recycled surface holds the previous tile's pixels and neither a rounded
-    /// card nor a rounded cover draws over its own corners. A buffer of the wrong size is
-    /// dropped. The one place a tile surface is recycled; every caller that hands back an
-    /// evicted pixmap goes through here.
-    pub fn recycle(recycled: Option<Self>, width: u32, height: u32) -> Self {
-        match recycled {
-            Some(mut p) if p.width() == width.max(1) && p.height() == height.max(1) => {
-                p.reset();
-                p
-            }
-            _ => Self::new(width, height),
-        }
-    }
-
-    /// Shifts all subsequent drawing so `(x, y)` in caller (screen) space maps to
-    /// this buffer's top-left — see the `origin` field. Set once, right after
-    /// `new`, for a sub-region tile.
-    pub fn set_origin(&mut self, x: i32, y: i32) {
-        self.origin = (x, y);
-    }
-
     fn off(&self, rect: Rect) -> Rect {
         rect.offset(-self.origin.0, -self.origin.1)
     }
@@ -173,18 +145,6 @@ impl Painter {
 
     pub fn height(&self) -> u32 {
         self.pixmap.height()
-    }
-
-    /// Wipes the whole surface back to transparent and drops any origin shift — what a
-    /// recycled buffer needs before it is drawn into again (see
-    /// [`rasterize_into`](crate::ui::rasterize_into)).
-    pub fn reset(&mut self) {
-        self.pixmap.fill(tiny_skia::Color::TRANSPARENT);
-        self.origin = (0, 0);
-    }
-
-    pub fn fill_rect(&mut self, rect: Rect, color: Color) {
-        self.fill_rounded_rect(rect, 0, color);
     }
 
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: i32, color: Color) {
@@ -208,17 +168,6 @@ impl Painter {
         };
         self.pixmap
             .stroke_path(&path, &paint, &stroke, Transform::identity(), None);
-    }
-
-    pub fn fill_circle(&mut self, cx: f32, cy: f32, r: f32, color: Color) {
-        if r <= 0.0 {
-            return;
-        }
-        let (cx, cy) = (cx - self.origin.0 as f32, cy - self.origin.1 as f32);
-        let Some(path) = PathBuilder::from_circle(cx, cy, r) else {
-            return;
-        };
-        self.fill_with(&path, &aa_paint(color));
     }
 
     fn fill_with(&mut self, path: &tiny_skia::Path, paint: &Paint<'_>) {
@@ -385,26 +334,6 @@ pub fn shadow_slice(radius: i32) -> u32 {
 /// flat pixels that stretch across the middle.
 pub fn shadow_atlas_side(radius: i32) -> u32 {
     2 * shadow_slice(radius) + 2
-}
-
-/// A rounded-rect drop shadow as a nine-sliceable atlas: the same shadow
-/// [`Painter::card_shadow`] draws, rasterized once at the smallest size whose middle is
-/// genuinely flat, for the compositor to stretch over any panel of that corner radius.
-///
-/// This is what a surface drawn into a tile of its own size uses instead of baking the
-/// shadow: a baked one costs the whole surface's area in blur and blit (on a 1190x924 modal
-/// card that measured 205ms of a 260ms raster) and, in a tile sized to the surface, is then
-/// clipped away almost entirely. Nine stretched GPU draws cost neither.
-///
-/// The centre strip is two pixels of that flat middle, so stretching it reproduces the
-/// interior the full-size blit painted — a glass panel sits at `0xc0`, so that interior is
-/// not invisible and dropping it would lighten every card.
-pub fn shadow_atlas(radius: i32) -> Option<Pixmap> {
-    let pad = shadow_pad(SHADOW_BLUR);
-    // Two flat pixels between the corner slices; `render_shadow_shape` grows this by `pad` on
-    // every side, so the shape passed in is the atlas minus its padding.
-    let side = 2 * (shadow_slice(radius) as i32 - pad) + 2;
-    render_shadow_shape(side as u32, side as u32, radius, pad, SHADOW_BLUR, SHADOW_OPACITY)
 }
 
 /// The rect [`shadow_atlas`] is stretched over for `rect`: the surface, moved by

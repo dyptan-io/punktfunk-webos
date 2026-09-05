@@ -81,7 +81,7 @@ impl App {
         // until release drags that thumb, rather than re-hit-testing the row list under a
         // pointer that may have wandered off it.
         if self.settings_ui.slider_drag {
-            self.drag_slider(x, screen_w, screen_h, fonts);
+            self.drag_slider(x);
             return true;
         }
         let focus = self.hover_focus_at(x, y, screen_w, screen_h, fonts);
@@ -93,7 +93,7 @@ impl App {
         if focus.row && !matches!(self.nav.screen, Screen::Home) {
             self.render.modal.focus_anim = Some(Instant::now());
         }
-        let close_changed = self.hover_close_at(x, y, screen_w, screen_h, fonts);
+        let close_changed = self.hover_close_at(x, y, screen_w, screen_h);
         focus.any || close_changed
     }
 
@@ -110,19 +110,6 @@ impl App {
     ) -> Option<usize> {
         let (_, content) = ui::tiles::confirm_dialog_layout(screen_w, screen_h, fonts, subtitle);
         ui::tiles::confirm_button_at(content, x, y)
-    }
-
-    /// Rect of confirm button `index` for a two-button modal with `subtitle` — the shared
-    /// geometry the focused-button tile and its hit-rect are positioned against.
-    pub(crate) fn confirm_focus_button_rect(
-        screen_w: u32,
-        screen_h: u32,
-        fonts: &ui::text::Fonts,
-        subtitle: &str,
-        index: usize,
-    ) -> Rect {
-        let (_, content) = ui::tiles::confirm_dialog_layout(screen_w, screen_h, fonts, subtitle);
-        ui::widgets::confirm_button_rect(content, index)
     }
 
     /// Moves the positional focus/selection onto whatever interactive element sits
@@ -173,10 +160,13 @@ impl App {
                 if self.screens.collections.dragging.is_some() {
                     return HoverChange::NONE;
                 }
-                let Some(row) = self.scroll_list_row_at(x, y, screen_w, screen_h) else {
+                let Some(row) = self.kit_list_row_at(x, y) else {
                     return HoverChange::NONE;
                 };
-                let button = self.scroll_list_row_button_at(x, y, screen_w, screen_h);
+                let button = self
+                    .kit_list_button_at(x, y)
+                    .filter(|(r, _)| *r == row)
+                    .map(|(_, b)| RowButton::Trailing(b));
                 let key = ScreenKey::Collections;
                 let row_changed = self.nav.cursor(key) != row;
                 let button_changed = self.screens.row_button != button;
@@ -217,9 +207,13 @@ impl App {
             }
             // Identical row-list geometry; only which focus field they carry differs.
             Screen::HdrCalibration => {
-                let Some((row, button)) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts) else {
+                let Some(row) = self.kit_list_row_at(x, y) else {
                     return HoverChange::NONE;
                 };
+                let button = self
+                    .kit_list_button_at(x, y)
+                    .filter(|(r, _)| *r == row)
+                    .map(|(_, b)| RowButton::Trailing(b));
                 // Same per-screen field table the keyboard path indexes, so hover and
                 // D-pad focus can never name different fields.
                 let Some(focused) = self.list_modal_focused_mut() else {
@@ -277,125 +271,24 @@ impl App {
         }
     }
 
-    /// The open scrolling list's display-row index under the pointer, using the same animated
-    /// `modal_scroll_px` the rows render with — a fixed-offset hit-test drifts a row off once
-    /// the list has scrolled. `None` outside the viewport, in a row gap, or off the family.
-    pub(crate) fn scroll_list_row_at(&self, x: i32, y: i32, screen_w: u32, screen_h: u32) -> Option<usize> {
-        let (content, scroll_px) = self.scroll_list_content_scroll(screen_w, screen_h)?;
-        Self::row_at(content, self.scroll_list_row_count(), scroll_px, x, y)
-    }
-
-    /// The open scrolling list's content viewport and its current animated scroll offset —
-    /// the shared geometry the hit test and `scroll_list_row_rect`'s lookup both index into,
-    /// so a scrolled list can't put them at odds.
-    fn scroll_list_content_scroll(&self, screen_w: u32, screen_h: u32) -> Option<(Rect, i32)> {
-        let (_, content) = self.scroll_list_layout(self.nav.screen, screen_w, screen_h)?;
-        let stride = ui::widgets::focus_row_stride() as i32;
-        let total = self.scroll_list_row_count();
-        Some((content, self.clamped_scroll_px(total, stride, content.height())))
-    }
-
-    /// The Bitrate row's rect and track — `settings_focused` is already that row (set by
-    /// whatever press started the drag), so this is the one geometry lookup both the arming
-    /// click and every later drag motion need.
-    /// The calibration row's rect and slider track, taken from the row itself so they are the
-    /// rects the renderer drew and not a second guess at them. Its buttons come from
-    /// `row_button_at`, like every other row's.
-    fn hdr_row_and_track(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<(Rect, Rect)> {
-        let rows = self.list_modal_rows()?;
-        let row = rows.get(view::hdrcalibration::ROW_SLIDER)?;
-        let rect = ui::widgets::focus_row_rect(
-            self.modal_list_content(screen_w, screen_h, fonts),
-            view::hdrcalibration::ROW_SLIDER,
-        );
-        Some((rect, ui::widgets::row_geom(rect, row).track))
-    }
-
     /// Drags whichever slider the armed press landed on to `x` — the one place that knows which
     /// screen's slider that is, shared by the arming press and every motion after it.
-    fn drag_slider(&mut self, x: i32, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) {
+    fn drag_slider(&mut self, x: i32) {
         if self.nav.screen == Screen::HdrCalibration {
-            if let Some((_, track)) = self.hdr_row_and_track(screen_w, screen_h, fonts) {
-                self.set_hdr_fraction(track_fraction(x, track));
+            let row = view::hdrcalibration::ROW_SLIDER;
+            if let Some(frac) = self.kit_list(Screen::HdrCalibration).track_frac(row, f64::from(x)) {
+                self.set_hdr_fraction(frac);
             }
         }
     }
 
-    /// `(row index, which of its trailing buttons)` under the pointer on the host menu.
-    /// Hover and click both go through this, so hovering previews exactly what clicking will
-    /// do — a click on a row's ⋯ opens that instead of the row's own action, the same split
-    /// as a sidebar host row's button.
-    fn list_modal_row_button_at(
-        &self,
-        x: i32,
-        y: i32,
-        screen_w: u32,
-        screen_h: u32,
-        fonts: &ui::text::Fonts,
-    ) -> Option<(usize, Option<RowButton>)> {
-        let row = self.modal_list_row_at(x, y, screen_w, screen_h, fonts)?;
-        let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
-        let button = self.row_button_at(row, ui::widgets::focus_row_rect(content, row), x, y);
-        Some((row, button))
-    }
-
-    /// The same, on a scrolling list — measured at the animated scroll offset the rows are
-    /// drawn at, so a button is clickable exactly where it looks.
-    fn scroll_list_row_button_at(&self, x: i32, y: i32, screen_w: u32, screen_h: u32) -> Option<RowButton> {
-        let (content, scroll_px) = self.scroll_list_content_scroll(screen_w, screen_h)?;
-        let row = self.scroll_list_row_at(x, y, screen_w, screen_h)?;
-        self.row_button_at(row, ui::widgets::focus_row_rect_at_px(content, row, scroll_px), x, y)
-    }
-
-    /// The list-modal row index under the pointer. `None` on a screen with no row list, or
-    /// when the pointer misses every row. Measured off `modal_list_geometry` — the viewport
-    /// the painter draws into — so hover and click land on the rows that are on screen.
-    pub(crate) fn modal_list_row_at(
-        &self,
-        x: i32,
-        y: i32,
-        screen_w: u32,
-        screen_h: u32,
-        fonts: &ui::text::Fonts,
-    ) -> Option<usize> {
-        let (_, content) = self.modal_list_geometry(screen_w, screen_h, fonts)?;
-        // A non-scrolling list modal is its rows' exact height, so the count comes off the
-        // viewport rather than a per-screen table — a second table is a second thing to keep
-        // in step — and its scroll offset is always zero.
-        let rows = (content.height() / ui::widgets::focus_row_stride()) as usize;
-        Self::row_at(content, rows, 0, x, y)
-    }
-
-    /// Which of `rows` rows in a `content` viewport `(x, y)` is on at `scroll_px`, if any.
-    /// One hit test for both list families: the plain modals pass a zero offset, the
-    /// scrolling ones the animated one their rows are drawn at — a fixed-offset test on a
-    /// scrolled list picks the wrong row.
-    fn row_at(content: Rect, rows: usize, scroll_px: i32, x: i32, y: i32) -> Option<usize> {
-        if !content.contains_point((x, y)) {
-            return None;
-        }
-        (0..rows).find(|&r| {
-            let rect = ui::widgets::focus_row_rect_at_px(content, r, scroll_px);
-            // Clipped edge rows aren't hoverable: a focused row composites on its own
-            // unclipped tile, so hovering one would pop it outside the card.
-            rect.y() >= content.y() && rect.bottom() <= content.bottom() && rect.contains_point((x, y))
-        })
-    }
-
-    fn hover_close_at(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> bool {
+    fn hover_close_at(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32) -> bool {
         if let Some(on_close) = self.ported_close_hit(x, y, screen_w, screen_h) {
             return self.set_hover_close(on_close);
         }
-        let Some(card) = self.modal_card_rect(screen_w, screen_h, fonts) else {
-            // Home draws no close button, but `hover_close` is only ever set true by a
-            // modal branch — without clearing it on the way back to Home it stayed stuck
-            // `true` forever (nothing on Home reset it), and `handle_mouse_click`'s
-            // `if self.render.hover_close { return self.back() }` then swallowed every Home
-            // click. Not reported as a visible change: Home draws no close button.
-            self.render.hover_close = false;
-            return false;
-        };
-        self.set_hover_close(ui::widgets::modal_close_rect(card).contains_point((x, y)))
+        // Home draws no close button; a stale `true` would swallow every Home click.
+        self.render.hover_close = false;
+        false
     }
 
     /// Updates `hover_close` and reports whether it actually changed — every modal
@@ -481,9 +374,12 @@ impl App {
                     self.commit_collection_drag();
                     return None;
                 }
-                if let Some(row) = self.scroll_list_row_at(x, y, screen_w, screen_h) {
+                if let Some(row) = self.kit_list_row_at(x, y) {
                     self.nav.set_cursor(ScreenKey::Collections, row);
-                    self.screens.row_button = self.scroll_list_row_button_at(x, y, screen_w, screen_h);
+                    self.screens.row_button = self
+                        .kit_list_button_at(x, y)
+                        .filter(|(r, _)| *r == row)
+                        .map(|(_, b)| RowButton::Trailing(b));
                 } else {
                     // No row under the pointer, so no trailing button either: the press is on
                     // the focused row itself.
@@ -528,14 +424,22 @@ impl App {
             // The one row is a track and a button, so a press is one or the other. Only the
             // button falls through to `press` below, which is what advances the step.
             Screen::HdrCalibration => {
-                let (_, button) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts)?;
+                let row = self.kit_list_row_at(x, y)?;
+                let button = self
+                    .kit_list_button_at(x, y)
+                    .filter(|(r, _)| *r == row)
+                    .map(|(_, b)| RowButton::Trailing(b));
                 // Focus follows the click, exactly as it does on a collection row's buttons.
                 self.screens.row_button = button;
                 if button.is_none() {
-                    let (row_rect, track) = self.hdr_row_and_track(screen_w, screen_h, fonts)?;
-                    if on_track(x, y, track, row_rect) {
+                    let p = pf_console_ui::pointer::Pointer {
+                        x: f64::from(x),
+                        y: f64::from(y),
+                        kind: pf_console_ui::pointer::PointerKind::Press,
+                    };
+                    if self.kit_list(Screen::HdrCalibration).on_track(row, p) {
                         self.settings_ui.slider_drag = true;
-                        self.drag_slider(x, screen_w, screen_h, fonts);
+                        self.drag_slider(x);
                     }
                     return None;
                 }
@@ -556,17 +460,4 @@ impl App {
         }
         self.press(screen_w, screen_h, fonts)
     }
-}
-
-/// Whether a press at `(x, y)` counts as landing on `track`. The full row height counts, not
-/// just the thin track: vertical precision on a slider isn't worth demanding of a Magic Remote
-/// pointer.
-fn on_track(x: i32, y: i32, track: Rect, row_rect: Rect) -> bool {
-    x >= track.x() && x < track.right() && y >= row_rect.y() && y < row_rect.bottom()
-}
-
-/// Where `x` sits along `track`, as 0..1. Shared by the press that arms a drag and every
-/// motion after it, so the thumb lands under the cursor exactly where the track was drawn.
-fn track_fraction(x: i32, track: Rect) -> f32 {
-    ((x - track.x()) as f32 / track.width().max(1) as f32).clamp(0.0, 1.0)
 }
