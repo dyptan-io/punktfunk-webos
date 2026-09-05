@@ -26,12 +26,13 @@ fn upload_spinner(
 /// Clamped to caps afterwards exactly like a global value, so an override a TV can't
 /// satisfy degrades instead of reaching the wire.
 fn launch_settings(app: &App, target: &crate::core::model::ConnectTarget) -> crate::services::store::Settings {
-    use crate::services::store::{SettingsOverride, DESKTOP_PIN_ID};
+    use crate::services::store::{shared, DESKTOP_PIN_ID};
     let id = target.launch.as_deref().unwrap_or(DESKTOP_PIN_ID);
-    let over = app
+    let bound = app
         .known_host(&target.host, target.port)
-        .map_or_else(SettingsOverride::default, |h| h.overrides(id));
-    let mut settings = over.merge_into(app.settings_ui.settings);
+        .and_then(|h| h.game_profile(id));
+    let over = shared::game_overrides(&app.profiles, bound);
+    let mut settings = crate::services::store::merge_for_game(&over, app.settings_ui.settings, id);
     settings.clamp_to_caps();
     settings
 }
@@ -67,6 +68,9 @@ pub(super) fn run_ui_flow(
     let mut app = App::new(identity.clone());
     // Re-poll pad type (ControllerDeviceAdded fires once per connect, not per menu entry).
     app.set_gamepad_type(gamepad::detect_type(game_controller));
+    // Seeded here for the same reason: the hotplug events fire once per connect, and this
+    // entry may follow one. Refreshed on both arms below.
+    let mut pad_connected = gamepad::any_pad_connected(game_controller);
     // GPU tile cache (render loop's, not App's). Recreated per menu entry.
     let mut tiles = crate::ui::cache::TileStore::new();
     // Upload spinner frames upfront (avoids lazy allocation stall during first spin cycle).
@@ -181,6 +185,18 @@ pub(super) fn run_ui_flow(
             open_quit_dialog(&mut quit_dialog, &mut input, &app);
             dirty = true;
         }
+        // The flip, watched rather than signalled: the Settings row writes the switch, and a
+        // pad arriving satisfies the default mode without anyone writing anything. `app` drops
+        // on return, and its `StateWriter` flushes and joins in `Drop` — so the value is on
+        // disk before the menu loop re-reads it.
+        // `CONSOLE_UI_BUILT` first: off the TV target `console_flow::wanted` is const-false, so
+        // handing the menu over there would bounce straight back here and spin the menu loop.
+        if crate::app::menu::CONSOLE_UI_BUILT && app.settings_ui.settings.gamepad_ui_active(pad_connected) {
+            tracing::info!("controller UI applies — handing the menu over");
+            app.persist();
+            text_input.stop();
+            return Ok(UiOutcome::Reenter);
+        }
         // Held D-pad/stick autorepeat (see `NAV_REPEAT_DELAY`) — the pad's stand-in for the
         // OS key repeat the remote and a keyboard get. Skipped while a launch is in flight,
         // like every other menu dispatch; the quit dialog ends the hold when it opens.
@@ -289,6 +305,7 @@ pub(super) fn run_ui_flow(
                     return Ok(quit(&app));
                 }
                 Event::ControllerDeviceAdded { which, .. } => {
+                    pad_connected = gamepad::any_pad_connected(game_controller);
                     if controller.is_none() {
                         match game_controller.open(which) {
                             Ok(c) => {
@@ -304,6 +321,7 @@ pub(super) fn run_ui_flow(
                     continue;
                 }
                 Event::ControllerDeviceRemoved { .. } => {
+                    pad_connected = gamepad::any_pad_connected(game_controller);
                     *controller = None;
                     // Re-poll rather than clearing: another pad may still be attached.
                     app.set_gamepad_type(gamepad::detect_type(game_controller));

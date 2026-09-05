@@ -16,6 +16,15 @@ use anyhow::Result;
 
 pub(crate) const TITLE: &str = "Settings";
 
+/// What a caption calls this set — its webOS release, or the set itself where the release
+/// could not be read. Shared by the lock captions and the pad-lane caution.
+fn os_name(webos_major: Option<u32>) -> String {
+    match webos_major {
+        Some(major) => format!("webOS {major}"),
+        None => "this TV".to_string(),
+    }
+}
+
 /// The caption a locked row carries: what fixed its value, and where to go to change it.
 ///
 /// Lives on the row that is *immutable*, not on the one that caused it — the greyed control is
@@ -23,10 +32,7 @@ pub(crate) const TITLE: &str = "Settings";
 ///
 /// `webos_major` is the OS major (`None` where it couldn't be read).
 fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
-    let source = || match webos_major {
-        Some(major) => format!("webOS {major}"),
-        None => "this TV".to_string(),
-    };
+    let source = || os_name(webos_major);
     match lock {
         menu::RowLock::HdrNeedsHevc => "HDR is not supported by H.264".to_string(),
         menu::RowLock::NoHdr => format!("HDR is not supported by {}", source()),
@@ -39,6 +45,9 @@ fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
             menu::audio_route_label(AudioRoutePref::NdlOpus),
         ),
         menu::RowLock::NoGamepad => "Connect a controller to your TV".to_string(),
+        menu::RowLock::NoShell => "This build has no controller UI".to_string(),
+        menu::RowLock::ConsoleOff => "Turn the controller UI on to choose when".to_string(),
+        menu::RowLock::NoPadLanes => "Only a DualSense supports this".to_string(),
     }
 }
 
@@ -52,8 +61,28 @@ fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
 /// whatever's actually plugged in) is a `DualSense`/`Edge` and the TV's kernel isn't running
 /// `hid-playstation` — see `platform::webos::dualsense::hid_playstation_bound`. Computed by
 /// the caller, like `webos_major`, so this module stays platform-neutral.
+/// The rows of a settings-shaped list, in `set`'s display order.
 pub(crate) fn rows(
     set: SettingsScope,
+    settings: &Settings,
+    detected_gamepad_type: Option<GamepadType>,
+    dualsense_limited: bool,
+    webos_major: Option<u32>,
+) -> Vec<FocusRow> {
+    rows_for(
+        menu::settings_visible_logical_rows(set),
+        settings,
+        detected_gamepad_type,
+        dualsense_limited,
+        webos_major,
+    )
+}
+
+/// The same builder against an explicit list, for a sub-screen that owns one — the Controller
+/// screen draws `menu::CONTROLLER_ROWS` through here so its labels, locks and captions are the
+/// main list's rather than a second copy that can drift from it.
+pub(crate) fn rows_for(
+    logical_rows: impl Iterator<Item = menu::SettingsRow>,
     settings: &Settings,
     detected_gamepad_type: Option<GamepadType>,
     dualsense_limited: bool,
@@ -112,7 +141,47 @@ pub(crate) fn rows(
         .with_subtext_opt(
             dualsense_limited.then(|| ui::widgets::RowSubtext::caution("Limited support by your WebOS version")),
         ),
+        menu::SettingsRow::Controller => FocusRow::action(crate::app::view::icons::ICON_GAMEPAD, "Controller")
+            .with_subtext(ui::widgets::RowSubtext::hint("Your pad, and which menus it drives")),
         menu::SettingsRow::Cursor => FocusRow::action(crate::app::view::icons::ICON_MOUSE, "Cursor"),
+        // Says which UI, not "shell": the choice a user is making here is between the menus
+        // they are looking at and the ones a pad drives.
+        menu::SettingsRow::GamepadUi => FocusRow::toggle(
+            crate::app::view::icons::ICON_TV,
+            "Controller-optimized UI",
+            settings.gamepad_ui,
+        )
+        .with_subtext(ui::widgets::RowSubtext::hint(
+            "Menus built for a pad, in place of these",
+        )),
+        menu::SettingsRow::GamepadUiMode => FocusRow::dropdown(
+            crate::app::view::icons::ICON_VISIBILITY,
+            "Show it",
+            settings.gamepad_ui_mode.label(),
+        ),
+        // Both on by default and both silent when the pad has no route for them, so these say
+        // what they do rather than whether they apply — `pad_audio::caps_for` decides that per
+        // session.
+        menu::SettingsRow::PadHaptics => FocusRow::toggle(
+            crate::app::view::icons::ICON_VIBRATION,
+            "Haptics",
+            settings.pad_haptics,
+        )
+        .with_subtext(pad_lane_caption(
+            "A DualSense plays a game's own haptics on its coils",
+            dualsense_limited,
+            webos_major,
+        )),
+        menu::SettingsRow::PadSpeaker => FocusRow::toggle(
+            crate::app::view::icons::ICON_VOLUME,
+            "Speaker",
+            settings.pad_speaker,
+        )
+        .with_subtext(pad_lane_caption(
+            "Audio a game sends to the pad comes out of the pad",
+            dualsense_limited,
+            webos_major,
+        )),
         menu::SettingsRow::Theme => FocusRow::dropdown(
             crate::app::view::icons::ICON_PALETTE,
             "Theme",
@@ -142,7 +211,7 @@ pub(crate) fn rows(
     };
     // Driven by the shared predicates rather than repeating their conditions, so a row hidden or
     // locked there can never disagree here.
-    menu::settings_visible_logical_rows(set)
+    logical_rows
         .map(|logical| {
             let row = row_for(logical);
             match menu::row_lock(logical, settings, detected_gamepad_type) {
@@ -155,6 +224,26 @@ pub(crate) fn rows(
             }
         })
         .collect()
+}
+
+/// What one of the pad's own lanes says: what it does, or that this release may not carry it.
+///
+/// A caution rather than a lock, unlike `RowLock::NoPadLanes` above it: whether a lane plays is
+/// the *pad's* answer, given per session (`session::pad_audio::caps_for`), and the release check
+/// behind `dualsense_limited` reads a kernel driver binding this client cannot see through on
+/// every set — it says nothing about a wired pad, which goes through `/dev/hidraw*` and not that
+/// driver at all (see `platform::webos::dualsense::hid_playstation_bound`). A wrong guess that
+/// only cautions costs a line of text; one that greys the row out takes away a working switch.
+fn pad_lane_caption(
+    what_it_does: &str,
+    dualsense_limited: bool,
+    webos_major: Option<u32>,
+) -> ui::widgets::RowSubtext {
+    if dualsense_limited {
+        ui::widgets::RowSubtext::caution(format!("May not work on {}", os_name(webos_major)))
+    } else {
+        ui::widgets::RowSubtext::hint(what_it_does)
+    }
 }
 
 /// [`scrolllist`] geometry bound to a settings scope — which is the only thing that decides

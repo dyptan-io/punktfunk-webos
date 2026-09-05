@@ -37,6 +37,10 @@ pub enum Screen {
     /// Carries the scope of the settings screen that opened it, so the sub-screen edits the
     /// same document its parent does and Back knows where to return.
     CursorSettings(SettingsScope),
+    /// Everything about the pad itself, behind `SettingsRow::Controller`. Carries the caller's
+    /// scope for the same reason [`Self::CursorSettings`] does: the sub-screen keeps editing
+    /// whichever document opened it.
+    ControllerSettings(SettingsScope),
     /// "Send logs to developer" confirmation (see `app/sendlogs.rs`).
     SendLogs,
     /// Which collection a held card belongs to (see `app/collections.rs`). A scrolling row

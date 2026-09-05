@@ -63,7 +63,7 @@ impl PowerRights {
 /// `Ok(PowerRights::default())` — the host answered and offers nothing — is a real answer, not
 /// an error: no Host power grant on this pairing, or a platform with no executor. Only a
 /// transport failure is `Err`.
-fn probe_rights(
+pub(crate) fn probe_rights(
     addr: &str,
     mgmt_port: u16,
     identity: &(String, String),

@@ -17,7 +17,7 @@ use anyhow::Result;
 pub const TITLE: &str = "Experimental";
 pub const SUBTITLE: &str = "Unstable, off by default.";
 
-/// Game mode, audio processing, HDR calibration, then the two pad-audio lanes. Order must match
+/// Game mode, audio processing, HDR calibration. Order must match
 /// `menu::EXP_ROWS`. `rooted` is the root-probe verdict, `None` while it is still running.
 pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
     // Driving the TV's Game picture/sound modes needs the Homebrew Channel's root helper — the
@@ -44,14 +44,6 @@ pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
         } else {
             ui::widgets::RowSubtext::hint("Measure this panel brightness — turn the dynamic tone mapping off")
         });
-    // Both on by default and both silent when the pad has no route for them, so these say what
-    // they do rather than whether they apply — `pad_audio::caps_for` decides that per session.
-    let pad_haptics = FocusRow::toggle(icons::ICON_TOUCH, "Controller haptics", settings.pad_haptics).with_subtext(
-        ui::widgets::RowSubtext::hint("A DualSense plays a game's own haptics on its coils"),
-    );
-    let pad_speaker = FocusRow::toggle(icons::ICON_SIGNAL, "Controller speaker", settings.pad_speaker).with_subtext(
-        ui::widgets::RowSubtext::hint("Audio a game sends to the pad comes out of the pad"),
-    );
     // The lock's caption replaces the row's own: a row the user can't change has nothing more
     // useful to say than why.
     let apply = |row: FocusRow, exp: ExpRow| match menu::exp_row_lock(exp, settings, rooted) {
@@ -62,8 +54,6 @@ pub fn rows(settings: &Settings, rooted: Option<bool>) -> Vec<FocusRow> {
         apply(game_mode, ExpRow::GameMode),
         apply(audio, ExpRow::AudioProcessing),
         apply(calibrate, ExpRow::HdrCalibration),
-        apply(pad_haptics, ExpRow::PadHaptics),
-        apply(pad_speaker, ExpRow::PadSpeaker),
     ]
 }
 

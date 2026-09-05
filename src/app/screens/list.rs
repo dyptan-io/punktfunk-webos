@@ -32,6 +32,12 @@ impl App {
                 let m = self.hdr_calibration_view()?;
                 view::hdrcalibration::rows(m.step, m.display)
             }
+            Screen::ControllerSettings(_) => view::controllersettings::rows(
+                self.settings_target(),
+                self.detected_gamepad_type,
+                self.dualsense_limited(),
+                self.webos_major(),
+            ),
             Screen::CursorSettings(_) => view::cursorsettings::rows(
                 self.settings_target(),
                 &self.editing_override(),
@@ -51,6 +57,7 @@ impl App {
             Screen::Experimental => crate::app::menu::EXP_ROWS.len(),
             Screen::HdrCalibration => view::hdrcalibration::ROW_COUNT,
             Screen::CursorSettings(_) => crate::app::menu::CURSOR_ROWS.len(),
+            Screen::ControllerSettings(_) => crate::app::menu::CONTROLLER_ROWS.len(),
             // Exhaustive for the same reason `list_modal_rows` is: this is the second half of
             // the family's table — the labels there, the count here — and a screen listed by
             // one but missed by the other navigates a list it cannot draw.
@@ -185,6 +192,11 @@ impl App {
                 .map_or_else(Vec::new, |row| {
                     crate::app::menu::dropdown_options(row, self.settings_target(), self.detected_gamepad_type)
                 }),
+            Screen::ControllerSettings(_) => crate::app::menu::CONTROLLER_ROWS
+                .get(display_row)
+                .map_or_else(Vec::new, |&row| {
+                    crate::app::menu::dropdown_options(row, self.settings_target(), self.detected_gamepad_type)
+                }),
             // No dropdowns: nothing on these screens opens one, so nothing here should be
             // drawn or hit-tested as if it had.
             Screen::Home
@@ -216,6 +228,9 @@ impl App {
             Screen::Experimental => crate::app::menu::audio_routes().len(),
             Screen::HostPower => crate::services::store::ExitAction::ALL.len(),
             Screen::Settings(set) => crate::app::menu::settings_logical_row(set, display_row).map_or(0, |row| {
+                crate::app::menu::dropdown_option_count(row, self.settings_target())
+            }),
+            Screen::ControllerSettings(_) => crate::app::menu::CONTROLLER_ROWS.get(display_row).map_or(0, |&row| {
                 crate::app::menu::dropdown_option_count(row, self.settings_target())
             }),
             _ => 0,

@@ -180,14 +180,34 @@ fn address_in(devices: &str) -> Option<String> {
         })
 }
 
-/// The `/proc/bus/input/devices` records of every connected `DualSense`, matched on the `N: Name=`
-/// line. One pad publishes three of them, and only some carry the field a caller wants.
+/// The `/proc/bus/input/devices` records of every connected `DualSense`. One pad publishes three
+/// of them, and only some carry the field a caller wants.
+///
+/// Matched on the `I:` ids first, and on the name only as a fallback: the kernel takes the input
+/// device's name straight from the HID/Bluetooth product name (`input_dev->name = hdev->name` in
+/// `hid-playstation`), and the pad advertises itself as a plain "Wireless Controller" — so a set
+/// that decorates the name is the lucky case, not the rule. The ids are the pad either way, which
+/// matters most to [`hid_playstation_bound`]: it asks specifically about the pads a *generic*
+/// binding is handling, and those are the ones least likely to be named after themselves.
 fn dualsense_blocks<'a>(devices: &'a str) -> impl Iterator<Item = &'a str> + 'a {
     devices.split("\n\n").filter(|block| {
-        block
-            .lines()
-            .any(|l| l.starts_with("N: Name=") && l.to_ascii_lowercase().contains("dualsense"))
+        block.lines().any(|l| {
+            (l.starts_with("I: ") && is_dualsense_ids(l))
+                || (l.starts_with("N: Name=") && l.to_ascii_lowercase().contains("dualsense"))
+        })
     })
+}
+
+/// Sony's vendor plus a `DualSense`/`Edge` product on a `/proc/bus/input/devices` `I:` line.
+/// The same pair [`super::hidraw`] opens a node by.
+fn is_dualsense_ids(id_line: &str) -> bool {
+    let field = |key: &str| {
+        id_line
+            .split_whitespace()
+            .find_map(|f| f.strip_prefix(key))
+            .and_then(|v| u16::from_str_radix(v, 16).ok())
+    };
+    field("Vendor=") == Some(0x054c) && field("Product=").is_some_and(|p| p == 0x0ce6 || p == 0x0df2)
 }
 
 /// Whether an attached `DualSense`/`Edge` is bound to the kernel's `hid-playstation` driver
@@ -996,6 +1016,22 @@ mod tests {
         assert_eq!(address_in(BT), Some("aa:bb:cc:dd:ee:ff".into()));
         // Both attached: the paired one is the only one the bus can reach.
         assert_eq!(address_in(&format!("{USB}\n{BT}")), Some("aa:bb:cc:dd:ee:ff".into()));
+    }
+
+    /// The pad a generic binding is handling is the one `hid_playstation_bound` exists to find,
+    /// and it is also the one least likely to be named `DualSense` — the kernel takes that name
+    /// from the product string, which the pad reports as a plain "Wireless Controller". So the
+    /// ids have to be enough on their own.
+    #[test]
+    fn a_pad_is_matched_by_its_ids_whatever_it_is_called() {
+        const PLAIN: &str =
+            "I: Bus=0005 Vendor=054c Product=0ce6 Version=8100\nN: Name=\"Wireless Controller\"\nU: Uniq=AA:BB:CC:DD:EE:FF\n";
+        const EDGE: &str = "I: Bus=0005 Vendor=054c Product=0df2 Version=8100\nN: Name=\"Wireless Controller\"\nU: Uniq=11:22:33:44:55:66\n";
+        const OTHER: &str = "I: Bus=0005 Vendor=045e Product=0b13 Version=0513\nN: Name=\"Xbox Wireless Controller\"\nU: Uniq=99:88:77:66:55:44\n";
+
+        assert_eq!(address_in(PLAIN), Some("aa:bb:cc:dd:ee:ff".into()));
+        assert_eq!(address_in(EDGE), Some("11:22:33:44:55:66".into()));
+        assert_eq!(address_in(OTHER), None, "another vendor's pad is not a DualSense");
     }
 
     /// The overfeed that broke speech up: a tick that overran used to fire again immediately.

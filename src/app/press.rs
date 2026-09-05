@@ -42,6 +42,7 @@ impl App {
             Screen::Experimental => self.handle_experimental_event(ev),
             Screen::HdrCalibration => self.handle_hdr_calibration_event(ev),
             Screen::CursorSettings(_) => self.handle_cursor_settings_event(ev),
+            Screen::ControllerSettings(_) => self.handle_controller_settings_event(ev),
             Screen::SendLogs => self.handle_send_logs_event(ev),
             Screen::Collections => self.handle_collections_event(ev, screen_w, screen_h),
             Screen::RenameCollection => self.handle_name_collection_event(ev, screen_w, screen_h),
@@ -114,6 +115,7 @@ impl App {
             | Screen::Experimental
             | Screen::HdrCalibration
             | Screen::CursorSettings(_)
+            | Screen::ControllerSettings(_)
             | Screen::Collections
             | Screen::RenameCollection => false,
         }

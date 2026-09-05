@@ -163,18 +163,6 @@ impl App {
                 self.persist();
                 self.open_hdr_calibration();
             }
-            // Never locked (see `menu::exp_row_lock`), so no guard: a pad without a route for
-            // the lane simply never has it declared, which is not a reason to refuse the press.
-            (Some(menu::ExpRow::PadHaptics), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
-                let from = self.settings_ui.settings.pad_haptics;
-                self.settings_ui.settings.pad_haptics = !from;
-                self.arm_switch_anim(from);
-            }
-            (Some(menu::ExpRow::PadSpeaker), MenuEvent::Left | MenuEvent::Right | MenuEvent::Confirm) => {
-                let from = self.settings_ui.settings.pad_speaker;
-                self.settings_ui.settings.pad_speaker = !from;
-                self.arm_switch_anim(from);
-            }
             (_, MenuEvent::Back) => {
                 self.persist();
                 self.nav.resume(Screen::Settings(SettingsScope::Global));

@@ -18,6 +18,12 @@ env:
   # Modern CMake refuses vendored libopus's old cmake_minimum_required
   # (audiopus_sys, pulled in transitively by punktfunk-core's `quic` feature).
   CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+  # Prebuilt Skia for the console shell. rust-skia publishes no armv7 archive for any OS, so
+  # this one is ours — built against this very sysroot; sha256 in the release notes.
+  # 🛑 Without it skia-bindings does not fail. It silently builds Skia from source for about an
+  # hour. Every build must log `DOWNLOAD AND INSTALL SUCCEEDED`, and that line is NOT on stdout
+  # under `cargo build -v` — read target/<triple>/<profile>/build/skia-bindings-*/output.
+  SKIA_BINARIES_URL: 'https://git.unom.io/unom/skia-binaries/releases/download/0.99.0/skia-binaries-{key}.tar.gz'
 
 includes:
   toolchain:

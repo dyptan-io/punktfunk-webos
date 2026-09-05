@@ -38,6 +38,7 @@ pub(crate) const fn is_confirm(screen: Screen) -> bool {
         | Screen::Experimental
         | Screen::HdrCalibration
         | Screen::CursorSettings(_)
+        | Screen::ControllerSettings(_)
         | Screen::Collections
         | Screen::RenameCollection => false,
     }
@@ -59,7 +60,9 @@ pub(crate) const fn over_video(screen: Screen) -> bool {
 pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
     match screen {
         Screen::Settings(_) | Screen::Collections => true,
-        Screen::Home
+        // Five rows never need a viewport, so the Controller screen is a plain list modal.
+        Screen::ControllerSettings(_)
+        | Screen::Home
         | Screen::Pairing
         | Screen::AddHost
         | Screen::Wake
@@ -92,6 +95,7 @@ pub(crate) const fn is_list_modal(screen: Screen) -> bool {
         | Screen::HostPower
         | Screen::Diagnostics
         | Screen::Experimental
+        | Screen::ControllerSettings(_)
         // A list modal like any other, even though it draws over the video plane rather than
         // over the menu — that difference is `compose_modal`'s, not this family's.
         | Screen::HdrCalibration

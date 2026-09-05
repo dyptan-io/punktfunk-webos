@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use pf_client_core::profiles::StreamProfile;
+
 use crate::core::caps::VideoCaps;
 
 /// Stream connection target.
@@ -118,23 +120,28 @@ impl Collection {
 
 /// What one game carries on one host. Absent from `KnownHost::games` entirely when it holds
 /// nothing — an untouched game costs no bytes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GamePrefs {
     /// Pre-collections pin slot, read once by the migration in `services::store::load` and
     /// never written again — collections carry the ordering now.
     #[serde(rename = "pin", skip_serializing)]
     pub legacy_pin: Option<u32>,
-    /// Settings this game overrides; every unset field falls through to the global [`Settings`].
-    #[serde(skip_serializing_if = "SettingsOverride::is_empty")]
-    pub over: SettingsOverride,
+    /// The settings profile this game streams with — an id into [`Persisted::profiles`], the
+    /// shared catalog punktfunk's other clients keep. `None` inherits the globals.
+    ///
+    /// The overrides this used to hold inline are that profile's sparse overlay now, so one
+    /// game's settings are a thing the shared shell can list, bind and show a chip for rather
+    /// than a shape only this client understood.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 impl GamePrefs {
     /// Nothing worth persisting — the prune drops these. `legacy_pin` never serializes, so
     /// it does not keep an entry alive.
     fn is_empty(&self) -> bool {
-        self.over.is_empty()
+        self.profile.is_none()
     }
 }
 
@@ -316,15 +323,15 @@ impl KnownHost {
         }
     }
 
-    /// This game's overrides, or the empty set — reading never creates an entry.
-    pub fn overrides(&self, id: &str) -> SettingsOverride {
-        self.games.get(id).map_or_else(SettingsOverride::default, |g| g.over)
+    /// This game's bound profile id, if it has one. Reading never creates an entry.
+    pub fn game_profile(&self, id: &str) -> Option<&str> {
+        self.games.get(id).and_then(|g| g.profile.as_deref())
     }
 
-    /// Runs `edit` against this game's overrides, creating the entry only if needed and
-    /// dropping it again when the edit leaves nothing behind.
-    pub fn edit_overrides(&mut self, id: &str, edit: impl FnOnce(&mut SettingsOverride)) {
-        edit(&mut self.games.entry(id.to_string()).or_default().over);
+    /// Binds (or with `None`, clears) this game's profile, dropping the entry when nothing
+    /// is left in it.
+    pub fn bind_game_profile(&mut self, id: &str, profile: Option<String>) {
+        self.games.entry(id.to_string()).or_default().profile = profile;
         self.drop_if_empty(id);
     }
 
@@ -467,30 +474,33 @@ impl KnownHost {
     }
 }
 
-/// The cursor-capture override the Desktop card carries: *off*, since capture is on globally
-/// for the games that are the common case and the desktop is the one card where the host's own
-/// pointer should stay visible. Doubles as the shipped demo of per-game overrides.
+/// The cursor capture the Desktop card runs with: *off*, since capture is on globally for the
+/// games that are the common case and the desktop is the one card where the host's own pointer
+/// should stay visible.
 ///
-/// `None` when the global is already off: a seeded default has no business pinning a value the
-/// user would then have to find and clear (a *user-set* override equal to the global is kept —
-/// see [`SettingsOverride`]). The one place this default lives: new hosts get it from
-/// [`new_host_games`], existing ones from `store`'s version bootstrap.
+/// `None` when the global is already off — there is nothing to turn off. Applied at the merge
+/// ([`merge_for_game`]) rather than stored on the card: as stored data it would now be a
+/// catalog profile, and a default nobody chose does not deserve a named entry. A user-set
+/// override on that card still wins, because it is set.
 pub fn desktop_capture_override(global: &Settings) -> Option<bool> {
     global.cursor_capture.then_some(false)
 }
 
-/// The `games` map a genuinely new host starts with: the Desktop card wearing
-/// [`desktop_capture_override`]. Its *placement* is [`new_host_collections`]'s job.
-pub fn new_host_games(global: &Settings) -> BTreeMap<String, GamePrefs> {
-    let mut games = BTreeMap::new();
-    if let Some(capture) = desktop_capture_override(global) {
-        games
-            .entry(DESKTOP_PIN_ID.to_string())
-            .or_insert_with(GamePrefs::default)
-            .over
-            .cursor_capture = Some(capture);
+/// One game's settings: its override on the globals, plus the Desktop card's standing rule
+/// that pointer capture is off there ([`desktop_capture_override`]).
+///
+/// The rule is applied HERE rather than stored as that card's override, which is what it used
+/// to be. Stored, it would now have to be a catalog profile — one per paired host, named and
+/// listed among the profiles the user actually made. A default nobody chose does not deserve
+/// an entry; an override the user sets on the Desktop card still wins, because it is set.
+pub fn merge_for_game(over: &SettingsOverride, global: Settings, id: &str) -> Settings {
+    let mut merged = over.merge_into(global);
+    if id == DESKTOP_PIN_ID && over.cursor_capture.is_none() {
+        if let Some(capture) = desktop_capture_override(&global) {
+            merged.cursor_capture = capture;
+        }
     }
-    games
+    merged
 }
 
 /// The collections a genuinely new host starts with: "Pinned" holding the Desktop card,
@@ -965,6 +975,43 @@ pub struct Settings {
     /// Which look the menus draw in — see [`ThemeChoice`]. Cosmetic and purely local, so it
     /// applies the moment it is picked rather than on the next launch.
     pub theme: ThemeChoice,
+    /// Draw the shared gamepad shell (`pf-console-ui`) instead of this client's own menus.
+    /// WHEN it takes over is [`Settings::gamepad_ui_mode`]; this is whether it may at all.
+    ///
+    /// Stored under the shell's own unprefixed key rather than a `webos.` namespace: the
+    /// shell's Settings rows read and write these very keys, so the two UIs edit one setting
+    /// instead of two that have to be kept in step.
+    pub gamepad_ui: bool,
+    /// When [`Settings::gamepad_ui`] actually fronts the app. Read per menu entry, so a change
+    /// — or a pad appearing — lands on the next return to the menu.
+    pub gamepad_ui_mode: GamepadUiMode,
+}
+
+/// When the shared shell takes the menus over. Mirrors Android's `gamepad_ui_mode`, and
+/// serializes to the same two strings the shell's own row stores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GamepadUiMode {
+    /// Only while a real game pad is attached. A Magic Remote is not one — see
+    /// `platform::webos::gamepad::any_pad_connected`.
+    #[default]
+    Connected,
+    /// Whenever the switch is on, pad or no pad.
+    Always,
+}
+
+impl GamepadUiMode {
+    /// Display order, and the dropdown's option list.
+    pub const ALL: [Self; 2] = [Self::Connected, Self::Always];
+
+    /// The row's collapsed value. Worded as the other clients word it, so a player who moves
+    /// between a TV and a phone reads the same two answers.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Connected => "With a controller",
+            Self::Always => "Always",
+        }
+    }
 }
 
 impl Default for Settings {
@@ -996,11 +1043,25 @@ impl Default for Settings {
             audio_route: AudioRoutePref::default(),
             cursor_gestures: false,
             theme: ThemeChoice::default(),
+            // On, taking over only while a pad is attached — the cross-client default, and the
+            // reason both UIs ship: a pad in hand wants the console, a Magic Remote wants the
+            // cursor menus this client was built for.
+            gamepad_ui: true,
+            gamepad_ui_mode: GamepadUiMode::Connected,
         }
     }
 }
 
 impl Settings {
+    /// Whether the shared shell should be fronting the app right now.
+    ///
+    /// The same rule Android's `gamepadUiActive` applies, minus its `tv` term: that term makes
+    /// an Android TV console-only whatever the mode says, and here it would defeat the whole
+    /// setting — every webOS set is a TV, and the cursor UI is the one a remote wants.
+    pub fn gamepad_ui_active(&self, pad_connected: bool) -> bool {
+        self.gamepad_ui && (self.gamepad_ui_mode == GamepadUiMode::Always || pad_connected)
+    }
+
     /// Normalise to what the active backend can present (`core::caps`), plus the one
     /// cross-field rule: HDR needs HEVC, so an explicit H.264 pick turns it off. Called on
     /// load, so the document never holds a *set* value whose row the UI has just hidden or
@@ -1122,6 +1183,27 @@ pub struct Persisted {
     /// which shape it is reading. `store::load` stamps it on first sight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// The settings-profile catalog: named bundles of sparse overrides, the model punktfunk's
+    /// other clients keep in `client-profiles.json`. Here it rides the one document this client
+    /// writes, for the reason everything else does — one file, one writer, no merge.
+    ///
+    /// A game's settings ARE a profile ([`GamePrefs::profile`]), which is what lets the shared
+    /// shell list them and bind one to a title. A TV with no desktop app beside it can still
+    /// fill this: opening a game's settings and changing a row creates the profile.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<StreamProfile>,
+    /// The stored settings object exactly as it was last read, so the fields this client does
+    /// not model survive a save.
+    ///
+    /// The shared schema is much wider than [`Settings`] — the gamepad shell alone writes a
+    /// palette, a library view and its own layout prefs, and other clients write more. Writing
+    /// the document back from [`Settings`] alone would reset every one of them on the next
+    /// save from EITHER UI, which on the shell reads as a setting that will not stick.
+    ///
+    /// `serde(skip)`: it is not a key of its own, it IS the settings object — reconstructed on
+    /// load (`services::store::from_document`) and merged over on save.
+    #[serde(skip)]
+    pub shared_base: pf_client_core::trust::Settings,
 }
 
 /// Cover-art paths for a title (host-relative, fetched via mTLS). Cards prefer

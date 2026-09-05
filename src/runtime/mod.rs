@@ -277,6 +277,10 @@ enum UiOutcome {
     /// The user (or the OS) asked to close the app, carrying the selected host's exit action
     /// UNFIRED — see [`ConnectOutcome::exit_plan`] for why nothing runs it here.
     Quit(Option<crate::services::power::ExitPlan>),
+    /// The other menu flow was asked for. The menu loop re-enters and reads
+    /// [`console_flow::wanted`] again, which is the whole of the old-UI ⇄ shell flip: each
+    /// side reloads the document on entry, so neither can show the other's changes stale.
+    Reenter,
 }
 
 enum StreamOutcome {
@@ -299,3 +303,38 @@ mod ui_flow;
 use input::*;
 use stream::run_inner;
 use ui_flow::run_ui_flow;
+
+/// The shared gamepad shell's flow, on the one target that links it.
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+mod console_flow;
+
+/// Off the TV target there is no Skia and so no shell — every build answers "not wanted" and
+/// the menu loop runs this client's own screens. Mirrors `main.rs`'s stub for non-Linux hosts:
+/// the alternative is a `cfg` around the menu loop's call site, which would fork the whole
+/// eleven-argument `run_ui_flow` call in two.
+#[cfg(not(all(target_os = "linux", target_arch = "arm")))]
+mod console_flow {
+    use super::{GameController, Result, UiOutcome};
+
+    /// No shell on this target.
+    pub(super) struct ConsoleGl;
+
+    /// Takes the pad state the real one reads, so the two signatures cannot drift apart —
+    /// only this build's answer is const.
+    pub(super) fn wanted(_pad_connected: bool) -> bool {
+        false
+    }
+
+    pub(super) fn run(
+        _canvas: &mut sdl2::render::Canvas<sdl2::video::Window>,
+        _gl: &mut Option<ConsoleGl>,
+        _events: &mut sdl2::EventPump,
+        _game_controller: &sdl2::GameControllerSubsystem,
+        _controller: &mut Option<GameController>,
+        _identity: &(String, String),
+        _notice: Option<String>,
+    ) -> Result<UiOutcome> {
+        // `wanted` is const-false here, so the menu loop never takes this branch.
+        Ok(UiOutcome::Reenter)
+    }
+}

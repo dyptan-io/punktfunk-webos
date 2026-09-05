@@ -3,8 +3,13 @@
 //! - [`load`] / [`save`] read and write the whole [`Persisted`] document.
 //! - [`StateWriter`] is what the app actually saves through: off-thread, coalescing.
 //! - [`load_or_create_identity`] handles the PEM pair, which stays outside the document.
+// The shell's `SettingsStore`. Gated with pf-console-ui itself, which is an arm-only dependency
+// so `task test` never has to fetch a Skia archive for the host target (see Cargo.toml).
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+pub mod console;
 mod identity;
 mod legacy;
+pub mod shared;
 mod writer;
 
 use std::path::PathBuf;
@@ -13,9 +18,9 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 pub use crate::core::model::{
-    desktop_capture_override, new_host_collections, new_host_games, upsert_known_host, AudioRoutePref, CodecPref,
-    Collection, ExitAction, GamepadType, KnownHost, LogLevelOverride, OverrideField, Persisted, Settings,
-    SettingsOverride, DESKTOP_PIN_ID,
+    merge_for_game, new_host_collections, upsert_known_host, AudioRoutePref, CodecPref, Collection, ExitAction,
+    GamepadType, GamepadUiMode, KnownHost, LogLevelOverride, OverrideField, Persisted, Settings, SettingsOverride,
+    DESKTOP_PIN_ID,
 };
 pub use crate::services::paths::app_dir;
 pub use identity::load_or_create_identity;
@@ -46,7 +51,7 @@ pub fn load() -> Loaded {
     // — or the file is missing entirely, which still needs migrating, since pairing a host wrote
     // `known-hosts.json` without ever writing settings.
     let mut state = match read_document() {
-        Some(doc) if doc.get("settings").is_some() => serde_json::from_value(doc).unwrap_or_default(),
+        Some(doc) if doc.get("settings").is_some() => from_document(doc),
         Some(doc) => legacy::migrate(serde_json::from_value(doc).unwrap_or_default()),
         None => legacy::migrate(Settings::default()),
     };
@@ -65,18 +70,11 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Brings [`Persisted::version`] up to this build's, and returns whether it had to — which is
 /// how the UI knows this release is running here for the first time.
 ///
-/// A document with *no* version predates the field, so it also gets
-/// [`desktop_capture_override`] bootstrapped onto its hosts; one that carries any version was
-/// written by a build that applied that default when each host was added.
-///
-/// Written synchronously so it happens once — `StateWriter`'s baseline is taken after this, and
-/// an unstamped document that never gets saved would seed again on every launch.
+/// Written synchronously so it happens once — `StateWriter`'s baseline is taken after this,
+/// and an unstamped document that never gets saved would stamp again on every launch.
 fn stamp_version(state: &mut Persisted) -> bool {
     if state.version.as_deref() == Some(VERSION) {
         return false;
-    }
-    if state.version.is_none() {
-        seed_desktop_capture(state);
     }
     state.version = Some(VERSION.to_string());
     if let Err(e) = save(state) {
@@ -87,32 +85,11 @@ fn stamp_version(state: &mut Persisted) -> bool {
     true
 }
 
-/// Puts [`desktop_capture_override`] on every host whose Desktop card is pinned and
-/// which carries no overrides yet. Reads the *legacy* pin, so it must run before
-/// [`migrate_collections`] — a document with no version is one that still has pins.
-///
-/// A host that already overrides something is left alone — the user has found the feature and
-/// this must not talk over them.
-fn seed_desktop_capture(state: &mut Persisted) {
-    let Some(capture) = desktop_capture_override(&state.settings) else {
-        return;
-    };
-    for host in &mut state.known_hosts {
-        let untouched = host.games.values().all(|g| g.over.is_empty());
-        if !untouched || host.games.get(DESKTOP_PIN_ID).is_none_or(|g| g.legacy_pin.is_none()) {
-            continue;
-        }
-        host.edit_overrides(DESKTOP_PIN_ID, |over| over.cursor_capture = Some(capture));
-        tracing::info!("seeded Desktop cursor-capture override on {}", host.name);
-    }
-}
-
 /// Gives every host that predates collections the vector it now needs: its old pins, in pin
 /// order, as one "Pinned" collection, then the dynamic Library entry — which is exactly the
 /// grid it was already drawing. A host with no pins gets Library alone.
 ///
-/// Runs after [`stamp_version`], whose `seed_desktop_capture` is the last reader of the legacy
-/// pin. One-shot in practice, since the first save writes `collections` and stops serializing
+/// The last reader of the legacy pin. One-shot in practice, since the first save writes `collections` and stops serializing
 /// `pin` — but idempotent regardless: a host that already has the vector is skipped.
 fn migrate_collections(state: &mut Persisted) {
     for host in &mut state.known_hosts {
@@ -141,8 +118,41 @@ fn migrate_collections(state: &mut Persisted) {
     }
 }
 
+/// The document, with its `settings` object read out of the shared schema into this client's
+/// own shape (see [`shared`]). A pre-shared object is converted here once; the next [`save`]
+/// writes it back in the shared schema.
+fn from_document(mut doc: Value) -> Persisted {
+    let object = doc.get("settings").cloned().unwrap_or(Value::Null);
+    // The shared object as stored, kept whole. Everything this client does not model rides
+    // back out on the next save through it — see [`Persisted::shared_base`]. A legacy document
+    // has no such fields, so it carries nothing.
+    let mut shared_base = pf_client_core::trust::Settings::default();
+    let settings = if shared::legacy_shape(&object) {
+        tracing::info!("settings.json predates the shared schema — converting on this load");
+        serde_json::from_value(object).unwrap_or_default()
+    } else {
+        shared_base = serde_json::from_value(object).unwrap_or_default();
+        shared::from_shared(&shared_base)
+    };
+    // Put this client's shape back so the rest of the document (known hosts, the selected row,
+    // the version stamp) deserializes exactly as it always did.
+    match serde_json::to_value(settings) {
+        Ok(v) => doc["settings"] = v,
+        Err(e) => tracing::warn!("could not re-encode settings: {e:#}"),
+    }
+    Persisted {
+        shared_base,
+        ..serde_json::from_value(doc).unwrap_or_default()
+    }
+}
+
 pub fn save(state: &Persisted) -> Result<()> {
-    let json = serde_json::to_string_pretty(state).context("serialize app state")?;
+    let mut doc = serde_json::to_value(state).context("serialize app state")?;
+    // The one place the settings object leaves this client in punktfunk's shape. Every other
+    // key stays as it was — only `settings` is shared.
+    doc["settings"] = serde_json::to_value(shared::to_shared(&state.shared_base, &state.settings))
+        .context("serialize shared settings")?;
+    let json = serde_json::to_string_pretty(&doc).context("render app state")?;
     crate::services::atomic::write(&path(), &json, "settings.json")
 }
 
@@ -157,8 +167,12 @@ pub fn persisted_log_level() -> LogLevelOverride {
         return LogLevelOverride::default();
     };
     let settings = doc.get("settings").unwrap_or(&doc);
+    // Both shapes: the shared schema keeps this client's own rows under a `webos.` prefix, and
+    // a document written before the move still has it bare. Reading only one of them would
+    // silently start every launch at the default level instead of the chosen one.
     settings
-        .get("log_level_override")
+        .get("webos.log_level_override")
+        .or_else(|| settings.get("log_level_override"))
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default()
 }

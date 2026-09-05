@@ -139,6 +139,13 @@ pub struct App {
     /// webOS on-screen keyboard up (moves address form from under panel).
     pub(crate) keyboard_shown: bool,
     pub(crate) identity: (String, String),
+    /// The stored settings object's fields this UI does not model, carried so a save from here
+    /// does not reset them — see [`store::Persisted::shared_base`].
+    shared_base: pf_client_core::trust::Settings,
+    /// The settings-profile catalog ([`store::Persisted::profiles`]). Held rather than re-read
+    /// because [`App::persist`] rebuilds the whole document from these fields, so anything not
+    /// here is dropped on the next save.
+    pub(crate) profiles: Vec<pf_client_core::profiles::StreamProfile>,
     /// Last tick time (for real-time scroll easing, not frame-count based).
     last_tick: Option<Instant>,
 }
@@ -235,6 +242,8 @@ impl App {
             known_hosts,
             selected_host,
             version: _,
+            profiles,
+            shared_base,
         } = loaded;
         let entries = known_entries(&known_hosts);
 
@@ -273,6 +282,8 @@ impl App {
             detected_gamepad_type: None,
             keyboard_shown: false,
             identity,
+            shared_base,
+            profiles,
             last_tick: None,
         };
         // Restore the last-active sidebar host (if it's still known and paired)
@@ -314,7 +325,7 @@ impl App {
     /// outlives its flow can't redirect the global screen's edits into it.
     pub(crate) fn settings_scope(&self) -> menu::SettingsScope {
         match self.nav.screen {
-            Screen::Settings(scope) | Screen::CursorSettings(scope) => scope,
+            Screen::Settings(scope) | Screen::CursorSettings(scope) | Screen::ControllerSettings(scope) => scope,
             // The Reset dialog is raised *over* the per-game list and returns to it, so the
             // scratch state is still what's being edited — without this arm every accessor
             // below reads Global while it is up, and the reset it confirms lands nowhere.
@@ -371,19 +382,12 @@ impl App {
     pub(crate) fn settings_rows(&self) -> Vec<ui::widgets::FocusRow> {
         let set = self.settings_scope();
         let settings = self.settings_target();
-        let effective = if settings.gamepad_type == store::GamepadType::Auto {
-            self.detected_gamepad_type.unwrap_or_default()
-        } else {
-            settings.gamepad_type
-        };
-        let dualsense_limited = effective.is_dualsense() && !crate::platform::webos::dualsense::hid_playstation_bound();
-        let webos_major = crate::platform::webos::device::sdk_version().map(|(major, _)| major);
         let mut rows = view::settings::rows(
             set,
             settings,
             self.detected_gamepad_type,
-            dualsense_limited,
-            webos_major,
+            self.dualsense_limited(),
+            self.webos_major(),
         );
         let over = self.editing_override();
         let focused = self.nav.cursor(ScreenKey::Settings);
@@ -786,7 +790,27 @@ impl App {
             // Always this build's version: whatever wrote the document last is what a future
             // migration needs to know, and that is now us.
             version: Some(store::VERSION.to_string()),
+            profiles: self.profiles.clone(),
+            // Carried, never rebuilt: this UI models a subset of the stored schema, and
+            // dropping the rest here would reset the gamepad shell's own rows every time
+            // anything on this side was saved. See [`store::Persisted::shared_base`].
+            shared_base: self.shared_base.clone(),
         });
+    }
+
+    /// Whether the pad in play is a `DualSense` this webOS release only partly supports — the
+    /// caution the Controller row carries. The *effective* kind, so `Auto` answers for
+    /// whatever is actually attached rather than for the word itself.
+    pub(crate) fn dualsense_limited(&self) -> bool {
+        menu::effective_gamepad(self.settings_target(), self.detected_gamepad_type)
+            .is_some_and(store::GamepadType::is_dualsense)
+            && !crate::platform::webos::dualsense::hid_playstation_bound()
+    }
+
+    /// This set's webOS major, for the row captions that name it. `None` where
+    /// `device::sdk_version` could not tell.
+    pub(crate) fn webos_major(&self) -> Option<u32> {
+        crate::platform::webos::device::sdk_version().map(|(major, _)| major)
     }
 
     /// The known-host record for an address — the one place `(host, port)` is matched.

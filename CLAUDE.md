@@ -45,8 +45,14 @@ machine) ← `runtime` (the two top-level loops).
   `screens::slots` (per-screen payloads) and `render::state` (grid, modal, hero, press, scroll
   windows, dirty flags). `screens::{list,confirm}` hold what a whole family of screens shares.
   Every field is `pub(crate)`; `runtime` writes through named setters.
-- **`runtime`** alternates two phases: `ui_flow` (menu) and `stream`, on
-  `StreamOutcome::ReturnToMenu` vs `Quit`.
+- **`console`** hosts the shared gamepad shell (`pf-console-ui`) on its own GL context over the
+  same SDL window: `gl` (Skia over framebuffer 0), `model` (host rows, library, the command
+  bus). armv7-only — it is the one target the prebuilt Skia archive exists for, so on every
+  other target the module is absent and `runtime::console_flow` is a stub.
+- **`runtime`** alternates two phases: a menu and `stream`, on `StreamOutcome::ReturnToMenu`
+  vs `Quit`. The menu is one of two flows, picked per entry by `Settings::console_ui`:
+  `ui_flow` (this client's own screens) or `console_flow` (the shared shell). Both reload the
+  document on entry, which is what keeps the flip from showing one side's edits stale.
 
 Rendering is a `tiny_skia` software framebuffer composited by SDL, redrawn on change.
 Add a screen: build on `ui::widgets::ListModal` (copy `app/{state,view}/hostmenu.rs`) and say
@@ -66,6 +72,13 @@ doing" under Phase 4 in `docs/APP-REWORK-PLAN.md`.
 - `GridState`/`CardIds` hand-write `Default`: a derived one starts the id counter at 0 and
   hands the first card a `TileId` a fixed tile already owns.
 - **NDL is `dlopen`'d, never linked** — a `DT_NEEDED` breaks webOS 4 startup before `main`.
+- **`settings.json` stores a schema wider than `Settings`.** It is `pf_client_core::trust::
+  Settings`, shared with every other client, and this one models a subset — so
+  `Persisted::shared_base` carries the rest and `shared::to_shared` writes over it. Rebuilding
+  the object from `Settings` alone resets the gamepad shell's own rows on the next save.
+- **A test behind the arm gate never runs**: `task test` builds the host target, and an armv7
+  test binary cannot execute on a runner. Real logic goes in `services::store::shared`
+  (ungated, tested); only glue goes behind the gate.
 - Video decodes through NDL DirectMedia (opaque decode+present, two generations picked by
   `device::ndl_generation()`); audio is client-side Opus.
   `core::caps` publishes the resulting limits and has three readers that must agree.

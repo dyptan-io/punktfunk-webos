@@ -6,7 +6,8 @@ use crate::core::caps::video_caps;
 use crate::core::event::MenuEvent;
 use crate::core::model::{BITRATE, BITRATE_AUTOMATIC, BITRATE_MIN_KBPS};
 use crate::services::store::{
-    AudioRoutePref, CodecPref, ExitAction, GamepadType, LogLevelOverride, OverrideField, Settings, SettingsOverride,
+    AudioRoutePref, CodecPref, ExitAction, GamepadType, GamepadUiMode, LogLevelOverride, OverrideField, Settings,
+    SettingsOverride,
 };
 use crate::ui::focus::Dir;
 use crate::ui::widgets::{FocusRow, RowSubtext};
@@ -64,15 +65,27 @@ pub enum SettingsRow {
     Hdr,
     /// Locked where the backend is capped at stereo — the only channel count then.
     Audio,
-    /// Which controller the host presents to the game — see `store::GamepadType`. Last of the
-    /// real settings: it's the only input-side one, and picking `DualSense` is what turns on
-    /// adaptive triggers (`crate::platform::webos::dualsense`).
+    /// Which controller the host presents to the game — see `store::GamepadType`. Picking
+    /// `DualSense` is what turns on adaptive triggers
+    /// (`crate::platform::webos::dualsense`). On the per-game list directly; on the global one
+    /// it lives behind [`Self::Controller`].
     Gamepad,
+    /// Not a setting — a link to `Screen::ControllerSettings`, holding everything about the pad
+    /// itself. Four controller rows on one list crowded out the stream settings people actually
+    /// come to Settings for.
+    Controller,
     /// Not a setting — a link to `Screen::CursorSettings`, directly below Controller since
     /// it's the other input-side entry. Both pointer toggles live behind it rather than on
     /// this list: neither is something a user sets more than once, and pairing them makes the
     /// gesture toggle discoverable next to the capture mode it interacts with.
     Cursor,
+    /// Whether the shared gamepad shell may front the app at all — the cross-client
+    /// `gamepad_ui_enabled`. Device-wide, and on the Controller sub-screen: what drives the
+    /// TV and which menus it drives are one question.
+    GamepadUi,
+    /// When it does — the cross-client `gamepad_ui_mode`. Directly below the switch that
+    /// gates it, the same adjacency Hdr keeps to Codec.
+    GamepadUiMode,
     /// Which look the menus draw in — see `ui::theme::PRESETS`. Cosmetic and device-wide, so
     /// it is on the global list only, and applies the moment it is picked.
     Theme,
@@ -88,6 +101,12 @@ pub enum SettingsRow {
     /// The Cursor sub-screen's rows. On no list here — see [`CURSOR_ROWS`].
     CursorCapture,
     CursorGestures,
+    /// Rumble from the pad's `0xD1` coil lane (`session::pad_audio`). On a libScePad title
+    /// (Spider-Man, GTA V Enhanced…) it is the ONLY vibration there is — those games drive the
+    /// coils and never the classic motors. Device-wide, on the Controller sub-screen.
+    PadHaptics,
+    /// The pad's own speaker, on either transport. Device-wide, next to [`Self::PadHaptics`].
+    PadSpeaker,
     /// The action row at the foot of the *per-game* list only. It drops every override,
     /// putting the game back to what its screen inherits. The global list has no counterpart:
     /// there is nothing above it to fall back to.
@@ -102,7 +121,7 @@ const GLOBAL_ROWS: [SettingsRow; 12] = [
     SettingsRow::Codec,
     SettingsRow::Hdr,
     SettingsRow::Audio,
-    SettingsRow::Gamepad,
+    SettingsRow::Controller,
     SettingsRow::Cursor,
     SettingsRow::Theme,
     SettingsRow::Experimental,
@@ -136,6 +155,18 @@ const GAME_ROWS: [SettingsRow; 9] = [
 /// the per-game marks all reach them without a second index space in between.
 pub const CURSOR_ROWS: [SettingsRow; 2] = [SettingsRow::CursorCapture, SettingsRow::CursorGestures];
 
+/// The Controller sub-screen's list, in display order (see `app::view::controllersettings`).
+/// The pad itself first (kind, then its two lanes), then which menus it drives.
+/// Same rule as [`CURSOR_ROWS`]: they are [`SettingsRow`]s like any other, so the override
+/// table and the mutators reach them without a second index space.
+pub const CONTROLLER_ROWS: [SettingsRow; 5] = [
+    SettingsRow::Gamepad,
+    SettingsRow::PadHaptics,
+    SettingsRow::PadSpeaker,
+    SettingsRow::GamepadUi,
+    SettingsRow::GamepadUiMode,
+];
+
 /// Experimental modal rows (see `app::view::experimental::rows`). A separate type from
 /// [`SettingsRow`]: these are device-wide toggles that no per-game override reaches.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -151,24 +182,16 @@ pub enum ExpRow {
     /// advertising one TV's numbers to every TV. Experimental because the measurement is by eye
     /// and the patterns run on the video plane outside a session.
     HdrCalibration,
-    /// Rumble from the pad's `0xD1` coil lane (`session::pad_audio`). On a libScePad title
-    /// (Spider-Man, GTA V Enhanced…) it is the ONLY vibration there is — those games drive the
-    /// coils and never the classic motors. Here rather than on the main list because it is on by
-    /// default and wants no attention, and because the lane is verified on one panel so far.
-    PadHaptics,
-    /// The pad's own speaker, on either transport. Same reasoning as [`Self::PadHaptics`].
-    PadSpeaker,
 }
 
 /// Order is display order. `AudioProcessing` stays at index 1 so its dropdown's `(Screen, row)`
-/// tile key does not move.
-pub const EXP_ROWS: [ExpRow; 5] = [
-    ExpRow::GameMode,
-    ExpRow::AudioProcessing,
-    ExpRow::HdrCalibration,
-    ExpRow::PadHaptics,
-    ExpRow::PadSpeaker,
-];
+/// tile key does not move; a new row goes on the end for the same reason.
+pub const EXP_ROWS: [ExpRow; 3] = [ExpRow::GameMode, ExpRow::AudioProcessing, ExpRow::HdrCalibration];
+
+/// Whether this build links the shared shell at all. Only the armv7 TV target does — see
+/// Cargo.toml — so on every other target the row is listed and locked rather than missing,
+/// which keeps the screen's row indices the same everywhere.
+pub(crate) const CONSOLE_UI_BUILT: bool = cfg!(all(target_os = "linux", target_arch = "arm"));
 
 /// Display position of [`ExpRow::AudioProcessing`] — the row a dropdown can hang off, which is
 /// what `DropdownState::row` names.
@@ -223,6 +246,13 @@ pub(crate) enum RowLock {
     RouteStereoOnly,
     /// Nothing is plugged into the TV, so there is no controller to describe to the host.
     NoGamepad,
+    /// This build has no shared shell linked (see [`CONSOLE_UI_BUILT`]), so there is nothing
+    /// for the switch to hand the menus to.
+    NoShell,
+    /// The console switch above is off, so its mode picks nothing.
+    ConsoleOff,
+    /// The pad in play is not a `DualSense`, and the coil and speaker lanes are its alone.
+    NoPadLanes,
 }
 
 /// Why an Experimental row can't be changed. Same contract as [`RowLock`]: the predicate that
@@ -247,13 +277,7 @@ pub(crate) fn exp_row_lock(row: ExpRow, settings: &Settings, rooted: Option<bool
         (ExpRow::GameMode, Some(false)) => Some(ExpRowLock::NotRooted),
         (ExpRow::AudioProcessing, _) if audio_routes().len() < 2 => Some(ExpRowLock::SoftwareOnly),
         (ExpRow::HdrCalibration, _) if !settings.hdr_enabled || !video_caps().hdr => Some(ExpRowLock::HdrOff),
-        // The pad rows never lock: both default on, and a pad that cannot play a lane simply
-        // never has it declared (`pad_audio::caps_for`) — nothing for the user to be told.
-        (ExpRow::GameMode, Some(true))
-        | (ExpRow::AudioProcessing, _)
-        | (ExpRow::HdrCalibration, _)
-        | (ExpRow::PadHaptics, _)
-        | (ExpRow::PadSpeaker, _) => None,
+        (ExpRow::GameMode, Some(true)) | (ExpRow::AudioProcessing, _) | (ExpRow::HdrCalibration, _) => None,
     }
 }
 
@@ -374,7 +398,31 @@ pub(crate) fn row_lock(row: SettingsRow, settings: &Settings, detected: Option<G
         SettingsRow::Audio if channel_options_up_to(caps.max_channels).len() < 2 => Some(RowLock::StereoOnly),
         SettingsRow::Audio if audio_channel_options(settings).len() < 2 => Some(RowLock::RouteStereoOnly),
         SettingsRow::Gamepad if detected.is_none() => Some(RowLock::NoGamepad),
+        // Listed and locked rather than hidden where no shell is linked, so the row indices are
+        // the same on every target — the same reason [`CONSOLE_UI_BUILT`] exists.
+        SettingsRow::GamepadUi | SettingsRow::GamepadUiMode if !CONSOLE_UI_BUILT => Some(RowLock::NoShell),
+        // The mode decides nothing while the switch above it is off. Greyed, not hidden: the
+        // dependency is the point, and it sits directly under the row that lifts it.
+        SettingsRow::GamepadUiMode if !settings.gamepad_ui => Some(RowLock::ConsoleOff),
+        // The pad's own lanes: only a DualSense carries them. `Auto` with nothing attached
+        // stays editable — there is no pad to judge yet. Whether a bound pad can actually play
+        // them is a caption, not a lock (see `view::settings::pad_lane_caption`).
+        SettingsRow::PadHaptics | SettingsRow::PadSpeaker
+            if effective_gamepad(settings, detected).is_some_and(|kind| !kind.is_dualsense()) =>
+        {
+            Some(RowLock::NoPadLanes)
+        }
         _ => None,
+    }
+}
+
+/// The controller kind in play: the explicit pick, or on `Auto` whatever is attached.
+/// `None` on `Auto` with nothing attached — no pad to answer for.
+pub(crate) fn effective_gamepad(settings: &Settings, detected: Option<GamepadType>) -> Option<GamepadType> {
+    if settings.gamepad_type == GamepadType::Auto {
+        detected
+    } else {
+        Some(settings.gamepad_type)
     }
 }
 
@@ -406,8 +454,11 @@ pub fn settings_logical_row(set: SettingsScope, display: usize) -> Option<Settin
 pub fn toggle_value(settings: &Settings, row: SettingsRow) -> Option<bool> {
     match row {
         SettingsRow::Hdr => Some(settings.hdr_enabled),
+        SettingsRow::GamepadUi => Some(settings.gamepad_ui),
         SettingsRow::CursorCapture => Some(settings.cursor_capture),
         SettingsRow::CursorGestures => Some(settings.cursor_gestures),
+        SettingsRow::PadHaptics => Some(settings.pad_haptics),
+        SettingsRow::PadSpeaker => Some(settings.pad_speaker),
         _ => None,
     }
 }
@@ -424,12 +475,18 @@ fn row_fields(row: SettingsRow) -> &'static [OverrideField] {
         SettingsRow::Hdr => &[OverrideField::HdrEnabled],
         SettingsRow::Codec => &[OverrideField::Codec],
         SettingsRow::Audio => &[OverrideField::AudioChannels],
-        SettingsRow::Gamepad => &[OverrideField::GamepadKind],
+        // Global-only today, so no dot renders; named with Gamepad anyway, so putting it on
+        // the per-game list later cannot silently lose one.
+        SettingsRow::Gamepad | SettingsRow::Controller => &[OverrideField::GamepadKind],
         SettingsRow::CursorCapture => &[OverrideField::CursorCapture],
         SettingsRow::CursorGestures => &[OverrideField::CursorGestures],
         SettingsRow::Cursor => &[OverrideField::CursorCapture, OverrideField::CursorGestures],
-        // Rows that override nothing: links out or an action.
-        SettingsRow::Theme
+        // Rows that override nothing: device-wide switches, links out or an action.
+        SettingsRow::GamepadUi
+        | SettingsRow::GamepadUiMode
+        | SettingsRow::PadHaptics
+        | SettingsRow::PadSpeaker
+        | SettingsRow::Theme
         | SettingsRow::Experimental
         | SettingsRow::Diagnostics
         | SettingsRow::About
@@ -638,6 +695,7 @@ pub type Label = std::borrow::Cow<'static, str>;
 pub fn dropdown_options(row: SettingsRow, settings: &Settings, detected: Option<GamepadType>) -> Vec<Label> {
     match row {
         SettingsRow::Theme => crate::ui::theme::PRESETS.iter().map(|t| t.name.into()).collect(),
+        SettingsRow::GamepadUiMode => GamepadUiMode::ALL.iter().map(|m| m.label().into()).collect(),
         SettingsRow::Resolution => RESOLUTIONS
             .iter()
             .map(|(w, h, _, name)| resolution_dropdown_label(*w, *h, name).into())
@@ -671,6 +729,7 @@ pub fn dropdown_options(row: SettingsRow, settings: &Settings, detected: Option<
 pub fn dropdown_option_count(row: SettingsRow, settings: &Settings) -> usize {
     match row {
         SettingsRow::Theme => crate::ui::theme::PRESETS.len(),
+        SettingsRow::GamepadUiMode => GamepadUiMode::ALL.len(),
         SettingsRow::Resolution => RESOLUTIONS.len(),
         SettingsRow::Framerate => REFRESH_RATES.len(),
         SettingsRow::Codec => video_caps().codec_prefs().len(),
@@ -686,6 +745,10 @@ pub fn dropdown_current_index(settings: &Settings, row: SettingsRow) -> usize {
         SettingsRow::Theme => crate::ui::theme::PRESETS
             .iter()
             .position(|t| t.choice == settings.theme)
+            .unwrap_or(0),
+        SettingsRow::GamepadUiMode => GamepadUiMode::ALL
+            .iter()
+            .position(|&m| m == settings.gamepad_ui_mode)
             .unwrap_or(0),
         SettingsRow::Resolution => RESOLUTIONS
             .iter()
@@ -728,6 +791,11 @@ pub fn apply_dropdown_choice(
         SettingsRow::Theme => {
             if let Some(t) = crate::ui::theme::PRESETS.get(choice_index) {
                 settings.theme = t.choice;
+            }
+        }
+        SettingsRow::GamepadUiMode => {
+            if let Some(&mode) = GamepadUiMode::ALL.get(choice_index) {
+                settings.gamepad_ui_mode = mode;
             }
         }
         SettingsRow::Resolution => {
@@ -794,6 +862,10 @@ pub fn adjust_setting(settings: &mut Settings, row: SettingsRow, forward: bool, 
             settings.hdr_enabled = !settings.hdr_enabled;
             true
         }
+        SettingsRow::GamepadUi => {
+            settings.gamepad_ui = !settings.gamepad_ui;
+            true
+        }
         SettingsRow::CursorCapture => {
             settings.cursor_capture = !settings.cursor_capture;
             true
@@ -802,12 +874,23 @@ pub fn adjust_setting(settings: &mut Settings, row: SettingsRow, forward: bool, 
             settings.cursor_gestures = !settings.cursor_gestures;
             true
         }
+        SettingsRow::PadHaptics | SettingsRow::PadSpeaker => {
+            let lane = if row == SettingsRow::PadHaptics {
+                &mut settings.pad_haptics
+            } else {
+                &mut settings.pad_speaker
+            };
+            *lane = !*lane;
+            true
+        }
         // Every dropdown row shares this arm, and the link/action rows fall through it with
         // an empty option list — `dropdown_option_count` is the one table that decides which
         // is which.
         SettingsRow::Resolution
         | SettingsRow::Framerate
         | SettingsRow::Theme
+        | SettingsRow::GamepadUiMode
+        | SettingsRow::Controller
         | SettingsRow::Codec
         | SettingsRow::Audio
         | SettingsRow::Gamepad
