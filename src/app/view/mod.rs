@@ -17,7 +17,6 @@ pub(crate) mod experimental;
 pub(crate) mod forget;
 pub(crate) mod hdrcalibration;
 pub(crate) mod home;
-pub(crate) mod hostmenu;
 pub(crate) mod hostpower;
 pub(crate) mod icons;
 pub(crate) mod pairing;

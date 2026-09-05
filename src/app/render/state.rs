@@ -45,6 +45,9 @@ pub(crate) struct RenderState {
     pub(crate) grid: grid::GridState,
     pub(crate) focus_anim: Option<Instant>,
     pub(crate) press: ui::animation::Press,
+    /// The kit list widget of the open ported list screen (`app::draw::list`), with the
+    /// screen it was made for — a different screen gets a fresh one.
+    pub(crate) list: Option<(crate::core::screen::Screen, pf_console_ui::widgets::MenuList)>,
 }
 
 impl Default for RenderState {
@@ -67,6 +70,7 @@ impl Default for RenderState {
             grid: grid::GridState::default(),
             focus_anim: None,
             press: ui::animation::Press::default(),
+            list: None,
         }
     }
 }

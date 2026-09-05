@@ -201,19 +201,19 @@ impl App {
                 self.screens.row_button = button;
                 HoverChange::split(row_changed, button_changed)
             }
-            Screen::HostMenu => {
-                let Some((i, button)) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts) else {
+            // A list drawn on the kit: hover focuses the row under the pointer, through the
+            // list's own last-drawn rects (`app::draw::list`).
+            screen @ (Screen::HostMenu | Screen::HostPower) => {
+                let Some(i) = self.kit_list_row_at(x, y) else {
                     return HoverChange::NONE;
                 };
-                let row_changed = self.nav.cursor(ScreenKey::HostMenu) != i;
-                let button_changed = self.screens.row_button != button;
-                self.nav.set_cursor(ScreenKey::HostMenu, i);
-                self.screens.row_button = button;
-                HoverChange::split(row_changed, button_changed)
+                let key = ScreenKey::of(screen);
+                let changed = self.nav.cursor(key) != i;
+                self.nav.set_cursor(key, i);
+                HoverChange::row(changed)
             }
             // Identical row-list geometry; only which focus field they carry differs.
-            Screen::HostPower
-            | Screen::Diagnostics
+            Screen::Diagnostics
             | Screen::Experimental
             | Screen::HdrCalibration
             | Screen::CursorSettings(_)
@@ -446,8 +446,8 @@ impl App {
     }
 
     fn hover_close_at(&mut self, x: i32, y: i32, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> bool {
-        if let Some(layout) = self.dialog_layout(screen_w, screen_h) {
-            return self.set_hover_close(layout.on_close(x, y));
+        if let Some(on_close) = self.ported_close_hit(x, y, screen_w, screen_h) {
+            return self.set_hover_close(on_close);
         }
         let Some(card) = self.modal_card_rect(screen_w, screen_h, fonts) else {
             // Home draws no close button, but `hover_close` is only ever set true by a
@@ -600,16 +600,15 @@ impl App {
                 }
                 self.screens.pairing_focus = PairingFocus::RequestAccess;
             }
-            Screen::HostMenu => {
-                let hit = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts);
-                if let Some((row, _)) = hit {
-                    self.nav.set_cursor(ScreenKey::HostMenu, row);
+            // A click on a kit list picks the row under it; off the rows it confirms the
+            // focused one, as an OK press does.
+            screen @ (Screen::HostMenu | Screen::HostPower) => {
+                if let Some(row) = self.kit_list_row_at(x, y) {
+                    self.nav.set_cursor(ScreenKey::of(screen), row);
                 }
-                self.screens.row_button = hit.and_then(|(_, button)| button);
             }
             // Identical row-list geometry; only which focus field they carry differs.
-            Screen::HostPower
-            | Screen::Diagnostics
+            Screen::Diagnostics
             | Screen::Experimental
             | Screen::CursorSettings(_)
             | Screen::ControllerSettings(_) => {

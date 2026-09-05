@@ -444,12 +444,6 @@ impl App {
     /// menu's rows are owned `String`s built per call, and this runs on every Magic Remote
     /// `MouseMotion`.
     pub(crate) fn with_modal_metrics<R>(&self, f: impl FnOnce(&dyn ui::ModalMetrics) -> R) -> Option<R> {
-        if matches!(self.nav.screen, Screen::HostMenu) {
-            return Some(f(&view::hostmenu::Metrics {
-                subtitle: &self.host_menu_subtitle(),
-                rows: self.host_menu_actions().len(),
-            }));
-        }
         self.with_modal_screen(|s| f(s))
     }
 
@@ -468,7 +462,9 @@ impl App {
             | Screen::SendLogs
             | Screen::RemoveCollection
             | Screen::ResetHdrCalibration
-            | Screen::ResetGameSettings => return None,
+            | Screen::ResetGameSettings
+            | Screen::HostMenu
+            | Screen::HostPower => return None,
             // One screen, two scopes: the dim title suffix is the only thing the per-game
             // one adds, and it comes from the scratch copy that scope implies.
             Screen::Settings(set) => f(&view::settings::Modal {
@@ -491,20 +487,6 @@ impl App {
                 wake: self.screens.wake.as_ref()?,
                 confirm: confirm.as_ref(),
             }),
-            Screen::HostMenu => f(&view::hostmenu::Modal {
-                title: self.host_menu_host_name().unwrap_or_default(),
-                subtitle: self.host_menu_subtitle(),
-                rows: self.host_menu_rows(),
-            }),
-            Screen::HostPower => {
-                let (auto_send, exit_action, access) = self.host_power_view();
-                f(&view::hostpower::Modal {
-                    host_name: self.host_menu_host_name().unwrap_or_default(),
-                    auto_send,
-                    exit_action,
-                    access,
-                })
-            }
             Screen::About => f(&view::about::Modal),
             Screen::SpeedTest => f(&view::speedtest::Modal {
                 state: self.screens.speed_test.as_ref(),

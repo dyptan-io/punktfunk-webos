@@ -150,8 +150,9 @@ pub struct App {
     /// Last tick time (for real-time scroll easing, not frame-count based).
     last_tick: Option<Instant>,
     /// The console kit's Geist, for the screens drawn on it (`app::draw`). Owned here
-    /// because the pointer hit tests measure with it too, not only the frame.
-    pub(crate) fonts: pf_console_ui::theme::Fonts,
+    /// because the pointer hit tests measure with it too, not only the frame; `Rc` so the
+    /// frame can borrow it beside a `&mut App`.
+    pub(crate) fonts: std::rc::Rc<pf_console_ui::theme::Fonts>,
 }
 
 /// What a finished background pairing/request-access ceremony reports back —
@@ -234,7 +235,7 @@ impl App {
         self.settings_ui.slider_drag = false;
     }
 
-    pub fn new(identity: (String, String), fonts: pf_console_ui::theme::Fonts) -> Self {
+    pub fn new(identity: (String, String), fonts: std::rc::Rc<pf_console_ui::theme::Fonts>) -> Self {
         let store::Loaded {
             state: loaded,
             new_build,
