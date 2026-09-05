@@ -19,46 +19,6 @@ fn center(within: Rect, width_frac: f32, height: u32, min_top: u32) -> Rect {
     Layout::vertical([Constraint::Min(min_top), Constraint::Length(height), Constraint::Min(0)]).split(column)[1]
 }
 
-/// How much of the panel webOS's on-screen keyboard occupies, measured on-device: it
-/// takes roughly the bottom half and its height barely varies between layouts.
-///
-/// This has to be a constant because SDL gives us no way to ask. `SDL_webOS.h` publishes
-/// only cursor / panel-resolution / refresh-rate / exported-window calls,
-/// `SDL_IsScreenKeyboardShown` is a bare bool, and the fork's internal `input_panel_rect`
-/// isn't reachable from the public API. `SDL_SetTextInputRect` (which this app does set,
-/// to the field) is the correct contract for "keep this region clear", but the webOS OSK
-/// ignores it.
-pub const KEYBOARD_PANEL_FRAC: f32 = 0.5;
-
-/// Smallest gap left above a card that has been lifted clear of the keyboard, so a tall
-/// one can't be pushed off the top of the panel.
-const KEYBOARD_MIN_TOP: u32 = 24;
-
-/// A modal card centred in whatever space the on-screen keyboard leaves.
-///
-/// With the keyboard down this is just [`modal_card_rect`] — the card sits where every
-/// other modal sits. With it up, the card is centred in the band above the panel rather
-/// than pinned to the very top: the point is to clear the keyboard, not to jam the card
-/// against the screen edge.
-pub fn modal_card_rect_above_keyboard(
-    screen_w: u32,
-    screen_h: u32,
-    width_frac: f32,
-    height: u32,
-    keyboard_shown: bool,
-) -> Rect {
-    if !keyboard_shown {
-        return modal_card_rect(screen_w, screen_h, width_frac, height);
-    }
-    let available = (screen_h as f32 * (1.0 - KEYBOARD_PANEL_FRAC)).round() as u32;
-    center(
-        Rect::new(0, 0, screen_w, available),
-        width_frac,
-        height,
-        KEYBOARD_MIN_TOP,
-    )
-}
-
 impl Painter {
     /// Draws a hairline (`Theme::rule`) `width` px wide at `(x, y)`.
     pub fn rule(&mut self, x: i32, y: i32, width: u32) {
@@ -122,19 +82,6 @@ impl Canvas<'_, '_> {
 /// streaming, quit app) — narrower than the scrollable `ListModal` screens.
 pub const SIMPLE_MODAL_WIDTH_FRAC: f32 = 0.40;
 
-/// [`simple_modal_card`], lifted clear of the on-screen keyboard when it is up — for the
-/// modals with a text field, which the panel would otherwise cover.
-pub fn simple_modal_card_above_keyboard(
-    screen_w: u32,
-    screen_h: u32,
-    keyboard_shown: bool,
-    content_height: impl FnOnce(Rect) -> u32,
-) -> Rect {
-    let w = (screen_w as f32 * SIMPLE_MODAL_WIDTH_FRAC).round() as u32;
-    let height = content_height(Rect::new(0, 0, w, 0));
-    modal_card_rect_above_keyboard(screen_w, screen_h, SIMPLE_MODAL_WIDTH_FRAC, height, keyboard_shown)
-}
-
 /// A centered [`SIMPLE_MODAL_WIDTH_FRAC`]-wide card whose *height* is derived from its
 /// own content: `content_height` receives a zero-y/height probe card at the final width
 /// and returns the card's total height. Shared by every confirm modal so they size
@@ -165,35 +112,4 @@ pub fn modal_close_rect(card_rect: Rect) -> Rect {
 }
 
 impl Canvas<'_, '_> {
-    /// A horizontal rule broken by a centred word — the "or" between two mutually exclusive
-    /// choices. Drawn in the value font, like the body copy it separates.
-    ///
-    /// The pairing card offers two independent ways to pair, and a sentence saying so is not
-    /// enough: without a visual break the two blocks read as *steps*, i.e. "fill in the PIN,
-    /// then press the button". The rule makes the exclusivity structural rather than something
-    /// the user has to read and remember.
-    pub fn or_divider(&mut self, content: Rect, y: i32, word: &str) -> Result<()> {
-        let font = self.fonts.value;
-        let word_w = self.fonts.raster.measure(font, word).0 as i32;
-        let gap = 18i32;
-        let line_y = y + self.fonts.raster.height(font) / 2;
-        let half = (content.width() as i32 - word_w - 2 * gap) / 2;
-        if half > 0 {
-            self.painter.rule(content.x(), line_y, half as u32);
-            self.painter.rule(content.right() - half, line_y, half as u32);
-        }
-        self.text_centered(font, word, content, y, palette().muted)?;
-        Ok(())
-    }
-
-    /// The accent-filled primary action button. Labelled in the label font, like every
-    /// other button.
-    pub fn primary_button(&mut self, rect: Rect, label: &str) -> Result<()> {
-        let font = self.fonts.label;
-        self.painter.card_shadow(rect, CARD_RADIUS);
-        self.painter.fill_rounded_rect(rect, CARD_RADIUS, palette().accent);
-        let text_y = rect.y() + (rect.height() as i32 - self.fonts.raster.height(font)) / 2;
-        self.text_centered(font, label, rect, text_y, palette().text)?;
-        Ok(())
-    }
 }

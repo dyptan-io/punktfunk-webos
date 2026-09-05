@@ -7,7 +7,7 @@
 use crate::app::nav::ScreenKey;
 use crate::app::screens::scrolllist::scroll_list_width_frac;
 use crate::app::screens::{is_confirm, is_list_modal, is_scroll_list};
-use crate::app::{view, App, PairingFocus, Screen};
+use crate::app::{view, App, Screen};
 use crate::ui;
 use crate::ui::render::Rect;
 use crate::ui::Painter;
@@ -211,7 +211,7 @@ impl App {
     ///
     /// One value rather than a copy table plus a construction site: the geometry, the
     /// painter and `SDL_SetTextInputRect` all measure the same form.
-    pub(crate) fn text_form(&self) -> Option<view::textform::Modal<'_>> {
+    pub(crate) fn text_form(&self) -> Option<FormCopy<'_>> {
         let (title, subtitle, typed, hint) = match self.nav.screen {
             Screen::EditHost => {
                 let name = self
@@ -258,12 +258,11 @@ impl App {
             }
             _ => return None,
         };
-        Some(view::textform::Modal {
+        Some(FormCopy {
             title,
             subtitle,
             typed,
             hint,
-            keyboard_shown: self.keyboard_shown,
         })
     }
 
@@ -375,16 +374,6 @@ impl App {
                 .confirm_subtitle()
                 .zip(self.confirm_focused())
                 .map(|(subtitle, i)| Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &subtitle, i)),
-            Screen::Pairing => {
-                let card = view::pairing::card_rect(screen_w, screen_h, fonts);
-                Some(match self.screens.pairing_focus {
-                    PairingFocus::Pin => {
-                        let digit_y = view::pairing::pin_row_y(card, fonts);
-                        view::pairing::digit_rect(card, digit_y, self.screens.pin_digit_index)
-                    }
-                    PairingFocus::RequestAccess => view::pairing::request_button_rect(card, fonts),
-                })
-            }
             // Every plain list modal: one geometry, measured off the `ModalScreen`
             // the painter draws, indexed by that screen's own focus cursor.
             Screen::HostMenu
@@ -394,6 +383,7 @@ impl App {
             // No single focused widget: a text form is one always-active field, and About is
             // a scrolling document.
             Screen::Home
+            | Screen::Pairing
             | Screen::AddHost
             | Screen::EditHost
             | Screen::RenameCollection
@@ -450,6 +440,11 @@ impl App {
             // dialogs are listed below so the match stays exhaustive.
             Screen::Home
             | Screen::About
+            | Screen::Pairing
+            | Screen::AddHost
+            | Screen::EditHost
+            | Screen::RenameCollection
+            | Screen::RenameProfile
             | Screen::ForgetHost
             | Screen::SendLogs
             | Screen::RemoveCollection
@@ -463,15 +458,6 @@ impl App {
                 title: view::collections::heading(self.collections_target_held()),
                 card: Some(self.collections_heading()),
             }),
-            Screen::Pairing => f(&view::pairing::Modal {
-                pin_digits: &self.screens.pin_digits,
-                status: self.screens.pairing_status.as_ref(),
-                busy: self.screens.pairing_busy,
-            }),
-            // Every one-field text form, described once by `text_form`.
-            Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::RenameProfile => {
-                f(&self.text_form()?)
-            }
             Screen::Wake => f(&view::wake::Modal {
                 wake: self.screens.wake.as_ref()?,
                 confirm: confirm.as_ref(),
@@ -512,4 +498,13 @@ impl App {
         p.set_origin(region.x(), region.y());
         p
     }
+}
+
+/// What a text form says: the copy that tells Add host, Edit address and the two rename
+/// dialogs apart, plus what is typed and why it is refused.
+pub(crate) struct FormCopy<'a> {
+    pub title: &'static str,
+    pub subtitle: String,
+    pub typed: &'a str,
+    pub hint: Option<&'a str>,
 }

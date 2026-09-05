@@ -10,6 +10,7 @@
 
 pub(crate) mod about;
 pub(crate) mod dialog;
+pub(crate) mod form;
 pub(crate) mod list;
 pub(crate) mod settings;
 
@@ -35,6 +36,11 @@ pub(crate) const fn ported(screen: Screen) -> bool {
             | Screen::SettingsPage
             | Screen::DeleteProfile
             | Screen::About
+            | Screen::AddHost
+            | Screen::EditHost
+            | Screen::RenameCollection
+            | Screen::RenameProfile
+            | Screen::Pairing
     )
 }
 
@@ -194,6 +200,31 @@ impl App {
     fn draw_modal_screen(&mut self, f: &Frame<'_>, screen: Screen, alpha: f32, live: bool, dt: f64) {
         let dy = ui::animation::modal_rise(alpha) as f32;
         let focus = self.nav.cursor(crate::app::nav::ScreenKey::of(screen));
+        if matches!(
+            screen,
+            Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::RenameProfile
+        ) {
+            let Some(copy) = self.text_form() else {
+                return;
+            };
+            let l = form::layout(f.fonts, f.w, f.h, f.k, &copy.subtitle, copy.hint.is_some(), self.keyboard_shown);
+            let hover_close = live && self.render.hover_close;
+            form::draw(f, &l, copy.title, copy.typed, copy.hint, hover_close, alpha, dy);
+            return;
+        }
+        if screen == Screen::Pairing {
+            let l = form::pair_layout(f.fonts, f.w, f.h, f.k, self.screens.pairing_status.is_some());
+            let state = form::PairState {
+                digits: self.screens.pin_digits,
+                digit_index: self.screens.pin_digit_index,
+                focus: self.screens.pairing_focus,
+                status: self.screens.pairing_status.as_deref(),
+                busy: self.screens.pairing_busy,
+            };
+            let hover_close = live && self.render.hover_close;
+            form::draw_pair(f, &l, &state, hover_close, alpha, dy);
+            return;
+        }
         if screen == Screen::About {
             let l = about::layout(f.w, f.h, f.k);
             self.ensure_about_wrapped(l.body.width(), f.k);
@@ -331,6 +362,11 @@ impl App {
         hit
     }
 
+    /// The pairing card's geometry on a frame of the given size.
+    pub(crate) fn pair_layout(&self, w: u32, h: u32) -> form::PairLayout {
+        form::pair_layout(&self.fonts, w as f32, h as f32, scale(h), self.screens.pairing_status.is_some())
+    }
+
     /// Where a ported screen's close mark is hit, if one is up.
     pub(crate) fn ported_close_hit(&self, x: i32, y: i32, w: u32, h: u32) -> Option<bool> {
         let screen = self.nav.screen;
@@ -339,6 +375,13 @@ impl App {
         }
         if screen == Screen::About {
             return Some(about::layout(w as f32, h as f32, scale(h)).on_close(x, y));
+        }
+        if screen == Screen::Pairing {
+            return Some(self.pair_layout(w, h).on_close(x, y));
+        }
+        if let Some(copy) = self.text_form() {
+            let l = form::layout(&self.fonts, w as f32, h as f32, scale(h), &copy.subtitle, copy.hint.is_some(), self.keyboard_shown);
+            return Some(l.on_close(x, y));
         }
         if is_list(screen) {
             let card = self.list_card(screen)?;

@@ -16,7 +16,7 @@ use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
 use crate::app::screens::is_scroll_list;
 use crate::app::screens::rowbuttons::RowButton;
-use crate::app::{view, App, HomeFocus, PairingFocus, Screen, SCROLL_INDICATOR_TILE_W};
+use crate::app::{view, App, HomeFocus, Screen, SCROLL_INDICATOR_TILE_W};
 use crate::ui;
 use crate::ui::cache;
 use crate::ui::render::TileId;
@@ -221,11 +221,6 @@ impl App {
                 name: &w.name,
                 mac_empty: w.mac.is_empty(),
             }),
-            Screen::Pairing => Some(ModalShellKey::Pairing {
-                digits: self.screens.pin_digits,
-                status: self.screens.pairing_status.as_deref(),
-                busy: self.screens.pairing_busy,
-            }),
             Screen::ForgetHost => Some(ModalShellKey::ForgetHost {
                 name: self
                     .screens
@@ -268,6 +263,7 @@ impl App {
             // display has no separate focus tile to protect, so it just redraws on
             // any `content_dirty` tick.
             Screen::Home
+            | Screen::Pairing
             | Screen::AddHost
             | Screen::EditHost
             | Screen::RenameCollection
@@ -317,13 +313,6 @@ impl App {
                 .as_ref()
                 .filter(|w| !w.mac.is_empty())
                 .map(|w| ModalFocusKey::WakeButton(w.focused)),
-            Screen::Pairing => Some(match self.screens.pairing_focus {
-                PairingFocus::Pin => ModalFocusKey::PairingDigit(
-                    self.screens.pin_digit_index,
-                    self.screens.pin_digits[self.screens.pin_digit_index],
-                ),
-                PairingFocus::RequestAccess => ModalFocusKey::PairingButton,
-            }),
             Screen::ForgetHost => Some(ModalFocusKey::ForgetButton(self.nav.cursor(ScreenKey::ForgetHost))),
             Screen::HostMenu => host_menu_actions
                 .get(self.nav.cursor(ScreenKey::HostMenu))
@@ -368,6 +357,7 @@ impl App {
             // None has a single focused widget: the address form is one always-active
             // field, and About is a scrolling document.
             Screen::Home
+            | Screen::Pairing
             | Screen::AddHost
             | Screen::EditHost
             | Screen::RenameCollection
@@ -531,33 +521,6 @@ impl App {
                         }
                         _ => None,
                     },
-                    Screen::Pairing => Some(match self.screens.pairing_focus {
-                        PairingFocus::Pin => {
-                            let digit = self.screens.pin_digits[self.screens.pin_digit_index].to_string();
-                            ui::rasterize(
-                                ui::widgets::CardTextTile {
-                                    font: fonts.title,
-                                    text: &digit,
-                                    w: view::pairing::DIGIT_W,
-                                    h: view::pairing::DIGIT_H,
-                                },
-                                text_cache,
-                                fonts,
-                            )?
-                        }
-                        PairingFocus::RequestAccess => {
-                            let card = view::pairing::card_rect(screen_w, screen_h, fonts);
-                            let btn = view::pairing::request_button_rect(card, fonts);
-                            ui::rasterize(
-                                view::pairing::RequestButtonTile {
-                                    w: btn.width(),
-                                    h: btn.height(),
-                                },
-                                text_cache,
-                                fonts,
-                            )?
-                        }
-                    }),
                     // Every plain list modal: same tile, same geometry, built from whichever
                     // rows the screen lists. Only Diagnostics and Experimental can have a
                     // dropdown open, and only the host menu has a ⋯ to light.
@@ -591,6 +554,7 @@ impl App {
                     // No single focused widget to draw — `modal_focus_version` is `None` on
                     // these, so this is the arm that never runs rather than one that panics.
                     Screen::Home
+                    | Screen::Pairing
                     | Screen::AddHost
                     | Screen::EditHost
                     | Screen::RenameCollection
