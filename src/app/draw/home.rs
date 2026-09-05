@@ -7,14 +7,14 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use pf_console_ui::icons::{by_name, draw_icon};
-use pf_console_ui::theme::{self, PanelStroke, W};
+use pf_console_ui::theme::{self, W};
 use pf_console_ui::{launcher_icons, os_marks};
 use skia_safe::{
-    images, BlendMode, BlurStyle, ClipOp, Color4f, Data, FilterMode, Image, ImageInfo, MaskFilter, MipmapMode, Paint,
-    RRect, Rect, SamplingOptions,
+    images, BlendMode, BlurStyle, Canvas, ClipOp, Color4f, Data, FilterMode, Image, ImageInfo, MaskFilter, MipmapMode,
+    Paint, Path, RRect, Rect, SamplingOptions,
 };
 
-use super::{line_h, panel, sk, Frame};
+use super::{focus_face, line_h, panel, sk, with_pop, Frame};
 use crate::app::grid::{Entrance, GridLayout};
 use crate::app::hosts::HostEntry;
 use crate::app::state::cardmenu::CardMenuRow;
@@ -30,10 +30,10 @@ const VALUE: f32 = 20.0;
 const TITLE: f32 = 40.0;
 const CAPTION: f32 = 14.0;
 pub(crate) const CARD_RADIUS: f32 = 10.0;
-/// Plan D7: the app mark top left, the "Hosts" title under it, in place of the wordmark band.
-const MARK_SIDE: f32 = 64.0;
-const HEADER_Y: f32 = 28.0;
-const HEADER_GAP: f32 = 14.0;
+/// Plan D7: the app mark top left at the panel's padding, the "Hosts" title under it.
+/// `MARK_SIDE` is the discs' box, not an icon tile; [`view::sidebar::TOP_Y`] follows these.
+const MARK_SIDE: f32 = 48.0;
+const HEADER_GAP: f32 = 36.0;
 const HEADER_SIZE: f32 = 26.0;
 const SIDEBAR_ICON: f32 = 30.0;
 const SIDEBAR_ICON_PAD: f32 = 20.0;
@@ -49,7 +49,6 @@ const MARK_DOT_R: f32 = 4.0;
 const MARK_DOT_INSET: f32 = 16.0;
 const GLOW_BLUR: f32 = 18.0;
 const SPINNER_R: f64 = 24.0;
-static APP_ICON: &[u8] = include_bytes!("../../../packaging/icon.png");
 
 fn px(f: &Frame<'_>, size: f32) -> f64 {
     f64::from(size * f.h / 1080.0)
@@ -112,13 +111,29 @@ pub(crate) fn cover_image(art: &crate::services::art::CardArt) -> Option<Image> 
     raw_image(art.width, art.height, RawFormat::Rgba8888, &art.pixels)
 }
 
-fn app_icon() -> Option<&'static Image> {
-    static ICON: std::sync::OnceLock<Option<Image>> = std::sync::OnceLock::new();
-    ICON.get_or_init(|| {
-        let img = image::load_from_memory(APP_ICON).ok()?.into_rgba8();
-        raw_image(img.width(), img.height(), RawFormat::Rgba8888, img.as_raw())
-    })
-    .as_ref()
+/// The brand mark: two discs of radius `side / 3` at (r, 2r) and (2r, r) with their lens,
+/// the favicon's geometry. Deep disc on the accent, the light disc and lens toward `fg`,
+/// so the mark follows the palette instead of shipping the launcher tile's background.
+pub(crate) fn app_mark(c: &Canvas, x: f32, y: f32, side: f32) {
+    let r = side / 3.0;
+    let light = (x + r, y + 2.0 * r);
+    let deep = (x + 2.0 * r, y + r);
+    let toward_fg = |t: f32| {
+        let (a, g) = (theme::accent(1.0), theme::fg(1.0));
+        let mix = |a: f32, b: f32| a + (b - a) * t;
+        Color4f::new(mix(a.r, g.r), mix(a.g, g.g), mix(a.b, g.b), 1.0)
+    };
+    let mut paint = theme::fill(toward_fg(0.4));
+    paint.set_anti_alias(true);
+    c.draw_circle(light, r, &paint);
+    paint.set_color4f(theme::accent(1.0), None);
+    c.draw_circle(deep, r, &paint);
+    let lens = Path::circle(light, r, None);
+    c.save();
+    c.clip_path(&lens, ClipOp::Intersect, true);
+    paint.set_color4f(toward_fg(0.68), None);
+    c.draw_circle(deep, r, &paint);
+    c.restore();
 }
 
 /// Card tint for a coverless poster: hashed per title so a library reads as varied, on the
@@ -145,7 +160,7 @@ pub(crate) fn menu_rows_h(rows: usize) -> f32 {
 impl App {
     /// Everything under the modals: the grid or what stands in for it, the status band, the
     /// sidebar. Skipped over live video, where all of it would cover the picture.
-    pub(crate) fn draw_home(&mut self, f: &Frame<'_>) {
+    pub(crate) fn draw_home(&mut self, f: &Frame<'_>, dt: f64) {
         if self.over_video_layers() {
             return;
         }
@@ -176,7 +191,7 @@ impl App {
             self.draw_grid(f, grid_x, available_w);
         }
         self.draw_status(f, grid_x, available_w);
-        self.draw_sidebar(f);
+        self.draw_sidebar(f, dt);
     }
 
     fn draw_status(&self, f: &Frame<'_>, grid_x: f32, available_w: f32) {
@@ -209,22 +224,19 @@ impl App {
         c.restore();
     }
 
-    fn draw_sidebar(&self, f: &Frame<'_>) {
+    fn draw_sidebar(&mut self, f: &Frame<'_>, dt: f64) {
         let c = f.canvas;
         let panel_rect = Rect::from_xywh(0.0, 0.0, SIDEBAR_W as f32, f.h);
         // Opaque on every look, glass included: a lit edge against the grid reads as a seam.
         c.draw_rect(panel_rect, &theme::fill(panel()));
         let x = SIDEBAR_PAD as f32;
-        if let Some(icon) = app_icon() {
-            let at = Rect::from_xywh(x, HEADER_Y, MARK_SIDE, MARK_SIDE);
-            c.draw_image_rect_with_sampling_options(icon, None, at, linear(), &Paint::default());
-        }
+        app_mark(c, x, x, MARK_SIDE);
         let size = px(f, HEADER_SIZE);
         f.fonts.draw(
             c,
             "Hosts",
             f64::from(x),
-            f64::from(HEADER_Y + MARK_SIDE + HEADER_GAP) + size * 0.8,
+            f64::from(x + MARK_SIDE + HEADER_GAP) + size * 0.8,
             W::SemiBold,
             size,
             theme::fg(1.0),
@@ -241,87 +253,78 @@ impl App {
         };
         let selected = self.sidebar_index_of_selected_host();
         let press = self.press_dip(Screen::Home);
+        self.render.sidebar_focus.step(rows.len(), focused, dt);
         for (i, base) in rows.iter().copied().enumerate() {
             let is_focused = focused == Some(i);
-            let rect = if is_focused {
-                sk(press.rect(zoom_rect(
-                    base,
-                    anim_frac(self.render.focus_anim, ui::animation::FOCUS_POP),
-                    ui::animation::FOCUS_GROWTH,
-                )))
-            } else {
-                sk(base)
-            };
+            let rect = if is_focused { sk(press.rect(base)) } else { sk(base) };
             if i == settings_row {
                 let y = rect.top - 14.0;
                 c.draw_line((rect.left, y), (rect.right, y), &theme::stroke(theme::fg(0.12), 1.0));
             }
-            if is_focused {
-                theme::drop_shadow(c, rect, CARD_RADIUS, 1.0, 0.35);
-                theme::panel(c, rect, CARD_RADIUS, None, PanelStroke::Gradient, 1.0);
-            } else if selected == Some(i) {
-                c.draw_rrect(rr(rect), &theme::fill(theme::accent(0.14)));
-            }
-            let (mark, label): (&str, &str) = match entries.get(i) {
-                Some(entry @ HostEntry::Pinned { .. }) => ("pin", entry.name()),
-                Some(entry) => (if entry.is_paired() { "tv" } else { "lock" }, entry.name()),
-                None if i == add_row => ("plus", "Add host"),
-                None => ("settings", "Settings"),
-            };
-            let tone = theme::fg(if is_focused { 1.0 } else { 0.6 });
-            let icon = Rect::from_xywh(
-                rect.left + SIDEBAR_ICON_PAD,
-                rect.center_y() - SIDEBAR_ICON / 2.0,
-                SIDEBAR_ICON,
-                SIDEBAR_ICON,
-            );
-            if let Some(m) = by_name(mark) {
-                draw_icon(c, m, icon.center_x(), icon.center_y(), SIDEBAR_ICON, tone);
-            }
-            let has_menu = entries.get(i).is_some_and(HostEntry::has_menu);
-            let reserve = if has_menu {
-                ui::widgets::SIDEBAR_MENU_BTN as f32 + 10.0
-            } else {
-                0.0
-            };
-            let text_x = rect.left + SIDEBAR_ICON_PAD + SIDEBAR_ICON + 16.0;
-            let max_w = rect.right - 20.0 - reserve - text_x;
-            let size = px(f, LABEL);
-            f.fonts.draw_clipped(
-                c,
-                label,
-                f64::from(text_x),
-                f64::from(rect.center_y()) + size * 0.36,
-                W::Medium,
-                size,
-                tone,
-                f64::from(max_w),
-            );
-            if let Some(entry) = entries.get(i).filter(|e| e.has_menu()) {
-                // Badged onto the icon's corner: a presence dot on the thing it describes.
-                if let Some(online) = self.entry_online(entry) {
-                    let (cx, cy) = (icon.right - 1.0, icon.bottom - 2.0);
-                    c.draw_circle((cx, cy), PRESENCE_DOT / 2.0 + 2.0, &theme::fill(panel()));
-                    let tone = if online { theme::ONLINE_GREEN } else { theme::fg(0.35) };
-                    c.draw_circle((cx, cy), PRESENCE_DOT / 2.0, &theme::fill(tone));
+            let fo = self.render.sidebar_focus.at(i);
+            with_pop(c, rect, fo, |c| {
+                focus_face(c, rect, CARD_RADIUS, fo, selected == Some(i), 1.0);
+                let (mark, label): (&str, &str) = match entries.get(i) {
+                    Some(entry @ HostEntry::Pinned { .. }) => ("pin", entry.name()),
+                    Some(entry) => (if entry.is_paired() { "tv" } else { "lock" }, entry.name()),
+                    None if i == add_row => ("plus", "Add host"),
+                    None => ("settings", "Settings"),
+                };
+                let tone = theme::fg(if is_focused { 1.0 } else { 0.6 });
+                let icon = Rect::from_xywh(
+                    rect.left + SIDEBAR_ICON_PAD,
+                    rect.center_y() - SIDEBAR_ICON / 2.0,
+                    SIDEBAR_ICON,
+                    SIDEBAR_ICON,
+                );
+                if let Some(m) = by_name(mark) {
+                    draw_icon(c, m, icon.center_x(), icon.center_y(), SIDEBAR_ICON, tone);
                 }
-                let btn = sk(ui::widgets::sidebar_menu_button_rect(super::ui_rect(rect)));
-                let lit = is_focused && menu_focused;
-                if lit {
-                    c.draw_rrect(
-                        RRect::new_rect_xy(btn, btn.height() / 2.0, btn.height() / 2.0),
-                        &theme::fill(theme::accent(0.9)),
-                    );
+                let has_menu = entries.get(i).is_some_and(HostEntry::has_menu);
+                let reserve = if has_menu {
+                    ui::widgets::SIDEBAR_MENU_BTN as f32 + 10.0
+                } else {
+                    0.0
+                };
+                let text_x = rect.left + SIDEBAR_ICON_PAD + SIDEBAR_ICON + 16.0;
+                let max_w = rect.right - 20.0 - reserve - text_x;
+                let size = px(f, LABEL);
+                f.fonts.draw_clipped(
+                    c,
+                    label,
+                    f64::from(text_x),
+                    f64::from(rect.center_y()) + size * 0.36,
+                    W::Medium,
+                    size,
+                    tone,
+                    f64::from(max_w),
+                );
+                if let Some(entry) = entries.get(i).filter(|e| e.has_menu()) {
+                    // Badged onto the icon's corner: a presence dot on the thing it describes.
+                    if let Some(online) = self.entry_online(entry) {
+                        let (cx, cy) = (icon.right - 1.0, icon.bottom - 2.0);
+                        c.draw_circle((cx, cy), PRESENCE_DOT / 2.0 + 2.0, &theme::fill(panel()));
+                        let tone = if online { theme::ONLINE_GREEN } else { theme::fg(0.35) };
+                        c.draw_circle((cx, cy), PRESENCE_DOT / 2.0, &theme::fill(tone));
+                    }
+                    let btn = sk(ui::widgets::sidebar_menu_button_rect(super::ui_rect(rect)));
+                    let lit = is_focused && menu_focused;
+                    if lit {
+                        c.draw_rrect(
+                            RRect::new_rect_xy(btn, btn.height() / 2.0, btn.height() / 2.0),
+                            &theme::fill(theme::accent(0.9)),
+                        );
+                    }
+                    if let Some(m) = by_name("ellipsis") {
+                        let tone = if lit {
+                            theme::on_accent()
+                        } else {
+                            theme::fg(if is_focused { 1.0 } else { 0.6 })
+                        };
+                        draw_icon(c, m, btn.center_x(), btn.center_y(), MENU_GLYPH, tone);
+                    }
                 }
-                if let Some(m) = by_name("ellipsis") {
-                    let tone = if lit {
-                        theme::on_accent()
-                    } else {
-                        theme::fg(if is_focused { 1.0 } else { 0.6 })
-                    };
-                    draw_icon(c, m, btn.center_x(), btn.center_y(), MENU_GLYPH, tone);
-                }
-            }
+            });
         }
     }
 
@@ -680,12 +683,41 @@ pub(crate) type Covers = HashMap<String, Image>;
 mod tests {
     use super::*;
 
+    /// The lens is lighter than the deep disc, and the box's corners stay clear.
+    #[test]
+    fn the_mark_is_two_discs_and_a_lens() {
+        theme::set_ink(pf_console_ui::theme::Ink::of(pf_console_ui::library::palette("violet")));
+        let mut surface = skia_safe::surfaces::raster_n32_premul((60, 60)).unwrap();
+        surface.canvas().clear(Color4f::new(0.0, 0.0, 0.0, 1.0));
+        app_mark(surface.canvas(), 6.0, 6.0, 48.0);
+        let img = surface.image_snapshot();
+        if let Ok(dir) = std::env::var("PF_WEBOS_DUMP") {
+            let png = img.encode(None, skia_safe::EncodedImageFormat::PNG, 100).unwrap();
+            std::fs::write(format!("{dir}/mark.png"), png.as_bytes()).unwrap();
+        }
+        let px = |x: i32, y: i32| {
+            let mut buf = [0u8; 4];
+            let info = ImageInfo::new(
+                (1, 1),
+                skia_safe::ColorType::RGBA8888,
+                skia_safe::AlphaType::Unpremul,
+                None,
+            );
+            assert!(img.read_pixels(&info, &mut buf, 4, (x, y), skia_safe::image::CachingHint::Allow));
+            buf
+        };
+        let corner = px(7, 7);
+        let deep = px(6 + 40, 6 + 8);
+        let lens = px(30, 30);
+        assert_eq!(&corner[..3], &[0, 0, 0]);
+        assert!(lens[0] > deep[0] && lens[1] > deep[1]);
+    }
+
     #[test]
     fn coverless_posters_pick_a_face_per_title() {
         let a = face_for("Portal");
         let b = face_for("Portal");
         assert_eq!(a, b);
-        assert!(app_icon().is_some());
         let art = crate::services::art::CardArt {
             width: 3,
             height: 4,

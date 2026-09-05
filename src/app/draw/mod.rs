@@ -15,6 +15,7 @@ pub(crate) mod home;
 pub(crate) mod list;
 pub(crate) mod settings;
 
+use pf_console_ui::anim::approach;
 use pf_console_ui::theme::{self, Fonts, PanelStroke, W};
 use skia_safe::{Canvas, RRect, Rect};
 
@@ -182,6 +183,85 @@ pub(crate) fn ui_rect(r: Rect) -> ui::render::Rect {
     )
 }
 
+/// One eased focus channel per item on the kit row's own curve (`approach`, τ 60 ms):
+/// toward 1 on the focused item, toward 0 on the rest. Hover is focus, so the pointer
+/// rides the same ease as the D-pad.
+#[derive(Default)]
+pub(crate) struct FocusEase {
+    f: Vec<f64>,
+    target: Option<usize>,
+}
+
+impl FocusEase {
+    /// Advances one frame. A changed item count snaps: the items share no history.
+    pub(crate) fn step(&mut self, len: usize, focused: Option<usize>, dt: f64) {
+        if self.f.len() != len {
+            self.f = (0..len).map(|i| f64::from(Some(i) == focused)).collect();
+        }
+        self.target = focused;
+        for (i, f) in self.f.iter_mut().enumerate() {
+            let target = f64::from(Some(i) == focused);
+            *f = approach(*f, target, dt, 0.06);
+            if (*f - target).abs() < 0.002 {
+                *f = target;
+            }
+        }
+    }
+
+    pub(crate) fn at(&self, i: usize) -> f32 {
+        self.f.get(i).copied().unwrap_or(0.0) as f32
+    }
+
+    /// Frames still owed: a channel short of its target.
+    pub(crate) fn animating(&self) -> bool {
+        self.f
+            .iter()
+            .enumerate()
+            .any(|(i, f)| *f != f64::from(Some(i) == self.target))
+    }
+}
+
+/// The kit row's focus face at `f` ∈ 0..=1 — tint and stroke rise with `f`, the specular
+/// past half — so a settings tab and a sidebar row read like a focused field. `rest` is
+/// the item's idle face (the open page, the selected host), fading as focus arrives.
+pub(crate) fn focus_face(c: &Canvas, r: Rect, corner: f32, f: f32, rest: bool, k: f32) {
+    if rest && f < 0.99 {
+        let idle = 1.0 - f;
+        theme::panel(
+            c,
+            r,
+            corner,
+            Some(theme::accent(0.14 * idle)),
+            PanelStroke::Plain(0.10 * idle),
+            k,
+        );
+    }
+    if f > 0.01 {
+        theme::panel(
+            c,
+            r,
+            corner,
+            Some(theme::accent(0.30 * f)),
+            PanelStroke::Plain(0.28 * f),
+            k,
+        );
+    }
+    if f > 0.5 {
+        theme::panel_highlight(c, r, corner, k);
+    }
+}
+
+/// Paints scaled 0.98 → 1.0 about `r`'s centre by `f`: the kit row's arrival.
+pub(crate) fn with_pop(c: &Canvas, r: Rect, f: f32, paint: impl FnOnce(&Canvas)) {
+    let s = 0.98 + 0.02 * f;
+    c.save();
+    c.translate((r.center_x(), r.center_y()));
+    c.scale((s, s));
+    c.translate((-r.center_x(), -r.center_y()));
+    paint(c);
+    c.restore();
+}
+
 impl App {
     /// The ported modal layer, drawn after the tiles: the open card at its open alpha and
     /// rise, and the card being left at its closing alpha — the same cross-fade
@@ -273,9 +353,11 @@ impl App {
             let l = settings::layout(f.w, f.h, f.k);
             let hover_close = live && self.render.hover_close;
             let (page, column) = (self.screens.settings_page.page, self.screens.settings_page.column);
-            let list = self.kit_list(screen);
-            list.cursor = focus;
-            settings::draw(f, list, &l, page, column, &rows, hover_close, alpha, dy, dt, live);
+            self.kit_list(screen).cursor = focus;
+            let render = &mut self.render;
+            let list = &mut render.list.as_mut().expect("kit_list seats it").1;
+            let tabs = &mut render.tab_focus;
+            settings::draw(f, list, tabs, &l, page, column, &rows, hover_close, alpha, dy, dt, live);
             return;
         }
         if is_list(screen) {

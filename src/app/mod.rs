@@ -671,6 +671,13 @@ impl App {
         if self.render.grid.card_pops_running() || self.render.grid.reveal.dissolving() {
             animating = true;
         }
+        // The kit list and the two focus eases settle on their own clocks, past the pop.
+        if self.render.list.as_ref().is_some_and(|(_, l)| l.animating())
+            || self.render.sidebar_focus.animating()
+            || self.render.tab_focus.animating()
+        {
+            animating = true;
+        }
         animating
     }
 

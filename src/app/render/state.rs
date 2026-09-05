@@ -35,4 +35,7 @@ pub(crate) struct RenderState {
     /// The kit list widget of the open ported list screen (`app::draw::list`), with the
     /// screen it was made for — a different screen gets a fresh one.
     pub(crate) list: Option<(crate::core::screen::Screen, pf_console_ui::widgets::MenuList)>,
+    /// The sidebar rows' and the settings tabs' eased focus (`app::draw::FocusEase`).
+    pub(crate) sidebar_focus: crate::app::draw::FocusEase,
+    pub(crate) tab_focus: crate::app::draw::FocusEase,
 }
