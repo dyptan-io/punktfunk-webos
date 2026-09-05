@@ -67,7 +67,12 @@ pub(crate) fn layout(fw: f32, fh: f32, k: f32) -> Layout {
         })
         .collect();
     let rows_left = col_x + (COLUMN_W + PAD) * k;
-    let rows = Rect::from_xywh(rows_left, body_top, card.right - PAD * 0.5 * k - rows_left, card.bottom - PAD * k - body_top);
+    let rows = Rect::from_xywh(
+        rows_left,
+        body_top,
+        card.right - PAD * 0.5 * k - rows_left,
+        card.bottom - PAD * k - body_top,
+    );
     let close = Rect::from_xywh(
         card.right - (PAD * 0.6 + CLOSE_BOX) * k,
         card.top + PAD * 0.6 * k,
@@ -133,7 +138,14 @@ pub(crate) fn draw(
             sp.set_anti_alias(true);
             c.draw_rrect(rr, &sp);
         } else if open {
-            theme::panel(c, *r, ENTRY_CORNER, Some(theme::accent(0.12)), PanelStroke::Plain(0.10), k);
+            theme::panel(
+                c,
+                *r,
+                ENTRY_CORNER,
+                Some(theme::accent(0.12)),
+                PanelStroke::Plain(0.10),
+                k,
+            );
         }
         let color = if open { theme::fg(1.0) } else { theme::fg(0.6) };
         if let Some(icon) = by_name(p.icon()) {
@@ -175,7 +187,9 @@ mod tests {
             RowSpec::choice("Video codec", "Automatic"),
             RowSpec::toggle("HDR", true).with_note("10-bit, BT.2020 PQ"),
             RowSpec::action("Calibrate HDR…", true),
-            RowSpec::toggle("Game mode", false).with_header("TV").locked("Needs a rooted TV"),
+            RowSpec::toggle("Game mode", false)
+                .with_header("TV")
+                .locked("Needs a rooted TV"),
         ];
         let l = layout(w as f32, h as f32, k);
         let mut surface = skia_safe::surfaces::raster_n32_premul((w as i32, h as i32)).unwrap();
@@ -183,7 +197,19 @@ mod tests {
         for _ in 0..90 {
             surface.canvas().clear(Color4f::new(0.075, 0.063, 0.16, 1.0));
             let f = Frame::new(surface.canvas(), &fonts, w, h);
-            draw(&f, &mut list, &l, Page::Display, false, &rows, false, 1.0, 0.0, 1.0 / 60.0, true);
+            draw(
+                &f,
+                &mut list,
+                &l,
+                Page::Display,
+                false,
+                &rows,
+                false,
+                1.0,
+                0.0,
+                1.0 / 60.0,
+                true,
+            );
         }
         if let Ok(dir) = std::env::var("PF_WEBOS_DUMP") {
             let png = surface
@@ -203,7 +229,10 @@ mod tests {
             assert!(e.right <= l.rows.left);
         }
         assert!(l.card.contains(l.rows));
-        assert_eq!(l.entry_at(l.entries[2].center_x() as i32, l.entries[2].center_y() as i32), Some(2));
+        assert_eq!(
+            l.entry_at(l.entries[2].center_x() as i32, l.entries[2].center_y() as i32),
+            Some(2)
+        );
         assert!(l.on_close(l.close.center_x() as i32, l.close.center_y() as i32));
     }
 }

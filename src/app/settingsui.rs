@@ -6,7 +6,6 @@
 
 use crate::services::store::Settings;
 
-
 pub(crate) struct SettingsUi {
     pub(crate) settings: Settings,
     /// Whether the mouse button is down on the Settings screen's slider row (Bitrate) with the

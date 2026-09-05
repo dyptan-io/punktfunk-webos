@@ -1,21 +1,9 @@
 use super::*;
 use crate::app::render::ctx::RenderCtx;
-use crate::app::render::skia::{RawFormat, SkiaTiles};
+use crate::app::render::skia::SkiaTiles;
 use crate::console::ConsoleGl;
 use crate::services::store::ExitAction;
 use crate::ui::render::{Size, TileSink};
-
-/// Uploads one rasterized spinner frame as `tile::spinner(idx)`'s image.
-fn upload_spinner(tiles: &mut SkiaTiles, idx: usize) -> Result<()> {
-    let tile = tile::spinner(idx);
-    if tiles.has_tile(tile) {
-        return Ok(());
-    }
-    if let Some(frame) = crate::app::assets::spinner_frames().get(idx) {
-        tiles.upload(tile, frame, false)?;
-    }
-    Ok(())
-}
 
 /// Runs the UI (host list -> pairing -> settings) until the user confirms a
 /// connect target or the system asks the app to close (`None`). A plain
@@ -62,10 +50,6 @@ pub(super) fn run_ui_flow(
     // Tile cache (render loop's, not App's) and the images drawn from it. Both per menu entry.
     let mut tiles = crate::ui::cache::TileStore::new();
     let mut images = SkiaTiles::new();
-    // Upload spinner frames upfront (avoids lazy allocation stall during first spin cycle).
-    for idx in 0..crate::ui::spinner::FRAMES {
-        upload_spinner(&mut images, idx)?;
-    }
     // Status from last connect attempt (sticky so reload progress doesn't erase it).
     if initial_status.is_some() {
         app.set_home_status(initial_status, true);
@@ -397,7 +381,6 @@ pub(super) fn run_ui_flow(
             dirty = true;
         }
         let animating = app.tick_animations()
-            || app.render.grid.tiles_pending
             || !app.render.grid.reveal.is_revealed()
             || quit_dialog_active
             || notif_frame.is_some();
@@ -439,33 +422,10 @@ pub(super) fn run_ui_flow(
         for tile in std::mem::take(&mut app.render.evicted_tiles) {
             images.drop_tile(tile);
         }
-        // Two families upload from outside the tile store (the spinner's pre-rasterized
-        // frames, the hero's raw decoded cover art); everything else is a tile the store
-        // just built.
         for id in updated {
-            if let Some(idx) = tile::spinner_index(id) {
-                upload_spinner(&mut images, idx)?;
-            } else if id == tile::HERO {
-                if let Some(hero) = app.render.hero.uploaded_image() {
-                    images.upload_raw(id, hero.width, hero.height, RawFormat::Rgb565, &hero.pixels)?;
-                }
-            } else if let Some(pm) = tiles.get(id) {
-                // The sidebar strip is the one tile that covers everything under it.
-                let opaque = id == tile::SIDEBAR;
-                images.upload(id, pm, opaque)?;
+            if let Some(pm) = tiles.get(id) {
+                images.upload(id, pm, false)?;
             }
-        }
-        // The launch backdrop's dissolve: its mask is the one texture that changes every frame
-        // it is up, so it is uploaded here rather than through the tile store (which caches by
-        // content) — a few KB, for the second or so the wave runs.
-        if app.render.hero.dissolving() {
-            let (mw, mh, px) = app.render.hero.dissolve_mask(frame_start);
-            images.upload_raw(tile::HERO_MASK, mw, mh, RawFormat::Rgba8888, px)?;
-        }
-        // The grid's own reveal dissolve — same reasoning as the hero mask above.
-        if app.render.grid.reveal.dissolving() {
-            let (mw, mh, px) = app.render.grid.reveal.dissolve_mask(frame_start);
-            images.upload_raw(tile::GRID_REVEAL_MASK, mw, mh, RawFormat::Rgba8888, px)?;
         }
         let mut cmds = app.draw_list(&tiles, display_mode.w as u32, display_mode.h as u32, fonts);
         // Appended into the same single draw list/present as the rest of the
@@ -504,7 +464,13 @@ pub(super) fn run_ui_flow(
                 });
             }
         }
-        toast.draw(&mut images, (fonts, &mut overlay_text), &notif_frame, display_mode.w, &mut cmds)?;
+        toast.draw(
+            &mut images,
+            (fonts, &mut overlay_text),
+            &notif_frame,
+            display_mode.w,
+            &mut cmds,
+        )?;
         // Quit dialog overlay, appended to this loop's single command list rather than
         // getting its own present (unlike the stream, which draws over the video plane).
         quit_dialog.draw(
@@ -534,16 +500,17 @@ pub(super) fn run_ui_flow(
                 dw as f32 / display_mode.w.max(1) as f32,
                 dh as f32 / display_mode.h.max(1) as f32,
             ));
-            images.present(c, &cmds);
-            // The screens drawn on the kit, over the tiles (`app::draw`).
+            // Home under the tile modals, the ported modals over them, the launch transition
+            // over everything (`app::draw`).
             app.apply_ink();
             kit_fonts.begin_frame();
             let dt = last_frame.elapsed().as_secs_f64().min(0.1);
             last_frame = Instant::now();
-            app.draw_modals(
-                &crate::app::draw::Frame::new(c, &kit_fonts, display_mode.w as u32, display_mode.h as u32),
-                dt,
-            );
+            let frame = crate::app::draw::Frame::new(c, &kit_fonts, display_mode.w as u32, display_mode.h as u32);
+            app.draw_home(&frame);
+            images.present(c, &cmds);
+            app.draw_modals(&frame, dt);
+            app.draw_launch(&frame);
         }
         gl.flush();
         canvas.window().gl_swap_window();

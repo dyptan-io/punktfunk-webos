@@ -11,22 +11,13 @@
 //! draws through, so there is one idiom for "how do I draw a thing" rather than a trait for
 //! widgets and a parallel family of free `render_*_tile` functions that each re-spelled the
 //! measure/allocate/wrap-in-a-canvas preamble.
-mod card;
-mod cardmenu;
 mod confirm;
 mod overlay;
-mod text;
 
-pub use card::{
-    CardOutlineTile, CardShadowTile, CardTile, CardTitleTile, FocusRingTile, CARD_OUTLINE_PAD, CARD_SHADOW_PAD,
-    FOCUS_RING_PAD,
-};
-pub use cardmenu::{CardMenuBandTile, CardMenuRowsTile, CardMenuTile, CardMenuTitleTile};
 pub use confirm::{
     confirm_button_at, confirm_dialog_card, confirm_dialog_layout, ConfirmDialogShellTile, ConfirmSurface,
 };
 pub use overlay::{LogOverlayTile, StatsOverlayTile, LOG_OVERLAY_LINES};
-pub use text::{TextTile, WrappedTextTile};
 
 /// Padding for row tile shadow + sidebar inflate. Settings rows use GPU scale.
 pub const ROW_TILE_PAD: i32 = 28;

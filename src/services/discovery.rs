@@ -44,8 +44,7 @@ fn addr_and_name(info: &mdns_sd::ResolvedService) -> Option<(String, String)> {
 
 /// Trims an advertised OS chain to something bounded and predictable: lowercase, at most five
 /// tokens of 32 characters, nothing outside [`paths::is_asset_char`]'s charset. Nothing
-/// downstream trusts a host's strings, and this one is matched against packaged icon names —
-/// `paths::is_asset_token` is the gate that actually guards the join.
+/// downstream trusts a host's strings, and this one is matched against packaged mark names.
 fn sanitize_os(raw: &str) -> String {
     raw.to_lowercase()
         .split('/')

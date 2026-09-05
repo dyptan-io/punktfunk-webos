@@ -68,8 +68,6 @@ pub struct Palette {
     /// rather than an alert.
     pub caution: Color,
     pub error: Color,
-    /// A positive state (a host being online).
-    pub ok: Color,
     /// Dims the screen behind an open modal.
     pub scrim: Color,
     /// Hairline rules inside a card.
@@ -110,10 +108,6 @@ pub struct Icons {
     pub close: &'static str,
     /// A dropdown row's open/closed affordance.
     pub chevron_down: &'static str,
-    /// A row's "more actions" affordance.
-    pub overflow: &'static str,
-    /// The pinned badge composited over a pinned card.
-    pub pin: &'static str,
 }
 
 /// Every look on offer, in the order the Theme dropdown lists them — the single table, so

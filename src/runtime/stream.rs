@@ -126,7 +126,6 @@ pub(super) fn run_inner() -> Result<()> {
         raster: &text_raster,
         label: crate::ui::text::FontId::Label,
         value: crate::ui::text::FontId::Value,
-        title: crate::ui::text::FontId::Title,
         icon: crate::ui::text::FontId::Icon,
         caption: crate::ui::text::FontId::Caption,
     };

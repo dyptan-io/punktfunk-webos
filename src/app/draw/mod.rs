@@ -11,6 +11,7 @@
 pub(crate) mod about;
 pub(crate) mod dialog;
 pub(crate) mod form;
+pub(crate) mod home;
 pub(crate) mod list;
 pub(crate) mod settings;
 
@@ -108,7 +109,7 @@ pub(crate) fn wrap(fonts: &Fonts, text: &str, w: W, size: f64, max_w: f64) -> Ve
 
 /// Blur sigma under a raised card, design units. Wide enough that a grid of covers reads as
 /// a wash rather than as shapes, which is what the frosted look was.
-const GLASS_BLUR: f32 = 14.0;
+pub(crate) const GLASS_BLUR: f32 = 14.0;
 
 /// A raised glass card: the frame under `rect` blurred, then the kit's panel over it. The
 /// blur is what the SDL compositor's frost chain was; the panel is every console surface.
@@ -163,6 +164,16 @@ pub(crate) fn sk(r: ui::render::Rect) -> Rect {
     Rect::from_xywh(r.x() as f32, r.y() as f32, r.width() as f32, r.height() as f32)
 }
 
+/// One of the app's colours as Skia's, for the surfaces still on the old palette.
+pub(crate) fn c4(c: ui::render::Color) -> skia_safe::Color4f {
+    skia_safe::Color4f::new(
+        f32::from(c.r) / 255.0,
+        f32::from(c.g) / 255.0,
+        f32::from(c.b) / 255.0,
+        f32::from(c.a) / 255.0,
+    )
+}
+
 /// A Skia rect as the app's integer one, for the hit tests.
 pub(crate) fn ui_rect(r: Rect) -> ui::render::Rect {
     ui::render::Rect::new(
@@ -207,7 +218,15 @@ impl App {
             let Some(copy) = self.text_form() else {
                 return;
             };
-            let l = form::layout(f.fonts, f.w, f.h, f.k, &copy.subtitle, copy.hint.is_some(), self.keyboard_shown);
+            let l = form::layout(
+                f.fonts,
+                f.w,
+                f.h,
+                f.k,
+                &copy.subtitle,
+                copy.hint.is_some(),
+                self.keyboard_shown,
+            );
             let hover_close = live && self.render.hover_close;
             form::draw(f, &l, copy.title, copy.typed, copy.hint, hover_close, alpha, dy);
             return;
@@ -229,7 +248,11 @@ impl App {
             let l = about::layout(f.w, f.h, f.k);
             self.ensure_about_wrapped(l.body.width(), f.k);
             let hover_close = live && self.render.hover_close;
-            let lines = self.render.about_wrapped.as_ref().map_or(&[][..], |(_, v)| v.as_slice());
+            let lines = self
+                .render
+                .about_wrapped
+                .as_ref()
+                .map_or(&[][..], |(_, v)| v.as_slice());
             about::draw(
                 f,
                 &l,
@@ -258,7 +281,15 @@ impl App {
                 return;
             };
             let headers = card.rows.iter().filter(|r| r.header.is_some()).count();
-            let l = list::layout(f.fonts, f.w, f.h, f.k, card.subtitle.as_deref(), card.rows.len(), headers);
+            let l = list::layout(
+                f.fonts,
+                f.w,
+                f.h,
+                f.k,
+                card.subtitle.as_deref(),
+                card.rows.len(),
+                headers,
+            );
             let hover_close = live && self.render.hover_close;
             let list = self.kit_list(screen);
             // The App's cursor is the one the handlers read; the widget's follows it.
@@ -364,7 +395,13 @@ impl App {
 
     /// The pairing card's geometry on a frame of the given size.
     pub(crate) fn pair_layout(&self, w: u32, h: u32) -> form::PairLayout {
-        form::pair_layout(&self.fonts, w as f32, h as f32, scale(h), self.screens.pairing_status.is_some())
+        form::pair_layout(
+            &self.fonts,
+            w as f32,
+            h as f32,
+            scale(h),
+            self.screens.pairing_status.is_some(),
+        )
     }
 
     /// Where a ported screen's close mark is hit, if one is up.
@@ -380,13 +417,29 @@ impl App {
             return Some(self.pair_layout(w, h).on_close(x, y));
         }
         if let Some(copy) = self.text_form() {
-            let l = form::layout(&self.fonts, w as f32, h as f32, scale(h), &copy.subtitle, copy.hint.is_some(), self.keyboard_shown);
+            let l = form::layout(
+                &self.fonts,
+                w as f32,
+                h as f32,
+                scale(h),
+                &copy.subtitle,
+                copy.hint.is_some(),
+                self.keyboard_shown,
+            );
             return Some(l.on_close(x, y));
         }
         if is_list(screen) {
             let card = self.list_card(screen)?;
             let headers = card.rows.iter().filter(|r| r.header.is_some()).count();
-            let l = list::layout(&self.fonts, w as f32, h as f32, scale(h), card.subtitle.as_deref(), card.rows.len(), headers);
+            let l = list::layout(
+                &self.fonts,
+                w as f32,
+                h as f32,
+                scale(h),
+                card.subtitle.as_deref(),
+                card.rows.len(),
+                headers,
+            );
             return Some(l.on_close(x, y));
         }
         self.dialog_layout(w, h).map(|l| l.on_close(x, y))
@@ -419,7 +472,10 @@ mod tests {
         assert!(lines.len() > 1, "{lines:?}");
         assert_eq!(lines.join(" "), text);
         for l in &lines {
-            assert!(f64::from(fonts.measure(l, W::Regular, 16.0)) <= 220.0 || !l.contains(' '), "{l}");
+            assert!(
+                f64::from(fonts.measure(l, W::Regular, 16.0)) <= 220.0 || !l.contains(' '),
+                "{l}"
+            );
         }
         assert_eq!(wrap(&fonts, "", W::Regular, 16.0, 100.0), vec![String::new()]);
     }

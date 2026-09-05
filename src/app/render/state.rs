@@ -26,12 +26,10 @@ pub(crate) struct RenderState {
     pub(crate) about_wrapped: Option<(u32, Vec<String>)>,
     /// Whether the Magic Remote's pointer is currently hovering a modal's close (X) button.
     pub(crate) hover_close: bool,
-    pub(crate) sidebar_gen: u64,
-    pub(crate) sidebar_dirty: bool,
-    /// The theme epoch the sidebar strip was baked in. Its own field because the strip is
-    /// versioned by `sidebar_gen` rather than by `cache::version`, so the epoch that stales
-    /// every other tile passes it by — and its fill is one of the things a look changes.
-    pub(crate) sidebar_styled_at: u64,
+    /// The grid's cover images by game id (see `app::draw::home`).
+    pub(crate) covers: crate::app::draw::home::Covers,
+    /// The launch backdrop as a Skia image, built when `hero` says its art is in hand.
+    pub(crate) hero_image: Option<skia_safe::Image>,
     /// Tiles whose GPU texture this frame released — drained by the render loop, which does
     /// the actual `drop_tile`. Nothing to do with the style: a Theme pick stales tiles through
     /// `ui::theme::epoch` folded into every cache version, not through this list.
@@ -53,9 +51,8 @@ impl Default for RenderState {
             about_lines: Vec::new(),
             about_wrapped: None,
             hover_close: false,
-            sidebar_gen: 0,
-            sidebar_dirty: true,
-            sidebar_styled_at: crate::ui::theme::epoch(),
+            covers: Default::default(),
+            hero_image: None,
             evicted_tiles: Vec::new(),
             modal: modal::ModalState::default(),
             // Hand-written, not derived: `GridState`'s own `Default` starts the tile-id counter

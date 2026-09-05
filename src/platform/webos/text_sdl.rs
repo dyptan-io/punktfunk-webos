@@ -77,7 +77,6 @@ fn pixmap_from_ttf_surface(surface: &sdl2::surface::Surface) -> Result<Pixmap> {
 pub struct SdlTextRaster<'ttf> {
     label: Font<'ttf, 'static>,
     value: Font<'ttf, 'static>,
-    title: Font<'ttf, 'static>,
     icon: Font<'ttf, 'static>,
     caption: Font<'ttf, 'static>,
     /// Memoized `measure` results, one map per font — see [`SdlTextRaster::measure`].
@@ -102,7 +101,6 @@ impl<'ttf> SdlTextRaster<'ttf> {
         Ok(Self {
             label: load_font(ttf, typefaces, height_px, 22, FontWeight::Medium)?,
             value: load_font(ttf, typefaces, height_px, 20, FontWeight::Regular)?,
-            title: load_font(ttf, typefaces, height_px, 40, FontWeight::SemiBold)?,
             icon: load_icon_font(ttf, typefaces)?,
             caption: load_font(ttf, typefaces, height_px, 14, FontWeight::Regular)?,
             measured: RefCell::new(std::array::from_fn(|_| HashMap::new())),
@@ -113,7 +111,6 @@ impl<'ttf> SdlTextRaster<'ttf> {
         match id {
             FontId::Label => &self.label,
             FontId::Value => &self.value,
-            FontId::Title => &self.title,
             FontId::Icon => &self.icon,
             FontId::Caption => &self.caption,
         }

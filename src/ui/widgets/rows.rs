@@ -582,16 +582,6 @@ impl FocusRow {
 }
 
 impl Canvas<'_, '_> {
-    /// A [`FocusRow::mark`]-sized dot, from its left edge and vertical centre — for callers
-    /// placing one outside a row (the card title strip), so the two marks can't drift apart.
-    pub fn mark_dot(&mut self, left: i32, cy: i32, color: Color) {
-        self.painter.fill_rounded_rect(
-            Rect::new(left, cy - MARK_DOT_R, 2 * MARK_DOT_R as u32, 2 * MARK_DOT_R as u32),
-            MARK_DOT_R,
-            color,
-        );
-    }
-
     /// Draws one focus row (icon + label + control per `RowKind`) at normal size.
     /// `dropdown_open` is independent of `focused` — a dropdown row's pill brightens while
     /// its overlay is expanded too, not only on row focus.

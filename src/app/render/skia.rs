@@ -31,14 +31,14 @@ pub(crate) enum RawFormat {
 }
 
 impl RawFormat {
-    fn bytes_per_pixel(self) -> usize {
+    pub(crate) fn bytes_per_pixel(self) -> usize {
         match self {
             Self::Rgb565 => 2,
             Self::Rgba8888 => 4,
         }
     }
 
-    fn info(self, w: u32, h: u32) -> ImageInfo {
+    pub(crate) fn info(self, w: u32, h: u32) -> ImageInfo {
         let (ct, at) = match self {
             Self::Rgb565 => (ColorType::RGB565, AlphaType::Opaque),
             Self::Rgba8888 => (ColorType::RGBA8888, AlphaType::Unpremul),
@@ -59,28 +59,8 @@ impl SkiaTiles {
         Self::default()
     }
 
-    pub fn has_tile(&self, tile: TileId) -> bool {
-        self.images.contains_key(&tile)
-    }
-
     pub fn drop_tile(&mut self, tile: TileId) {
         self.images.remove(&tile);
-    }
-
-    /// Replaces `tile` with `pixels` in `format`. Length is checked, not trusted: a producer
-    /// whose encoding drifts would otherwise upload at the wrong pitch and show as a skew.
-    pub fn upload_raw(&mut self, tile: TileId, w: u32, h: u32, format: RawFormat, pixels: &[u8]) -> Result<()> {
-        let row_bytes = w as usize * format.bytes_per_pixel();
-        let expected = row_bytes * h as usize;
-        anyhow::ensure!(
-            pixels.len() == expected,
-            "upload {tile:?}: {} bytes for {w}x{h} {format:?} (want {expected})",
-            pixels.len(),
-        );
-        let image = images::raster_from_data(&format.info(w, h), Data::new_copy(pixels), row_bytes)
-            .ok_or_else(|| anyhow!("upload {tile:?}: Skia refused a {w}x{h} {format:?} image"))?;
-        self.images.insert(tile, image);
-        Ok(())
     }
 
     /// Draws `cmds` in order. A tile with no image is skipped: the loop uploads before it
@@ -91,7 +71,13 @@ impl SkiaTiles {
             match cmd {
                 DrawCmd::Tex { tile, dst, alpha } => {
                     if let Some(img) = self.images.get(tile) {
-                        canvas.draw_image_rect_with_sampling_options(img, None, sk(*dst), nearest(), &alpha_paint(*alpha));
+                        canvas.draw_image_rect_with_sampling_options(
+                            img,
+                            None,
+                            sk(*dst),
+                            nearest(),
+                            &alpha_paint(*alpha),
+                        );
                     }
                 }
                 DrawCmd::TexCropped { tile, src, dst, alpha } => {
@@ -107,7 +93,13 @@ impl SkiaTiles {
                 }
                 DrawCmd::TexF { tile, dst, alpha } => {
                     if let Some(img) = self.images.get(tile) {
-                        canvas.draw_image_rect_with_sampling_options(img, None, skf(*dst), linear(), &alpha_paint(*alpha));
+                        canvas.draw_image_rect_with_sampling_options(
+                            img,
+                            None,
+                            skf(*dst),
+                            linear(),
+                            &alpha_paint(*alpha),
+                        );
                     }
                 }
                 DrawCmd::Erase { tile, dst } => {
@@ -142,8 +134,12 @@ impl TileSink for SkiaTiles {
 /// sigma is half the SDL chain's minification width — the same visual spread. `fallback` is
 /// unused: there is no renderer here that cannot blur.
 fn frost(canvas: &Canvas, pane: &FrostPane) {
-    let Some(blur) = image_filters::blur((pane.blur as f32 * 0.5, pane.blur as f32 * 0.5), TileMode::Clamp, None, None)
-    else {
+    let Some(blur) = image_filters::blur(
+        (pane.blur as f32 * 0.5, pane.blur as f32 * 0.5),
+        TileMode::Clamp,
+        None,
+        None,
+    ) else {
         return;
     };
     // The mask is in `shape`'s units; `at` is where the whole shape lands, zoom included.
@@ -155,7 +151,12 @@ fn frost(canvas: &Canvas, pane: &FrostPane) {
         Corners::All => RRect::new_rect_xy(sk(pane.at), rx, ry),
         Corners::Bottom => RRect::new_rect_radii(
             sk(pane.at),
-            &[Vector::new(0.0, 0.0), Vector::new(0.0, 0.0), Vector::new(rx, ry), Vector::new(rx, ry)],
+            &[
+                Vector::new(0.0, 0.0),
+                Vector::new(0.0, 0.0),
+                Vector::new(rx, ry),
+                Vector::new(rx, ry),
+            ],
         ),
     };
     let dst = sk(pane.dst);
@@ -304,17 +305,5 @@ mod tests {
         assert!(inside > 0 && inside < 255, "inside the pane: {inside}");
         assert_eq!(px(&out, 3, 6)[0], 0);
         assert_eq!(px(&out, 4, 6)[0], 255);
-    }
-
-    /// Raw uploads check their length, so a producer changing encoding fails loudly.
-    #[test]
-    fn raw_upload_checks_its_pitch() {
-        let mut tiles = SkiaTiles::new();
-        assert!(tiles.upload_raw(TileId(2), 2, 2, RawFormat::Rgb565, &[0; 8]).is_ok());
-        assert!(tiles.upload_raw(TileId(3), 2, 2, RawFormat::Rgb565, &[0; 7]).is_err());
-        assert!(tiles.upload_raw(TileId(4), 2, 2, RawFormat::Rgba8888, &[0; 16]).is_ok());
-        assert!(tiles.has_tile(TileId(2)));
-        tiles.drop_tile(TileId(2));
-        assert!(!tiles.has_tile(TileId(2)));
     }
 }

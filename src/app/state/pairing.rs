@@ -158,7 +158,6 @@ impl App {
                 );
                 self.persist();
                 self.rebuild_entries();
-                self.render.sidebar_dirty = true;
                 self.nav.screen = Screen::Home;
                 self.select_host(outcome.host, outcome.port, outcome.mgmt_port);
             }

@@ -111,5 +111,4 @@ pub fn modal_close_rect(card_rect: Rect) -> Rect {
     )
 }
 
-impl Canvas<'_, '_> {
-}
+impl Canvas<'_, '_> {}

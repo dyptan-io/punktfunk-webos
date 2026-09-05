@@ -188,29 +188,6 @@ impl TileStore {
         self.ensure(id, static_version(), build)
     }
 
-    /// Reuses `id`'s existing pixmap as the scratch surface for its own rebuild — for a
-    /// tile whose reallocation per rebuild is the dominant cost (a full-screen layer, or a
-    /// modal card rebuilt on every keystroke). The painter is handed to `build` already
-    /// sized; `build` is responsible for clearing whatever it does not overwrite.
-    pub fn ensure_in_place(
-        &mut self,
-        id: TileId,
-        version: u64,
-        fresh: impl FnOnce() -> Painter,
-        build: impl FnOnce(&mut Painter) -> Result<()>,
-    ) -> Result<bool> {
-        if self.is_fresh(id, version) {
-            return Ok(false);
-        }
-        let mut painter = match self.take(id) {
-            Some(p) => p,
-            None => fresh(),
-        };
-        build(&mut painter)?;
-        self.store(id, Entry { version, painter });
-        Ok(true)
-    }
-
     /// Stores an already-rasterized tile.
     pub fn put(&mut self, id: TileId, version: u64, painter: Painter) {
         self.store(id, Entry { version, painter });

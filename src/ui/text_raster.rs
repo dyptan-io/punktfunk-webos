@@ -9,14 +9,13 @@ use crate::ui::render::Color;
 pub enum FontId {
     Label,
     Value,
-    Title,
     Icon,
     Caption,
 }
 
 impl FontId {
     /// Number of variants, so a per-font table can be a fixed array.
-    pub const COUNT: usize = 5;
+    pub const COUNT: usize = 4;
 
     /// Dense index into such a table. Fieldless enum, so the discriminant *is* the index.
     pub fn index(self) -> usize {
