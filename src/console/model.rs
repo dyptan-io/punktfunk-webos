@@ -191,6 +191,9 @@ impl Service {
                 pin: None,
                 bound_profile: None,
                 game_profiles: Default::default(),
+                // Needs `/api/v1/status`, which this client does not ask — the same reason
+                // `LibraryGame::running` is false here. Empty renders as no line.
+                running: String::new(),
             })
             .collect();
         extra.sort_by(|a, b| a.name.cmp(&b.name));
@@ -253,6 +256,7 @@ impl Service {
                 .iter()
                 .filter_map(|(id, g)| g.profile.clone().map(|p| (id.clone(), p)))
                 .collect(),
+            running: String::new(),
             key,
         }
     }
@@ -411,6 +415,7 @@ impl Service {
         self.art = Some(spawn_art(
             loaded.host,
             loaded.mgmt_port,
+            loaded.port,
             self.identity.clone(),
             games,
             self.handles.library.clone(),
@@ -822,9 +827,14 @@ enum ArtItem {
 /// each one. This thread is already waiting on the network, so the work lands where nothing is
 /// watching. The shelf publishes the size it caches at; before it has drawn once there is no
 /// size to decode to, and those few covers go over encoded as they always did.
+///
+/// Disk first (`services::art`), which is the same cache the classic menus fill: leaving a
+/// shelf and coming back re-asks for every cover, and over Wi-Fi that was ~10 MB and the whole
+/// reason returning to the host list felt slow.
 fn spawn_art(
     addr: String,
     mgmt: u16,
+    port: u16,
     identity: (String, String),
     games: Vec<GameEntry>,
     library: pf_console_ui::LibraryShared,
@@ -838,18 +848,28 @@ fn spawn_art(
                 return;
             };
             for game in games {
+                let hand_over = |bytes: Vec<u8>| {
+                    let item = library
+                        .art_scale()
+                        .and_then(|k| pf_console_ui::decode_poster_off_thread(&bytes, k))
+                        .map_or(ArtItem::Encoded(bytes), ArtItem::Decoded);
+                    tx.send((game.id.clone(), item))
+                };
+                if let Some(bytes) = crate::services::art::cached_cover(&addr, port, &game.id) {
+                    // A closed channel means the shelf moved on; stop fetching for it.
+                    if hand_over(bytes).is_err() {
+                        return;
+                    }
+                    continue;
+                }
                 // Portrait first (the card's aspect), then the wider art as a fallback — the
                 // same order `services::art` asks in for the old UI's covers.
                 let candidates = [&game.art.portrait, &game.art.header, &game.art.hero];
                 for path in candidates.into_iter().flatten() {
                     match library::fetch_art(&agent, &addr, mgmt, path) {
                         Ok(bytes) => {
-                            let item = library
-                                .art_scale()
-                                .and_then(|k| pf_console_ui::decode_poster_off_thread(&bytes, k))
-                                .map_or(ArtItem::Encoded(bytes), ArtItem::Decoded);
-                            // A closed channel means the shelf moved on; stop fetching for it.
-                            if tx.send((game.id.clone(), item)).is_err() {
+                            crate::services::art::store_cover(&addr, port, &game.id, &bytes);
+                            if hand_over(bytes).is_err() {
                                 return;
                             }
                             break;

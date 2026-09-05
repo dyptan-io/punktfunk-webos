@@ -397,7 +397,18 @@ pub(super) fn run(
         // LEGEND, and claiming a pad prints button marks for buttons that are not in the room.
         // It is also what the home screen reads to put Options and Settings on the d-pad
         // instead of on Y and X (`pads.is_empty()`).
-        let pad_pref = pad.map(|_| shared::gamepad_pref(state.settings.gamepad_type));
+        // Automatic means "whatever is plugged in", so the legend asks SDL rather than
+        // printing the host's Xbox default over a DualSense. An explicit pick still wins:
+        // someone who chose a pad kind wants its glyphs whatever is attached.
+        let pad_pref = pad.map(|_| {
+            let stored = state.settings.gamepad_type;
+            let kind = if stored == store::GamepadType::Auto {
+                crate::platform::webos::gamepad::detect_type(game_controller).unwrap_or(stored)
+            } else {
+                stored
+            };
+            shared::gamepad_pref(kind)
+        });
         if let (Some(pad), Some(pref)) = (pad, pad_pref) {
             pads.push(pad_info(pad, pref));
         }

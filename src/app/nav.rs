@@ -27,6 +27,7 @@ pub(crate) enum ScreenKey {
     Diagnostics,
     Experimental,
     HdrCalibration,
+    ControllerSettings,
     CursorSettings,
     SendLogs,
     Collections,
@@ -56,6 +57,7 @@ impl ScreenKey {
             Screen::Experimental => Self::Experimental,
             Screen::HdrCalibration => Self::HdrCalibration,
             Screen::CursorSettings(_) => Self::CursorSettings,
+            Screen::ControllerSettings(_) => Self::ControllerSettings,
             Screen::SendLogs => Self::SendLogs,
             Screen::Collections => Self::Collections,
             Screen::RenameCollection => Self::RenameCollection,
@@ -84,6 +86,7 @@ pub(crate) const fn over_scroll_list(screen: Screen) -> bool {
             | Screen::HdrCalibration
             | Screen::Diagnostics
             | Screen::CursorSettings(_)
+            | Screen::ControllerSettings(_)
             | Screen::SendLogs
             | Screen::RenameCollection
             | Screen::RemoveCollection

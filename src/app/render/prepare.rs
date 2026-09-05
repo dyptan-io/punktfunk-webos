@@ -273,6 +273,12 @@ impl App {
                 display: m.display,
                 stalled: m.stalled,
             }),
+            Screen::ControllerSettings(_) => Some(ModalShellKey::ControllerSettings {
+                gamepad_type: self.settings_target().gamepad_type,
+                gamepad_ui: self.settings_target().gamepad_ui,
+                gamepad_ui_mode: self.settings_target().gamepad_ui_mode,
+                detected: self.detected_gamepad_type,
+            }),
             Screen::CursorSettings(_) => Some(ModalShellKey::CursorSettings {
                 cursor_capture: self.settings_target().cursor_capture,
                 cursor_gestures: self.settings_target().cursor_gestures,
@@ -397,6 +403,13 @@ impl App {
                     self.screens.row_button,
                 )
             }),
+            Screen::ControllerSettings(_) => Some(ModalFocusKey::ControllerSettingsRow(
+                self.nav.cursor(ScreenKey::ControllerSettings),
+                self.settings_target().gamepad_type,
+                self.settings_target().gamepad_ui,
+                self.settings_target().gamepad_ui_mode,
+                self.detected_gamepad_type,
+            )),
             Screen::CursorSettings(_) => Some(ModalFocusKey::CursorSettingsRow(
                 self.nav.cursor(ScreenKey::CursorSettings),
                 self.settings_target().cursor_capture,
@@ -606,7 +619,8 @@ impl App {
                     | Screen::Diagnostics
                     | Screen::Experimental
                     | Screen::HdrCalibration
-                    | Screen::CursorSettings(_) => {
+                    | Screen::CursorSettings(_)
+                    | Screen::ControllerSettings(_) => {
                         let rows = self.list_modal_rows().unwrap_or_default();
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
                         self.list_modal_focused()

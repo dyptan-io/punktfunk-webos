@@ -5,6 +5,7 @@ mod about;
 pub(crate) mod addhost;
 pub(crate) mod cardmenu;
 pub(crate) mod collections;
+mod controllersettings;
 mod cursorsettings;
 pub(crate) mod diagnostics;
 mod edithost;

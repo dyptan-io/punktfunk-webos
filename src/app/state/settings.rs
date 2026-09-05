@@ -100,6 +100,12 @@ impl App {
                     }
                     self.open_cursor_settings(set);
                 }
+                Some(menu::SettingsRow::Controller) => {
+                    if set == menu::SettingsScope::Global {
+                        self.persist();
+                    }
+                    self.open_controller_settings(set);
+                }
                 Some(menu::SettingsRow::Experimental) => {
                     self.persist();
                     self.open_experimental();

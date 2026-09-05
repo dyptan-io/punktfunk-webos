@@ -256,6 +256,33 @@ pub fn reconcile_host_caches(known: &[crate::core::model::KnownHost]) {
 /// the naming rule — [`cache_class`] reads it back off the filename.
 ///
 /// Heroes are marked so a game can cache a cover and a hero side by side.
+/// This host's cached ENCODED cover bytes for `game_id`, if the cache holds them.
+///
+/// Shared with the gamepad shell's own art thread, which decodes to a different format than
+/// this loader does and so cannot use the `.raw` beside it. One cache either way: whichever UI
+/// browsed last warms the other, and the same per-host budget and orphan sweep bound both.
+pub(crate) fn cached_cover(host: &str, port: u16, game_id: &str) -> Option<Vec<u8>> {
+    let path = cache_path(&cache_dir(host, port), game_id, ArtKind::Card, false);
+    std::fs::read(path).ok().filter(|b| !b.is_empty())
+}
+
+/// Store encoded cover bytes, then bring the host's directory back inside its budget.
+/// Best-effort throughout: a cache that cannot be written costs a re-fetch, nothing more.
+pub(crate) fn store_cover(host: &str, port: u16, game_id: &str, bytes: &[u8]) {
+    let dir = cache_dir(host, port);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = cache_path(&dir, game_id, ArtKind::Card, false);
+    let tmp = path.with_extension("tmp");
+    // Write-then-rename, like the raw path above: a kill mid-write must not leave a truncated
+    // file that later reads as a cover.
+    if std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    prune_cache(&dir);
+}
+
 fn cache_path(dir: &std::path::Path, game_id: &str, kind: ArtKind, raw: bool) -> PathBuf {
     let hero = if matches!(kind, ArtKind::Hero) { HERO_SUFFIX } else { "" };
     let raw = if raw { RAW_SUFFIX } else { "" };
