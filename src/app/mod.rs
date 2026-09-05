@@ -67,11 +67,6 @@ pub(crate) const LIBRARY_STATUS_DELAY: Duration = Duration::from_secs(1);
 /// Wider than track for rounded caps not to clip.
 const SCROLL_INDICATOR_TILE_W: u32 = 10;
 
-/// About document window size (lines). Balances GPU texture height limit vs rebuild hitch.
-const ABOUT_WINDOW_BUDGET: usize = 80;
-/// Margin (lines) before recentering the baked window.
-const ABOUT_WINDOW_MARGIN: usize = 16;
-
 /// Home status bar's vertical padding; box height is fixed at two text rows.
 const STATUS_BG_PAD: i32 = 12;
 

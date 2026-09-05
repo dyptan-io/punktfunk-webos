@@ -19,7 +19,7 @@ impl App {
         ev: MenuEvent,
         screen_w: u32,
         screen_h: u32,
-        fonts: &ui::text::Fonts,
+        _fonts: &ui::text::Fonts,
     ) -> Option<ConnectTarget> {
         // Anything but a confirm moves focus or closes the screen, so a dip still running
         // from an earlier press belongs to a widget that is no longer under the cursor.
@@ -37,7 +37,7 @@ impl App {
             Screen::HostPower => self.handle_host_power_event(ev),
             Screen::SpeedTest => self.handle_speed_test_event(ev),
             Screen::EditHost => self.handle_edit_host_event(ev),
-            Screen::About => self.handle_about_event(ev, screen_w, screen_h, fonts),
+            Screen::About => self.handle_about_event(ev, screen_w, screen_h),
             Screen::HdrCalibration => self.handle_hdr_calibration_event(ev),
             Screen::SendLogs => self.handle_send_logs_event(ev),
             Screen::Collections => self.handle_collections_event(ev, screen_w, screen_h),

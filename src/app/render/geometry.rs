@@ -36,7 +36,7 @@ impl App {
         screen: Screen,
         screen_w: u32,
         screen_h: u32,
-        fonts: &ui::text::Fonts,
+        _fonts: &ui::text::Fonts,
     ) -> Option<(usize, usize, Rect, Rect)> {
         match screen {
             // The scope comes off the passed screen, not `self.nav.screen`: a closing Settings(Game)
@@ -47,13 +47,6 @@ impl App {
                 let (card, content) =
                     view::scrolllist::layout(total, screen_w, screen_h, scroll_list_width_frac(screen));
                 Some((total, view::scrolllist::visible_rows(total, screen_h), card, content))
-            }
-            Screen::About => {
-                let card = view::about::card_rect(screen_w, screen_h);
-                let body = view::about::body_rect(card, fonts);
-                let total = self.render.about_wrapped.as_ref().map_or(0, |(_, v)| v.len());
-                let visible = view::about::visible_lines(body, fonts.raster, fonts.value);
-                Some((total, visible, card, body))
             }
             _ => None,
         }
@@ -132,21 +125,11 @@ impl App {
         fonts: &ui::text::Fonts,
     ) -> Option<(Rect, Rect)> {
         let (total, _, _, content) = self.scroll_geometry_for(screen, screen_w, screen_h, fonts)?;
-        // About uses a bounded window; for other screens, window_start is 0.
-        let window_start = match screen {
-            Screen::About => self.render.content_window.start,
-            _ => 0,
-        };
         let stride = self.scroll_stride_for(screen, fonts);
-        // The animated offset (see `sync_modal_scroll`), in absolute content pixels,
-        // rebased onto whatever slice is currently baked into the tile.
+        // The animated offset (see `sync_modal_scroll`), in absolute content pixels. Every
+        // remaining scrolling tile list is baked whole, so there is no window to rebase onto.
         let scroll_px = self.clamped_scroll_px(total, stride, content.height());
-        let src = Rect::new(
-            0,
-            scroll_px - window_start as i32 * stride,
-            content.width(),
-            content.height(),
-        );
+        let src = Rect::new(0, scroll_px, content.width(), content.height());
         Some((src, content))
     }
 
@@ -195,14 +178,14 @@ impl App {
     }
 
     /// Same as `scroll_stride`, but for an explicit screen — see `scroll_geometry_for`.
-    pub(crate) fn scroll_stride_for(&self, screen: Screen, fonts: &ui::text::Fonts) -> i32 {
+    pub(crate) fn scroll_stride_for(&self, screen: Screen, _fonts: &ui::text::Fonts) -> i32 {
         match screen {
             Screen::Collections => ui::widgets::focus_row_stride() as i32,
-            Screen::About => view::about::line_stride(fonts.raster, fonts.value),
             // Nothing else has a scrolling body. `1` rather than `0` because the stride is a
             // divisor in the scroll arithmetic, and this is only reached where
             // `scroll_geometry` already said there is nothing to scroll.
             Screen::Home
+            | Screen::About
             | Screen::Pairing
             | Screen::AddHost
             | Screen::Wake
@@ -466,6 +449,7 @@ impl App {
             // A screen drawn on the kit has no tile-side modal at all (`app::draw`); the five
             // dialogs are listed below so the match stays exhaustive.
             Screen::Home
+            | Screen::About
             | Screen::ForgetHost
             | Screen::SendLogs
             | Screen::RemoveCollection
@@ -492,7 +476,6 @@ impl App {
                 wake: self.screens.wake.as_ref()?,
                 confirm: confirm.as_ref(),
             }),
-            Screen::About => f(&view::about::Modal),
             Screen::SpeedTest => f(&view::speedtest::Modal {
                 state: self.screens.speed_test.as_ref(),
                 host_name: &self.screens.speed_test_name,

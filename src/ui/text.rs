@@ -170,27 +170,6 @@ impl Canvas<'_, '_> {
         Ok(width)
     }
 
-    /// Renders one line of text WITHOUT touching [`TextCache`] — for text that is
-    /// unique per line and scrolled past once, where caching is pure loss.
-    ///
-    /// [`TextCache`] is deliberately unbounded (see its docs: entry count is bounded by
-    /// the app's own content — a handful of labels, one row per host/game). The About
-    /// screen's licence wall breaks that assumption badly: `THIRD-PARTY-NOTICES.txt` is
-    /// ~10,000 distinct lines, so scrolling the whole document through a cached
-    /// [`text`](Self::text) would leave ~10,000 rasterized `Pixmap`s resident for the rest
-    /// of the process — on a TV with no eviction path. These lines are drawn at most a
-    /// couple of times each (once per scroll position that shows them), so rasterizing
-    /// fresh is both cheaper overall and bounded in memory.
-    pub fn text_uncached(&mut self, font: FontId, s: &str, x: i32, y: i32, color: Color) -> Result<u32> {
-        if s.is_empty() {
-            return Ok(0);
-        }
-        let pixmap = self.fonts.raster.rasterize(font, s, color)?;
-        let width = pixmap.width();
-        self.painter.draw_pixmap(x, y, &pixmap);
-        Ok(width)
-    }
-
     /// One line centred horizontally within `within`, at `y`. The `x + (w - measure) / 2`
     /// every centred label was spelling out for itself.
     pub fn text_centered(&mut self, font: FontId, s: &str, within: Rect, y: i32, color: Color) -> Result<u32> {

@@ -15,16 +15,11 @@ pub(crate) struct RenderState {
     pub(crate) hero: hero::Hero,
     /// Scroll state for overflowing modal content.
     pub(crate) scroll: ui::scroll::ScrollWindow,
-    /// Settings' scroll position, stashed while About borrows `scroll` for its own document —
-    /// restored on return so the focus highlight doesn't end up outside the visible rows.
-    pub(crate) settings_scroll: ui::scroll::ScrollWindow,
-    /// Window slice of baked About document.
-    pub(crate) content_window: ui::scroll::ContentWindow,
     /// The About document's source lines, built once on first open. ~10,000 static string
     /// slices; cheap to hold, wasteful to rebuild per frame.
     pub(crate) about_lines: Vec<&'static str>,
     /// `about_lines` wrapped to a body width, flattened into one list of visual lines (see
-    /// `view::about::wrap_document`) — the unit `scroll`/`content_window` actually scroll over,
+    /// `draw::about::wrap_document`) — the unit About scrolls over,
     /// since a source line's wrapped length varies and only the flattened list has a uniform
     /// per-unit stride. Keyed by the body width it was wrapped for, rebuilt if that width
     /// changes.
@@ -55,8 +50,6 @@ impl Default for RenderState {
         Self {
             hero: hero::Hero::default(),
             scroll: ui::scroll::ScrollWindow::new(),
-            settings_scroll: ui::scroll::ScrollWindow::new(),
-            content_window: ui::scroll::ContentWindow::new(),
             about_lines: Vec::new(),
             about_wrapped: None,
             hover_close: false,

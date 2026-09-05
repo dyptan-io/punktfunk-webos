@@ -11,14 +11,12 @@ use anyhow::{Context, Result};
 use crate::app::hosts::HostEntry;
 use crate::app::nav::ScreenKey;
 use crate::app::render::ctx::RenderCtx;
-use crate::app::render::key::{ModalFocusKey, ModalShellKey, ScrollContentKey};
+use crate::app::render::key::{ModalFocusKey, ModalShellKey};
 use crate::app::render::tile;
 use crate::app::render::SnapshotBody;
 use crate::app::screens::is_scroll_list;
 use crate::app::screens::rowbuttons::RowButton;
-use crate::app::{
-    view, App, HomeFocus, PairingFocus, Screen, ABOUT_WINDOW_BUDGET, ABOUT_WINDOW_MARGIN, SCROLL_INDICATOR_TILE_W,
-};
+use crate::app::{view, App, HomeFocus, PairingFocus, Screen, SCROLL_INDICATOR_TILE_W};
 use crate::ui;
 use crate::ui::cache;
 use crate::ui::render::TileId;
@@ -650,13 +648,6 @@ impl App {
         // document) gets its scroll indicator and content tile refreshed here — see
         // `scroll_geometry`'s docs for why this one block covers every such modal
         // instead of being hand-copied per screen.
-        if matches!(self.nav.screen, Screen::About) {
-            // Mutates `about_wrapped` only — must happen before `scroll_geometry`
-            // (a `&self` read) can report a non-zero total for this frame.
-            let card = view::about::card_rect(screen_w, screen_h);
-            let body = view::about::body_rect(card, fonts);
-            self.ensure_about_wrapped(fonts, body.width());
-        }
         if let Some((total, visible, _, content)) = self.scroll_geometry(screen_w, screen_h, fonts) {
             let scroll = self.render.scroll.clamped(total, visible);
             let ind = cache::version(&(self.nav.screen, total, visible, scroll, content.height()));
@@ -713,33 +704,6 @@ impl App {
                         // shorter list on the same screen) would otherwise keep drawing.
                         self.evict_list_rows_from(rows.len(), tiles);
                         self.render.modal.scroll_list_rows_version_cached = Some(rows_version);
-                    }
-                    // Every row is baked, so the window is the whole list — the crop
-                    // rebase in `scroll_src_rect` has nothing to shift.
-                    self.render.content_window = ui::scroll::ContentWindow {
-                        start: 0,
-                        len: row_count,
-                    };
-                }
-                Screen::About => {
-                    if let Some(new_start) = self.render.content_window.recenter_if_needed(
-                        scroll,
-                        visible,
-                        total,
-                        ABOUT_WINDOW_BUDGET,
-                        ABOUT_WINDOW_MARGIN,
-                    ) {
-                        let len = ABOUT_WINDOW_BUDGET.min(total.saturating_sub(new_start));
-                        if let Some((_, wrapped)) = &self.render.about_wrapped {
-                            let stride = self.scroll_stride(fonts) as u32;
-                            let mut p = Painter::new(content.width().max(1), (len as u32 * stride).max(1));
-                            let mut c = ui::Canvas::tile(&mut p, text_cache, fonts);
-                            view::about::draw_window(&mut c, fonts.value, wrapped, new_start, len)?;
-                            self.render.content_window = ui::scroll::ContentWindow { start: new_start, len };
-                            let key = cache::version(&(Screen::About, ScrollContentKey::About(new_start)));
-                            tiles.put(tile::SCROLL_CONTENT, key, p);
-                            updated.push(tile::SCROLL_CONTENT);
-                        }
                     }
                 }
                 _ => {}

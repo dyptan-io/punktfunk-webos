@@ -896,7 +896,7 @@ pub(super) fn handle_ui_event(
                 Screen::About => {
                     /// Licence-wall px per wheel detent — a few lines at a time.
                     const ABOUT_WHEEL_STEP: i32 = 90;
-                    *dirty |= app.scroll_about_by(-wheel_y * ABOUT_WHEEL_STEP, w, h, fonts);
+                    *dirty |= app.scroll_about_by(-wheel_y * ABOUT_WHEEL_STEP, w, h);
                 }
                 Screen::Home => {
                     /// Grid px scrolled per wheel detent — about a third of a card
