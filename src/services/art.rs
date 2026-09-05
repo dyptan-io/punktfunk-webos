@@ -236,7 +236,7 @@ fn cache_dir(host: &str, port: u16) -> PathBuf {
 /// The filesystem work runs on its own thread: the caller is either the startup path or a
 /// keypress, and unlinking a stale host's quota is up to ~190 files.
 pub fn reconcile_host_caches(known: &[crate::core::model::KnownHost]) {
-    let keep: HashSet<String> = known.iter().map(|h| host_key(&h.host, h.port)).collect();
+    let keep: HashSet<String> = known.iter().map(|h| host_key(&h.addr, h.port)).collect();
     std::thread::Builder::new()
         .name("punktfunk-webos-art-gc".into())
         .spawn(move || {

@@ -209,7 +209,7 @@ impl Service {
         let known = state
             .known_hosts
             .iter()
-            .find(|h| h.host == host && h.port == port && h.fingerprint.is_some())?;
+            .find(|h| h.addr == host && h.port == port && h.is_paired())?;
         Some(self.saved_row(known))
     }
 
@@ -219,14 +219,14 @@ impl Service {
         let online = advert.is_some() || self.reachable.get(&key).copied().unwrap_or(false);
         HostRow {
             name: if h.name.is_empty() {
-                h.host.clone()
+                h.addr.clone()
             } else {
                 h.name.clone()
             },
-            addr: h.host.clone(),
+            addr: h.addr.clone(),
             port: h.port,
-            fp_hex: h.fingerprint.map(shared::hex).unwrap_or_default(),
-            paired: h.fingerprint.is_some(),
+            fp_hex: h.fp_hex.clone(),
+            paired: h.is_paired(),
             saved: true,
             online,
             // The live advert first, then what was saved from an earlier one: reading only the
@@ -251,11 +251,7 @@ impl Service {
             // Title id → profile id, straight off the record: the bind screen only compares
             // these against the catalog it was handed, and a dangling one resolves to nothing
             // there exactly as it does at launch.
-            game_profiles: h
-                .games
-                .iter()
-                .filter_map(|(id, g)| g.profile.clone().map(|p| (id.clone(), p)))
-                .collect(),
+            game_profiles: h.game_profiles.clone(),
             running: String::new(),
             key,
         }
@@ -310,7 +306,7 @@ impl Service {
                 key,
                 game: Some(game),
                 profile_id,
-            } => self.bind_game_profile(&key, &game, profile_id),
+            } => self.bind_game_profile(&key, &game, profile_id.as_deref()),
             // Pinned profile CARDS, and binding a whole host's default: neither is a surface
             // this client draws. Logged rather than dropped — the rows that raise them are the
             // shell's, so one in a log says a screen appeared that this arm has not caught up
@@ -334,10 +330,10 @@ impl Service {
     /// Point one title at a catalog profile, or clear it. Refuses an id the catalog does not
     /// hold: the record must never name a profile nothing resolves, and the shell can only
     /// offer ids it was handed, so one that misses means the two went out of step.
-    fn bind_game_profile(&self, key: &str, game: &str, profile_id: Option<String>) {
+    fn bind_game_profile(&self, key: &str, game: &str, profile_id: Option<&str>) {
         let changed = self.store.edit(|state| {
-            if let Some(id) = &profile_id {
-                if !state.profiles.iter().any(|p| p.id == *id) {
+            if let Some(id) = profile_id {
+                if !state.profiles.iter().any(|p| p.id == id) {
                     tracing::warn!(%id, "console: bind to a profile this document does not hold");
                     return false;
                 }
@@ -347,7 +343,7 @@ impl Service {
                 return false;
             };
             let host = &mut state.known_hosts[i];
-            if host.game_profile(game).map(str::to_string) == profile_id {
+            if host.game_profile(game) == profile_id {
                 return false;
             }
             host.bind_game_profile(game, profile_id);
@@ -378,7 +374,7 @@ impl Service {
             .snapshot()
             .known_hosts
             .iter()
-            .find(|h| h.host == addr)
+            .find(|h| h.addr == addr)
             .map_or(0, |h| h.port);
         self.games = Some(library::load_games_async(
             addr.to_string(),
@@ -495,22 +491,22 @@ impl Service {
         tracing::info!("console: paired with {}:{}", outcome.addr, outcome.port);
         let key = shared::host_key(&shared::hex(fingerprint), &outcome.addr, outcome.port);
         self.store.edit(|state| {
-            store::upsert_known_host(
-                &mut state.known_hosts,
-                KnownHost {
+            // Only reaches a genuinely new host — `upsert_known_host` keeps an existing
+            // record's bindings and collections.
+            let mut record = KnownHost {
+                shared: pf_client_core::trust::KnownHost {
                     name: outcome.name,
-                    host: outcome.addr,
+                    addr: outcome.addr,
                     port: outcome.port,
-                    fingerprint: Some(fingerprint),
                     mgmt_port: outcome.mgmt_port,
                     mac: outcome.mac,
                     os: outcome.os,
-                    // Only reaches a genuinely new host — `upsert_known_host` keeps an existing
-                    // record's overrides and collections.
-                    collections: Some(store::new_host_collections()),
-                    ..KnownHost::default()
+                    ..Default::default()
                 },
-            );
+                ..KnownHost::default()
+            };
+            record.set_fingerprint(fingerprint);
+            store::upsert_known_host(&mut state.known_hosts, record);
             true
         });
         self.handles.console.set_pair(PairPhase::Paired { key });
@@ -524,16 +520,18 @@ impl Service {
         self.store.edit(|state| {
             // Keyed by address, not fingerprint: a hand-typed host has none yet, so an
             // fp-keyed upsert would collide every one of them onto the same record.
-            if let Some(h) = state.known_hosts.iter_mut().find(|h| h.host == addr && h.port == port) {
+            if let Some(h) = state.known_hosts.iter_mut().find(|h| h.addr == addr && h.port == port) {
                 if !name.is_empty() {
                     h.name = name;
                 }
             } else {
                 state.known_hosts.push(KnownHost {
-                    name: if name.is_empty() { addr.clone() } else { name },
-                    host: addr,
-                    port,
-                    collections: Some(store::new_host_collections()),
+                    shared: pf_client_core::trust::KnownHost {
+                        name: if name.is_empty() { addr.clone() } else { name },
+                        addr,
+                        port,
+                        ..Default::default()
+                    },
                     ..KnownHost::default()
                 });
             }
@@ -552,7 +550,7 @@ impl Service {
             // silently unpair a host somebody only renamed.
             let h = &mut state.known_hosts[i];
             h.name = if name.trim().is_empty() { addr.clone() } else { name };
-            h.host = addr;
+            h.addr = addr;
             h.port = port;
             true
         });
@@ -575,7 +573,7 @@ impl Service {
             if state
                 .selected_host
                 .as_ref()
-                .is_some_and(|(h, p)| gone.as_ref().is_some_and(|g| g.host == *h && g.port == *p))
+                .is_some_and(|(h, p)| gone.as_ref().is_some_and(|g| g.addr == *h && g.port == *p))
             {
                 state.selected_host = None;
             }
@@ -585,7 +583,7 @@ impl Service {
             tracing::warn!("console: forget for an unknown host ({key}) — ignoring");
             return;
         };
-        tracing::info!("console: forgot {} ({}:{})", gone.name, gone.host, gone.port);
+        tracing::info!("console: forgot {} ({}:{})", gone.name, gone.addr, gone.port);
         // Its covers are keyed by host and would otherwise outlive the record. This is the
         // last moment the address is known.
         crate::services::art::reconcile_host_caches(&self.store.snapshot().known_hosts);
@@ -606,10 +604,10 @@ impl Service {
             .iter()
             .map(|h| SweepTarget {
                 key: shared::known_host_key(h),
-                addr: h.host.clone(),
+                addr: h.addr.clone(),
                 port: h.port,
                 mgmt: h.mgmt_port.unwrap_or(DEFAULT_MGMT_PORT),
-                fingerprint: h.fingerprint,
+                fingerprint: h.fingerprint(),
             })
             .collect();
         if targets.is_empty() {
@@ -689,7 +687,7 @@ impl Service {
         let key = state
             .known_hosts
             .iter()
-            .find(|h| h.host == addr && h.port == port)
+            .find(|h| h.addr == addr && h.port == port)
             .map_or_else(|| shared::host_key("", addr, port), shared::known_host_key);
         self.reachable.insert(key, online);
     }
@@ -744,7 +742,7 @@ impl Service {
 fn same_host(h: &KnownHost, d: &DiscoveredHost) -> bool {
     // Compared as pairs, not as two `&&`-ed equalities: with the address fields spelled
     // differently on the two types, that shape reads as a typo to `suspicious_operation_groupings`.
-    (h.host.as_str(), h.port) == (d.addr.as_str(), d.port)
+    (h.addr.as_str(), h.port) == (d.addr.as_str(), d.port)
 }
 
 /// The two power rows this client renders, from the rights the host reported.

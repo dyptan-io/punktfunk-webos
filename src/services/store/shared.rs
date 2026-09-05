@@ -23,33 +23,9 @@ use crate::core::model::{Persisted, DESKTOP_PIN_ID};
 use crate::core::settings::TvSettings;
 use pf_client_core::trust::Settings;
 
-/// Enough of a host record for the shared shell to name and reach it.
-///
-/// Lives here rather than beside the shell's `SettingsStore`, which is arm-gated and therefore
-/// never *runs* on a test runner — the armv7 build cannot execute on one. Real conversion logic
-/// belongs where `task test` can execute it; only glue belongs behind that gate.
-///
-/// 🛑 `id` is pinned to `None` on purpose, overriding the base. `KnownHost::default()` MINTS a
-/// fresh stable id — right for punktfunk, where a record is created once and keeps it, wrong
-/// here: this converts on demand, so taking the default would hand the shell a DIFFERENT id for
-/// the same host on every call, and "Copy link" would emit a `punktfunk://` link whose record id
-/// matches nothing. This client keys hosts by `addr:port` and mints no ids, so `None` is the only
-/// truthful answer; Copy link degrades to "isn't saved any more" instead of lying.
+/// The shell's copy of a host record: the shared half, verbatim (plan D8).
 pub fn to_shared_host(h: &crate::core::model::KnownHost) -> trust::KnownHost {
-    trust::KnownHost {
-        name: h.name.clone(),
-        addr: h.host.clone(),
-        port: h.port,
-        fp_hex: h.fingerprint.map(hex).unwrap_or_default(),
-        paired: h.fingerprint.is_some(),
-        mac: h.mac.clone(),
-        os: h.os.clone(),
-        mgmt_port: h.mgmt_port,
-        profile_id: h.profile_id.clone(),
-        pinned_profiles: h.pinned_profiles.clone(),
-        id: None,
-        ..trust::KnownHost::default()
-    }
+    h.shared.clone()
 }
 
 /// The shell's stable row key for a host: its pinned fingerprint, else `addr:port`
@@ -69,7 +45,7 @@ pub fn host_key(fp_hex: &str, addr: &str, port: u16) -> String {
 
 /// [`host_key`] for a record this client holds.
 pub fn known_host_key(h: &crate::core::model::KnownHost) -> String {
-    host_key(&h.fingerprint.map(hex).unwrap_or_default(), &h.host, h.port)
+    host_key(&h.fp_hex, &h.addr, h.port)
 }
 
 /// The record a shell row key addresses, or `None` if it names no host this client knows.
@@ -125,14 +101,17 @@ mod tests {
     /// and the hex being the full 32 bytes.
     #[test]
     fn hosts_convert_for_the_shell() {
-        let paired = crate::core::model::KnownHost {
-            name: "desk".into(),
-            host: "192.168.1.5".into(),
-            port: 47_989,
-            fingerprint: Some([0xab; 32]),
-            mgmt_port: Some(47_990),
+        let mut paired = crate::core::model::KnownHost {
+            shared: trust::KnownHost {
+                name: "desk".into(),
+                addr: "192.168.1.5".into(),
+                port: 47_989,
+                mgmt_port: Some(47_990),
+                ..Default::default()
+            },
             ..Default::default()
         };
+        paired.set_fingerprint([0xab; 32]);
         let h = to_shared_host(&paired);
         assert_eq!(
             (h.name.as_str(), h.addr.as_str(), h.port),
@@ -141,13 +120,17 @@ mod tests {
         assert_eq!(h.mgmt_port, Some(47_990));
         assert!(h.paired);
         assert_eq!(h.fp_hex, "ab".repeat(32), "32 bytes is 64 hex chars");
-        // Not merely absent — STABLE. `KnownHost::default()` mints a fresh id, so a conversion
-        // that took the default would differ on every call for the same host.
-        assert!(h.id.is_none(), "no minted record id to report");
+        assert_eq!(paired.fingerprint(), Some([0xab; 32]), "the pin decodes back");
+        // The record carries a stable id now, minted once: the same answer every call.
+        assert!(h.id.is_some(), "a saved record has an id");
         assert_eq!(to_shared_host(&paired).id, h.id, "same host, same answer");
 
         let unpaired = crate::core::model::KnownHost {
-            fingerprint: None,
+            shared: trust::KnownHost {
+                fp_hex: String::new(),
+                paired: false,
+                ..paired.shared.clone()
+            },
             ..paired
         };
         let h = to_shared_host(&unpaired);
@@ -160,18 +143,23 @@ mod tests {
     /// nothing. Both spellings, and the pinned-card suffix the shell may append.
     #[test]
     fn row_keys_invert_to_their_host() {
-        let paired = crate::core::model::KnownHost {
-            name: "desk".into(),
-            host: "192.168.1.5".into(),
-            port: 47_989,
-            fingerprint: Some([0xab; 32]),
+        let mut paired = crate::core::model::KnownHost {
+            shared: trust::KnownHost {
+                name: "desk".into(),
+                addr: "192.168.1.5".into(),
+                port: 47_989,
+                ..Default::default()
+            },
             ..Default::default()
         };
+        paired.set_fingerprint([0xab; 32]);
         let unpaired = crate::core::model::KnownHost {
-            name: "typed".into(),
-            host: "10.0.0.9".into(),
-            port: 47_989,
-            fingerprint: None,
+            shared: trust::KnownHost {
+                name: "typed".into(),
+                addr: "10.0.0.9".into(),
+                port: 47_989,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let hosts = vec![paired.clone(), unpaired.clone()];
@@ -223,7 +211,7 @@ pub fn launch_settings(
     one_off: Option<&str>,
 ) -> Settings {
     let id = launch.unwrap_or(DESKTOP_PIN_ID);
-    let host = state.known_hosts.iter().find(|h| h.host == addr && h.port == port);
+    let host = state.known_hosts.iter().find(|h| h.addr == addr && h.port == port);
     let per_title = host.and_then(|h| h.game_profile(id));
     let bound = host.and_then(|h| h.profile_id.as_deref());
     let catalog = profiles::ProfilesFile {
@@ -249,8 +237,11 @@ mod launch_tests {
 
     fn state_with(profile: StreamProfile, bind: impl FnOnce(&mut crate::core::model::KnownHost)) -> Persisted {
         let mut host = crate::core::model::KnownHost {
-            host: "10.0.0.2".into(),
-            port: 47989,
+            shared: trust::KnownHost {
+                addr: "10.0.0.2".into(),
+                port: 47989,
+                ..Default::default()
+            },
             ..Default::default()
         };
         bind(&mut host);
@@ -271,7 +262,7 @@ mod launch_tests {
         host_profile.overrides.bitrate_kbps = Some(34_000);
         let hid = host_profile.id.clone();
         let mut state = state_with(title_profile, |h| {
-            h.bind_game_profile("doom", Some(tid.clone()));
+            h.bind_game_profile("doom", Some(&tid));
         });
         state.profiles.push(host_profile);
         state.known_hosts[0].profile_id = Some(hid);
@@ -285,7 +276,7 @@ mod launch_tests {
         assert!(!desktop.cursor_capture(), "the desktop card streams with capture off");
         assert!(other.cursor_capture(), "a game keeps the global capture");
 
-        state.known_hosts[0].bind_game_profile("doom", Some("gone".into()));
+        state.known_hosts[0].bind_game_profile("doom", Some("gone"));
         let dangling = launch_settings(&state, "10.0.0.2", 47989, Some("doom"), None);
         assert_eq!(
             dangling.bitrate_kbps, 34_000,

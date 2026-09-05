@@ -286,9 +286,9 @@ impl App {
                 .hosts
                 .known
                 .iter()
-                .find(|h| h.host == host && h.port == port && h.is_paired())
+                .find(|h| h.addr == host && h.port == port && h.is_paired())
             {
-                let (host, port, mgmt_port) = (h.host.clone(), h.port, h.mgmt_port);
+                let (host, port, mgmt_port) = (h.addr.clone(), h.port, h.mgmt_port);
                 app.select_host(host, port, mgmt_port);
             }
         }
@@ -392,7 +392,7 @@ impl App {
 
     /// Whether `addr:port` already has a sidebar row, saved or merely discovered.
     pub(crate) fn host_listed(&self, addr: &str, port: u16) -> bool {
-        self.hosts.known.iter().any(|h| h.host == addr && h.port == port)
+        self.hosts.known.iter().any(|h| h.addr == addr && h.port == port)
             || self
                 .hosts
                 .entries
@@ -433,7 +433,7 @@ impl App {
                 .hosts
                 .known
                 .iter_mut()
-                .find(|h| h.host == found.addr && h.port == found.port);
+                .find(|h| h.addr == found.addr && h.port == found.port);
             if let Some(known) = known {
                 if !found.mac.is_empty() && known.mac != found.mac {
                     known.mac.clone_from(&found.mac);
@@ -714,7 +714,7 @@ impl App {
 
     /// The known-host record for an address — the one place `(host, port)` is matched.
     pub(crate) fn known_host(&self, host: &str, port: u16) -> Option<&KnownHost> {
-        self.hosts.known.iter().find(|h| h.host == host && h.port == port)
+        self.hosts.known.iter().find(|h| h.addr == host && h.port == port)
     }
 
     /// The `KnownHost` record backing `selected_host`, if any — shared by every lookup
@@ -760,12 +760,12 @@ impl App {
     ) -> Option<crate::services::power::ExitPlan> {
         action.action_id()?;
         Some(crate::services::power::ExitPlan {
-            addr: known.host.clone(),
+            addr: known.addr.clone(),
             mgmt_port: known.mgmt_port.unwrap_or(crate::services::library::DEFAULT_MGMT_PORT),
             identity: self.identity.clone(),
             // Required, not merely pinned-if-known: an unpaired host would refuse the invoke
             // anyway, and a power action is the last request to send to an unverified peer.
-            pin: Some(known.fingerprint?),
+            pin: Some(known.fingerprint()?),
             action,
         })
     }
@@ -783,7 +783,7 @@ impl App {
     }
 
     pub(crate) fn known_host_mut(&mut self, host: &str, port: u16) -> Option<&mut KnownHost> {
-        self.hosts.known.iter_mut().find(|h| h.host == host && h.port == port)
+        self.hosts.known.iter_mut().find(|h| h.addr == host && h.port == port)
     }
 
     pub(crate) fn selected_known_host_mut(&mut self) -> Option<&mut KnownHost> {

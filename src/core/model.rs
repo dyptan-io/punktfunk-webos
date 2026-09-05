@@ -1,6 +1,4 @@
 //! Plain domain data. No I/O — persistence lives in `crate::services`.
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
 use pf_client_core::profiles::StreamProfile;
@@ -20,55 +18,58 @@ pub struct ConnectTarget {
     pub profile: Option<String>,
 }
 
-/// `Default` is both how the literals that build one spread over the fields they don't care about
-/// and how a record missing a field loads (`serde(default)` on the container) — so a field added
-/// here needs no migration.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// One saved host: the record every punktfunk client stores (`trust::KnownHost`, flattened
+/// into the same object — plan D8) plus what only this TV keeps: its power behaviour and the
+/// grid's collections. Reads of the shared fields go through `Deref`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KnownHost {
-    pub name: String,
-    pub host: String,
-    pub port: u16,
-    /// The host's pinned leaf certificate SHA-256; `None` = discovered but never paired.
-    pub fingerprint: Option<[u8; 32]>,
-    /// Management API port (game library); defaults to `library::DEFAULT_MGMT_PORT`.
-    pub mgmt_port: Option<u16>,
-    /// Wake-on-LAN MACs learned from mDNS; empty if never advertised.
-    pub mac: Vec<String>,
-    /// Host OS identity chain from mDNS, used for the Desktop card's mark.
-    pub os: String,
-    /// Auto-wake on unreachable (per-host, off by default; lives in Host power settings).
+    #[serde(flatten)]
+    pub shared: pf_client_core::trust::KnownHost,
+    /// Wake this host when it is picked and found asleep.
     pub wol_auto: bool,
     /// What to do to this host when the app exits (per-host, off by default; sits under
     /// `wol_auto` in Host power settings — the two are the same switch pointing opposite ways).
     pub exit_action: ExitAction,
-    /// Per-game state for this host, keyed by `GameEntry::id` (or [`DESKTOP_PIN_ID`]) — pins
-    /// and settings overrides together, so one prune drops both when a game leaves the library.
-    /// A `BTreeMap` so the file's key order is stable and diffable.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub games: BTreeMap<String, GamePrefs>,
-    /// This host's default settings profile, by catalog id — what a title with no binding of
-    /// its own streams with (the shared `KnownHost::profile_id`). `None` is the global document.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile_id: Option<String>,
-    /// Profiles shown as their own cards under this host in the sidebar (the shared
-    /// `KnownHost::pinned_profiles`); each streams the desktop with that profile.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pinned_profiles: Vec<String>,
     /// Grid section order, Library included as the [`Collection::dynamic`] entry. One vector
-    /// carries everything: order, names and membership. `None` means "never migrated" — see
-    /// `services::store::load`, which is the only place that may leave it so.
-    ///
-    /// Visible only so the add/pair flows can seed it in a struct literal. Read it through
-    /// [`KnownHost::collections`] and change it through the methods below, which are what
-    /// keep a game in at most one collection and Library unremovable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) collections: Option<Vec<Collection>>,
+    /// carries everything: order, names and membership. Change it through the methods below,
+    /// which keep a game in at most one collection and Library unremovable.
+    #[serde(default = "new_host_collections")]
+    pub(crate) collections: Vec<Collection>,
 }
 
-/// What the app does to a host on its way out — the second half of that host's power settings.
-///
-/// Maps onto punktfunk's host actions (`POST /api/v1/actions/{id}`, host-side from core
+impl Default for KnownHost {
+    fn default() -> Self {
+        Self {
+            shared: pf_client_core::trust::KnownHost::default(),
+            wol_auto: false,
+            exit_action: ExitAction::default(),
+            collections: new_host_collections(),
+        }
+    }
+}
+
+impl std::ops::Deref for KnownHost {
+    type Target = pf_client_core::trust::KnownHost;
+    fn deref(&self) -> &Self::Target {
+        &self.shared
+    }
+}
+
+impl std::ops::DerefMut for KnownHost {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.shared
+    }
+}
+
+/// The shared record derives no `PartialEq`; the store's writer compares documents, and the
+/// serialized form is the one comparison that cannot miss a field.
+impl PartialEq for KnownHost {
+    fn eq(&self, other: &Self) -> bool {
+        serde_json::to_value(self).ok() == serde_json::to_value(other).ok()
+    }
+}
+
 /// 0.33.0), which need the pairing's Host power grant. Defaults to [`Self::None`]: a client
 /// that quietly powered a machine down would be worse than one that never offered to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -128,33 +129,6 @@ impl Collection {
     }
 }
 
-/// What one game carries on one host. Absent from `KnownHost::games` entirely when it holds
-/// nothing — an untouched game costs no bytes.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct GamePrefs {
-    /// Pre-collections pin slot, read once by the migration in `services::store::load` and
-    /// never written again — collections carry the ordering now.
-    #[serde(rename = "pin", skip_serializing)]
-    pub legacy_pin: Option<u32>,
-    /// The settings profile this game streams with — an id into [`Persisted::profiles`], the
-    /// shared catalog punktfunk's other clients keep. `None` inherits the globals.
-    ///
-    /// The overrides this used to hold inline are that profile's sparse overlay now, so one
-    /// game's settings are a thing the shared shell can list, bind and show a chip for rather
-    /// than a shape only this client understood.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile: Option<String>,
-}
-
-impl GamePrefs {
-    /// Nothing worth persisting — the prune drops these. `legacy_pin` never serializes, so
-    /// it does not keep an entry alive.
-    fn is_empty(&self) -> bool {
-        self.profile.is_none()
-    }
-}
-
 /// Max *user* collections per host. The dynamic Library entry is not one of them.
 pub const MAX_COLLECTIONS: usize = 20;
 
@@ -172,29 +146,36 @@ pub const PINNED_COLLECTION: &str = "Pinned";
 pub const DESKTOP_PIN_ID: &str = "__desktop__";
 
 impl KnownHost {
+    /// Paired means a pinned certificate: the fingerprint IS the pair state.
     pub fn is_paired(&self) -> bool {
-        self.fingerprint.is_some()
+        !self.fp_hex.is_empty()
     }
 
-    /// The grid sections, in order. Empty only on a host `store::load` never migrated —
-    /// every path that builds or loads a host leaves at least the Library entry here.
+    /// The pinned certificate fingerprint, decoded from the stored hex.
+    pub fn fingerprint(&self) -> Option<[u8; 32]> {
+        pf_client_core::trust::parse_hex32(&self.fp_hex)
+    }
+
+    /// Pins `fp` as the host's certificate: the record is paired from here on.
+    pub fn set_fingerprint(&mut self, fp: [u8; 32]) {
+        use std::fmt::Write;
+        self.fp_hex = fp.iter().fold(String::with_capacity(64), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        });
+        self.paired = true;
+    }
+
+    /// The grid sections, in order. Never empty: every record carries at least Library.
     pub fn collections(&self) -> &[Collection] {
-        self.collections.as_deref().unwrap_or_default()
-    }
-
-    /// Whether this host still needs the pre-collections migration (see `services::store`).
-    pub(crate) fn needs_migration(&self) -> bool {
-        self.collections.is_none()
-    }
-
-    /// Installs the migrated vector. Only `services::store`'s migration calls this; every
-    /// other mutation goes through the methods below, which cannot break the invariants.
-    pub(crate) fn set_collections(&mut self, collections: Vec<Collection>) {
-        self.collections = Some(collections);
+        &self.collections
     }
 
     fn collections_mut(&mut self) -> &mut Vec<Collection> {
-        self.collections.get_or_insert_with(|| vec![Collection::library()])
+        if self.collections.is_empty() {
+            self.collections.push(Collection::library());
+        }
+        &mut self.collections
     }
 
     /// Index of the dynamic (Library) entry. Present on every migrated host; `None` only
@@ -224,22 +205,9 @@ impl KnownHost {
         }
     }
 
-    /// This game's bound profile id, if it has one. Reading never creates an entry.
+    /// This game's bound profile id, if it has one (the shared `game_profiles`).
     pub fn game_profile(&self, id: &str) -> Option<&str> {
-        self.games.get(id).and_then(|g| g.profile.as_deref())
-    }
-
-    /// Binds (or with `None`, clears) this game's profile, dropping the entry when nothing
-    /// is left in it.
-    pub fn bind_game_profile(&mut self, id: &str, profile: Option<String>) {
-        self.games.entry(id.to_string()).or_default().profile = profile;
-        self.drop_if_empty(id);
-    }
-
-    fn drop_if_empty(&mut self, id: &str) {
-        if self.games.get(id).is_some_and(GamePrefs::is_empty) {
-            self.games.remove(id);
-        }
+        self.shared.profile_for_game(id)
     }
 
     /// Drops per-game state for ids the host no longer lists. `live` must come from a
@@ -247,10 +215,12 @@ impl KnownHost {
     /// everything. [`DESKTOP_PIN_ID`] is always kept: it is never in a library listing.
     /// Returns whether anything was removed.
     pub fn prune_games(&mut self, live: impl Fn(&str) -> bool) -> bool {
-        let before = self.games.len();
-        self.games.retain(|id, _| id == DESKTOP_PIN_ID || live(id));
-        let mut dropped = self.games.len() != before;
-        for entry in self.collections.iter_mut().flatten() {
+        let before = self.game_profiles.len();
+        self.shared
+            .game_profiles
+            .retain(|id, _| id == DESKTOP_PIN_ID || live(id));
+        let mut dropped = self.game_profiles.len() != before;
+        for entry in &mut self.collections {
             let before = entry.games.len();
             entry.games.retain(|id| id == DESKTOP_PIN_ID || live(id));
             dropped |= entry.games.len() != before;
@@ -383,20 +353,19 @@ pub fn new_host_collections() -> Vec<Collection> {
     vec![pinned, Collection::library()]
 }
 
-/// Upserts by `(host, port)`, keeping the existing fingerprint if the new record is unpaired
-/// (a fresh mDNS discovery shouldn't clobber a paired host) — same reasoning for `mac`,
-/// learned separately (see `App::drain_discovery`) and not necessarily known again at the
-/// point something else re-upserts this host. The same rule preserves `os`. `games` and
-/// `wol_auto` are *always* kept from the existing record — as are `collections`: only the
-/// collections screen, the per-game settings screen and the Wake screen change them, so no
-/// add/edit/re-pair flow may clobber any of it.
+/// Upserts by `(addr, port)`, keeping the existing pin if the new record is unpaired (a fresh
+/// mDNS discovery shouldn't clobber a paired host) — same reasoning for `mac` and `os`,
+/// learned separately (see `App::drain_discovery`). The record's id, its profile bindings,
+/// its pins, `wol_auto`, the exit action and `collections` are *always* kept from the existing
+/// record: only their own screens change them, so no add/edit/re-pair flow may clobber any.
 pub fn upsert_known_host(hosts: &mut Vec<KnownHost>, mut new: KnownHost) {
-    let Some(existing) = hosts.iter_mut().find(|h| h.host == new.host && h.port == new.port) else {
+    let Some(existing) = hosts.iter_mut().find(|h| h.addr == new.addr && h.port == new.port) else {
         hosts.push(new);
         return;
     };
     if !new.is_paired() {
-        new.fingerprint = existing.fingerprint;
+        new.fp_hex.clone_from(&existing.fp_hex);
+        new.paired = existing.paired;
     }
     if new.mac.is_empty() {
         new.mac.clone_from(&existing.mac);
@@ -404,7 +373,10 @@ pub fn upsert_known_host(hosts: &mut Vec<KnownHost>, mut new: KnownHost) {
     if new.os.is_empty() {
         new.os.clone_from(&existing.os);
     }
-    new.games.clone_from(&existing.games);
+    new.id.clone_from(&existing.id);
+    new.profile_id.clone_from(&existing.profile_id);
+    new.pinned_profiles.clone_from(&existing.pinned_profiles);
+    new.game_profiles.clone_from(&existing.game_profiles);
     new.collections.clone_from(&existing.collections);
     new.wol_auto = existing.wol_auto;
     new.exit_action = existing.exit_action;
@@ -747,8 +719,8 @@ pub struct Persisted {
     /// other clients keep in `client-profiles.json`. Here it rides the one document this client
     /// writes, for the reason everything else does — one file, one writer, no merge.
     ///
-    /// A game's settings ARE a profile ([`GamePrefs::profile`]), which is what lets the shared
-    /// shell list them and bind one to a title. A TV with no desktop app beside it can still
+    /// A game's settings ARE a profile (the shared `game_profiles`), which is what lets the
+    /// shared shell list them and bind one to a title. A TV with no desktop app beside it can still
     /// fill this: opening a game's settings and changing a row creates the profile.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub profiles: Vec<StreamProfile>,
@@ -775,4 +747,57 @@ pub struct GameEntry {
     /// Packaged brand mark token, such as `steam`, for art-less launcher cards.
     #[serde(default)]
     pub icon: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The saved record is the shared one plus this TV's fields, in one flat object (plan D8):
+    /// what the shell reads is what is stored, and the pin round-trips through its hex.
+    #[test]
+    fn host_record_is_the_shared_record_flattened() {
+        let mut h = KnownHost {
+            shared: pf_client_core::trust::KnownHost {
+                name: "desk".into(),
+                addr: "10.0.0.2".into(),
+                port: 47_989,
+                ..Default::default()
+            },
+            wol_auto: true,
+            ..Default::default()
+        };
+        h.set_fingerprint([0x5a; 32]);
+        h.bind_game_profile("doom", Some("p1"));
+        let json = serde_json::to_value(&h).unwrap();
+        assert_eq!(json["addr"], "10.0.0.2");
+        assert_eq!(json["fp_hex"], "5a".repeat(32));
+        assert_eq!(json["wol_auto"], true);
+        assert_eq!(json["game_profiles"]["doom"], "p1");
+        assert!(json.get("shared").is_none(), "flattened, not nested");
+        let back: KnownHost = serde_json::from_value(json).unwrap();
+        assert_eq!(back, h);
+        assert!(back.is_paired());
+        assert_eq!(back.fingerprint(), Some([0x5a; 32]));
+        assert_eq!(back.collections().len(), 2, "a fresh record carries Pinned and Library");
+
+        // Re-adding the host unpaired keeps the pin, the id and the bindings.
+        let mut hosts = vec![h.clone()];
+        upsert_known_host(
+            &mut hosts,
+            KnownHost {
+                shared: pf_client_core::trust::KnownHost {
+                    name: "desk".into(),
+                    addr: "10.0.0.2".into(),
+                    port: 47_989,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        assert_eq!(hosts.len(), 1);
+        assert!(hosts[0].is_paired() && hosts[0].wol_auto);
+        assert_eq!(hosts[0].id, h.id);
+        assert_eq!(hosts[0].game_profile("doom"), Some("p1"));
+    }
 }

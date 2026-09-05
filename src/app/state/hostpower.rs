@@ -228,7 +228,7 @@ impl App {
     fn power_access_for(&self, known: Option<&store::KnownHost>) -> PowerAccess {
         // An unpaired host has no access mask for a power grant to sit in, and the management
         // lane would refuse the invoke on the certificate alone.
-        if !known.is_some_and(|h| h.fingerprint.is_some()) {
+        if !known.is_some_and(crate::core::model::KnownHost::is_paired) {
             return PowerAccess::NotPaired;
         }
         match self.screens.power_rights {

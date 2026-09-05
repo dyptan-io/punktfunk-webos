@@ -514,8 +514,8 @@ fn start_launch(
     let fingerprint = state
         .known_hosts
         .iter()
-        .find(|h| h.host == addr && h.port == port)
-        .and_then(|h| h.fingerprint)
+        .find(|h| h.addr == addr && h.port == port)
+        .and_then(crate::core::model::KnownHost::fingerprint)
         .or_else(|| shared::parse_fp(fp_hex))
         .context("that host isn't paired with this TV yet")?;
     let mut settings = shared::launch_settings(&state, addr, port, launch.as_deref(), None);
@@ -538,19 +538,19 @@ fn start_launch(
 fn exit_plan(service: &Service, identity: &(String, String)) -> Option<crate::services::power::ExitPlan> {
     let state = service.store.snapshot();
     let (host, port) = state.selected_host.clone()?;
-    let known = state.known_hosts.iter().find(|h| h.host == host && h.port == port)?;
+    let known = state.known_hosts.iter().find(|h| h.addr == host && h.port == port)?;
     known.exit_action.action_id()?;
     if !service.is_online(known) {
         tracing::debug!("exit action skipped: {host} was not reachable");
         return None;
     }
     Some(crate::services::power::ExitPlan {
-        addr: known.host.clone(),
+        addr: known.addr.clone(),
         mgmt_port: known.mgmt_port.unwrap_or(crate::services::library::DEFAULT_MGMT_PORT),
         identity: identity.clone(),
         // Required, not merely pinned-if-known: a power action is the last request to send to
         // an unverified peer, and an unpaired host would refuse it anyway.
-        pin: Some(known.fingerprint?),
+        pin: Some(known.fingerprint()?),
         action: known.exit_action,
     })
 }

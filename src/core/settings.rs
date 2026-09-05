@@ -16,7 +16,7 @@ const P: &str = "webos.";
 const GAMEPAD_UI_KEY: &str = "gamepad_ui_enabled";
 const GAMEPAD_UI_MODE_KEY: &str = "gamepad_ui_mode";
 
-pub(crate) fn key(name: &str) -> String {
+fn key(name: &str) -> String {
     format!("{P}{name}")
 }
 
@@ -30,25 +30,8 @@ fn put<T: serde::Serialize>(t: &mut Settings, key: String, value: &T) {
     }
 }
 
-/// Every field this client used to persist under its own name and now writes under the
-/// prefix. Seeing any of them UNPREFIXED is what identifies a document written before the move.
-pub(crate) const MOVED: &[&str] = &[
-    "hdr_peak_nits",
-    "hdr_frame_avg_nits",
-    "hdr_black_code",
-    "hdr_calibrated",
-    "log_level_override",
-    "show_logs",
-    "game_mode",
-    "audio_route",
-    "cursor_gestures",
-    "stats_overlay",
-    "gamepad_type",
-    "cursor_capture",
-];
-
 /// This client's codec pick as punktfunk's wire name, and back.
-pub(crate) fn shared_codec(c: CodecPref) -> &'static str {
+fn shared_codec(c: CodecPref) -> &'static str {
     match c {
         CodecPref::Auto => "auto",
         CodecPref::H264 => "h264",
