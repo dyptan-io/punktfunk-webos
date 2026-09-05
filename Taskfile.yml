@@ -91,7 +91,7 @@ tasks:
       # archive that upstream does not build. Same version, same key, different host.
       SKIA_BINARIES_URL: 'https://github.com/rust-skia/skia-binaries/releases/download/0.99.0/skia-binaries-{key}.tar.gz'
     cmds:
-      - cargo test --bin punktfunk-webos
+      - cargo test --bins
 
   lint:
     desc: Cross-target `cargo clippy` (the lint set in Cargo.toml's `[lints.clippy]`), no Docker (used by CI)
@@ -117,6 +117,11 @@ tasks:
     desc: Format the whole crate with rustfmt (native — formatting doesn't need the cross toolchain)
     cmds:
       - cargo fmt
+
+  fmt-check:
+    desc: Fail on anything rustfmt would change (used by CI)
+    cmds:
+      - cargo fmt --check
 
   docker:build:
     desc: Cross-compile the release binary inside Docker with thin LTO (fast) — the local dev entry point. Override with RELEASE_LTO=fat for optimized build.

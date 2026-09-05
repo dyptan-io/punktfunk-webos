@@ -59,6 +59,9 @@ jobs:
         with:
           version: 3
 
+      - name: Format check
+        run: task fmt-check
+
       - name: Lint
         run: task lint
         env:

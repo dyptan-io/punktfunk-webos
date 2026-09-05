@@ -1,5 +1,5 @@
 //! The settings page: the desktop shells' page map on the console's row engine
-//! (`webos-pointer-ui-overhaul.md` WP4/WP5).
+//! (planning `design/webos-pointer-ui-overhaul.md` WP4/WP5).
 //!
 //! Pages and groups are the `WinUI` order; a row the TV cannot honour is left off a page's
 //! positive list rather than greyed. Every shared row is the console's own — its label,
