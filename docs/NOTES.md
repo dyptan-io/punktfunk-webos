@@ -735,6 +735,8 @@ Burst is 320 Mbps / 3 s (not 3 Gbps / 5 s) — the UI thread shares a 3-core Cor
 
 NDL DirectMedia is the only backend. NDL has no decode context; calls go through `NdlVideo::ffi` mutex (header says not thread-safe). AV1 remains disabled (never produced picture).
 
+Backpressure: the video pump samples `render_buffer_length` every 500 ms; two samples of ≥ 8 frames freeze the feed and ask for a keyframe, exactly the loss path (no flush — a flush restart kills the audio plane). Measured sessions sit at 0–1, so this only fires on a real decoder stall.
+
 An SMP (Starfish Media Pipeline) backend for webOS 3.5-4.x was built and removed (2026-08-26, issue #164): never verified on real 3.5-4.x hardware, and it carried a C++ shim `.so`, an ACB sink and a Settings row for the whole NDL v1 audience. Those TVs get NDL v1 (H.264/SDR).
 
 ## NDL generations: v2 (webOS 5+) and v1 (3.5-4.x)
