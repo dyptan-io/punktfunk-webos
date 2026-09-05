@@ -17,24 +17,6 @@ fn upload_spinner(tiles: &mut SkiaTiles, idx: usize) -> Result<()> {
     Ok(())
 }
 
-/// The settings one launch runs with: the global document with `target`'s per-game
-/// overrides applied. The single merge point — everything downstream (`spawn_connect`,
-/// `session::connect`, the stream loop) reads this one copy.
-///
-/// Clamped to caps afterwards exactly like a global value, so an override a TV can't
-/// satisfy degrades instead of reaching the wire.
-fn launch_settings(app: &App, target: &crate::core::model::ConnectTarget) -> crate::services::store::Settings {
-    use crate::services::store::{shared, DESKTOP_PIN_ID};
-    let id = target.launch.as_deref().unwrap_or(DESKTOP_PIN_ID);
-    let bound = app
-        .known_host(&target.host, target.port)
-        .and_then(|h| h.game_profile(id));
-    let over = shared::game_overrides(&app.profiles, bound);
-    let mut settings = crate::services::store::merge_for_game(&over, app.settings_ui.settings, id);
-    settings.clamp_to_caps();
-    settings
-}
-
 /// Runs the UI (host list -> pairing -> settings) until the user confirms a
 /// connect target or the system asks the app to close (`None`). A plain
 /// function, not a closure — a closure capturing `canvas`/`events` by
@@ -251,7 +233,7 @@ pub(super) fn run_ui_flow(
                         .clone()
                         .unwrap_or_else(|| store::DESKTOP_PIN_ID.to_string()),
                 ));
-                let mut settings = launch_settings(&app, &target);
+                let mut settings = app.launch_settings(&target);
                 let gamepad_auto = settings.gamepad_type == store::GamepadType::Auto;
                 settings = resolve_gamepad_type(settings, game_controller);
                 let handle = spawn_connect(identity.clone(), target, settings)?;

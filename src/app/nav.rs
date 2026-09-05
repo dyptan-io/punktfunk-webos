@@ -15,7 +15,6 @@ use crate::core::screen::Screen;
 pub(crate) enum ScreenKey {
     Home,
     Pairing,
-    Settings,
     AddHost,
     Wake,
     ForgetHost,
@@ -24,27 +23,24 @@ pub(crate) enum ScreenKey {
     About,
     SpeedTest,
     HostPower,
-    Diagnostics,
-    Experimental,
     HdrCalibration,
-    ControllerSettings,
-    CursorSettings,
     SendLogs,
     Collections,
     RenameCollection,
     RemoveCollection,
     ResetHdrCalibration,
-    ResetGameSettings,
+    SettingsPage,
+    RenameProfile,
+    DeleteProfile,
 }
 
 impl ScreenKey {
-    pub const COUNT: usize = Self::ResetGameSettings as usize + 1;
+    pub const COUNT: usize = Self::DeleteProfile as usize + 1;
 
     pub const fn of(screen: Screen) -> Self {
         match screen {
             Screen::Home => Self::Home,
             Screen::Pairing => Self::Pairing,
-            Screen::Settings(_) => Self::Settings,
             Screen::AddHost => Self::AddHost,
             Screen::Wake => Self::Wake,
             Screen::ForgetHost => Self::ForgetHost,
@@ -53,17 +49,15 @@ impl ScreenKey {
             Screen::About => Self::About,
             Screen::SpeedTest => Self::SpeedTest,
             Screen::HostPower => Self::HostPower,
-            Screen::Diagnostics => Self::Diagnostics,
-            Screen::Experimental => Self::Experimental,
             Screen::HdrCalibration => Self::HdrCalibration,
-            Screen::CursorSettings(_) => Self::CursorSettings,
-            Screen::ControllerSettings(_) => Self::ControllerSettings,
             Screen::SendLogs => Self::SendLogs,
             Screen::Collections => Self::Collections,
             Screen::RenameCollection => Self::RenameCollection,
             Screen::RemoveCollection => Self::RemoveCollection,
             Screen::ResetHdrCalibration => Self::ResetHdrCalibration,
-            Screen::ResetGameSettings => Self::ResetGameSettings,
+            Screen::SettingsPage => Self::SettingsPage,
+            Screen::RenameProfile => Self::RenameProfile,
+            Screen::DeleteProfile => Self::DeleteProfile,
         }
     }
 }
@@ -79,19 +73,15 @@ pub(crate) const fn over_scroll_list(screen: Screen) -> bool {
     }
     matches!(
         screen,
-        Screen::Experimental
+        Screen::SettingsPage
             // Included even though nothing behind it is drawn (see `screens::over_video`): this
             // decides tile *retention*, and dropping the row band would make the return from a
             // calibration a re-raster of the whole settings list.
             | Screen::HdrCalibration
-            | Screen::Diagnostics
-            | Screen::CursorSettings(_)
-            | Screen::ControllerSettings(_)
             | Screen::SendLogs
             | Screen::RenameCollection
             | Screen::RemoveCollection
             | Screen::ResetHdrCalibration
-            | Screen::ResetGameSettings
     )
 }
 

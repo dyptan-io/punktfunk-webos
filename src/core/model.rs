@@ -45,6 +45,10 @@ pub struct KnownHost {
     /// A `BTreeMap` so the file's key order is stable and diffable.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub games: BTreeMap<String, GamePrefs>,
+    /// This host's default settings profile, by catalog id — what a title with no binding of
+    /// its own streams with (the shared `KnownHost::profile_id`). `None` is the global document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
     /// Grid section order, Library included as the [`Collection::dynamic`] entry. One vector
     /// carries everything: order, names and membership. `None` means "never migrated" — see
     /// `services::store::load`, which is the only place that may leave it so.
@@ -142,115 +146,6 @@ impl GamePrefs {
     /// it does not keep an entry alive.
     fn is_empty(&self) -> bool {
         self.profile.is_none()
-    }
-}
-
-/// The one table every per-game override derives from — the struct, [`OverrideField`] and all
-/// the merge/capture/clear logic are generated from it, so a new overridable setting is one
-/// line here plus one row mapping in `app::menu::row_fields`.
-macro_rules! settings_override {
-    ($(
-        $(#[$attr:meta])*
-        $field:ident: $ty:ty as $variant:ident,
-        |$get:ident| $read:expr,
-        |$set:ident, $val:ident| $write:expr;
-    )*) => {
-        /// A sparse [`Settings`] diff: `Some` overrides the global value for one game, `None`
-        /// inherits it.
-        ///
-        /// A field starts overriding when the user picks a value the global doesn't have, and
-        /// stops two ways, both done *on this screen*: picking the global's own value back
-        /// ([`SettingsOverride::capture`] stores nothing) or clearing the row
-        /// ([`SettingsOverride::clear`]). The global later drifting onto the value does
-        /// **not** clear it — "pinned to 60 Hz" must survive the global moving away again.
-        ///
-        /// Deliberately *not* every field. Experimental and diagnostics toggles are
-        /// device-wide.
-        ///
-        /// `Copy + Hash + Eq` because it rides the render cache keys next to `Settings`.
-        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-        #[serde(default)]
-        pub struct SettingsOverride {
-            $(
-                $(#[$attr])*
-                #[serde(skip_serializing_if = "Option::is_none")]
-                pub $field: Option<$ty>,
-            )*
-        }
-
-        /// One overridable field, as a value — what `app::menu` keys its row mapping by, so
-        /// "which rows carry a mark" and "what an edited row records" read the same table.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub enum OverrideField {
-            $($variant,)*
-        }
-
-        impl SettingsOverride {
-            /// Whether this field overrides the global — what puts the mark on its row.
-            pub fn is_set(&self, field: OverrideField) -> bool {
-                match field {
-                    $(OverrideField::$variant => self.$field.is_some(),)*
-                }
-            }
-
-            /// Records `field` from `edited` unless that is what `global` says right now, in
-            /// which case it goes back to inheriting (see [`SettingsOverride`]).
-            ///
-            /// Only the named field: editing Bitrate must neither pin Resolution to whatever
-            /// the global happened to be, nor clear an override the global has drifted onto.
-            pub fn capture(&mut self, field: OverrideField, edited: &Settings, global: &Settings) {
-                match field {
-                    $(OverrideField::$variant => {
-                        let value = { let $get = edited; $read };
-                        let inherited = { let $get = global; $read };
-                        self.$field = (value != inherited).then_some(value);
-                    })*
-                }
-            }
-
-            /// Drops `field` back to inheriting the global, for a value that genuinely
-            /// differs — the other way an override ends (see [`SettingsOverride`]).
-            pub fn clear(&mut self, field: OverrideField) {
-                match field {
-                    $(OverrideField::$variant => self.$field = None,)*
-                }
-            }
-
-            /// `base` with every set field applied. The result still needs
-            /// [`Settings::clamp_to_caps`] before it reaches the wire, exactly like a
-            /// global value.
-            #[must_use]
-            pub fn merge_into(&self, mut base: Settings) -> Settings {
-                $(
-                    if let Some($val) = self.$field {
-                        let $set = &mut base;
-                        $write;
-                    }
-                )*
-                base
-            }
-        }
-    };
-}
-
-settings_override! {
-    /// Width and height move together — they are one Resolution row.
-    mode: (u32, u32) as Mode,
-        |s| (s.width, s.height),
-        |s, v| { s.width = v.0; s.height = v.1; };
-    refresh_hz: u32 as RefreshHz, |s| s.refresh_hz, |s, v| s.refresh_hz = v;
-    bitrate_kbps: u32 as BitrateKbps, |s| s.bitrate_kbps, |s, v| s.bitrate_kbps = v;
-    hdr_enabled: bool as HdrEnabled, |s| s.hdr_enabled, |s, v| s.hdr_enabled = v;
-    codec: CodecPref as Codec, |s| s.codec, |s, v| s.codec = v;
-    audio_channels: u8 as AudioChannels, |s| s.audio_channels, |s, v| s.audio_channels = v;
-    gamepad_type: GamepadType as GamepadKind, |s| s.gamepad_type, |s, v| s.gamepad_type = v;
-    cursor_capture: bool as CursorCapture, |s| s.cursor_capture, |s, v| s.cursor_capture = v;
-    cursor_gestures: bool as CursorGestures, |s| s.cursor_gestures, |s, v| s.cursor_gestures = v;
-}
-
-impl SettingsOverride {
-    pub fn is_empty(&self) -> bool {
-        *self == Self::default()
     }
 }
 
@@ -472,35 +367,6 @@ impl KnownHost {
         collections.insert(to, entry);
         true
     }
-}
-
-/// The cursor capture the Desktop card runs with: *off*, since capture is on globally for the
-/// games that are the common case and the desktop is the one card where the host's own pointer
-/// should stay visible.
-///
-/// `None` when the global is already off — there is nothing to turn off. Applied at the merge
-/// ([`merge_for_game`]) rather than stored on the card: as stored data it would now be a
-/// catalog profile, and a default nobody chose does not deserve a named entry. A user-set
-/// override on that card still wins, because it is set.
-pub fn desktop_capture_override(global: &Settings) -> Option<bool> {
-    global.cursor_capture.then_some(false)
-}
-
-/// One game's settings: its override on the globals, plus the Desktop card's standing rule
-/// that pointer capture is off there ([`desktop_capture_override`]).
-///
-/// The rule is applied HERE rather than stored as that card's override, which is what it used
-/// to be. Stored, it would now have to be a catalog profile — one per paired host, named and
-/// listed among the profiles the user actually made. A default nobody chose does not deserve
-/// an entry; an override the user sets on the Desktop card still wins, because it is set.
-pub fn merge_for_game(over: &SettingsOverride, global: Settings, id: &str) -> Settings {
-    let mut merged = over.merge_into(global);
-    if id == DESKTOP_PIN_ID && over.cursor_capture.is_none() {
-        if let Some(capture) = desktop_capture_override(&global) {
-            merged.cursor_capture = capture;
-        }
-    }
-    merged
 }
 
 /// The collections a genuinely new host starts with: "Pinned" holding the Desktop card,
@@ -725,23 +591,6 @@ pub const BITRATE_MIN_KBPS: u32 = 10_000;
 /// link-capacity probe's burst target (`PUNKTFUNK_ABR_PROBE_KBPS`) — an Automatic session that
 /// could climb past what the slider allows would just be a second, hidden setting.
 pub const BITRATE_MAX_KBPS: u32 = 200_000;
-/// Slider granularity — also the lattice of valid fixed-bitrate values.
-pub const BITRATE_STEP_KBPS: u32 = 5_000;
-/// The Bitrate slider's stops. `BITRATE_AUTOMATIC` is the one value off it — a notch below the
-/// floor, not a stop on the lattice.
-pub const BITRATE: Lattice = Lattice {
-    lo: BITRATE_MIN_KBPS,
-    hi: BITRATE_MAX_KBPS,
-    step: BITRATE_STEP_KBPS,
-};
-
-/// Sentinel one notch below `BITRATE_MIN_KBPS` on the slider: `punktfunk_core::client::NativeClient`
-/// arms its own client-side AIMD bitrate controller (`punktfunk_core::abr`) precisely when it's
-/// asked to connect with `bitrate_kbps == 0` — it reacts to unrecoverable frames, heavy loss,
-/// one-way-delay rise, and (via `session.rs`'s `report_decode_us` call) decode latency, backing off
-/// or climbing every ~750ms. A fixed Mbps number, however carefully picked, never adapts to a link
-/// that degrades mid-session — this does.
-pub const BITRATE_AUTOMATIC: u32 = 0;
 
 /// A slider's discrete positions: a closed range walked in fixed steps.
 ///
@@ -1000,20 +849,6 @@ pub enum GamepadUiMode {
     Always,
 }
 
-impl GamepadUiMode {
-    /// Display order, and the dropdown's option list.
-    pub const ALL: [Self; 2] = [Self::Connected, Self::Always];
-
-    /// The row's collapsed value. Worded as the other clients word it, so a player who moves
-    /// between a TV and a phone reads the same two answers.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Connected => "With a controller",
-            Self::Always => "Always",
-        }
-    }
-}
-
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -1071,14 +906,6 @@ impl Settings {
     /// global pick shadows stays in the document, unused, and applies again once it doesn't.
     pub fn clamp_to_caps(&mut self) {
         self.clamp(true);
-    }
-
-    /// [`Settings::clamp_to_caps`] as a value, and silent — the per-game screen re-derives its
-    /// merged copy on every keystroke, which is no place to log the same clamp repeatedly.
-    #[must_use]
-    pub fn presentable(mut self) -> Self {
-        self.clamp(false);
-        self
     }
 
     fn clamp(&mut self, log: bool) {

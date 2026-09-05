@@ -20,10 +20,6 @@ pub const CARD_OUTLINE: TileId = TileId(3);
 pub const MODAL: TileId = TileId(5);
 /// Open modal focused widget (zoom-animated).
 pub const MODAL_FOCUS: TileId = TileId(6);
-/// Open dropdown panel.
-pub const DROPDOWN_OVERLAY: TileId = TileId(7);
-/// Dropdown focused option.
-pub const DROPDOWN_FOCUS: TileId = TileId(8);
 /// Home status line.
 pub const STATUS: TileId = TileId(9);
 /// "No host selected" hint.

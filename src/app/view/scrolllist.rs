@@ -106,15 +106,6 @@ pub(crate) fn content_column(row: Rect) -> Rect {
     row.inset_x(SIDE_PAD)
 }
 
-/// Where a dropdown opened from row `row` anchors its option overlay — one row below it.
-///
-/// Positioned from a pixel scroll offset rather than a viewport-local row index, since a
-/// gliding list puts its rows at continuous offsets. `scroll_px` of 0 is the unscrolled case.
-pub(crate) fn dropdown_overlay_rect_at_px(content: Rect, row: usize, scroll_px: i32) -> Rect {
-    let y = ui::widgets::focus_row_rect_at_px(content, row + 1, scroll_px).y();
-    Rect::new(content.x(), y, content.width(), 0)
-}
-
 /// The shell only: card chrome, title and rule. The row list is its own scroll-content tile
 /// and any open dropdown its own overlay tile, so neither scrolling nor navigating options
 /// re-rasterizes this.

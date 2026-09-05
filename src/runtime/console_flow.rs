@@ -495,22 +495,6 @@ fn leave_for_classic(store: &Arc<ConsoleStore>) -> UiOutcome {
     UiOutcome::Reenter
 }
 
-/// The settings one launch runs with — the global document with this game's per-host overrides
-/// applied, then clamped like any global value. The console's copy of `ui_flow::launch_settings`,
-/// reading the store rather than `App`.
-fn launch_settings(state: &store::Persisted, addr: &str, port: u16, launch: Option<&str>) -> store::Settings {
-    let id = launch.unwrap_or(store::DESKTOP_PIN_ID);
-    let bound = state
-        .known_hosts
-        .iter()
-        .find(|h| h.host == addr && h.port == port)
-        .and_then(|h| h.game_profile(id));
-    let over = shared::game_overrides(&state.profiles, bound);
-    let mut settings = store::merge_for_game(&over, state.settings, id);
-    settings.clamp_to_caps();
-    settings
-}
-
 /// Start the connect for a launch the shell committed.
 fn start_launch(
     store: &Arc<ConsoleStore>,
@@ -533,7 +517,7 @@ fn start_launch(
         .and_then(|h| h.fingerprint)
         .or_else(|| shared::parse_fp(fp_hex))
         .context("that host isn't paired with this TV yet")?;
-    let mut settings = launch_settings(&state, addr, port, launch.as_deref());
+    let mut settings = shared::launch_settings(&state, addr, port, launch.as_deref(), None);
     let gamepad_auto = settings.gamepad_type == store::GamepadType::Auto;
     settings = resolve_gamepad_type(settings, game_controller);
     let target = crate::app::ConnectTarget {

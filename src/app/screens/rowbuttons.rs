@@ -71,14 +71,6 @@ impl App {
     /// (`docs/COLLECTIONS-PLAN.md` §Risks).
     fn row_buttons(&self, row: usize) -> RowButtons {
         match self.nav.screen {
-            Screen::Experimental => crate::app::menu::EXP_ROWS.get(row).map_or_else(
-                || RowButtons::trailing(&[]),
-                |&r| {
-                    RowButtons::trailing(view::experimental::trailing(r, &self.settings_ui.settings)).reserve_mark(
-                        view::experimental::trailing_mark_reserved(r, &self.settings_ui.settings),
-                    )
-                },
-            ),
             // One row, one button: the tick that finishes the measurement.
             Screen::HdrCalibration => RowButtons::trailing(view::hdrcalibration::ACTION_ICONS),
             Screen::Collections => self

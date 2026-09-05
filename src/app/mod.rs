@@ -30,14 +30,13 @@ use crate::ui::render::Rect;
 use anyhow::Result;
 
 use crate::app::hosts::HostEntry;
-use crate::app::nav::ScreenKey;
 use crate::core::event::MenuEvent;
 use crate::core::model;
 pub use crate::core::model::ConnectTarget;
 pub use crate::core::screen::{HomeFocus, PairingFocus, Screen};
 use crate::services::discovery::Discovery;
 use crate::services::library::GameEntry;
-use crate::services::store::{self, KnownHost, Settings};
+use crate::services::store::{self, KnownHost};
 use crate::ui;
 
 /// How much a focused grid card grows. Bigger than the modal widgets' pop (they sit
@@ -99,12 +98,6 @@ pub struct WakeState {
     pub(crate) silent: bool,
     pub(crate) last_probe: Option<Instant>,
     pub(crate) probe_rx: Option<std::sync::mpsc::Receiver<crate::services::library::GamesLoaded>>,
-}
-
-/// Open dropdown on settings modal.
-pub struct DropdownState {
-    pub row: usize,
-    pub focused: usize,
 }
 
 pub struct App {
@@ -331,99 +324,6 @@ impl App {
             .host_menu_index
             .and_then(|i| self.hosts.entries.get(i))
             .map(HostEntry::name)
-    }
-
-    /// Which document the settings-shaped screen that is up is editing. Read off the screen
-    /// itself — it and the Cursor sub-screen both carry their scope — so a scratch copy that
-    /// outlives its flow can't redirect the global screen's edits into it.
-    pub(crate) fn settings_scope(&self) -> menu::SettingsScope {
-        match self.nav.screen {
-            Screen::Settings(scope) | Screen::CursorSettings(scope) | Screen::ControllerSettings(scope) => scope,
-            // The Reset dialog is raised *over* the per-game list and returns to it, so the
-            // scratch state is still what's being edited — without this arm every accessor
-            // below reads Global while it is up, and the reset it confirms lands nowhere.
-            Screen::ResetGameSettings => menu::SettingsScope::Game,
-            _ => menu::SettingsScope::Global,
-        }
-    }
-
-    /// The per-game scratch state, but only while a per-game screen is actually up — the one
-    /// gate every accessor below shares, in the two forms borrowck needs.
-    pub(crate) fn editing_game(&self) -> Option<&state::gamesettings::GameSettingsState> {
-        match self.settings_scope() {
-            menu::SettingsScope::Game => self.settings_ui.game_settings.as_ref(),
-            menu::SettingsScope::Global => None,
-        }
-    }
-
-    pub(crate) fn editing_game_mut(&mut self) -> Option<&mut state::gamesettings::GameSettingsState> {
-        match self.settings_scope() {
-            menu::SettingsScope::Game => self.settings_ui.game_settings.as_mut(),
-            menu::SettingsScope::Global => None,
-        }
-    }
-
-    /// The `Settings` the open settings screen is editing: the global document, or the
-    /// per-game scratch copy. One accessor so every mutator, lock check and dropdown lookup
-    /// in `menu` sees the same value the rows were built from.
-    pub(crate) fn settings_target(&self) -> &Settings {
-        match self.editing_game() {
-            Some(gs) => &gs.merged,
-            None => &self.settings_ui.settings,
-        }
-    }
-
-    /// Spells `editing_game_mut`'s gate out rather than calling it: the fallback arm needs
-    /// `self` back, which borrowck won't grant while a returned `Option<&mut _>` is in scope.
-    pub(crate) fn settings_target_mut(&mut self) -> &mut Settings {
-        let scope = self.settings_scope();
-        match &mut self.settings_ui.game_settings {
-            Some(gs) if scope == menu::SettingsScope::Game => &mut gs.merged,
-            _ => &mut self.settings_ui.settings,
-        }
-    }
-
-    /// This game's overrides while the per-game screen is up — what decides which rows wear
-    /// a "use global" button. Empty everywhere else, so the global screen shows none.
-    pub(crate) fn editing_override(&self) -> store::SettingsOverride {
-        self.editing_game()
-            .map_or_else(store::SettingsOverride::default, |gs| gs.over)
-    }
-
-    /// The settings rows, with the platform/hardware facts the view can't reach folded in,
-    /// plus the override dot on every row this game differs from the global on.
-    pub(crate) fn settings_rows(&self) -> Vec<ui::widgets::FocusRow> {
-        let set = self.settings_scope();
-        let settings = self.settings_target();
-        let mut rows = view::settings::rows(
-            set,
-            settings,
-            self.detected_gamepad_type,
-            self.dualsense_limited(),
-            self.webos_major(),
-        );
-        let over = self.editing_override();
-        let focused = self.nav.cursor(ScreenKey::Settings);
-        for (display, (row, logical)) in rows
-            .iter_mut()
-            .zip(menu::settings_visible_logical_rows(set))
-            .enumerate()
-        {
-            menu::decorate_override(row, &over, logical, display == focused);
-        }
-        rows
-    }
-
-    /// `(row, focused, alpha)` for the open dropdown or its close-fade; `None` if neither.
-    pub(crate) fn dropdown_draw_state(&self) -> Option<(usize, usize, f32)> {
-        if let Some(dd) = &self.settings_ui.dropdown {
-            Some((dd.row, dd.focused, self.settings_ui.dropdown_fade.open_alpha()))
-        } else {
-            self.settings_ui
-                .dropdown_fade
-                .closing_frame()
-                .map(|(alpha, (row, focused))| (row, focused, alpha))
-        }
     }
 
     /// Grid geometry bridges — `view::home` is pure geometry, so these supply the two
@@ -657,6 +557,12 @@ impl App {
                     true
                 }
             }
+            Screen::RenameProfile => {
+                !self.screens.profile_name.text().is_empty() && {
+                    self.screens.profile_name.backspace();
+                    true
+                }
+            }
             Screen::Pairing => self.erase_pin_digit(),
             _ => false,
         }
@@ -719,9 +625,6 @@ impl App {
             animating = true;
         }
         if self.render.modal.fade.tick() {
-            animating = true;
-        }
-        if self.settings_ui.dropdown_fade.tick() {
             animating = true;
         }
         // The hero loading screen keeps panning for as long as the launch is on screen,
@@ -796,7 +699,12 @@ impl App {
     /// Queues the whole document for the background writer. Every mutation of settings, hosts or
     /// selection comes through here rather than writing its own slice.
     pub(crate) fn persist(&self) {
-        self.state_writer.save(store::Persisted {
+        self.state_writer.save(self.persisted());
+    }
+
+    /// The document as this App holds it right now.
+    pub(crate) fn persisted(&self) -> store::Persisted {
+        store::Persisted {
             settings: self.settings_ui.settings,
             known_hosts: self.hosts.known.clone(),
             selected_host: self.library.selected_host.clone(),
@@ -808,14 +716,14 @@ impl App {
             // dropping the rest here would reset the gamepad shell's own rows every time
             // anything on this side was saved. See [`store::Persisted::shared_base`].
             shared_base: self.shared_base.clone(),
-        });
+        }
     }
 
     /// Whether the pad in play is a `DualSense` this webOS release only partly supports — the
     /// caution the Controller row carries. The *effective* kind, so `Auto` answers for
     /// whatever is actually attached rather than for the word itself.
     pub(crate) fn dualsense_limited(&self) -> bool {
-        let settings = self.settings_target();
+        let settings = &self.settings_ui.settings;
         let effective = if settings.gamepad_type == store::GamepadType::Auto {
             self.detected_gamepad_type.unwrap_or_default()
         } else {

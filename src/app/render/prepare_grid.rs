@@ -286,8 +286,9 @@ impl App {
             if let Some(pin_id) = self.library.pin_id_at(idx, columns) {
                 let title = self.grid_card_entry(idx, columns).title.as_str();
                 // Keyed by card identity like the card tiles themselves (`CardIds`),
-                // not by title — two games can share one.
-                let overridden = self.game_has_overrides(pin_id);
+                // not by title — two games can share one. The dot says the title is bound
+                // to a settings profile (plan D5).
+                let overridden = self.game_is_bound(pin_id);
                 let version = cache::version(&(pin_id, card_w, card_h, overridden));
                 if tiles.ensure(tile::CARD_TITLE, version, || {
                     ui::rasterize(

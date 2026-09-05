@@ -183,7 +183,7 @@ impl App {
                 );
             }
         }
-        self.nav.resume(Screen::Experimental);
+        self.nav.resume(Screen::SettingsPage);
     }
 
     /// Opens the "clear this calibration?" dialog from the Calibrate row's delete button.
@@ -201,9 +201,9 @@ impl App {
                 if self.nav.cursor(ScreenKey::ResetHdrCalibration) == 0 {
                     self.clear_hdr_calibration();
                 }
-                self.nav.resume(Screen::Experimental);
+                self.nav.resume(Screen::SettingsPage);
             }
-            MenuEvent::Back | MenuEvent::Secondary => self.nav.resume(Screen::Experimental),
+            MenuEvent::Back | MenuEvent::Secondary => self.nav.resume(Screen::SettingsPage),
             MenuEvent::Up | MenuEvent::Down | MenuEvent::Left | MenuEvent::Right => {}
         }
     }

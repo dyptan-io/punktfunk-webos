@@ -14,19 +14,12 @@ use crate::app::menu::PowerAccess;
 use crate::app::screens::rowbuttons::RowButton;
 use crate::app::state::hdrcalibration::HdrStep;
 use crate::app::state::hostmenu::HostAction;
-use crate::core::model::{
-    AudioRoutePref, ExitAction, GamepadType, GamepadUiMode, HdrDisplay, LogLevelOverride, Settings, SettingsOverride,
-};
+use crate::core::model::{ExitAction, HdrDisplay};
 
 /// Focused widget in the open modal. Each variant carries its content,
 /// so value changes (not just focus moves) invalidate the tile.
 #[derive(PartialEq, Eq, Hash)]
 pub enum ModalFocusKey<'a> {
-    /// The detected pad type rides along because the Controller row's "Automatic (...)" value
-    /// depends on it, not just on `Settings` — a hotplug alone doesn't touch `Settings` at all.
-    /// The override rides along because it decides which rows wear a "use global" button —
-    /// a change there moves no value in `Settings` at all.
-    SettingsRow(usize, Settings, SettingsOverride, Option<GamepadType>),
     HostPowerRow {
         row: usize,
         auto: bool,
@@ -43,38 +36,16 @@ pub enum ModalFocusKey<'a> {
     /// The action and the pairing state are what the row's label is derived from, so they
     /// stand in for it — see `app::state::hostmenu::host_menu_row`.
     MenuRow(usize, HostAction, bool, Option<RowButton>, Option<ExitAction>),
-    /// (focused row, log level, stats-overlay on, show-logs on) — any change invalidates the tile.
-    DiagnosticsRow(usize, LogLevelOverride, bool, bool),
-    /// The focused row plus everything its label, caption and control are derived from — the
-    /// same set its shell key carries, named for the same reason (see `ModalShellKey`).
-    ExperimentalRow {
-        row: usize,
-        /// Which of the row's buttons is lit — the Calibrate row's Clear.
-        button: Option<RowButton>,
-        game_mode: bool,
-        audio_route: AudioRoutePref,
-        hdr_enabled: bool,
-        hdr: Option<HdrDisplay>,
-        rooted: Option<bool>,
-    },
     /// (focused row, which measurement is being made, the volume it has reached, whether the
     /// pattern feed has stalled, whether the tick has focus) — the card's copy, its slider and
     /// its caution all move with these.
     HdrCalibrationRow(usize, HdrStep, HdrDisplay, bool, Option<RowButton>),
-    /// (focused row, cursor-capture on, cursor-gestures on, which rows are overridden) — any
-    /// change invalidates the tile.
-    CursorSettingsRow(usize, bool, bool, SettingsOverride),
-    /// (focused row, pad kind, console switch, when it fronts, detected pad) — the focused
-    /// row is redrawn on its own tile, so every value its label can show is keyed here.
-    ControllerSettingsRow(usize, GamepadType, bool, GamepadUiMode, Option<GamepadType>),
     /// Which `Screen::SendLogs` button is focused (0 = Cancel, 1 = Send).
     SendLogsButton(usize),
     /// Which `Screen::RemoveCollection` button is focused (0 = Remove, 1 = Cancel).
     RemoveCollectionButton(usize),
     /// Which `Screen::ResetHdrCalibration` button is focused (0 = Clear, 1 = Cancel).
     ResetHdrButton(usize),
-    /// Which `Screen::ResetGameSettings` button is focused (0 = Reset, 1 = Cancel).
-    ResetGameSettingsButton(usize),
     /// (focused row, the row's name, whether it is the one already holding the card, which
     /// trailing button is focused, whether the row is being dragged) — what the focused row
     /// draws, and nothing else: the list behind it is its own tiles.
@@ -100,16 +71,6 @@ pub enum ScrollContentKey {
 /// of a `hover_close` field repeated down every variant and every arm that builds one.
 #[derive(PartialEq, Eq, Hash)]
 pub enum ModalShellKey<'a> {
-    // Only what `render_settings` reads — the whole `Settings` struct (or the
-    // dropdown row) would invalidate this key, forcing a full-screen re-raster,
-    // on every keystroke or dropdown open/close. The shell draws chrome only (no
-    // row content, not even the Bitrate caution — that's the focus tile's job),
-    // so nothing but the title suffix can actually change it.
-    Settings {
-        /// The per-game screen's dim title suffix — `None` on the global one. The only thing
-        /// separating the two shells.
-        game: Option<&'a str>,
-    },
     Wake {
         name: &'a str,
         mac_empty: bool,
@@ -142,42 +103,12 @@ pub enum ModalShellKey<'a> {
     SpeedTest {
         status: &'a str,
     },
-    Diagnostics {
-        log_level: LogLevelOverride,
-        stats_overlay: bool,
-        show_logs: bool,
-        send_to_host: bool,
-    },
-    Experimental {
-        game_mode: bool,
-        /// Named on the Audio processing row.
-        audio_route: AudioRoutePref,
-        /// HDR off locks the Calibrate row and rewrites its caption.
-        hdr_enabled: bool,
-        /// The measured volume, named on the Calibrate row; `None` until it has been measured.
-        hdr: Option<HdrDisplay>,
-        /// The root-probe verdict — it locks the Game mode row and rewrites its caption.
-        rooted: Option<bool>,
-    },
     /// The calibration card: its subtitle is the step's instruction and its rows carry the
     /// measurement, so both move the whole shell.
     HdrCalibration {
         step: HdrStep,
         display: HdrDisplay,
         stalled: bool,
-    },
-    CursorSettings {
-        cursor_capture: bool,
-        cursor_gestures: bool,
-        over: SettingsOverride,
-    },
-    /// Everything the Controller list draws from: the three values, plus the detected pad,
-    /// which decides both the `Automatic` label and whether the row is locked.
-    ControllerSettings {
-        gamepad_type: GamepadType,
-        gamepad_ui: bool,
-        gamepad_ui_mode: GamepadUiMode,
-        detected: Option<GamepadType>,
     },
     /// Fixed warning copy + two buttons — nothing screen-specific left to key on.
     SendLogs,
@@ -187,10 +118,6 @@ pub enum ModalShellKey<'a> {
     RemoveCollection {
         name: &'a str,
         games: usize,
-    },
-    /// The game it asks about — its title is the whole subtitle.
-    ResetGameSettings {
-        game: &'a str,
     },
     /// The shell is title, rule and the card being moved — the rows are their own tiles, so
     /// nothing about the collections themselves belongs here except how many there are (the

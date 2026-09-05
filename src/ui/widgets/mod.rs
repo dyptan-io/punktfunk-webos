@@ -6,7 +6,6 @@
 
 mod cards;
 mod confirm;
-mod dropdown;
 mod listmodal;
 mod modal;
 mod notification;
@@ -16,7 +15,6 @@ mod sidebar;
 
 pub use cards::*;
 pub use confirm::*;
-pub use dropdown::*;
 pub use listmodal::*;
 pub use modal::*;
 pub use notification::*;

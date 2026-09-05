@@ -141,13 +141,16 @@ impl App {
                 "Cancel",
                 view::hdrcalibration::RESET_SUBTITLE.to_string(),
             ),
-            Screen::ResetGameSettings => Confirm::new(
-                Some(view::icons::ICON_DELETE),
-                "Reset",
-                Tone::Danger,
-                "Cancel",
-                view::resetgame::subtitle(&self.settings_ui.game_settings.as_ref()?.title),
-            ),
+            Screen::DeleteProfile => {
+                let (hosts, titles) = self.profile_use_counts();
+                Confirm::new(
+                    Some(view::icons::ICON_DELETE),
+                    "Delete",
+                    Tone::Danger,
+                    "Cancel",
+                    view::profile::delete_subtitle(hosts, titles),
+                )
+            }
             Screen::SendLogs => Confirm::new(
                 Some(view::icons::ICON_SEND),
                 "Send",

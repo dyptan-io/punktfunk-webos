@@ -42,7 +42,7 @@ impl App {
             // The scope comes off the passed screen, not `self.nav.screen`: a closing Settings(Game)
             // is asked about after `self.nav.screen` has moved on, and reading the live scope there
             // measures the global list instead of the one being faded out.
-            Screen::Settings(_) | Screen::Collections => {
+            Screen::Collections => {
                 let total = self.scroll_list_row_count_for(screen);
                 let (card, content) =
                     view::scrolllist::layout(total, screen_w, screen_h, scroll_list_width_frac(screen));
@@ -197,7 +197,7 @@ impl App {
     /// Same as `scroll_stride`, but for an explicit screen — see `scroll_geometry_for`.
     pub(crate) fn scroll_stride_for(&self, screen: Screen, fonts: &ui::text::Fonts) -> i32 {
         match screen {
-            Screen::Settings(_) | Screen::Collections => ui::widgets::focus_row_stride() as i32,
+            Screen::Collections => ui::widgets::focus_row_stride() as i32,
             Screen::About => view::about::line_stride(fonts.raster, fonts.value),
             // Nothing else has a scrolling body. `1` rather than `0` because the stride is a
             // divisor in the scroll arithmetic, and this is only reached where
@@ -211,16 +211,14 @@ impl App {
             | Screen::EditHost
             | Screen::SpeedTest
             | Screen::HostPower
-            | Screen::Diagnostics
-            | Screen::Experimental
             | Screen::HdrCalibration
-            | Screen::CursorSettings(_)
-            | Screen::ControllerSettings(_)
             | Screen::SendLogs
             | Screen::RenameCollection
             | Screen::RemoveCollection
             | Screen::ResetHdrCalibration
-            | Screen::ResetGameSettings => 1,
+            | Screen::SettingsPage
+            | Screen::RenameProfile
+            | Screen::DeleteProfile => 1,
         }
     }
 
@@ -245,6 +243,12 @@ impl App {
                     None,
                 )
             }
+            Screen::RenameProfile => (
+                view::profile::RENAME_TITLE,
+                view::profile::RENAME_SUBTITLE.to_string(),
+                self.screens.profile_name.text(),
+                self.profile_name_hint(),
+            ),
             Screen::AddHost => (
                 view::addhost::ADD_TITLE,
                 view::addhost::ADD_SUBTITLE.to_string(),
@@ -362,7 +366,7 @@ impl App {
             // Drawn on the kit, focus and all (`app::draw`).
             screen if crate::app::draw::ported(screen) => None,
             // The scrolling row lists: one focused row, positioned the same way on both.
-            Screen::Settings(_) | Screen::Collections => {
+            Screen::Collections => {
                 let (total, _, _, content) = self.scroll_geometry_for(screen, screen_w, screen_h, fonts)?;
                 // Positioned from the animated pixel offset, not the row index: the baked
                 // list is cropped at that offset, and the focus tile *is* the focused row
@@ -384,7 +388,7 @@ impl App {
             | Screen::SpeedTest
             | Screen::RemoveCollection
             | Screen::ResetHdrCalibration
-            | Screen::ResetGameSettings => self
+            => self
                 .confirm_subtitle()
                 .zip(self.confirm_focused())
                 .map(|(subtitle, i)| Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &subtitle, i)),
@@ -402,14 +406,18 @@ impl App {
             // the painter draws, indexed by that screen's own focus cursor.
             Screen::HostMenu
             | Screen::HostPower
-            | Screen::Diagnostics
-            | Screen::Experimental
             | Screen::HdrCalibration
-            | Screen::CursorSettings(_)
-            | Screen::ControllerSettings(_) => self.list_modal_focus_rect(screen_w, screen_h, fonts),
+            => self.list_modal_focus_rect(screen_w, screen_h, fonts),
             // No single focused widget: a text form is one always-active field, and About is
             // a scrolling document.
-            Screen::Home | Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::About => None,
+            Screen::Home
+            | Screen::AddHost
+            | Screen::EditHost
+            | Screen::RenameCollection
+            | Screen::RenameProfile
+            | Screen::About
+            | Screen::SettingsPage
+            | Screen::DeleteProfile => None,
         }
     }
 
@@ -462,15 +470,10 @@ impl App {
             | Screen::SendLogs
             | Screen::RemoveCollection
             | Screen::ResetHdrCalibration
-            | Screen::ResetGameSettings
             | Screen::HostMenu
-            | Screen::HostPower => return None,
-            // One screen, two scopes: the dim title suffix is the only thing the per-game
-            // one adds, and it comes from the scratch copy that scope implies.
-            Screen::Settings(set) => f(&view::settings::Modal {
-                set,
-                game: self.editing_game().map(|gs| gs.title.as_str()),
-            }),
+            | Screen::HostPower
+            | Screen::SettingsPage
+            | Screen::DeleteProfile => return None,
             Screen::Collections => f(&view::collections::Modal {
                 rows: self.collections_row_count(),
                 title: view::collections::heading(self.collections_target_held()),
@@ -482,7 +485,9 @@ impl App {
                 busy: self.screens.pairing_busy,
             }),
             // Every one-field text form, described once by `text_form`.
-            Screen::AddHost | Screen::EditHost | Screen::RenameCollection => f(&self.text_form()?),
+            Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::RenameProfile => {
+                f(&self.text_form()?)
+            }
             Screen::Wake => f(&view::wake::Modal {
                 wake: self.screens.wake.as_ref()?,
                 confirm: confirm.as_ref(),
@@ -493,25 +498,7 @@ impl App {
                 host_name: &self.screens.speed_test_name,
                 confirm: confirm.as_ref(),
             }),
-            Screen::Diagnostics => f(&view::diagnostics::Modal {
-                settings: &self.settings_ui.settings,
-                to_host: self.send_logs_host_ready(),
-            }),
             Screen::HdrCalibration => f(&self.hdr_calibration_view()?),
-            Screen::Experimental => f(&view::experimental::Modal {
-                settings: &self.settings_ui.settings,
-                rooted: self.hosts.rooted,
-            }),
-            Screen::ControllerSettings(_) => f(&view::controllersettings::Modal {
-                settings: self.settings_target(),
-                detected_gamepad_type: self.detected_gamepad_type,
-                dualsense_limited: self.dualsense_limited(),
-                webos_major: self.webos_major(),
-            }),
-            Screen::CursorSettings(_) => f(&view::cursorsettings::Modal {
-                settings: self.settings_target(),
-                over: &self.editing_override(),
-            }),
         })
     }
 

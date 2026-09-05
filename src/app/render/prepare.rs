@@ -17,11 +17,11 @@ use crate::app::render::SnapshotBody;
 use crate::app::screens::is_scroll_list;
 use crate::app::screens::rowbuttons::RowButton;
 use crate::app::{
-    menu, view, App, HomeFocus, PairingFocus, Screen, ABOUT_WINDOW_BUDGET, ABOUT_WINDOW_MARGIN, SCROLL_INDICATOR_TILE_W,
+    view, App, HomeFocus, PairingFocus, Screen, ABOUT_WINDOW_BUDGET, ABOUT_WINDOW_MARGIN, SCROLL_INDICATOR_TILE_W,
 };
 use crate::ui;
 use crate::ui::cache;
-use crate::ui::render::{Rect, TileId};
+use crate::ui::render::TileId;
 use crate::ui::Painter;
 
 impl App {
@@ -214,9 +214,6 @@ impl App {
             .then(|| view::speedtest::status(self.screens.speed_test.as_ref(), &self.screens.speed_test_name))
             .unwrap_or_default();
         let key = match self.nav.screen {
-            Screen::Settings(_) => Some(ModalShellKey::Settings {
-                game: self.editing_game().map(|gs| gs.title.as_str()),
-            }),
             Screen::Collections => Some(ModalShellKey::Collections {
                 held: self.collections_target_held(),
                 card: self.collections_heading(),
@@ -259,49 +256,26 @@ impl App {
             Screen::SpeedTest => Some(ModalShellKey::SpeedTest {
                 status: &speed_test_status,
             }),
-            Screen::Diagnostics => Some(ModalShellKey::Diagnostics {
-                log_level: self.settings_ui.settings.log_level_override,
-                stats_overlay: self.settings_ui.settings.stats_overlay,
-                show_logs: self.settings_ui.settings.show_logs,
-                send_to_host: self.send_logs_host_ready(),
-            }),
-            Screen::Experimental => Some(ModalShellKey::Experimental {
-                game_mode: self.settings_ui.settings.game_mode,
-                audio_route: self.settings_ui.settings.audio_route,
-                hdr_enabled: self.settings_ui.settings.hdr_enabled,
-                hdr: self.calibrated_hdr_display(),
-                rooted: self.hosts.rooted,
-            }),
             Screen::HdrCalibration => self.hdr_calibration_view().map(|m| ModalShellKey::HdrCalibration {
                 step: m.step,
                 display: m.display,
                 stalled: m.stalled,
-            }),
-            Screen::ControllerSettings(_) => Some(ModalShellKey::ControllerSettings {
-                gamepad_type: self.settings_target().gamepad_type,
-                gamepad_ui: self.settings_target().gamepad_ui,
-                gamepad_ui_mode: self.settings_target().gamepad_ui_mode,
-                detected: self.detected_gamepad_type,
-            }),
-            Screen::CursorSettings(_) => Some(ModalShellKey::CursorSettings {
-                cursor_capture: self.settings_target().cursor_capture,
-                cursor_gestures: self.settings_target().cursor_gestures,
-                over: self.editing_override(),
             }),
             Screen::SendLogs => Some(ModalShellKey::SendLogs),
             Screen::ResetHdrCalibration => Some(ModalShellKey::ResetHdrCalibration),
             Screen::RemoveCollection => self
                 .removed_collection()
                 .map(|(name, games)| ModalShellKey::RemoveCollection { name, games }),
-            Screen::ResetGameSettings => self
-                .settings_ui
-                .game_settings
-                .as_ref()
-                .map(|gs| ModalShellKey::ResetGameSettings { game: &gs.title }),
             // `EditHost` joins `AddHost` in having no shell key: its typed-digit
             // display has no separate focus tile to protect, so it just redraws on
             // any `content_dirty` tick.
-            Screen::Home | Screen::AddHost | Screen::EditHost | Screen::RenameCollection => None,
+            Screen::Home
+            | Screen::AddHost
+            | Screen::EditHost
+            | Screen::RenameCollection
+            | Screen::RenameProfile
+            | Screen::SettingsPage
+            | Screen::DeleteProfile => None,
         };
         // Hashed with the key rather than carried inside it: the close-button hover changes
         // every shell alike (see `ModalShellKey`).
@@ -322,12 +296,6 @@ impl App {
             .then(|| view::speedtest::apply_label(view::speedtest::recommendation(self.screens.speed_test.as_ref())))
             .unwrap_or_default();
         let key = match self.nav.screen {
-            Screen::Settings(_) => Some(ModalFocusKey::SettingsRow(
-                self.nav.cursor(ScreenKey::Settings),
-                *self.settings_target(),
-                self.editing_override(),
-                self.detected_gamepad_type,
-            )),
             Screen::Collections => {
                 let row = self.nav.cursor(ScreenKey::Collections);
                 let host = self.selected_known_host();
@@ -383,21 +351,6 @@ impl App {
             // on the card but text.
             Screen::SpeedTest => view::speedtest::finished(self.screens.speed_test.as_ref())
                 .then(|| ModalFocusKey::SpeedTestButton(self.nav.cursor(ScreenKey::SpeedTest), &speed_test_label)),
-            Screen::Diagnostics => Some(ModalFocusKey::DiagnosticsRow(
-                self.nav.cursor(ScreenKey::Diagnostics),
-                self.settings_ui.settings.log_level_override,
-                self.settings_ui.settings.stats_overlay,
-                self.settings_ui.settings.show_logs,
-            )),
-            Screen::Experimental => Some(ModalFocusKey::ExperimentalRow {
-                row: self.nav.cursor(ScreenKey::Experimental),
-                button: self.screens.row_button,
-                game_mode: self.settings_ui.settings.game_mode,
-                audio_route: self.settings_ui.settings.audio_route,
-                hdr_enabled: self.settings_ui.settings.hdr_enabled,
-                hdr: self.calibrated_hdr_display(),
-                rooted: self.hosts.rooted,
-            }),
             Screen::HdrCalibration => self.hdr_calibration_view().map(|m| {
                 ModalFocusKey::HdrCalibrationRow(
                     self.nav.cursor(ScreenKey::HdrCalibration),
@@ -407,19 +360,6 @@ impl App {
                     self.screens.row_button,
                 )
             }),
-            Screen::ControllerSettings(_) => Some(ModalFocusKey::ControllerSettingsRow(
-                self.nav.cursor(ScreenKey::ControllerSettings),
-                self.settings_target().gamepad_type,
-                self.settings_target().gamepad_ui,
-                self.settings_target().gamepad_ui_mode,
-                self.detected_gamepad_type,
-            )),
-            Screen::CursorSettings(_) => Some(ModalFocusKey::CursorSettingsRow(
-                self.nav.cursor(ScreenKey::CursorSettings),
-                self.settings_target().cursor_capture,
-                self.settings_target().cursor_gestures,
-                self.editing_override(),
-            )),
             Screen::SendLogs => Some(ModalFocusKey::SendLogsButton(self.nav.cursor(ScreenKey::SendLogs))),
             Screen::RemoveCollection => Some(ModalFocusKey::RemoveCollectionButton(
                 self.nav.cursor(ScreenKey::RemoveCollection),
@@ -427,12 +367,16 @@ impl App {
             Screen::ResetHdrCalibration => Some(ModalFocusKey::ResetHdrButton(
                 self.nav.cursor(ScreenKey::ResetHdrCalibration),
             )),
-            Screen::ResetGameSettings => Some(ModalFocusKey::ResetGameSettingsButton(
-                self.nav.cursor(ScreenKey::ResetGameSettings),
-            )),
             // None has a single focused widget: the address form is one always-active
             // field, and About is a scrolling document.
-            Screen::Home | Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::About => None,
+            Screen::Home
+            | Screen::AddHost
+            | Screen::EditHost
+            | Screen::RenameCollection
+            | Screen::RenameProfile
+            | Screen::About
+            | Screen::SettingsPage
+            | Screen::DeleteProfile => None,
         };
         key.as_ref().map(cache::version)
     }
@@ -536,15 +480,14 @@ impl App {
                     screen if crate::app::draw::ported(screen) => None,
                     // The scrolling row lists: one focused row re-rendered on its own tile,
                     // over the cropped strip the rest of the list is baked into.
-                    screen @ (Screen::Settings(_) | Screen::Collections) => {
+                    screen @ Screen::Collections => {
                         let index = self.nav.cursor(ScreenKey::of(screen));
                         match (
                             self.scroll_list_layout(screen, screen_w, screen_h),
                             scroll_list_rows.get_or_insert_with(|| self.scroll_list_rows().unwrap_or_default()),
                         ) {
                             (Some((_, content)), rows) => {
-                                let dropdown_open =
-                                    self.settings_ui.dropdown.as_ref().is_some_and(|dd| dd.row == index);
+                                let dropdown_open = false;
                                 let target_on = rows.get(index).is_some_and(|r| r.value == "On");
                                 Some(ui::rasterize(
                                     ui::widgets::FocusRowTile {
@@ -575,7 +518,7 @@ impl App {
                     | Screen::SpeedTest
                     | Screen::RemoveCollection
                     | Screen::ResetHdrCalibration
-                    | Screen::ResetGameSettings => match (self.confirm_of(), self.confirm_focused()) {
+                    => match (self.confirm_of(), self.confirm_focused()) {
                         (Some(confirm), Some(i)) => {
                             let rect = Self::confirm_focus_button_rect(screen_w, screen_h, fonts, &confirm.subtitle, i);
                             Some(ui::rasterize(
@@ -622,17 +565,13 @@ impl App {
                     // dropdown open, and only the host menu has a ⋯ to light.
                     Screen::HostMenu
                     | Screen::HostPower
-                    | Screen::Diagnostics
-                    | Screen::Experimental
                     | Screen::HdrCalibration
-                    | Screen::CursorSettings(_)
-                    | Screen::ControllerSettings(_) => {
+                    => {
                         let rows = self.list_modal_rows().unwrap_or_default();
                         let content = self.modal_list_content(screen_w, screen_h, fonts);
                         self.list_modal_focused()
                             .map(|focused| {
-                                let dropdown_open =
-                                    self.settings_ui.dropdown.as_ref().is_some_and(|dd| dd.row == focused);
+                                let dropdown_open = false;
                                 let target_on = rows.get(focused).is_some_and(|r| r.value == "On");
                                 ui::rasterize(
                                     ui::widgets::FocusRowTile {
@@ -653,7 +592,14 @@ impl App {
                     }
                     // No single focused widget to draw — `modal_focus_version` is `None` on
                     // these, so this is the arm that never runs rather than one that panics.
-                    Screen::Home | Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::About => {
+                    Screen::Home
+                    | Screen::AddHost
+                    | Screen::EditHost
+                    | Screen::RenameCollection
+                    | Screen::RenameProfile
+                    | Screen::About
+                    | Screen::SettingsPage
+                    | Screen::DeleteProfile => {
                         None
                     }
                 };
@@ -664,66 +610,6 @@ impl App {
             }
         } else {
             tiles.remove(tile::MODAL_FOCUS);
-        }
-        Ok(())
-    }
-
-    /// Dropdown family: the overlay panel + focused-option tile for an open Settings/Diagnostics dropdown; cleared when closed (unless a close-fade still needs them). Extracted from `prepare_tiles`.
-    fn prepare_dropdown(&mut self, ctx: &mut RenderCtx<'_>) -> Result<()> {
-        let RenderCtx {
-            tiles,
-            text: text_cache,
-            fonts,
-            screen: size,
-            updated,
-            ..
-        } = ctx;
-        let (screen_w, screen_h) = (size.w, size.h);
-        if let Some(dd) = &self.settings_ui.dropdown {
-            let options = self.dropdown_options(dd.row);
-            // The overlay hangs inside whichever viewport its list is drawn in.
-            let content_w = match self.nav.screen {
-                Screen::Diagnostics | Screen::Experimental | Screen::HostPower => {
-                    self.modal_list_content(screen_w, screen_h, fonts).width()
-                }
-                _ => view::settings::layout(self.settings_scope(), screen_w, screen_h)
-                    .1
-                    .width(),
-            };
-
-            // Keyed by screen as well as row: row 0 means a different setting on Settings
-            // than it does on Diagnostics.
-            let overlay = cache::version(&(self.nav.screen, dd.row));
-            if tiles.ensure(tile::DROPDOWN_OVERLAY, overlay, || {
-                let overlay_h = options.len() as u32 * ui::widgets::DROPDOWN_OPTION_H;
-                let mut p = Painter::new(content_w, overlay_h.max(1));
-                let rect = Rect::new(0, 0, content_w, overlay_h);
-                ui::Canvas::tile(&mut p, text_cache, fonts)
-                    .render(ui::widgets::DropdownOverlay::new(&options), rect)?;
-                Ok(p)
-            })? {
-                updated.push(tile::DROPDOWN_OVERLAY);
-            }
-
-            let focused = cache::version(&(self.nav.screen, dd.row, dd.focused));
-            if tiles.ensure(tile::DROPDOWN_FOCUS, focused, || {
-                let option = options.get(dd.focused).map_or("", AsRef::as_ref);
-                ui::rasterize(
-                    ui::widgets::DropdownOptionTile {
-                        option,
-                        width: content_w,
-                    },
-                    text_cache,
-                    fonts,
-                )
-            })? {
-                updated.push(tile::DROPDOWN_FOCUS);
-            }
-        } else if !self.settings_ui.dropdown_fade.is_closing() {
-            // Keep the tiles cached while a close-fade is in flight — `draw_list`
-            // still composites them at falling alpha.
-            tiles.remove(tile::DROPDOWN_OVERLAY);
-            tiles.remove(tile::DROPDOWN_FOCUS);
         }
         Ok(())
     }
@@ -794,7 +680,7 @@ impl App {
 
             match self.nav.screen {
                 screen if is_scroll_list(screen) => {
-                    let dropdown_row = self.settings_ui.dropdown.as_ref().map(|dd| dd.row);
+                    let dropdown_row: Option<usize> = None;
                     let row_count = self.scroll_list_row_count();
                     let rows_version = self.scroll_list_rows_version(content.width());
                     let cached = self.render.modal.scroll_list_rows_version_cached == Some(rows_version)
@@ -873,47 +759,13 @@ impl App {
     /// just Settings — even where the exact strings differ (e.g. the host menu).
     pub fn prewarm_modal_caches(
         &self,
-        text_cache: &mut crate::ui::text::TextCache,
-        fonts: &ui::text::Fonts,
-        screen_w: u32,
-        screen_h: u32,
+        _text_cache: &mut crate::ui::text::TextCache,
+        _fonts: &ui::text::Fonts,
+        _screen_w: u32,
+        _screen_h: u32,
     ) -> Result<()> {
-        let mut scratch = Painter::new(screen_w, screen_h);
-        view::settings::render(
-            &mut ui::Canvas::new(&mut scratch, text_cache, fonts, screen_w, screen_h),
-            menu::SettingsScope::Global,
-            None,
-            self.render.hover_close,
-        )?;
-        let (_, content) = view::settings::layout(menu::SettingsScope::Global, screen_w, screen_h);
-        let rows = self.settings_rows();
-        // One row is enough to warm the glyph cache the whole list draws from — the rest are
-        // the same fonts at the same sizes.
-        if let Some(row) = rows.first() {
-            let _ = ui::rasterize(
-                ui::widgets::RowTile {
-                    row,
-                    width: content.width(),
-                    dropdown_open: false,
-                },
-                text_cache,
-                fonts,
-            )?;
-        }
-        let _ = ui::rasterize(
-            ui::widgets::FocusRowTile {
-                rows: &rows,
-                content_width: content.width(),
-                index: 0,
-                dropdown_open: false,
-                switch_frac: 0.0,
-                trailing_focused: None,
-                leading_focused: false,
-                leading_active: false,
-            },
-            text_cache,
-            fonts,
-        )?;
+        // The settings list this warmed is on the kit now; the remaining tile modals are
+        // small enough to rasterize cold.
         Ok(())
     }
 
@@ -960,7 +812,6 @@ impl App {
         }
 
         self.prepare_modal(ctx)?;
-        self.prepare_dropdown(ctx)?;
         self.prepare_scroll(ctx)?;
 
         // Entering a modal rasterizes it — shell, rows, and (Settings/About) the full

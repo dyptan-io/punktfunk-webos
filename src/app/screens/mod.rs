@@ -25,22 +25,19 @@ pub(crate) const fn is_confirm(screen: Screen) -> bool {
         | Screen::SpeedTest
         | Screen::RemoveCollection
         | Screen::ResetHdrCalibration
-        | Screen::ResetGameSettings => true,
+        | Screen::DeleteProfile => true,
         Screen::Home
         | Screen::Pairing
-        | Screen::Settings(_)
         | Screen::AddHost
         | Screen::HostMenu
         | Screen::EditHost
         | Screen::About
         | Screen::HostPower
-        | Screen::Diagnostics
-        | Screen::Experimental
         | Screen::HdrCalibration
-        | Screen::CursorSettings(_)
-        | Screen::ControllerSettings(_)
         | Screen::Collections
-        | Screen::RenameCollection => false,
+        | Screen::RenameCollection
+        | Screen::SettingsPage
+        | Screen::RenameProfile => false,
     }
 }
 
@@ -59,10 +56,9 @@ pub(crate) const fn over_video(screen: Screen) -> bool {
 /// [`is_confirm`].
 pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
     match screen {
-        Screen::Settings(_) | Screen::Collections => true,
+        Screen::Collections => true,
         // Three rows never need a viewport, so the Controller screen is a plain list modal.
-        Screen::ControllerSettings(_)
-        | Screen::Home
+        Screen::Home
         | Screen::Pairing
         | Screen::AddHost
         | Screen::Wake
@@ -73,15 +69,14 @@ pub(crate) const fn is_scroll_list(screen: Screen) -> bool {
         | Screen::About
         | Screen::SpeedTest
         | Screen::HostPower
-        | Screen::Diagnostics
-        | Screen::Experimental
         | Screen::HdrCalibration
-        | Screen::CursorSettings(_)
         | Screen::SendLogs
         | Screen::RenameCollection
         | Screen::RemoveCollection
         | Screen::ResetHdrCalibration
-        | Screen::ResetGameSettings => false,
+        | Screen::SettingsPage
+        | Screen::RenameProfile
+        | Screen::DeleteProfile => false,
     }
 }
 
@@ -93,17 +88,13 @@ pub(crate) const fn is_list_modal(screen: Screen) -> bool {
     match screen {
         Screen::HostMenu
         | Screen::HostPower
-        | Screen::Diagnostics
-        | Screen::Experimental
-        | Screen::ControllerSettings(_)
         // A list modal like any other, even though it draws over the video plane rather than
         // over the menu — that difference is `compose_modal`'s, not this family's.
         | Screen::HdrCalibration
-        | Screen::CursorSettings(_) => true,
+        => true,
         Screen::Home
         | Screen::Pairing
         // Settings is a list too, but a scrolling one — see `is_scroll_list`.
-        | Screen::Settings(_)
         | Screen::AddHost
         | Screen::Wake
         | Screen::ForgetHost
@@ -116,6 +107,8 @@ pub(crate) const fn is_list_modal(screen: Screen) -> bool {
         | Screen::RenameCollection
         | Screen::RemoveCollection
         | Screen::ResetHdrCalibration
-        | Screen::ResetGameSettings => false,
+        | Screen::SettingsPage
+        | Screen::RenameProfile
+        | Screen::DeleteProfile => false,
     }
 }

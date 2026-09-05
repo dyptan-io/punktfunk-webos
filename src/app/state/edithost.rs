@@ -67,6 +67,7 @@ impl App {
                 wol_auto: old.wol_auto,
                 exit_action: old.exit_action,
                 games: old.games.clone(),
+                profile_id: old.profile_id.clone(),
                 collections: old.collections.clone(),
             },
         );

@@ -207,18 +207,6 @@ impl FocusRow {
         self
     }
 
-    /// Keeps the right-side mark gutter clear without drawing a mark.
-    pub fn reserve_mark_gutter(mut self, reserve: bool) -> Self {
-        self.mark_reserve = reserve;
-        self
-    }
-
-    /// [`with_subtext`](Self::with_subtext) for a caption a condition may not produce.
-    pub fn with_subtext_opt(mut self, subtext: Option<RowSubtext>) -> Self {
-        self.subtext = subtext;
-        self
-    }
-
     /// Gives this row [`trailing`](Self::trailing) buttons. Always built unfocused: which
     /// one is lit belongs to the focused-row tile alone (see `App::list_focus_rows`), so a
     /// shell underneath cannot bake in a highlight that outlives the focus that put it there.
@@ -315,10 +303,6 @@ pub fn row_geom(row_rect: Rect, row: &FocusRow) -> RowGeom {
         row.label.is_empty(),
         row.value_reserve.max(row.trailing.len()),
     )
-}
-
-pub fn row_layout(row_rect: Rect, marked: bool) -> RowGeom {
-    row_layout_for(row_rect, marked, false, 0)
 }
 
 /// [`row_layout`], with `wide` spanning the slider track from the label's own x to the value

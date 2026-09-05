@@ -19,7 +19,7 @@ use pf_client_core::trust;
 
 use pf_client_core::profiles;
 
-use crate::core::model::{CodecPref, GamepadType, Settings, SettingsOverride};
+use crate::core::model::{CodecPref, GamepadType, Persisted, Settings, DESKTOP_PIN_ID};
 
 /// Prefix for rows only this client has. Namespaced so a future shared field of the same name
 /// cannot collide with what a TV persisted.
@@ -266,109 +266,6 @@ fn shared_gamepad(t: GamepadType) -> String {
     gamepad_pref(t).as_str().to_string()
 }
 
-/// One game's overrides, read through its binding — the empty set when it has none, or when
-/// the id it names is no longer in the catalog. A dangling binding is never an error here, the
-/// same rule punktfunk's own resolver follows.
-pub fn game_overrides(catalog: &[profiles::StreamProfile], bound: Option<&str>) -> SettingsOverride {
-    bound
-        .and_then(|id| catalog.iter().find(|p| p.id == id))
-        .map_or_else(SettingsOverride::default, |p| override_from_overlay(&p.overrides))
-}
-
-/// Writes `over` back as `game`'s profile, and returns the id it is bound to now.
-///
-/// Creating on first edit is what gives a TV a catalog at all: there is no desktop app beside
-/// it to make one, so the act of giving a game its own settings is the act of making a profile.
-/// An edit that empties the override deletes the profile and returns `None` — a named entry
-/// that overrides nothing would be a card the user never asked for.
-pub fn bind_game_overrides(
-    catalog: &mut Vec<profiles::StreamProfile>,
-    bound: Option<&str>,
-    title: &str,
-    over: &SettingsOverride,
-) -> Option<String> {
-    let existing = bound.and_then(|id| catalog.iter().position(|p| p.id == id));
-    if over.is_empty() {
-        if let Some(i) = existing {
-            catalog.remove(i);
-        }
-        return None;
-    }
-    let overlay = overlay_from_override(over);
-    if let Some(i) = existing {
-        catalog[i].overrides = overlay;
-        return Some(catalog[i].id.clone());
-    }
-    let mut profile = profiles::StreamProfile::new(unique_name(catalog, title));
-    profile.overrides = overlay;
-    let id = profile.id.clone();
-    catalog.push(profile);
-    Some(id)
-}
-
-/// The game's own name, or that name with a counter — two hosts can list the same title, and
-/// the catalog is one flat list whose names are what the user picks from.
-fn unique_name(catalog: &[profiles::StreamProfile], title: &str) -> String {
-    let taken = |name: &str| catalog.iter().any(|p| p.name == name);
-    if !taken(title) {
-        return title.to_string();
-    }
-    (2..)
-        .map(|n| format!("{title} ({n})"))
-        .find(|name| !taken(name))
-        .unwrap_or_else(|| title.to_string())
-}
-
-/// One game's overrides as a profile overlay, and back.
-///
-/// Same table as [`to_shared`]/[`from_shared`], for the same reason: a per-game override and a
-/// global setting mean the same thing to a host, so they must reach the wire through one
-/// mapping. The two rows punktfunk has no field for ride `extra` under [`P`], exactly as the
-/// global document's do.
-///
-/// `mode` is the one pair that is not one-to-one: this client picks resolution as a unit, so a
-/// half-set overlay (width without height, from another client) reads as no override rather
-/// than a resolution this UI cannot show.
-pub fn overlay_from_override(o: &SettingsOverride) -> profiles::SettingsOverlay {
-    let mut overlay = profiles::SettingsOverlay {
-        width: o.mode.map(|(w, _)| w),
-        height: o.mode.map(|(_, h)| h),
-        refresh_hz: o.refresh_hz,
-        bitrate_kbps: o.bitrate_kbps,
-        hdr_enabled: o.hdr_enabled,
-        codec: o.codec.map(|c| shared_codec(c).to_string()),
-        audio_channels: o.audio_channels,
-        gamepad: o.gamepad_type.map(shared_gamepad),
-        mouse_mode: o.cursor_capture.map(|c| shared_mouse_mode(c).to_string()),
-        ..profiles::SettingsOverlay::default()
-    };
-    if let Some(on) = o.cursor_gestures {
-        overlay
-            .extra
-            .insert(key("cursor_gestures"), serde_json::Value::Bool(on));
-    }
-    overlay
-}
-
-/// The inverse. Anything this client has no row for stays in the overlay untouched — it is
-/// read here, never rewritten from this shape.
-pub fn override_from_overlay(o: &profiles::SettingsOverlay) -> SettingsOverride {
-    SettingsOverride {
-        mode: o.width.zip(o.height),
-        refresh_hz: o.refresh_hz,
-        bitrate_kbps: o.bitrate_kbps,
-        hdr_enabled: o.hdr_enabled,
-        codec: o.codec.as_deref().map(local_codec),
-        audio_channels: o.audio_channels,
-        gamepad_type: o.gamepad.as_deref().and_then(local_gamepad),
-        cursor_capture: o.mouse_mode.as_deref().map(|m| m != "desktop"),
-        cursor_gestures: o
-            .extra
-            .get(&key("cursor_gestures"))
-            .and_then(serde_json::Value::as_bool),
-    }
-}
-
 /// This client's codec pick as punktfunk's wire name, and back — the same two arms
 /// [`to_shared`] and [`from_shared`] use, named so the override mapping cannot spell them
 /// differently.
@@ -431,7 +328,7 @@ fn local_gamepad(name: &str) -> Option<GamepadType> {
 mod tests {
     use super::*;
     // Named only by the fixtures below, so they would be unused imports in a normal build.
-    use crate::core::model::{AudioRoutePref, GamepadUiMode, LogLevelOverride, SettingsOverride, ThemeChoice};
+    use crate::core::model::{AudioRoutePref, GamepadUiMode, LogLevelOverride, ThemeChoice};
 
     /// Every field survives the trip. This is the test that matters: the two UIs read the same
     /// file through this pair, so a field that does not round-trip is one the gamepad shell
@@ -551,89 +448,6 @@ mod tests {
         assert_eq!(mine.gamepad_ui_mode, GamepadUiMode::Connected);
     }
 
-    /// Every override field survives the trip through a profile overlay. The two rows
-    /// punktfunk has no field for ride `extra`, so "it round-trips" is the only thing that
-    /// proves they were not quietly dropped on the way.
-    #[test]
-    fn an_override_round_trips_through_a_profile_overlay() {
-        let over = SettingsOverride {
-            mode: Some((2560, 1440)),
-            refresh_hz: Some(120),
-            bitrate_kbps: Some(60_000),
-            hdr_enabled: Some(true),
-            codec: Some(CodecPref::Hevc),
-            audio_channels: Some(6),
-            gamepad_type: Some(GamepadType::DualSenseEdge),
-            cursor_capture: Some(false),
-            cursor_gestures: Some(true),
-        };
-        assert_eq!(override_from_overlay(&overlay_from_override(&over)), over);
-
-        // An empty one stays empty rather than becoming a set of defaults — that is the
-        // difference between "inherits the globals" and "pinned to whatever they were".
-        let empty = SettingsOverride::default();
-        assert!(overlay_from_override(&empty).is_empty());
-        assert_eq!(override_from_overlay(&overlay_from_override(&empty)), empty);
-
-        // Resolution is picked as a unit here, so a half-set overlay reads as no override.
-        let half = profiles::SettingsOverlay {
-            width: Some(1920),
-            ..profiles::SettingsOverlay::default()
-        };
-        assert_eq!(override_from_overlay(&half).mode, None);
-    }
-
-    /// The catalog write-back: first edit creates, later edits update in place, and emptying
-    /// deletes. A TV has no desktop app beside it, so this is the only thing that ever makes
-    /// a profile there — if it did not create, the shell's profile list would stay empty.
-    #[test]
-    fn a_games_first_override_creates_its_profile_and_emptying_it_deletes_it() {
-        let mut catalog = Vec::new();
-        let over = SettingsOverride {
-            refresh_hz: Some(60),
-            ..SettingsOverride::default()
-        };
-        let id = bind_game_overrides(&mut catalog, None, "Hollow Knight", &over).expect("a profile");
-        assert_eq!(catalog.len(), 1);
-        assert_eq!(catalog[0].name, "Hollow Knight");
-        assert_eq!(game_overrides(&catalog, Some(&id)), over);
-
-        // A second edit rewrites that profile rather than making another.
-        let wider = SettingsOverride {
-            bitrate_kbps: Some(20_000),
-            ..over
-        };
-        let same = bind_game_overrides(&mut catalog, Some(&id), "Hollow Knight", &wider);
-        assert_eq!(same.as_deref(), Some(id.as_str()));
-        assert_eq!(catalog.len(), 1);
-        assert_eq!(game_overrides(&catalog, Some(&id)), wider);
-
-        // Clearing every row takes the profile with it: a named entry overriding nothing is a
-        // card the user never asked for.
-        assert_eq!(
-            bind_game_overrides(&mut catalog, Some(&id), "Hollow Knight", &SettingsOverride::default()),
-            None
-        );
-        assert!(catalog.is_empty());
-        // And a binding left pointing at it reads as no override rather than an error.
-        assert_eq!(game_overrides(&catalog, Some(&id)), SettingsOverride::default());
-    }
-
-    /// Two hosts can list the same title, and the catalog is one flat list of names.
-    #[test]
-    fn a_second_game_of_the_same_name_gets_its_own_entry() {
-        let mut catalog = Vec::new();
-        let over = SettingsOverride {
-            refresh_hz: Some(60),
-            ..SettingsOverride::default()
-        };
-        bind_game_overrides(&mut catalog, None, "Doom", &over);
-        bind_game_overrides(&mut catalog, None, "Doom", &over);
-        assert_eq!(catalog.len(), 2);
-        assert_eq!(catalog[1].name, "Doom (2)");
-        assert_ne!(catalog[0].id, catalog[1].id);
-    }
-
     /// The rule the flip runs on, both directions. Mirrors Android's `gamepadUiActive` minus
     /// its `tv` term — every webOS set is a TV, so that term would make the mode meaningless.
     #[test]
@@ -656,7 +470,7 @@ mod tests {
         assert!(always.gamepad_ui_active(false), "no pad needed under Always");
 
         // The switch is the outer gate: off means off under either mode.
-        for mode in GamepadUiMode::ALL {
+        for mode in [GamepadUiMode::Connected, GamepadUiMode::Always] {
             let off = Settings {
                 gamepad_ui: false,
                 gamepad_ui_mode: mode,
@@ -827,5 +641,78 @@ mod tests {
             ..trust::Settings::default()
         };
         assert_eq!(from_shared(&t).codec, CodecPref::Auto);
+    }
+}
+
+/// The settings one launch runs with: the global document with the resolved profile applied
+/// — one-off ?? per-title ?? host default, the shared resolver's own precedence — then the
+/// Desktop card's standing rule that pointer capture is off there (unless the profile sets
+/// the mouse mode), then this set's caps. The single merge point both menu loops call.
+pub fn launch_settings(state: &Persisted, addr: &str, port: u16, launch: Option<&str>, one_off: Option<&str>) -> Settings {
+    let id = launch.unwrap_or(DESKTOP_PIN_ID);
+    let host = state.known_hosts.iter().find(|h| h.host == addr && h.port == port);
+    let per_title = host.and_then(|h| h.game_profile(id));
+    let bound = host.and_then(|h| h.profile_id.as_deref());
+    let catalog = profiles::ProfilesFile {
+        version: profiles::PROFILES_VERSION,
+        profiles: state.profiles.clone(),
+    };
+    let profile = trust::resolve_profile(&catalog, bound, per_title, one_off);
+    let global = to_shared(&state.shared_base, &state.settings);
+    let effective = profile.as_ref().map_or_else(|| global.clone(), |p| p.overrides.apply(&global));
+    let mut settings = from_shared(&effective);
+    if id == DESKTOP_PIN_ID && profile.as_ref().is_none_or(|p| p.overrides.mouse_mode.is_none()) {
+        settings.cursor_capture = false;
+    }
+    settings.clamp_to_caps();
+    settings
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+    use pf_client_core::profiles::StreamProfile;
+
+    fn state_with(profile: StreamProfile, bind: impl FnOnce(&mut crate::core::model::KnownHost)) -> Persisted {
+        let mut host = crate::core::model::KnownHost {
+            host: "10.0.0.2".into(),
+            port: 47989,
+            ..Default::default()
+        };
+        bind(&mut host);
+        let mut state = Persisted::default();
+        state.known_hosts.push(host);
+        state.profiles.push(profile);
+        state
+    }
+
+    /// A title binding beats the host's default; a dangling id falls through to it; the
+    /// desktop card streams with capture off unless the profile pins the mouse mode.
+    #[test]
+    fn launch_follows_the_shared_precedence_and_the_desktop_rule() {
+        let mut title_profile = StreamProfile::new("Doom");
+        title_profile.overrides.bitrate_kbps = Some(12_000);
+        let tid = title_profile.id.clone();
+        let mut host_profile = StreamProfile::new("Work");
+        host_profile.overrides.bitrate_kbps = Some(34_000);
+        let hid = host_profile.id.clone();
+        let mut state = state_with(title_profile, |h| {
+            h.bind_game_profile("doom", Some(tid.clone()));
+        });
+        state.profiles.push(host_profile);
+        state.known_hosts[0].profile_id = Some(hid);
+        state.settings.cursor_capture = true;
+
+        let doom = launch_settings(&state, "10.0.0.2", 47989, Some("doom"), None);
+        assert_eq!(doom.bitrate_kbps, 12_000);
+        let other = launch_settings(&state, "10.0.0.2", 47989, Some("quake"), None);
+        assert_eq!(other.bitrate_kbps, 34_000, "the host default covers an unbound title");
+        let desktop = launch_settings(&state, "10.0.0.2", 47989, None, None);
+        assert!(!desktop.cursor_capture, "the desktop card streams with capture off");
+        assert!(other.cursor_capture, "a game keeps the global capture");
+
+        state.known_hosts[0].bind_game_profile("doom", Some("gone".into()));
+        let dangling = launch_settings(&state, "10.0.0.2", 47989, Some("doom"), None);
+        assert_eq!(dangling.bitrate_kbps, 34_000, "a dangling title binding falls back to the host default");
     }
 }
