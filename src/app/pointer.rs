@@ -272,6 +272,11 @@ impl App {
         // MouseMotion (the physical button press can jostle the remote a little).
         self.handle_mouse_motion(x, y, screen_w, screen_h);
         if self.render.hover_close {
+            // The X closes the card outright. On Settings that differs from Back, which first
+            // steps from the rows back to the page column.
+            if self.nav.screen == Screen::SettingsPage {
+                self.screens.settings_page.column = true;
+            }
             // Same "what Back means here" as everywhere else — see `back`'s docs.
             return self.back(screen_w, screen_h);
         }
