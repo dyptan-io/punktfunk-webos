@@ -30,11 +30,10 @@ const VALUE: f32 = 20.0;
 const TITLE: f32 = 40.0;
 const CAPTION: f32 = 14.0;
 pub(crate) const CARD_RADIUS: f32 = 10.0;
-/// Plan D7: the app mark top left at the panel's padding, the "Hosts" title under it.
-/// `MARK_SIDE` is the discs' box, not an icon tile; [`view::sidebar::TOP_Y`] follows these.
-const MARK_SIDE: f32 = 48.0;
-const HEADER_GAP: f32 = 36.0;
-const HEADER_SIZE: f32 = 26.0;
+/// The app mark top left at the panel's padding, on its own — the host rows say what the
+/// column is. `MARK_SIDE` is the discs' box, not an icon tile; [`view::sidebar::TOP_Y`]
+/// follows it.
+const MARK_SIDE: f32 = 64.0;
 const SIDEBAR_ICON: f32 = 30.0;
 const SIDEBAR_ICON_PAD: f32 = 20.0;
 const MENU_GLYPH: f32 = 26.0;
@@ -231,16 +230,6 @@ impl App {
         c.draw_rect(panel_rect, &theme::fill(panel()));
         let x = SIDEBAR_PAD as f32;
         app_mark(c, x, x, MARK_SIDE);
-        let size = px(f, HEADER_SIZE);
-        f.fonts.draw(
-            c,
-            "Hosts",
-            f64::from(x),
-            f64::from(x + MARK_SIDE + HEADER_GAP) + size * 0.8,
-            W::SemiBold,
-            size,
-            theme::fg(1.0),
-        );
 
         let entries = &self.hosts.entries;
         let add_row = entries.len();
