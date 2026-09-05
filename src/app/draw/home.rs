@@ -8,10 +8,10 @@ use std::time::Instant;
 
 use pf_console_ui::icons::{by_name, draw_icon};
 use pf_console_ui::theme::{self, W};
-use pf_console_ui::{launcher_icons, os_marks};
+use pf_console_ui::{brand, launcher_icons, os_marks};
 use skia_safe::{
-    images, BlendMode, BlurStyle, Canvas, ClipOp, Color4f, Data, FilterMode, Image, ImageInfo, MaskFilter, MipmapMode,
-    Paint, Path, RRect, Rect, SamplingOptions,
+    images, BlendMode, BlurStyle, ClipOp, Color4f, Data, FilterMode, Image, ImageInfo, MaskFilter, MipmapMode, Paint,
+    RRect, Rect, SamplingOptions,
 };
 
 use super::{focus_face, line_h, panel, sk, with_pop, Frame};
@@ -110,31 +110,6 @@ pub(crate) fn cover_image(art: &crate::services::art::CardArt) -> Option<Image> 
     raw_image(art.width, art.height, RawFormat::Rgba8888, &art.pixels)
 }
 
-/// The brand mark: two discs of radius `side / 3` at (r, 2r) and (2r, r) with their lens,
-/// the favicon's geometry. Deep disc on the accent, the light disc and lens toward `fg`,
-/// so the mark follows the palette instead of shipping the launcher tile's background.
-pub(crate) fn app_mark(c: &Canvas, x: f32, y: f32, side: f32) {
-    let r = side / 3.0;
-    let light = (x + r, y + 2.0 * r);
-    let deep = (x + 2.0 * r, y + r);
-    let toward_fg = |t: f32| {
-        let (a, g) = (theme::accent(1.0), theme::fg(1.0));
-        let mix = |a: f32, b: f32| a + (b - a) * t;
-        Color4f::new(mix(a.r, g.r), mix(a.g, g.g), mix(a.b, g.b), 1.0)
-    };
-    let mut paint = theme::fill(toward_fg(0.4));
-    paint.set_anti_alias(true);
-    c.draw_circle(light, r, &paint);
-    paint.set_color4f(theme::accent(1.0), None);
-    c.draw_circle(deep, r, &paint);
-    let lens = Path::circle(light, r, None);
-    c.save();
-    c.clip_path(&lens, ClipOp::Intersect, true);
-    paint.set_color4f(toward_fg(0.68), None);
-    c.draw_circle(deep, r, &paint);
-    c.restore();
-}
-
 /// Card tint for a coverless poster: hashed per title so a library reads as varied, on the
 /// kit's face colour so it follows the palette.
 fn face_for(title: &str) -> Color4f {
@@ -229,7 +204,10 @@ impl App {
         // Opaque on every look, glass included: a lit edge against the grid reads as a seam.
         c.draw_rect(panel_rect, &theme::fill(panel()));
         let x = SIDEBAR_PAD as f32;
-        app_mark(c, x + SIDEBAR_ICON_PAD, x, MARK_SIDE);
+        // The entrance plays once, from the first frame the sidebar shows.
+        let shown = *self.render.mark_shown_at.get_or_insert_with(Instant::now);
+        let intro = brand::intro_progress(shown.elapsed().as_secs_f32());
+        brand::draw(c, x + SIDEBAR_ICON_PAD, x, MARK_SIDE, intro);
 
         let entries = &self.hosts.entries;
         let add_row = entries.len();
@@ -678,7 +656,7 @@ mod tests {
         theme::set_ink(pf_console_ui::theme::Ink::of(pf_console_ui::library::palette("violet")));
         let mut surface = skia_safe::surfaces::raster_n32_premul((60, 60)).unwrap();
         surface.canvas().clear(Color4f::new(0.0, 0.0, 0.0, 1.0));
-        app_mark(surface.canvas(), 6.0, 6.0, 48.0);
+        brand::draw(surface.canvas(), 6.0, 6.0, 48.0, 1.0);
         let img = surface.image_snapshot();
         if let Ok(dir) = std::env::var("PF_WEBOS_DUMP") {
             let png = img.encode(None, skia_safe::EncodedImageFormat::PNG, 100).unwrap();
