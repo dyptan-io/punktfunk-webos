@@ -1,4 +1,4 @@
-//! The pointer UI's screens on the console kit (`webos-pointer-ui-overhaul.md` WP3).
+//! The pointer UI's screens on the console kit (planning `design/webos-pointer-ui-overhaul.md` WP3).
 //!
 //! Immediate mode: a screen in [`ported`] draws itself on the frame's canvas every tick, from
 //! app state, with `pf_console_ui`'s `theme` and `widgets`. Its geometry is one `layout` per

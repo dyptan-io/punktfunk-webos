@@ -1,4 +1,4 @@
-//! The profile catalog's editor (`webos-pointer-ui-overhaul.md` D5): new, rename, duplicate,
+//! The profile catalog's editor (planning `design/webos-pointer-ui-overhaul.md` D5): new, rename, duplicate,
 //! delete, and the card menu's shortcut that opens a title's bound profile in profile scope,
 //! creating it first. The catalog is the shared one every client reads; a title binds to a
 //! profile by id on its host record.
