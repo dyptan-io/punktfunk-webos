@@ -1,13 +1,12 @@
 //! Home screen logic: sidebar/grid navigation, host selection, game library fetch,
 //! launching. Grid pixel geometry (rect helpers) lives in `app::view::home`.
 use crate::app::hosts::HostEntry;
-use crate::app::nav::ScreenKey;
 use crate::app::state::textfield::TextField;
 use crate::app::view;
 use crate::app::App;
 use crate::app::ConnectTarget;
 use crate::core::event::MenuEvent;
-use crate::core::screen::{HomeFocus, Screen, SettingsScope};
+use crate::core::screen::{HomeFocus, Screen};
 use crate::ui;
 use std::time::Instant;
 
@@ -210,13 +209,7 @@ impl App {
                     self.screens.add_host = TextField::ipv4();
                     self.nav.screen = Screen::AddHost;
                 }
-                HomeFocus::Sidebar(_) => {
-                    self.nav.screen = Screen::Settings(SettingsScope::Global);
-                    self.settings_ui.dropdown = None;
-                    self.nav.set_cursor(ScreenKey::Settings, 0);
-                    self.render.scroll = ui::scroll::ScrollWindow::new();
-                    self.render.content_window = ui::scroll::ContentWindow::new();
-                }
+                HomeFocus::Sidebar(_) => self.open_settings_page(),
                 HomeFocus::SidebarMenu(i) => self.open_host_menu(i),
                 HomeFocus::Grid(i) => self.confirm_grid_card(i, columns),
             },

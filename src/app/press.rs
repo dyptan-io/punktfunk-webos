@@ -30,7 +30,6 @@ impl App {
         match self.nav.screen {
             Screen::Home => return self.handle_home_event(ev, screen_w, screen_h),
             Screen::Pairing => self.handle_pairing_event(ev),
-            Screen::Settings(_) => self.handle_settings_event(ev, screen_h),
             Screen::AddHost => self.handle_add_host_event(ev),
             Screen::Wake => self.handle_wake_event(ev),
             Screen::ForgetHost => self.handle_forget_host_event(ev),
@@ -39,17 +38,15 @@ impl App {
             Screen::SpeedTest => self.handle_speed_test_event(ev),
             Screen::EditHost => self.handle_edit_host_event(ev),
             Screen::About => self.handle_about_event(ev, screen_w, screen_h, fonts),
-            Screen::Diagnostics => self.handle_diagnostics_event(ev),
-            Screen::Experimental => self.handle_experimental_event(ev),
             Screen::HdrCalibration => self.handle_hdr_calibration_event(ev),
-            Screen::CursorSettings(_) => self.handle_cursor_settings_event(ev),
-            Screen::ControllerSettings(_) => self.handle_controller_settings_event(ev),
             Screen::SendLogs => self.handle_send_logs_event(ev),
             Screen::Collections => self.handle_collections_event(ev, screen_w, screen_h),
             Screen::RenameCollection => self.handle_name_collection_event(ev, screen_w, screen_h),
             Screen::RemoveCollection => self.handle_remove_collection_event(ev),
             Screen::ResetHdrCalibration => self.handle_reset_hdr_event(ev),
-            Screen::ResetGameSettings => self.handle_reset_game_settings_event(ev),
+            Screen::SettingsPage => self.handle_settings_page_event(ev),
+            Screen::RenameProfile => self.handle_rename_profile_event(ev),
+            Screen::DeleteProfile => self.handle_delete_profile_event(ev),
         }
         None
     }
@@ -87,11 +84,6 @@ impl App {
     /// value the press changes in place, and pushing a full-width row in for that reads as
     /// the list lurching; a button *is* its action.
     fn pressable(&self) -> bool {
-        // Focus is on a dropdown option, which has its own tile — the row behind the
-        // overlay is not what was pressed.
-        if self.settings_ui.dropdown.is_some() {
-            return false;
-        }
         match self.nav.screen {
             // Sidebar rows are buttons: pick a host, add one, open Settings. A grid card
             // isn't — launching one is already an animation of its own.
@@ -104,19 +96,16 @@ impl App {
             | Screen::SendLogs
             | Screen::RemoveCollection
             | Screen::ResetHdrCalibration
-            | Screen::ResetGameSettings => true,
+            | Screen::DeleteProfile => true,
             // Rows, not buttons.
-            Screen::Settings(_)
+            Screen::SettingsPage
+            | Screen::RenameProfile
             | Screen::AddHost
             | Screen::EditHost
             | Screen::About
             | Screen::HostMenu
             | Screen::HostPower
-            | Screen::Diagnostics
-            | Screen::Experimental
             | Screen::HdrCalibration
-            | Screen::CursorSettings(_)
-            | Screen::ControllerSettings(_)
             | Screen::Collections
             | Screen::RenameCollection => false,
         }

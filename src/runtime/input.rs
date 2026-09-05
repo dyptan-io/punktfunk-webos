@@ -470,7 +470,10 @@ pub(super) fn home_key_fired(prev: &mut bool) -> bool {
 /// stops it on the way out, and `SDL_SetTextInputRect` tells webOS where the field is
 /// so the panel doesn't cover it. Committed text arrives as `Event::TextInput`.
 pub(super) fn text_input_screen(screen: Screen) -> bool {
-    matches!(screen, Screen::AddHost | Screen::EditHost | Screen::RenameCollection)
+    matches!(
+        screen,
+        Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::RenameProfile
+    )
 }
 
 /// Edge-triggers Back off `held`: a repeat/OS-resent press while already held
@@ -976,7 +979,7 @@ pub(super) fn handle_ui_event(
         Event::KeyDown { keycode: Some(k), .. }
             if matches!(
                 app.nav.screen,
-                Screen::Pairing | Screen::AddHost | Screen::EditHost | Screen::RenameCollection
+                Screen::Pairing | Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::RenameProfile
             ) =>
         {
             if let Some(digit) = crate::platform::webos::input::digit_key_value(k) {
@@ -987,6 +990,7 @@ pub(super) fn handle_ui_event(
                     Screen::RenameCollection => {
                         app.enter_collection_name_char((b'0' + digit) as char);
                     }
+                    Screen::RenameProfile => app.enter_profile_name_char((b'0' + digit) as char),
                     _ => unreachable!(),
                 }
                 return EventAction::Next;
@@ -1023,6 +1027,11 @@ pub(super) fn handle_ui_event(
                 Screen::RenameCollection => {
                     for c in text.chars() {
                         app.enter_collection_name_char(c);
+                    }
+                }
+                Screen::RenameProfile => {
+                    for c in text.chars() {
+                        app.enter_profile_name_char(c);
                     }
                 }
                 _ => {}

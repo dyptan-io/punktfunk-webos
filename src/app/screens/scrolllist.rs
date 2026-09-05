@@ -8,7 +8,7 @@
 use crate::app::nav::ScreenKey;
 use crate::app::screens::is_scroll_list;
 use crate::app::view;
-use crate::app::{menu, App};
+use crate::app::App;
 use crate::core::model::Collection;
 use crate::core::screen::Screen;
 use crate::ui::cache;
@@ -23,7 +23,6 @@ impl App {
     /// missed by the other.
     pub(crate) fn scroll_list_rows(&self) -> Option<Vec<FocusRow>> {
         match self.nav.screen {
-            Screen::Settings(_) => Some(self.settings_rows()),
             Screen::Collections => self.collections_rows(),
             _ => None,
         }
@@ -39,7 +38,6 @@ impl App {
     /// closing modal is measured after `nav.screen` has already moved on.
     pub(crate) fn scroll_list_row_count_for(&self, screen: Screen) -> usize {
         match screen {
-            Screen::Settings(set) => menu::settings_row_count(set),
             Screen::Collections => self.collections_row_count(),
             _ => 0,
         }
@@ -62,21 +60,7 @@ impl App {
     /// common case while one of these is open — this comparison is the entire cost.
     pub(crate) fn scroll_list_rows_version(&self, content_w: u32) -> u64 {
         let screen = self.nav.screen;
-        let cursor = self.nav.cursor(ScreenKey::of(screen));
         match screen {
-            Screen::Settings(_) => cache::version(&(
-                screen,
-                *self.settings_target(),
-                self.editing_override(),
-                self.detected_gamepad_type,
-                // The Controller row's caption turns on whether the pad is actually bound to
-                // hid-playstation, which a hotplug can change on its own.
-                crate::platform::webos::dualsense::hid_playstation_bound(),
-                // The focused row carries the override-clear hint (`decorate_override`).
-                cursor,
-                self.settings_ui.dropdown.as_ref().map(|dd| dd.row),
-                content_w,
-            )),
             // Names, counts and which row holds the card — everything the rows draw. The
             // counts rather than the member ids: hashing every id of every collection is the
             // whole library, per frame, and no row draws one.

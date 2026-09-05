@@ -17,9 +17,8 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 pub use crate::core::model::{
-    merge_for_game, new_host_collections, upsert_known_host, AudioRoutePref, CodecPref, Collection, ExitAction,
-    GamepadType, GamepadUiMode, KnownHost, LogLevelOverride, OverrideField, Persisted, Settings, SettingsOverride,
-    DESKTOP_PIN_ID,
+    new_host_collections, upsert_known_host, AudioRoutePref, CodecPref, Collection, ExitAction, GamepadType,
+    KnownHost, LogLevelOverride, Persisted, Settings, DESKTOP_PIN_ID,
 };
 pub use crate::services::paths::app_dir;
 pub use identity::load_or_create_identity;

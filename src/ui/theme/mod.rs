@@ -27,8 +27,6 @@ pub mod presets;
 /// One complete look: what it is called, what it is coloured, and what its raised surfaces
 /// are made of.
 pub struct Theme {
-    /// Display name, and the only label the Theme dropdown has.
-    pub name: &'static str,
     /// The persisted value that names this look. [`PRESETS`] is the only place the two are
     /// tied together, so adding a look is adding one entry there.
     pub choice: ThemeChoice,
@@ -148,12 +146,6 @@ static EPOCH: AtomicU64 = AtomicU64::new(0);
 /// for — the same answer `ThemeChoice`'s lenient `Deserialize` gives.
 fn index_of(choice: ThemeChoice) -> usize {
     PRESETS.iter().position(|t| t.choice == choice).unwrap_or(0)
-}
-
-/// The look `choice` names.
-#[inline]
-pub fn for_choice(choice: ThemeChoice) -> &'static Theme {
-    &PRESETS[index_of(choice)]
 }
 
 /// Draws everything in `choice` from here on. Returns whether that was a change — the caller

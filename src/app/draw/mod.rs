@@ -10,6 +10,7 @@
 
 pub(crate) mod dialog;
 pub(crate) mod list;
+pub(crate) mod settings;
 
 use pf_console_ui::theme::{self, Fonts, PanelStroke, W};
 use skia_safe::canvas::SaveLayerRec;
@@ -28,9 +29,10 @@ pub(crate) const fn ported(screen: Screen) -> bool {
             | Screen::SendLogs
             | Screen::RemoveCollection
             | Screen::ResetHdrCalibration
-            | Screen::ResetGameSettings
             | Screen::HostMenu
             | Screen::HostPower
+            | Screen::SettingsPage
+            | Screen::DeleteProfile
     )
 }
 
@@ -190,6 +192,16 @@ impl App {
     fn draw_modal_screen(&mut self, f: &Frame<'_>, screen: Screen, alpha: f32, live: bool, dt: f64) {
         let dy = ui::animation::modal_rise(alpha) as f32;
         let focus = self.nav.cursor(crate::app::nav::ScreenKey::of(screen));
+        if screen == Screen::SettingsPage {
+            let rows = self.settings_page_specs();
+            let l = settings::layout(f.w, f.h, f.k);
+            let hover_close = live && self.render.hover_close;
+            let (page, column) = (self.screens.settings_page.page, self.screens.settings_page.column);
+            let list = self.kit_list(screen);
+            list.cursor = focus;
+            settings::draw(f, list, &l, page, column, &rows, hover_close, alpha, dy, dt, live);
+            return;
+        }
         if is_list(screen) {
             let Some(card) = self.list_card(screen) else {
                 return;
@@ -259,7 +271,7 @@ impl App {
         use crate::core::event::MenuEvent as E;
         use pf_client_core::menu_nav::{MenuDir, MenuEvent as K};
         let screen = self.nav.screen;
-        if !is_list(screen) {
+        if !is_list(screen) && !(screen == Screen::SettingsPage && !self.screens.settings_page.column) {
             return;
         }
         let len = self.row_count();
@@ -280,7 +292,7 @@ impl App {
     /// The row of the ported list under `(x, y)` — the kit's own last-drawn geometry.
     pub(crate) fn kit_list_row_at(&mut self, x: i32, y: i32) -> Option<usize> {
         let screen = self.nav.screen;
-        if !is_list(screen) {
+        if !is_list(screen) && screen != Screen::SettingsPage {
             return None;
         }
         let len = self.row_count();
@@ -302,6 +314,9 @@ impl App {
     /// Where a ported screen's close mark is hit, if one is up.
     pub(crate) fn ported_close_hit(&self, x: i32, y: i32, w: u32, h: u32) -> Option<bool> {
         let screen = self.nav.screen;
+        if screen == Screen::SettingsPage {
+            return Some(settings::layout(w as f32, h as f32, scale(h)).on_close(x, y));
+        }
         if is_list(screen) {
             let card = self.list_card(screen)?;
             let headers = card.rows.iter().filter(|r| r.header.is_some()).count();

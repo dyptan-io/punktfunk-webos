@@ -220,7 +220,7 @@ pub(crate) fn title_of(screen: Screen) -> Option<&'static str> {
         Screen::SendLogs => view::sendlogs::TITLE,
         Screen::RemoveCollection => view::collections::REMOVE_TITLE,
         Screen::ResetHdrCalibration => view::hdrcalibration::RESET_TITLE,
-        Screen::ResetGameSettings => view::resetgame::TITLE,
+        Screen::DeleteProfile => view::profile::DELETE_TITLE,
         _ => return None,
     })
 }

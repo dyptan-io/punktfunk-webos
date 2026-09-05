@@ -256,31 +256,6 @@ impl App {
                 Self::push_faded(cmds, tile::SCROLL_CONTENT, src, dst.offset(0, dy), alpha, fades);
             }
         }
-        // An open dropdown's panel and its focused option, resolved once — the two are
-        // drawn either side of the focus tile below, which is the only reason they are
-        // not one block.
-        let dropdown = self.dropdown_draw_state().and_then(|(row, focused, dd_alpha)| {
-            let (content, scroll_px) = self.dropdown_geom(screen_w, screen_h, fonts)?;
-            let overlay_rect = view::scrolllist::dropdown_overlay_rect_at_px(content, row, scroll_px);
-            Some((row, focused, overlay_rect, (255.0 * m * dd_alpha) as u8))
-        });
-        // Dropdown overlay (Settings or Diagnostics).
-        if let Some((row, _, overlay_rect, dd_alpha)) = dropdown {
-            let options_len = self.dropdown_len(row);
-            let panel = Rect::new(
-                overlay_rect.x(),
-                overlay_rect.y() + dy,
-                overlay_rect.width(),
-                options_len as u32 * ui::widgets::DROPDOWN_OPTION_H,
-            );
-            // The popup lifts off the row behind it, same as the card lifts off the screen.
-            ui::painter::push_shadow(cmds, tile::PANEL_SHADOW, ui::widgets::CARD_RADIUS, panel, dd_alpha);
-            cmds.push(DrawCmd::Tex {
-                tile: tile::DROPDOWN_OVERLAY,
-                dst: panel,
-                alpha: dd_alpha,
-            });
-        }
         // Focused widget of the active modal (setting row, button, etc.);
         // composites on shell at its on-screen position (no re-rasterize on move).
         // The entering screen's only — the snapshot has its own focused row baked in.
@@ -317,23 +292,6 @@ impl App {
                     alpha,
                 }),
             }
-        }
-        // The open dropdown's focused option — same idea, composited on
-        // top of the shell's unfocused option list at its actual
-        // position, so navigating dropdown options needs no modal
-        // re-rasterize either. `Settings` or `Diagnostics`.
-        if let Some((_, focused, overlay_rect, dd_alpha)) = dropdown {
-            let option_rect = ui::widgets::dropdown_option_rect(overlay_rect, focused);
-            cmds.push(DrawCmd::Tex {
-                tile: tile::DROPDOWN_FOCUS,
-                dst: Rect::new(
-                    option_rect.x(),
-                    option_rect.y() + dy,
-                    option_rect.width(),
-                    option_rect.height(),
-                ),
-                alpha: dd_alpha,
-            });
         }
         // Whichever modal is scrollable, its indicator (names kept from when only Settings
         // had one; every scrollable modal now shares the same timing and the same

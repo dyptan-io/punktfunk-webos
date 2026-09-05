@@ -9,11 +9,10 @@ use crate::core::screen::Screen;
 use crate::services::library::{self, LibraryError};
 use std::path::Path;
 
-/// Leaves headroom below the host's 1 MiB request limit.
-const MAX_LOG_BYTES: u64 = 1000 * 1024;
-
 /// Upload endpoint (see the Go service: POST multipart `file` field to `/upload`).
 const UPLOAD_URL: &str = "https://www.upload.dyptan.dev/upload";
+/// The tail of the log that travels; the file itself rotates at this size too.
+const MAX_LOG_BYTES: u64 = 960 * 1024;
 
 /// What the background upload thread reports back — a user-facing status line
 /// either way, shown in the Home status bar by `drain_send_logs`.
