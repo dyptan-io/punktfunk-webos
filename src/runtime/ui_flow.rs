@@ -423,7 +423,7 @@ pub(super) fn run_ui_flow(
             let dt = last_frame.elapsed().as_secs_f64().min(0.1);
             last_frame = Instant::now();
             let frame = crate::app::draw::Frame::new(c, &kit_fonts, display_mode.w as u32, display_mode.h as u32);
-            app.draw_home(&frame);
+            app.draw_home(&frame, dt);
             app.draw_modals(&frame, dt);
             app.draw_launch(&frame);
             if let Some(lines) = &log_lines {

@@ -4,11 +4,11 @@
 //! [`layout`] is what the pointer measures; the rows are hit through the list's own rects.
 
 use pf_console_ui::icons::{by_name, draw_icon};
-use pf_console_ui::theme::{self, PanelStroke, W};
+use pf_console_ui::theme::{self, W};
 use pf_console_ui::widgets::{MenuList, RowSpec};
-use skia_safe::{Contains, Point, RRect, Rect};
+use skia_safe::{Contains, Point, Rect};
 
-use super::{glass_card, Frame};
+use super::{focus_face, glass_card, with_pop, FocusEase, Frame};
 use crate::app::state::settingspage::Page;
 
 /// The card as a share of the screen, both axes.
@@ -93,6 +93,7 @@ pub(crate) fn layout(fw: f32, fh: f32, k: f32) -> Layout {
 pub(crate) fn draw(
     f: &Frame<'_>,
     list: &mut MenuList,
+    tabs: &mut FocusEase,
     l: &Layout,
     page: Page,
     column: bool,
@@ -128,38 +129,26 @@ pub(crate) fn draw(
             theme::fg(if hover_close { 1.0 } else { 0.5 }),
         );
     }
+    tabs.step(Page::ALL.len(), (column && active).then(|| page.index()), dt);
     for (i, (p, r)) in Page::ALL.iter().zip(&l.entries).enumerate() {
         let open = i == page.index();
-        let focused = open && column && active;
-        let rr = RRect::new_rect_xy(*r, ENTRY_CORNER * k, ENTRY_CORNER * k);
-        if focused {
-            c.draw_rrect(rr, &theme::fill(theme::accent(0.30)));
-            let mut sp = theme::stroke(theme::accent(0.8), 1.5 * k);
-            sp.set_anti_alias(true);
-            c.draw_rrect(rr, &sp);
-        } else if open {
-            theme::panel(
-                c,
-                *r,
-                ENTRY_CORNER,
-                Some(theme::accent(0.12)),
-                PanelStroke::Plain(0.10),
-                k,
-            );
-        }
+        let fo = tabs.at(i);
         let color = if open { theme::fg(1.0) } else { theme::fg(0.6) };
-        if let Some(icon) = by_name(p.icon()) {
-            draw_icon(c, icon, r.left + 24.0 * k, r.center_y(), ICON_BOX * k, color);
-        }
-        f.fonts.draw(
-            c,
-            p.label(),
-            f64::from(r.left + 44.0 * k),
-            f64::from(r.center_y() + ENTRY_SIZE as f32 * k * 0.35),
-            if open { W::SemiBold } else { W::Medium },
-            ENTRY_SIZE * f64::from(k),
-            color,
-        );
+        with_pop(c, *r, fo, |c| {
+            focus_face(c, *r, ENTRY_CORNER, fo, open, k);
+            if let Some(icon) = by_name(p.icon()) {
+                draw_icon(c, icon, r.left + 24.0 * k, r.center_y(), ICON_BOX * k, color);
+            }
+            f.fonts.draw(
+                c,
+                p.label(),
+                f64::from(r.left + 44.0 * k),
+                f64::from(r.center_y() + ENTRY_SIZE as f32 * k * 0.35),
+                if open { W::SemiBold } else { W::Medium },
+                ENTRY_SIZE * f64::from(k),
+                color,
+            );
+        });
     }
     list.render(c, l.rows, rows, f.fonts, f64::from(k), dt, active && !column);
     c.restore();
@@ -194,29 +183,35 @@ mod tests {
         let l = layout(w as f32, h as f32, k);
         let mut surface = skia_safe::surfaces::raster_n32_premul((w as i32, h as i32)).unwrap();
         let mut list = MenuList::new();
-        for _ in 0..90 {
-            surface.canvas().clear(Color4f::new(0.075, 0.063, 0.16, 1.0));
-            let f = Frame::new(surface.canvas(), &fonts, w, h);
-            draw(
-                &f,
-                &mut list,
-                &l,
-                Page::Display,
-                false,
-                &rows,
-                false,
-                1.0,
-                0.0,
-                1.0 / 60.0,
-                true,
-            );
-        }
-        if let Ok(dir) = std::env::var("PF_WEBOS_DUMP") {
-            let png = surface
-                .image_snapshot()
-                .encode(None, skia_safe::EncodedImageFormat::PNG, 100)
-                .unwrap();
-            std::fs::write(format!("{dir}/settings-display.png"), png.as_bytes()).unwrap();
+        let mut tabs = FocusEase::default();
+        // Rows focused first, then the page column: both faces settle within the frames.
+        for (column, name) in [(false, "settings-display"), (true, "settings-column")] {
+            for _ in 0..90 {
+                surface.canvas().clear(Color4f::new(0.075, 0.063, 0.16, 1.0));
+                let f = Frame::new(surface.canvas(), &fonts, w, h);
+                draw(
+                    &f,
+                    &mut list,
+                    &mut tabs,
+                    &l,
+                    Page::Display,
+                    column,
+                    &rows,
+                    false,
+                    1.0,
+                    0.0,
+                    1.0 / 60.0,
+                    true,
+                );
+            }
+            assert!(!tabs.animating());
+            if let Ok(dir) = std::env::var("PF_WEBOS_DUMP") {
+                let png = surface
+                    .image_snapshot()
+                    .encode(None, skia_safe::EncodedImageFormat::PNG, 100)
+                    .unwrap();
+                std::fs::write(format!("{dir}/{name}.png"), png.as_bytes()).unwrap();
+            }
         }
     }
 
