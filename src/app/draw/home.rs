@@ -30,9 +30,9 @@ const VALUE: f32 = 20.0;
 const TITLE: f32 = 40.0;
 const CAPTION: f32 = 14.0;
 pub(crate) const CARD_RADIUS: f32 = 10.0;
-/// The app mark top left at the panel's padding, on its own — the host rows say what the
-/// column is. `MARK_SIDE` is the discs' box, not an icon tile; [`view::sidebar::TOP_Y`]
-/// follows it.
+/// The app mark top left, on its own — the host rows say what the column is. Its left edge
+/// lines up with the row icons, not the panel padding, or it reads as hanging off the edge.
+/// `MARK_SIDE` is the discs' box, not an icon tile; [`view::sidebar::TOP_Y`] follows it.
 const MARK_SIDE: f32 = 64.0;
 const SIDEBAR_ICON: f32 = 30.0;
 const SIDEBAR_ICON_PAD: f32 = 20.0;
@@ -229,7 +229,7 @@ impl App {
         // Opaque on every look, glass included: a lit edge against the grid reads as a seam.
         c.draw_rect(panel_rect, &theme::fill(panel()));
         let x = SIDEBAR_PAD as f32;
-        app_mark(c, x, x, MARK_SIDE);
+        app_mark(c, x + SIDEBAR_ICON_PAD, x, MARK_SIDE);
 
         let entries = &self.hosts.entries;
         let add_row = entries.len();
