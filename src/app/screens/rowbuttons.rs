@@ -8,7 +8,6 @@
 //! `ui::widgets::{leading,trailing}_button_rect`, which the painter draws from and the
 //! pointer hit-tests against.
 use crate::app::nav::ScreenKey;
-use crate::app::state::hostmenu::host_menu_trailing;
 use crate::app::view;
 use crate::app::App;
 use crate::core::screen::Screen;
@@ -72,12 +71,6 @@ impl App {
     /// (`docs/COLLECTIONS-PLAN.md` §Risks).
     fn row_buttons(&self, row: usize) -> RowButtons {
         match self.nav.screen {
-            Screen::HostMenu => RowButtons::trailing(
-                self.host_menu_actions()
-                    .get(row)
-                    .copied()
-                    .map_or(&[][..], host_menu_trailing),
-            ),
             Screen::Experimental => crate::app::menu::EXP_ROWS.get(row).map_or_else(
                 || RowButtons::trailing(&[]),
                 |&r| {

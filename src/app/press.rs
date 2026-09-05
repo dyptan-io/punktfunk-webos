@@ -26,6 +26,7 @@ impl App {
         if ev != MenuEvent::Confirm {
             self.render.press.take();
         }
+        self.kit_list_visual(ev);
         match self.nav.screen {
             Screen::Home => return self.handle_home_event(ev, screen_w, screen_h),
             Screen::Pairing => self.handle_pairing_event(ev),

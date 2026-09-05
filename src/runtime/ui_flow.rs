@@ -68,8 +68,10 @@ pub(super) fn run_ui_flow(
     canvas.window_mut().show();
     // Both menus need it now; without a GL context there is nothing to draw with.
     let gl = console_flow::bring_up(gl, canvas).context("menu: GL host")?;
-    let kit_fonts = pf_console_ui::theme::build_fonts().context("menu: kit fonts")?;
-    let mut app = App::new(identity.clone(), kit_fonts);
+    let kit_fonts = std::rc::Rc::new(pf_console_ui::theme::build_fonts().context("menu: kit fonts")?);
+    let mut app = App::new(identity.clone(), kit_fonts.clone());
+    // The kit widgets step on real time, like the shell's do.
+    let mut last_frame = Instant::now();
     // Re-poll pad type (ControllerDeviceAdded fires once per connect, not per menu entry).
     app.set_gamepad_type(gamepad::detect_type(game_controller));
     // Seeded here for the same reason: the hotplug events fire once per connect, and this
@@ -555,13 +557,13 @@ pub(super) fn run_ui_flow(
             images.present(c, &cmds);
             // The screens drawn on the kit, over the tiles (`app::draw`).
             app.apply_ink();
-            app.fonts.begin_frame();
-            app.draw_modals(&crate::app::draw::Frame::new(
-                c,
-                &app.fonts,
-                display_mode.w as u32,
-                display_mode.h as u32,
-            ));
+            kit_fonts.begin_frame();
+            let dt = last_frame.elapsed().as_secs_f64().min(0.1);
+            last_frame = Instant::now();
+            app.draw_modals(
+                &crate::app::draw::Frame::new(c, &kit_fonts, display_mode.w as u32, display_mode.h as u32),
+                dt,
+            );
         }
         gl.flush();
         canvas.window().gl_swap_window();

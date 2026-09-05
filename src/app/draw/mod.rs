@@ -9,6 +9,7 @@
 //! (`height / 800`) the shell applies, so a row here is a row there.
 
 pub(crate) mod dialog;
+pub(crate) mod list;
 
 use pf_console_ui::theme::{self, Fonts, PanelStroke, W};
 use skia_safe::canvas::SaveLayerRec;
@@ -28,7 +29,14 @@ pub(crate) const fn ported(screen: Screen) -> bool {
             | Screen::RemoveCollection
             | Screen::ResetHdrCalibration
             | Screen::ResetGameSettings
+            | Screen::HostMenu
+            | Screen::HostPower
     )
+}
+
+/// The ported screens that are a list card (`draw::list`) rather than a dialog.
+pub(crate) const fn is_list(screen: Screen) -> bool {
+    matches!(screen, Screen::HostMenu | Screen::HostPower)
 }
 
 /// What every draw fn takes.
@@ -111,11 +119,31 @@ pub(crate) fn glass_card(canvas: &Canvas, rect: Rect, corner: f32, k: f32) {
 pub(crate) fn lucide_for(material: &str) -> Option<&'static str> {
     use crate::app::view::icons as m;
     Some(match material {
-        x if x == m::ICON_DELETE => "trash-2",
-        x if x == m::ICON_SEND => "send",
-        x if x == m::ICON_POWER => "power",
+        x if x == m::ICON_TV => "tv",
+        x if x == m::ICON_LOCK => "lock",
+        x if x == m::ICON_ADD => "plus",
+        x if x == m::ICON_SETTINGS => "settings",
+        x if x == m::ICON_MONITOR => "monitor",
+        x if x == m::ICON_SCHEDULE => "clock",
         x if x == m::ICON_SIGNAL => "activity",
+        x if x == m::ICON_SUN => "sun",
+        x if x == m::ICON_POWER => "power",
+        x if x == m::ICON_DELETE => "trash-2",
+        x if x == m::ICON_EDIT => "pencil",
+        x if x == m::ICON_INFO => "info",
+        x if x == m::ICON_WRENCH => "wrench",
+        x if x == m::ICON_BUG => "bug",
+        x if x == m::ICON_CHART => "chart-column",
+        x if x == m::ICON_MEMORY => "cpu",
+        x if x == m::ICON_MOVIE => "film",
+        x if x == m::ICON_VISIBILITY => "eye",
+        x if x == m::ICON_SEND => "send",
         x if x == m::ICON_CHECK => "check",
+        x if x == m::ICON_GAMEPAD => "gamepad-2",
+        x if x == m::ICON_PALETTE => "palette",
+        x if x == m::ICON_MOUSE => "mouse",
+        x if x == m::ICON_TOUCH => "pointer",
+        x if x == m::ICON_REORDER => "grip-vertical",
         _ => return None,
     })
 }
@@ -138,8 +166,9 @@ pub(crate) fn ui_rect(r: Rect) -> ui::render::Rect {
 impl App {
     /// The ported modal layer, drawn after the tiles: the open card at its open alpha and
     /// rise, and the card being left at its closing alpha — the same cross-fade
-    /// `render::compose` plays for tiles, from state instead of from a snapshot.
-    pub(crate) fn draw_modals(&self, f: &Frame<'_>) {
+    /// `render::compose` plays for tiles, from state instead of from a snapshot. `dt` is
+    /// the frame's step, for the kit widgets' own motion.
+    pub(crate) fn draw_modals(&mut self, f: &Frame<'_>, dt: f64) {
         let screen = self.nav.screen;
         let m = if matches!(screen, Screen::Home) {
             0.0
@@ -148,22 +177,35 @@ impl App {
         };
         if let Some((alpha, left)) = self.render.modal.fade.closing_frame_against(m) {
             if ported(left) {
-                self.draw_modal_screen(f, left, alpha, false);
+                self.draw_modal_screen(f, left, alpha, false, dt);
             }
         }
         if ported(screen) && m > 0.0 {
-            self.draw_modal_screen(f, screen, m, true);
+            self.draw_modal_screen(f, screen, m, true, dt);
         }
     }
 
     /// One ported card. `live` is whether it is the screen the cursor is on: a card on its
     /// way out keeps its last focus but takes no pop and no press.
-    fn draw_modal_screen(&self, f: &Frame<'_>, screen: Screen, alpha: f32, live: bool) {
+    fn draw_modal_screen(&mut self, f: &Frame<'_>, screen: Screen, alpha: f32, live: bool, dt: f64) {
         let dy = ui::animation::modal_rise(alpha) as f32;
+        let focus = self.nav.cursor(crate::app::nav::ScreenKey::of(screen));
+        if is_list(screen) {
+            let Some(card) = self.list_card(screen) else {
+                return;
+            };
+            let headers = card.rows.iter().filter(|r| r.header.is_some()).count();
+            let l = list::layout(f.fonts, f.w, f.h, f.k, card.subtitle.as_deref(), card.rows.len(), headers);
+            let hover_close = live && self.render.hover_close;
+            let list = self.kit_list(screen);
+            // The App's cursor is the one the handlers read; the widget's follows it.
+            list.cursor = focus;
+            list::draw(f, list, &l, &card.title, &card.rows, hover_close, alpha, dy, dt, live);
+            return;
+        }
         let (Some(title), Some(confirm)) = (dialog::title_of(screen), self.confirm_for(screen)) else {
             return;
         };
-        let focus = self.nav.cursor(crate::app::nav::ScreenKey::of(screen));
         let motion = live.then_some(dialog::Motion {
             focus_anim: self.render.modal.focus_anim,
             press: self.press_dip(screen),
@@ -171,6 +213,110 @@ impl App {
         });
         dialog::draw(f, title, &confirm, focus, motion.as_ref(), alpha, dy);
     }
+
+    /// The kit list for `screen`, made fresh when the screen changes so a new card enters
+    /// with its own rise and no scroll carried over from the last one.
+    pub(crate) fn kit_list(&mut self, screen: Screen) -> &mut pf_console_ui::widgets::MenuList {
+        let cursor = self.nav.cursor(crate::app::nav::ScreenKey::of(screen));
+        let fresh = !matches!(&self.render.list, Some((s, _)) if *s == screen);
+        if fresh {
+            let mut list = pf_console_ui::widgets::MenuList::new();
+            list.jump_to(cursor);
+            self.render.list = Some((screen, list));
+        }
+        &mut self.render.list.as_mut().expect("just set").1
+    }
+
+    /// The card a ported list screen shows: its title, subtitle and rows in the kit's
+    /// vocabulary. `None` on any other screen.
+    pub(crate) fn list_card(&self, screen: Screen) -> Option<ListCard> {
+        use crate::app::view;
+        Some(match screen {
+            Screen::HostMenu => ListCard {
+                title: self.host_menu_title(),
+                subtitle: Some(self.host_menu_subtitle()),
+                rows: self.host_menu_rows().iter().map(list::row_spec).collect(),
+            },
+            Screen::HostPower => {
+                let (auto_send, exit_action, access) = self.host_power_view();
+                ListCard {
+                    title: view::hostpower::title(self.host_menu_host_name().unwrap_or_default()),
+                    subtitle: Some(view::hostpower::SUBTITLE.to_string()),
+                    rows: view::hostpower::rows(auto_send, exit_action, access)
+                        .iter()
+                        .map(list::row_spec)
+                        .collect(),
+                }
+            }
+            _ => return None,
+        })
+    }
+
+    /// The kit widget's side of a menu event on a ported list screen: the recoil at an end,
+    /// the confirm dip, the value slip. The App's handler is what the event *means*; this
+    /// is only what it looks like.
+    pub(crate) fn kit_list_visual(&mut self, ev: crate::core::event::MenuEvent) {
+        use crate::core::event::MenuEvent as E;
+        use pf_client_core::menu_nav::{MenuDir, MenuEvent as K};
+        let screen = self.nav.screen;
+        if !is_list(screen) {
+            return;
+        }
+        let len = self.row_count();
+        let kit = match ev {
+            E::Up => K::Move(MenuDir::Up),
+            E::Down => K::Move(MenuDir::Down),
+            E::Left => K::Move(MenuDir::Left),
+            E::Right => K::Move(MenuDir::Right),
+            E::Confirm => K::Confirm,
+            E::Back | E::Secondary => return,
+        };
+        let cursor = self.nav.cursor(crate::app::nav::ScreenKey::of(screen));
+        let list = self.kit_list(screen);
+        list.cursor = cursor;
+        let _ = list.menu(kit, len);
+    }
+
+    /// The row of the ported list under `(x, y)` — the kit's own last-drawn geometry.
+    pub(crate) fn kit_list_row_at(&mut self, x: i32, y: i32) -> Option<usize> {
+        let screen = self.nav.screen;
+        if !is_list(screen) {
+            return None;
+        }
+        let len = self.row_count();
+        let list = self.kit_list(screen);
+        let before = list.cursor;
+        // A hover only reports a row it *moves* to, so probe from a cursor no row can be.
+        list.cursor = usize::MAX;
+        let p = pf_console_ui::pointer::Pointer {
+            x: f64::from(x),
+            y: f64::from(y),
+            kind: pf_console_ui::pointer::PointerKind::Move,
+        };
+        let _ = list.pointer(p, len);
+        let hit = (list.cursor != usize::MAX).then_some(list.cursor);
+        list.cursor = before;
+        hit
+    }
+
+    /// Where a ported screen's close mark is hit, if one is up.
+    pub(crate) fn ported_close_hit(&self, x: i32, y: i32, w: u32, h: u32) -> Option<bool> {
+        let screen = self.nav.screen;
+        if is_list(screen) {
+            let card = self.list_card(screen)?;
+            let headers = card.rows.iter().filter(|r| r.header.is_some()).count();
+            let l = list::layout(&self.fonts, w as f32, h as f32, scale(h), card.subtitle.as_deref(), card.rows.len(), headers);
+            return Some(l.on_close(x, y));
+        }
+        self.dialog_layout(w, h).map(|l| l.on_close(x, y))
+    }
+}
+
+/// What a ported list screen shows.
+pub(crate) struct ListCard {
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub rows: Vec<pf_console_ui::widgets::RowSpec>,
 }
 
 #[cfg(test)]
