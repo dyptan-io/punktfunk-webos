@@ -27,8 +27,6 @@ pub enum ModalFocusKey<'a> {
         access: PowerAccess,
     },
     WakeButton(usize),
-    PairingDigit(usize, u8),
-    PairingButton,
     ForgetButton(usize),
     /// Carries label to prevent stale tiles across screen changes.
     SpeedTestButton(usize, &'a str),
@@ -63,11 +61,6 @@ pub enum ModalShellKey<'a> {
     Wake {
         name: &'a str,
         mac_empty: bool,
-    },
-    Pairing {
-        digits: [u8; 4],
-        status: Option<&'a str>,
-        busy: bool,
     },
     ForgetHost {
         name: Option<&'a str>,

@@ -51,16 +51,18 @@ impl HoverChange {
 impl App {
     /// Handed to `SDL_SetTextInputRect` by the render loop. `None` off the text forms, which
     /// are the only screens that take text input at all.
-    pub fn address_field_rect(&self, screen_w: u32, screen_h: u32, fonts: &ui::text::Fonts) -> Option<Rect> {
+    pub fn address_field_rect(&self, screen_w: u32, screen_h: u32, _fonts: &ui::text::Fonts) -> Option<Rect> {
         let form = self.text_form()?;
-        Some(view::textform::field_rect(
-            screen_w,
-            screen_h,
-            fonts,
+        let l = crate::app::draw::form::layout(
+            &self.fonts,
+            screen_w as f32,
+            screen_h as f32,
+            crate::app::draw::scale(screen_h),
             &form.subtitle,
             form.hint.is_some(),
             self.keyboard_shown,
-        ))
+        );
+        Some(l.field_rect())
     }
 
     /// Updates focus/hover to whatever the Magic Remote's pointer is over, returning
@@ -227,10 +229,15 @@ impl App {
                 HoverChange::split(row_changed, button_changed)
             }
             Screen::Pairing => {
-                let card = view::pairing::card_rect(screen_w, screen_h, fonts);
-                if view::pairing::request_button_rect(card, fonts).contains_point((x, y)) {
+                let l = self.pair_layout(screen_w, screen_h);
+                if l.on_button(x, y) {
                     let changed = self.screens.pairing_focus != PairingFocus::RequestAccess;
                     self.screens.pairing_focus = PairingFocus::RequestAccess;
+                    HoverChange::row(changed)
+                } else if let Some(i) = l.digit_at(x, y) {
+                    let changed = self.screens.pairing_focus != PairingFocus::Pin || self.screens.pin_digit_index != i;
+                    self.screens.pairing_focus = PairingFocus::Pin;
+                    self.screens.pin_digit_index = i;
                     HoverChange::row(changed)
                 } else {
                     HoverChange::NONE
@@ -483,12 +490,16 @@ impl App {
             }
             Screen::Pairing => {
                 // The Magic Remote pointer is the most reliable input on this TV, so the
-                // "Request access" button is clickable directly: focus it and confirm.
-                let card = view::pairing::card_rect(screen_w, screen_h, fonts);
-                if !view::pairing::request_button_rect(card, fonts).contains_point((x, y)) {
-                    return None;
+                // "Request access" button is clickable directly: focus it and confirm. A
+                // digit box focuses that digit; a press then steps it, as OK does.
+                let l = self.pair_layout(screen_w, screen_h);
+                if l.on_button(x, y) {
+                    self.screens.pairing_focus = PairingFocus::RequestAccess;
+                } else {
+                    let i = l.digit_at(x, y)?;
+                    self.screens.pairing_focus = PairingFocus::Pin;
+                    self.screens.pin_digit_index = i;
                 }
-                self.screens.pairing_focus = PairingFocus::RequestAccess;
             }
             Screen::SettingsPage => {
                 let l = crate::app::draw::settings::layout(screen_w as f32, screen_h as f32, crate::app::draw::scale(screen_h));

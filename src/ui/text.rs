@@ -170,13 +170,6 @@ impl Canvas<'_, '_> {
         Ok(width)
     }
 
-    /// One line centred horizontally within `within`, at `y`. The `x + (w - measure) / 2`
-    /// every centred label was spelling out for itself.
-    pub fn text_centered(&mut self, font: FontId, s: &str, within: Rect, y: i32, color: Color) -> Result<u32> {
-        let w = self.fonts.raster.measure(font, s).0 as i32;
-        self.text(font, s, within.x() + (within.width() as i32 - w) / 2, y, color)
-    }
-
     /// Draws one icon glyph (one of the `ICON_*` constants) from the bundled icon
     /// font, scaled to fill `rect` — the same [`TextCache`] that caches on-screen text
     /// caches these too (a font id plus the glyph string is already a unique, stable

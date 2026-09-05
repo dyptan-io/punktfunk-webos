@@ -7,21 +7,6 @@ use tiny_skia::Pixmap;
 pub const CARD_RADIUS: i32 = 10;
 pub const MODAL_RADIUS: i32 = 20;
 
-/// Approximate moonlight-tv's 2% focus zoom by inflating rect from center.
-fn focus_zoom(rect: Rect, focused: bool) -> Rect {
-    if !focused {
-        return rect;
-    }
-    let grow_w = ((rect.width() as f32) * 0.02).round() as i32;
-    let grow_h = ((rect.height() as f32) * 0.02).round() as i32;
-    Rect::new(
-        rect.x() - grow_w,
-        rect.y() - grow_h,
-        rect.width() + 2 * grow_w as u32,
-        rect.height() + 2 * grow_h as u32,
-    )
-}
-
 /// How far the focused-card glow's blur extends past the card edge — the pad
 /// `render_focus_ring_tile`'s canvas must leave for it not to clip. The halo reads
 /// tighter than this: `render_glow_shape` reshapes the blur's ramp into a collar on the
@@ -59,14 +44,6 @@ impl Painter {
         let accent = palette().accent_bright;
         let color = Color::RGBA(accent.r, accent.g, accent.b, 0xd0);
         self.stroke_rounded_rect(rect, CARD_RADIUS, color, 1.5);
-    }
-
-    /// Draw text-entry card (PIN/IP boxes); always visible, zoom when focused.
-    pub fn card(&mut self, rect: Rect, focused: bool) -> Rect {
-        let r = focus_zoom(rect, focused);
-        self.card_shadow(r, CARD_RADIUS);
-        self.fill_rounded_rect(r, CARD_RADIUS, palette().surface);
-        r
     }
 
     /// Focus card that never inflates. Rows are rasterized once at their literal size;
@@ -422,28 +399,3 @@ impl Canvas<'_, '_> {
     }
 }
 
-/// A focused card tile with centered text — a padded transparent tile holding
-/// one `Painter::card(.., false)` box (no CPU inflate; the zoom is a GPU animation
-/// in `app::App`'s draw-list building) with `text` centered in it. Backs the pairing screen's
-/// focused digit and button tiles.
-pub struct CardTextTile<'a> {
-    pub font: FontId,
-    pub text: &'a str,
-    pub w: u32,
-    pub h: u32,
-}
-
-impl Widget for CardTextTile<'_> {
-    fn render(self, area: Rect, c: &mut Canvas) -> Result<()> {
-        let drawn = c.painter.card(area.inflate(-ROW_TILE_PAD), false);
-        let text_y = drawn.y() + (drawn.height() as i32 - c.fonts.raster.height(self.font)) / 2;
-        c.text_centered(self.font, self.text, drawn, text_y, palette().text)?;
-        Ok(())
-    }
-}
-
-impl TileWidget for CardTextTile<'_> {
-    fn size(&self, _fonts: &Fonts) -> (u32, u32) {
-        padded_size(self.w, self.h, ROW_TILE_PAD)
-    }
-}
