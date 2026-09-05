@@ -36,6 +36,7 @@ pub(crate) const fn is_confirm(screen: Screen) -> bool {
         | Screen::Collections
         | Screen::RenameCollection
         | Screen::SettingsPage
+        | Screen::PickProfile
         | Screen::RenameProfile => false,
     }
 }
@@ -58,6 +59,7 @@ pub(crate) const fn is_list_modal(screen: Screen) -> bool {
     match screen {
         Screen::HostMenu
         | Screen::HostPower
+        | Screen::PickProfile
         // A list modal like any other, even though it draws over the video plane rather than
         // over the menu — that difference is `compose_modal`'s, not this family's.
         | Screen::HdrCalibration

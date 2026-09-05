@@ -150,8 +150,26 @@ pub(crate) struct PairingOutcome {
 }
 
 /// The sidebar's saved-host rows.
-fn known_entries(known_hosts: &[store::KnownHost]) -> Vec<HostEntry> {
-    known_hosts.iter().cloned().map(HostEntry::Known).collect()
+/// The sidebar's rows from the saved hosts: each host, then one card per profile pinned
+/// under it (a pin whose profile has left the catalog is skipped, not shown broken).
+fn known_entries(
+    known_hosts: &[store::KnownHost],
+    profiles: &[pf_client_core::profiles::StreamProfile],
+) -> Vec<HostEntry> {
+    let mut entries = Vec::with_capacity(known_hosts.len());
+    for h in known_hosts {
+        entries.push(HostEntry::Known(h.clone()));
+        for id in &h.pinned_profiles {
+            if let Some(p) = profiles.iter().find(|p| p.id == *id) {
+                entries.push(HostEntry::Pinned {
+                    host: h.clone(),
+                    profile_id: id.clone(),
+                    label: format!("{} · {}", h.name, p.name),
+                });
+            }
+        }
+    }
+    entries
 }
 
 impl App {
@@ -220,7 +238,7 @@ impl App {
             version: _,
             profiles,
         } = loaded;
-        let entries = known_entries(&known_hosts);
+        let entries = known_entries(&known_hosts, &profiles);
 
         // Catches hosts that left the list while the app was closed (migration, torn document);
         // in-session removals reconcile at their own sites.
@@ -332,8 +350,12 @@ impl App {
     /// Rebuilds the sidebar from `known_hosts`, dropping any discovered-but-unsaved rows. Every
     /// caller that mutates `known_hosts` goes through this rather than collecting the list
     /// itself, so no site has to remember to re-anchor focus.
+    pub(crate) fn refresh_entries(&mut self) {
+        self.rebuild_entries();
+    }
+
     pub(crate) fn rebuild_entries(&mut self) {
-        self.set_entries(known_entries(&self.hosts.known));
+        self.set_entries(known_entries(&self.hosts.known, &self.profiles));
     }
 
     /// The one place the sidebar row list is replaced: keeps focus on the row the user is on and

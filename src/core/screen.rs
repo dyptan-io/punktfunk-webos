@@ -35,6 +35,9 @@ pub enum Screen {
     RenameProfile,
     /// "Delete profile?" — warns what falls back to the default settings.
     DeleteProfile,
+    /// One list of the catalog's profiles, for a host default, a one-off connect, a title's
+    /// binding or the sidebar pins (`app::state::profilepick`).
+    PickProfile,
 }
 
 /// Pairing modal's focused input: PIN row or "Request access" button.

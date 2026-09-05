@@ -31,10 +31,11 @@ pub(crate) enum ScreenKey {
     SettingsPage,
     RenameProfile,
     DeleteProfile,
+    PickProfile,
 }
 
 impl ScreenKey {
-    pub const COUNT: usize = Self::DeleteProfile as usize + 1;
+    pub const COUNT: usize = Self::PickProfile as usize + 1;
 
     pub const fn of(screen: Screen) -> Self {
         match screen {
@@ -57,6 +58,7 @@ impl ScreenKey {
             Screen::SettingsPage => Self::SettingsPage,
             Screen::RenameProfile => Self::RenameProfile,
             Screen::DeleteProfile => Self::DeleteProfile,
+            Screen::PickProfile => Self::PickProfile,
         }
     }
 }

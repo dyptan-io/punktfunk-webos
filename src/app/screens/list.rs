@@ -19,6 +19,7 @@ impl App {
         match self.nav.screen {
             Screen::HostMenu => self.host_menu_actions().len(),
             Screen::HostPower => view::hostpower::ROW_COUNT,
+            Screen::PickProfile => self.pick_profile_rows().len(),
             Screen::HdrCalibration => view::hdrcalibration::ROW_COUNT,
             // Exhaustive for the same reason `list_modal_rows` is: this is the second half of
             // the family's table — the labels there, the count here — and a screen listed by

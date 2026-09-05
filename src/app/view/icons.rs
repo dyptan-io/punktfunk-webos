@@ -12,3 +12,6 @@ pub const ICON_EDIT: &str = "pencil";
 pub const ICON_SEND: &str = "send";
 pub const ICON_REORDER: &str = "grip-vertical";
 pub const ICON_CLOSE: &str = "x";
+pub const ICON_WRENCH: &str = "wrench";
+pub const ICON_PLAY: &str = "play";
+pub const ICON_PIN: &str = "pin";

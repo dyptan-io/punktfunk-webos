@@ -217,7 +217,7 @@ impl App {
             &target.host,
             target.port,
             target.launch.as_deref(),
-            None,
+            target.profile.as_deref(),
         )
     }
 }

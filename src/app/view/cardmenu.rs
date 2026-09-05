@@ -10,10 +10,17 @@ impl App {
     /// its height, its hit test and its handler all count rows through here.
     pub(crate) fn card_menu_row_kinds(&self, pin_id: &str) -> &'static [CardMenuRow] {
         // Nothing to remove a Library card from — Library *is* "in no collection".
-        if self.card_is_held(pin_id) {
-            &[CardMenuRow::MoveTo, CardMenuRow::Remove, CardMenuRow::Settings]
-        } else {
-            &[CardMenuRow::MoveTo, CardMenuRow::Settings]
+        // The bind list only when there is a catalog to bind from.
+        match (self.card_is_held(pin_id), self.profiles.is_empty()) {
+            (true, false) => &[
+                CardMenuRow::MoveTo,
+                CardMenuRow::Remove,
+                CardMenuRow::Profile,
+                CardMenuRow::Settings,
+            ],
+            (true, true) => &[CardMenuRow::MoveTo, CardMenuRow::Remove, CardMenuRow::Settings],
+            (false, false) => &[CardMenuRow::MoveTo, CardMenuRow::Profile, CardMenuRow::Settings],
+            (false, true) => &[CardMenuRow::MoveTo, CardMenuRow::Settings],
         }
     }
 

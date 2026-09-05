@@ -12,6 +12,7 @@ mod home;
 pub(crate) mod hostmenu;
 pub(crate) mod hostpower;
 mod pairing;
+pub(crate) mod profilepick;
 pub(crate) mod profiles;
 pub(crate) mod reach;
 pub(crate) mod sendlogs;
