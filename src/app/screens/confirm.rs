@@ -63,6 +63,8 @@ pub(crate) struct Button {
 pub(crate) struct Confirm {
     pub subtitle: String,
     pub buttons: [Button; 2],
+    /// The body reads as an error (a failed speed test).
+    pub failed: bool,
 }
 
 impl Confirm {
@@ -75,6 +77,7 @@ impl Confirm {
     ) -> Self {
         Self {
             subtitle,
+            failed: false,
             buttons: [
                 Button {
                     icon,
@@ -171,15 +174,18 @@ impl App {
                 if !view::speedtest::finished(state) {
                     return None;
                 }
-                Confirm::new(
-                    Some(view::icons::ICON_SIGNAL),
-                    view::speedtest::apply_label(view::speedtest::recommendation(state)),
-                    Tone::Primary,
-                    // "Close" rather than "Cancel": the test has already run, so there is
-                    // nothing left to call off.
-                    "Close",
-                    view::speedtest::status(state, &self.screens.speed_test_name),
-                )
+                Confirm {
+                    failed: matches!(state, Some(crate::app::state::speedtest::SpeedTestState::Failed(_))),
+                    ..Confirm::new(
+                        Some(view::icons::ICON_SIGNAL),
+                        view::speedtest::apply_label(view::speedtest::recommendation(state)),
+                        Tone::Primary,
+                        // "Close" rather than "Cancel": the test has already run, so there is
+                        // nothing left to call off.
+                        "Close",
+                        view::speedtest::status(state, &self.screens.speed_test_name),
+                    )
+                }
             }
             _ => return None,
         })

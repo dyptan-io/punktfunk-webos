@@ -14,9 +14,7 @@
 mod confirm;
 mod overlay;
 
-pub use confirm::{
-    confirm_button_at, confirm_dialog_card, confirm_dialog_layout, ConfirmDialogShellTile, ConfirmSurface,
-};
+pub use confirm::{confirm_button_at, confirm_dialog_layout, ConfirmDialogShellTile, ConfirmSurface};
 pub use overlay::{LogOverlayTile, StatsOverlayTile, LOG_OVERLAY_LINES};
 
 /// Padding for row tile shadow + sidebar inflate. Settings rows use GPU scale.

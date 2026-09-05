@@ -187,12 +187,12 @@ impl App {
             Screen::Home
             | Screen::About
             | Screen::Pairing
-            | Screen::AddHost
             | Screen::Wake
+            | Screen::SpeedTest
+            | Screen::AddHost
             | Screen::ForgetHost
             | Screen::HostMenu
             | Screen::EditHost
-            | Screen::SpeedTest
             | Screen::HostPower
             | Screen::HdrCalibration
             | Screen::SendLogs
@@ -432,7 +432,6 @@ impl App {
     pub(crate) fn with_modal_screen<R>(&self, f: impl FnOnce(&dyn ui::ModalScreen) -> R) -> Option<R> {
         // The dialogs' labels and subtitle, from the one place that knows them. Bound here so
         // the borrowed `ConfirmButton`s below outlive the call.
-        let confirm = self.confirm_of();
         Some(match self.nav.screen {
             // A screen drawn on the kit has no tile-side modal at all (`app::draw`); the five
             // dialogs are listed below so the match stays exhaustive.
@@ -450,20 +449,13 @@ impl App {
             | Screen::HostMenu
             | Screen::HostPower
             | Screen::SettingsPage
-            | Screen::DeleteProfile => return None,
+            | Screen::DeleteProfile
+            | Screen::Wake
+            | Screen::SpeedTest => return None,
             Screen::Collections => f(&view::collections::Modal {
                 rows: self.collections_row_count(),
                 title: view::collections::heading(self.collections_target_held()),
                 card: Some(self.collections_heading()),
-            }),
-            Screen::Wake => f(&view::wake::Modal {
-                wake: self.screens.wake.as_ref()?,
-                confirm: confirm.as_ref(),
-            }),
-            Screen::SpeedTest => f(&view::speedtest::Modal {
-                state: self.screens.speed_test.as_ref(),
-                host_name: &self.screens.speed_test_name,
-                confirm: confirm.as_ref(),
             }),
             Screen::HdrCalibration => f(&self.hdr_calibration_view()?),
         })

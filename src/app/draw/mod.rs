@@ -42,6 +42,8 @@ pub(crate) const fn ported(screen: Screen) -> bool {
             | Screen::RenameCollection
             | Screen::RenameProfile
             | Screen::Pairing
+            | Screen::Wake
+            | Screen::SpeedTest
     )
 }
 
@@ -297,7 +299,14 @@ impl App {
             list::draw(f, list, &l, &card.title, &card.rows, hover_close, alpha, dy, dt, live);
             return;
         }
-        let (Some(title), Some(confirm)) = (dialog::title_of(screen), self.confirm_for(screen)) else {
+        let Some(title) = dialog::title_of(screen) else {
+            return;
+        };
+        let Some(confirm) = self.confirm_for(screen) else {
+            if let Some((title, body, tone)) = self.message_card(screen) {
+                let hover_close = live && self.render.hover_close;
+                dialog::draw_message(f, title, &body, tone, hover_close, alpha, dy);
+            }
             return;
         };
         let motion = live.then_some(dialog::Motion {
