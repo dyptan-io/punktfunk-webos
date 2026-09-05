@@ -334,10 +334,9 @@ impl VideoStage {
             partial,
         };
         let result = self.feed(frame.data, frame.pts_ns, flags);
-        // Either the piece never reached the decoder (a hold swallows it, an error refused it) or
-        // it did and a keyframe has just been asked for regardless — on both paths the AU cannot
-        // be completed. Forgetting it costs the rest of one AU; keeping it would eventually feed a
-        // frame with a hole in it.
+        // The piece never reached the decoder (a hold swallowed it, an error refused it, the
+        // decoder is gone), so the AU cannot be completed. Forgetting it costs the rest of one AU;
+        // keeping it would eventually feed a frame with a hole in it.
         if !matches!(result, SinkResult::Presented { .. }) {
             self.parts.drop_open();
             // The AU this was accumulating for will never complete, so it must not be added to
@@ -354,10 +353,9 @@ impl VideoStage {
         if self.sink.is_dead() {
             return SinkResult::Dead;
         }
-        let request_keyframe = match self.gate(&flags) {
-            HoldGate::Skip(result) => return result,
-            HoldGate::Feed { request_keyframe } => request_keyframe,
-        };
+        if let HoldGate::Skip(result) = self.gate(&flags) {
+            return result;
+        }
 
         let base_ns = self.au_stamp_ns(pts_ns, flags.partial);
         // The feed is timed only where something reads the figure: the host's ABR controller, or
@@ -403,7 +401,7 @@ impl VideoStage {
             Err(e) => (None, self.on_play_error(&e, &flags, base_ns)),
         };
 
-        if request_keyframe || failed_keyframe {
+        if failed_keyframe {
             SinkResult::NeedKeyframe
         } else {
             SinkResult::Presented { decode_us }
@@ -431,17 +429,18 @@ impl VideoStage {
             // queue holds good frames that the hold is about to present anyway.
         }
         let Some(started) = self.hold_started else {
-            return HoldGate::Feed {
-                request_keyframe: false,
-            };
+            return HoldGate::Feed;
         };
         if flags.recovery_mark {
             self.recovery_marks = self.recovery_marks.saturating_add(1);
         }
-        let request_keyframe = self.take_keyframe_slot();
         let recovered = flags.reanchor || self.recovery_marks >= punktfunk_core::reanchor::REANCHOR_MARKS_TO_LIFT;
         if !recovered {
-            return HoldGate::Skip(if request_keyframe {
+            // The slot is taken only while frames are still skipped. The frame that lifts the hold
+            // restarts decoding by itself, and reporting a request on it made `submit` read the
+            // feed as refused — abandoning the open AU, i.e. truncating the very keyframe that
+            // resumed the picture on a slice-progressive session, and re-arming the hold.
+            return HoldGate::Skip(if self.take_keyframe_slot() {
                 SinkResult::NeedKeyframe
             } else {
                 SinkResult::Held
@@ -460,7 +459,7 @@ impl VideoStage {
         self.stats.holding.store(false, Ordering::Relaxed);
         self.hold_started = None;
         self.recovery_marks = 0;
-        HoldGate::Feed { request_keyframe }
+        HoldGate::Feed
     }
 
     /// Handles a refused feed; returns whether to ask the host for a keyframe.
@@ -498,9 +497,8 @@ impl VideoStage {
 
 /// What [`VideoStage::gate`] decided about this frame.
 enum HoldGate {
-    /// Feed it. `request_keyframe` is set when a hold released on this frame and the throttle
-    /// allowed asking for one — the frame is still fed, but the request is what gets reported.
-    Feed { request_keyframe: bool },
+    /// Feed it — not holding, or this is the frame that lifts the hold.
+    Feed,
     /// Still frozen — skip it, and report this instead.
     Skip(SinkResult),
 }
@@ -510,7 +508,7 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
-    /// A decoder that accepts everything and reports whatever depth the test sets.
+    /// A decoder that takes pieces, accepts everything, and reports whatever depth the test sets.
     struct FakeSink {
         depth: Cell<Option<u32>>,
     }
@@ -521,7 +519,11 @@ mod tests {
             "fake"
         }
         fn caps(&self) -> VideoSinkCaps {
-            VideoSinkCaps::FEED_ONLY
+            VideoSinkCaps {
+                pts: true,
+                partial_au: true,
+                flush: false,
+            }
         }
         fn feed(&self, _au: &[u8], _pts_ns: u64) -> anyhow::Result<()> {
             Ok(())
@@ -544,15 +546,15 @@ mod tests {
         )
     }
 
-    fn frame(index: u32, reanchor: bool) -> WireFrame<'static> {
+    fn frame(index: u32, part: Option<(bool, bool, u32)>, reanchor: bool, loss: bool) -> WireFrame<'static> {
         WireFrame {
             data: &[0u8; 4],
             pts_ns: u64::from(index) * 16_666_667,
             index,
-            part: None,
+            part: part.map(|(first, last, offset)| punktfunk_core::session::FramePart { offset, first, last }),
             reanchor,
             recovery_mark: false,
-            loss: false,
+            loss,
         }
     }
 
@@ -565,8 +567,11 @@ mod tests {
         s.backlog_sampled = None;
         assert!(s.backpressure(), "the second asks for a keyframe");
         assert!(s.holding());
-        assert!(matches!(s.submit(&frame(1, false)), SinkResult::Held));
-        assert!(matches!(s.submit(&frame(2, true)), SinkResult::Presented { .. }));
+        assert!(matches!(s.submit(&frame(1, None, false, false)), SinkResult::Held));
+        assert!(matches!(
+            s.submit(&frame(2, None, true, false)),
+            SinkResult::Presented { .. }
+        ));
         assert!(!s.holding());
 
         let mut shallow = stage(Some(1));
@@ -575,5 +580,35 @@ mod tests {
         shallow.backlog_sampled = None;
         assert!(!shallow.backpressure());
         assert!(!stage(None).backpressure(), "no queue to read, nothing to steer on");
+    }
+
+    /// A keyframe lifting a hold is fed whole, however long since the last request — reporting a
+    /// request on its first piece made `submit` abandon the AU and re-arm the hold on the next.
+    #[test]
+    fn the_resume_keyframe_keeps_its_au_open() {
+        let mut s = stage(None);
+        assert!(matches!(
+            s.submit(&frame(1, None, false, true)),
+            SinkResult::NeedKeyframe
+        ));
+        assert!(s.holding());
+        // The throttle has long expired by the time the host's keyframe lands.
+        s.last_keyframe_request = None;
+        let before = s.frames();
+        assert!(matches!(
+            s.submit(&frame(2, Some((true, false, 0)), true, false)),
+            SinkResult::Presented { .. }
+        ));
+        assert!(!s.holding());
+        assert!(matches!(
+            s.submit(&frame(2, Some((false, true, 4)), true, false)),
+            SinkResult::Presented { .. }
+        ));
+        assert_eq!(s.frames(), before + 1, "two pieces, one picture");
+        assert!(matches!(
+            s.submit(&frame(3, None, false, false)),
+            SinkResult::Presented { .. }
+        ));
+        assert!(!s.holding(), "the next AU must not read the resumed one as lost");
     }
 }
