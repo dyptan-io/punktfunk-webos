@@ -52,17 +52,6 @@ pub enum ModalFocusKey<'a> {
     CollectionRow(usize, &'a str, bool, Option<RowButton>, bool),
 }
 
-/// Scrollable modal content keys. Paired with Screen for staleness checks.
-///
-/// Settings has no variant here: its rows are baked one tile each, keyed by
-/// [`ui::widgets::FocusRow::key`] — see [`tile::list_row`]. A single strip keyed on the
-/// whole `Settings` struct meant one changed value re-rasterized every row.
-#[derive(PartialEq, Eq, Hash)]
-pub enum ScrollContentKey {
-    /// About window's start line.
-    About(usize),
-}
-
 /// Each modal's shell content keys. Value changes invalidate the shell;
 /// pure focus moves don't (that's `ModalFocusKey`'s job).
 ///

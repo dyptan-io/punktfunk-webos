@@ -48,6 +48,8 @@ pub(crate) struct ScreenSlots {
     pub(crate) settings_page: SettingsPage,
     /// The name being typed for the profile in scope (`Screen::RenameProfile`).
     pub(crate) profile_name: TextField,
+    /// The About document's first visible line.
+    pub(crate) about_scroll: usize,
     /// The card `Screen::Collections` is moving, and its title — see [`CollectionsState`].
     pub(crate) collections: CollectionsState,
     /// What the host said about this pairing's power rights, `None` while the probe is still

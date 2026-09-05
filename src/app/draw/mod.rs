@@ -8,6 +8,7 @@
 //! Sizes are the console's design units, scaled by [`Frame::k`] — the same rule
 //! (`height / 800`) the shell applies, so a row here is a row there.
 
+pub(crate) mod about;
 pub(crate) mod dialog;
 pub(crate) mod list;
 pub(crate) mod settings;
@@ -33,6 +34,7 @@ pub(crate) const fn ported(screen: Screen) -> bool {
             | Screen::HostPower
             | Screen::SettingsPage
             | Screen::DeleteProfile
+            | Screen::About
     )
 }
 
@@ -192,6 +194,24 @@ impl App {
     fn draw_modal_screen(&mut self, f: &Frame<'_>, screen: Screen, alpha: f32, live: bool, dt: f64) {
         let dy = ui::animation::modal_rise(alpha) as f32;
         let focus = self.nav.cursor(crate::app::nav::ScreenKey::of(screen));
+        if screen == Screen::About {
+            let l = about::layout(f.w, f.h, f.k);
+            self.ensure_about_wrapped(l.body.width(), f.k);
+            let hover_close = live && self.render.hover_close;
+            let lines = self.render.about_wrapped.as_ref().map_or(&[][..], |(_, v)| v.as_slice());
+            about::draw(
+                f,
+                &l,
+                crate::app::view::about::TITLE,
+                &crate::app::view::about::subtitle(),
+                lines,
+                self.screens.about_scroll,
+                hover_close,
+                alpha,
+                dy,
+            );
+            return;
+        }
         if screen == Screen::SettingsPage {
             let rows = self.settings_page_specs();
             let l = settings::layout(f.w, f.h, f.k);
@@ -316,6 +336,9 @@ impl App {
         let screen = self.nav.screen;
         if screen == Screen::SettingsPage {
             return Some(settings::layout(w as f32, h as f32, scale(h)).on_close(x, y));
+        }
+        if screen == Screen::About {
+            return Some(about::layout(w as f32, h as f32, scale(h)).on_close(x, y));
         }
         if is_list(screen) {
             let card = self.list_card(screen)?;

@@ -62,7 +62,6 @@ impl App {
         self.screens.row_button = None;
         self.nav.enter(Screen::Collections, holding);
         self.render.scroll = crate::ui::scroll::ScrollWindow::new();
-        self.render.content_window = crate::ui::scroll::ContentWindow::new();
         self.scroll_list_row_into_view(screen_h);
     }
 
