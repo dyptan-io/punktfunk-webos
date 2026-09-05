@@ -216,7 +216,8 @@ impl App {
             | Screen::Diagnostics
             | Screen::Experimental
             | Screen::HdrCalibration
-            | Screen::CursorSettings(_) => {
+            | Screen::CursorSettings(_)
+            | Screen::ControllerSettings(_) => {
                 let Some((row, button)) = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts) else {
                     return HoverChange::NONE;
                 };
@@ -598,7 +599,11 @@ impl App {
                 self.screens.row_button = hit.and_then(|(_, button)| button);
             }
             // Identical row-list geometry; only which focus field they carry differs.
-            Screen::HostPower | Screen::Diagnostics | Screen::Experimental | Screen::CursorSettings(_) => {
+            Screen::HostPower
+            | Screen::Diagnostics
+            | Screen::Experimental
+            | Screen::CursorSettings(_)
+            | Screen::ControllerSettings(_) => {
                 let hit = self.list_modal_row_button_at(x, y, screen_w, screen_h, fonts);
                 if let Some((row, _)) = hit {
                     *self.list_modal_focused_mut()? = row;

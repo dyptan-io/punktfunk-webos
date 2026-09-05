@@ -215,6 +215,7 @@ impl App {
             | Screen::Experimental
             | Screen::HdrCalibration
             | Screen::CursorSettings(_)
+            | Screen::ControllerSettings(_)
             | Screen::SendLogs
             | Screen::RenameCollection
             | Screen::RemoveCollection
@@ -402,7 +403,8 @@ impl App {
             | Screen::Diagnostics
             | Screen::Experimental
             | Screen::HdrCalibration
-            | Screen::CursorSettings(_) => self.list_modal_focus_rect(screen_w, screen_h, fonts),
+            | Screen::CursorSettings(_)
+            | Screen::ControllerSettings(_) => self.list_modal_focus_rect(screen_w, screen_h, fonts),
             // No single focused widget: a text form is one always-active field, and About is
             // a scrolling document.
             Screen::Home | Screen::AddHost | Screen::EditHost | Screen::RenameCollection | Screen::About => None,
@@ -512,6 +514,12 @@ impl App {
             Screen::Experimental => f(&view::experimental::Modal {
                 settings: &self.settings_ui.settings,
                 rooted: self.hosts.rooted,
+            }),
+            Screen::ControllerSettings(_) => f(&view::controllersettings::Modal {
+                settings: self.settings_target(),
+                detected_gamepad_type: self.detected_gamepad_type,
+                dualsense_limited: self.dualsense_limited(),
+                webos_major: self.webos_major(),
             }),
             Screen::CursorSettings(_) => f(&view::cursorsettings::Modal {
                 settings: self.settings_target(),

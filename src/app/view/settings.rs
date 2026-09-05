@@ -54,8 +54,28 @@ fn lock_caption(lock: menu::RowLock, webos_major: Option<u32>) -> String {
 /// whatever's actually plugged in) is a `DualSense`/`Edge` and the TV's kernel isn't running
 /// `hid-playstation` — see `platform::webos::dualsense::hid_playstation_bound`. Computed by
 /// the caller, like `webos_major`, so this module stays platform-neutral.
+/// The rows of a settings-shaped list, in `set`'s display order.
 pub(crate) fn rows(
     set: SettingsScope,
+    settings: &Settings,
+    detected_gamepad_type: Option<GamepadType>,
+    dualsense_limited: bool,
+    webos_major: Option<u32>,
+) -> Vec<FocusRow> {
+    rows_for(
+        menu::settings_visible_logical_rows(set),
+        settings,
+        detected_gamepad_type,
+        dualsense_limited,
+        webos_major,
+    )
+}
+
+/// The same builder against an explicit list, for a sub-screen that owns one — the Controller
+/// screen draws `menu::CONTROLLER_ROWS` through here so its labels, locks and captions are the
+/// main list's rather than a second copy that can drift from it.
+pub(crate) fn rows_for(
+    logical_rows: impl Iterator<Item = menu::SettingsRow>,
     settings: &Settings,
     detected_gamepad_type: Option<GamepadType>,
     dualsense_limited: bool,
@@ -114,6 +134,8 @@ pub(crate) fn rows(
         .with_subtext_opt(
             dualsense_limited.then(|| ui::widgets::RowSubtext::caution("Limited support by your WebOS version")),
         ),
+        menu::SettingsRow::Controller => FocusRow::action(crate::app::view::icons::ICON_GAMEPAD, "Controller")
+            .with_subtext(ui::widgets::RowSubtext::hint("Your pad, and which menus it drives")),
         menu::SettingsRow::Cursor => FocusRow::action(crate::app::view::icons::ICON_MOUSE, "Cursor"),
         // Says which UI, not "shell": the choice a user is making here is between the menus
         // they are looking at and the ones a pad drives.
@@ -159,7 +181,7 @@ pub(crate) fn rows(
     };
     // Driven by the shared predicates rather than repeating their conditions, so a row hidden or
     // locked there can never disagree here.
-    menu::settings_visible_logical_rows(set)
+    logical_rows
         .map(|logical| {
             let row = row_for(logical);
             match menu::row_lock(logical, settings, detected_gamepad_type) {

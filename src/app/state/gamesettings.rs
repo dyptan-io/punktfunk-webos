@@ -70,6 +70,9 @@ impl App {
     /// only thing the flow's two screens differ in.
     pub(crate) fn clear_focused_override(&mut self) {
         let row = match self.nav.screen {
+            Screen::ControllerSettings(_) => menu::CONTROLLER_ROWS
+                .get(self.nav.cursor(ScreenKey::ControllerSettings))
+                .copied(),
             Screen::CursorSettings(_) => menu::CURSOR_ROWS
                 .get(self.nav.cursor(ScreenKey::CursorSettings))
                 .copied(),

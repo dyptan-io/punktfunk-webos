@@ -65,18 +65,23 @@ pub enum SettingsRow {
     Hdr,
     /// Locked where the backend is capped at stereo — the only channel count then.
     Audio,
-    /// Which controller the host presents to the game — see `store::GamepadType`. Last of the
-    /// real settings: it's the only input-side one, and picking `DualSense` is what turns on
-    /// adaptive triggers (`crate::platform::webos::dualsense`).
+    /// Which controller the host presents to the game — see `store::GamepadType`. Picking
+    /// `DualSense` is what turns on adaptive triggers
+    /// (`crate::platform::webos::dualsense`). On the per-game list directly; on the global one
+    /// it lives behind [`Self::Controller`].
     Gamepad,
+    /// Not a setting — a link to `Screen::ControllerSettings`, holding everything about the pad
+    /// itself. Four controller rows on one list crowded out the stream settings people actually
+    /// come to Settings for.
+    Controller,
     /// Not a setting — a link to `Screen::CursorSettings`, directly below Controller since
     /// it's the other input-side entry. Both pointer toggles live behind it rather than on
     /// this list: neither is something a user sets more than once, and pairing them makes the
     /// gesture toggle discoverable next to the capture mode it interacts with.
     Cursor,
     /// Whether the shared gamepad shell may front the app at all — the cross-client
-    /// `gamepad_ui_enabled`. Device-wide, and directly below Cursor because the three
-    /// input-side rows answer one question between them: what is driving this TV.
+    /// `gamepad_ui_enabled`. Device-wide, and on the Controller sub-screen: what drives the
+    /// TV and which menus it drives are one question.
     GamepadUi,
     /// When it does — the cross-client `gamepad_ui_mode`. Directly below the switch that
     /// gates it, the same adjacency Hdr keeps to Codec.
@@ -103,17 +108,15 @@ pub enum SettingsRow {
 }
 
 /// The global list, in display order.
-const GLOBAL_ROWS: [SettingsRow; 14] = [
+const GLOBAL_ROWS: [SettingsRow; 12] = [
     SettingsRow::Resolution,
     SettingsRow::Framerate,
     SettingsRow::Bitrate,
     SettingsRow::Codec,
     SettingsRow::Hdr,
     SettingsRow::Audio,
-    SettingsRow::Gamepad,
+    SettingsRow::Controller,
     SettingsRow::Cursor,
-    SettingsRow::GamepadUi,
-    SettingsRow::GamepadUiMode,
     SettingsRow::Theme,
     SettingsRow::Experimental,
     SettingsRow::Diagnostics,
@@ -145,6 +148,12 @@ const GAME_ROWS: [SettingsRow; 9] = [
 /// Its rows are [`SettingsRow`]s like any other, so the override table, the toggle values and
 /// the per-game marks all reach them without a second index space in between.
 pub const CURSOR_ROWS: [SettingsRow; 2] = [SettingsRow::CursorCapture, SettingsRow::CursorGestures];
+
+/// The Controller sub-screen's list, in display order (see `app::view::controllersettings`).
+/// Same rule as [`CURSOR_ROWS`]: they are [`SettingsRow`]s like any other, so the override
+/// table and the mutators reach them without a second index space.
+pub const CONTROLLER_ROWS: [SettingsRow; 3] =
+    [SettingsRow::Gamepad, SettingsRow::GamepadUi, SettingsRow::GamepadUiMode];
 
 /// Experimental modal rows (see `app::view::experimental::rows`). A separate type from
 /// [`SettingsRow`]: these are device-wide toggles that no per-game override reaches.
@@ -451,7 +460,9 @@ fn row_fields(row: SettingsRow) -> &'static [OverrideField] {
         SettingsRow::Hdr => &[OverrideField::HdrEnabled],
         SettingsRow::Codec => &[OverrideField::Codec],
         SettingsRow::Audio => &[OverrideField::AudioChannels],
-        SettingsRow::Gamepad => &[OverrideField::GamepadKind],
+        // Global-only today, so no dot renders; named with Gamepad anyway, so putting it on
+        // the per-game list later cannot silently lose one.
+        SettingsRow::Gamepad | SettingsRow::Controller => &[OverrideField::GamepadKind],
         SettingsRow::CursorCapture => &[OverrideField::CursorCapture],
         SettingsRow::CursorGestures => &[OverrideField::CursorGestures],
         SettingsRow::Cursor => &[OverrideField::CursorCapture, OverrideField::CursorGestures],
@@ -853,6 +864,7 @@ pub fn adjust_setting(settings: &mut Settings, row: SettingsRow, forward: bool, 
         | SettingsRow::Framerate
         | SettingsRow::Theme
         | SettingsRow::GamepadUiMode
+        | SettingsRow::Controller
         | SettingsRow::Codec
         | SettingsRow::Audio
         | SettingsRow::Gamepad
