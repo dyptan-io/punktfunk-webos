@@ -25,10 +25,10 @@ impl App {
     /// Resolves a reachable, paired host for log delivery.
     pub(crate) fn send_logs_host(&self) -> Option<HostTarget> {
         let known = self.reachable_selected_host()?;
-        let pin = known.fingerprint?;
+        let pin = known.fingerprint()?;
         Some(HostTarget {
             name: known.name.clone(),
-            addr: known.host.clone(),
+            addr: known.addr.clone(),
             mgmt_port: known.mgmt_port.unwrap_or(library::DEFAULT_MGMT_PORT),
             identity: self.identity.clone(),
             pin,
@@ -38,7 +38,7 @@ impl App {
     /// Whether "Send logs" would send directly to the host.
     pub(crate) fn send_logs_host_ready(&self) -> bool {
         self.reachable_selected_host()
-            .is_some_and(|known| known.fingerprint.is_some())
+            .is_some_and(crate::core::model::KnownHost::is_paired)
     }
 
     /// Sends to the host when available, otherwise opens developer confirmation.

@@ -298,7 +298,7 @@ impl App {
                 let host = std::mem::take(&mut self.hosts.known[idx]);
                 self.library.set_desktop_icon(&host.os);
                 self.library
-                    .regroup(&host, self.recents.for_host(&host.host, host.port));
+                    .regroup(&host, self.recents.for_host(&host.addr, host.port));
                 self.hosts.known[idx] = host;
             }
             None => self.library.clear_groups(),
@@ -318,7 +318,7 @@ impl App {
         };
         let live: std::collections::HashSet<&str> = self.library.games.iter().map(|g| g.id.as_str()).collect();
         let (host, port) = (
-            self.hosts.known[known_idx].host.clone(),
+            self.hosts.known[known_idx].addr.clone(),
             self.hosts.known[known_idx].port,
         );
         if self.hosts.known[known_idx].prune_games(|id| live.contains(id)) {
@@ -334,7 +334,7 @@ impl App {
         self.library
             .selected_host
             .as_ref()
-            .and_then(|(h, p)| self.hosts.known.iter().position(|k| k.host == *h && k.port == *p))
+            .and_then(|(h, p)| self.hosts.known.iter().position(|k| k.addr == *h && k.port == *p))
     }
 
     /// Eased 0..=1 progress of pin id `id`'s arrival (see `tile::CardSlot::pop`)
@@ -391,11 +391,11 @@ impl App {
         let entry = self.hosts.entries[idx].clone();
         match entry {
             HostEntry::Pinned { host, profile_id, .. } => {
-                let (addr, port) = (host.host.clone(), host.port);
+                let (addr, port) = (host.addr.clone(), host.port);
                 self.connect_desktop_with(&addr, port, Some(profile_id));
             }
             HostEntry::Known(h) if h.is_paired() => {
-                let (host, port, mgmt_port) = (h.host, h.port, h.mgmt_port);
+                let (host, port, mgmt_port) = (h.addr.clone(), h.port, h.mgmt_port);
                 // Re-confirming the already-active host refreshes its library too — a
                 // user clicking it is asking to see the current game list, e.g. after
                 // installing something new on the host.
@@ -432,7 +432,7 @@ impl App {
             .hosts
             .known
             .iter()
-            .find(|h| h.host == host && h.port == port)
+            .find(|h| h.addr == host && h.port == port)
             .map_or_else(|| host.clone(), |h| h.name.clone());
         // Picking a host is the user's own action, so its progress replaces whatever the last
         // launch left on screen. The reload `App::new` starts is not this — it runs before
@@ -451,8 +451,8 @@ impl App {
         self.render.grid.scroll_target = 0;
 
         let identity = (self.identity.0.clone(), self.identity.1.clone());
-        let known = self.hosts.known.iter().find(|h| h.host == host && h.port == port);
-        let fingerprint = known.and_then(|k| k.fingerprint);
+        let known = self.hosts.known.iter().find(|h| h.addr == host && h.port == port);
+        let fingerprint = known.and_then(crate::core::model::KnownHost::fingerprint);
         let mgmt_port = mgmt_port.unwrap_or(crate::services::library::DEFAULT_MGMT_PORT);
         tracing::debug!("library: fetching from {host}:{mgmt_port}…");
         self.jobs.games = Some(crate::services::library::load_games_async(
@@ -497,8 +497,8 @@ impl App {
             Ok(games) => {
                 tracing::info!("library: {} games from {host}:{mgmt_port}", games.len());
                 let identity = (self.identity.0.clone(), self.identity.1.clone());
-                let known = self.hosts.known.iter().find(|h| h.host == host && h.port == port);
-                let fingerprint = known.and_then(|k| k.fingerprint);
+                let known = self.hosts.known.iter().find(|h| h.addr == host && h.port == port);
+                let fingerprint = known.and_then(crate::core::model::KnownHost::fingerprint);
                 // Covers are requested per card as the grid window reaches them (see
                 // `App::prepare_tiles`), not fetched for the whole library up front.
                 self.jobs.art = Some(crate::services::art::ArtLoader::spawn(
@@ -550,7 +550,7 @@ impl App {
                 .hosts
                 .known
                 .iter()
-                .find(|h| h.host == host && h.port == port)
+                .find(|h| h.addr == host && h.port == port)
                 .map(|h| h.mac.clone())
                 .unwrap_or_default();
             self.start_wake(host, port, mac, reason);
@@ -573,12 +573,12 @@ impl App {
         let Some((host, port)) = self.library.selected_host.clone() else {
             return;
         };
-        let Some(known) = self.hosts.known.iter().find(|h| h.host == host && h.port == port) else {
+        let Some(known) = self.hosts.known.iter().find(|h| h.addr == host && h.port == port) else {
             return;
         };
         // The pin is also the pair state: no pin means the host was never paired, so there is
         // nothing to connect with.
-        let Some(fingerprint) = known.fingerprint else {
+        let Some(fingerprint) = known.fingerprint() else {
             return;
         };
         // Desktop is the host's own session rather than a game it lists, so it launches with
@@ -638,7 +638,7 @@ impl App {
         let Some(known) = self.known_host(host, port) else {
             return;
         };
-        let Some(fingerprint) = known.fingerprint else {
+        let Some(fingerprint) = known.fingerprint() else {
             return;
         };
         let mgmt_port = known.mgmt_port;
@@ -671,8 +671,8 @@ impl App {
         let HostEntry::Known(h) = &self.hosts.entries[idx] else {
             return;
         };
-        let (host, port) = (h.host.clone(), h.port);
-        self.hosts.known.retain(|k| !(k.host == host && k.port == port));
+        let (host, port) = (h.addr.clone(), h.port);
+        self.hosts.known.retain(|k| !(k.addr == host && k.port == port));
         if self.recents.forget_host(&host, port) {
             self.recents.save();
         }

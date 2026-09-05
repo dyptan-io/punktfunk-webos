@@ -53,7 +53,7 @@ impl App {
                 let id = profile.id.clone();
                 self.profiles.push(profile);
                 if let Some(h) = self.known_host_mut(&host, port) {
-                    h.bind_game_profile(pin_id, Some(id.clone()));
+                    h.bind_game_profile(pin_id, Some(&id));
                 }
                 self.persist();
                 id
@@ -150,8 +150,8 @@ impl App {
             .hosts
             .known
             .iter()
-            .flat_map(|h| h.games.values())
-            .filter(|g| g.profile.as_deref() == Some(id))
+            .flat_map(|h| h.game_profiles.values())
+            .filter(|p| p.as_str() == id)
             .count();
         (hosts, titles)
     }
@@ -187,12 +187,7 @@ impl App {
             if h.profile_id.as_deref() == Some(&id) {
                 h.profile_id = None;
             }
-            for g in h.games.values_mut() {
-                if g.profile.as_deref() == Some(&id) {
-                    g.profile = None;
-                }
-            }
-            h.games.retain(|_, g| g.profile.is_some());
+            h.game_profiles.retain(|_, p| *p != id);
         }
         self.screens.settings_page.scope = Scope::Global;
         self.persist();

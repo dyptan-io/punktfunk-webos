@@ -164,7 +164,7 @@ impl App {
             ProfilePick::BindGame { pin_id, .. } => {
                 if let Some((host, port)) = self.library.selected_host.clone() {
                     if let Some(h) = self.known_host_mut(&host, port) {
-                        h.bind_game_profile(&pin_id, chosen);
+                        h.bind_game_profile(&pin_id, chosen.as_deref());
                     }
                 }
                 self.persist();

@@ -39,7 +39,7 @@ impl HostEntry {
     }
     pub fn host(&self) -> &str {
         match self {
-            Self::Known(h) | Self::Pinned { host: h, .. } => &h.host,
+            Self::Known(h) | Self::Pinned { host: h, .. } => &h.addr,
             Self::Discovered(h) => &h.addr,
         }
     }

@@ -65,8 +65,8 @@ impl App {
             .hosts
             .known
             .iter()
-            .find(|h| h.host == host && h.port == port)
-            .and_then(|k| k.fingerprint);
+            .find(|h| h.addr == host && h.port == port)
+            .and_then(crate::core::model::KnownHost::fingerprint);
 
         self.screens.speed_test_name = name;
         self.screens.speed_test = Some(SpeedTestState::Connecting);
