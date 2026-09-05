@@ -230,6 +230,46 @@ pub fn launch_settings(
     settings
 }
 
+/// Point a host's default at a catalog profile, or clear it. Refuses an id the catalog does not
+/// hold: the record must never name a profile nothing resolves. Reports whether it changed.
+pub fn bind_host_profile(state: &mut Persisted, key: &str, profile_id: Option<String>) -> bool {
+    if let Some(id) = &profile_id {
+        if !state.profiles.iter().any(|p| p.id == *id) {
+            tracing::warn!(%id, "bind to a profile this document does not hold");
+            return false;
+        }
+    }
+    let Some(i) = find_known(&state.known_hosts, key) else {
+        tracing::warn!(%key, "profile bind for an unknown host");
+        return false;
+    };
+    let host = &mut state.known_hosts[i];
+    if host.profile_id == profile_id {
+        return false;
+    }
+    host.profile_id = profile_id;
+    true
+}
+
+/// Pin or unpin one profile card on a host. Appends in press order; idempotent, so a repeat
+/// inside one refresh cannot double a card. Reports whether it changed.
+pub fn set_pin(state: &mut Persisted, key: &str, profile_id: String, pin: bool) -> bool {
+    let Some(i) = find_known(&state.known_hosts, key) else {
+        tracing::warn!(%key, "pin toggle for an unknown host");
+        return false;
+    };
+    let pins = &mut state.known_hosts[i].pinned_profiles;
+    let had = pins.contains(&profile_id);
+    if pin && !had {
+        pins.push(profile_id);
+    } else if !pin && had {
+        pins.retain(|id| *id != profile_id);
+    } else {
+        return false;
+    }
+    true
+}
+
 #[cfg(test)]
 mod launch_tests {
     use super::*;
@@ -249,6 +289,27 @@ mod launch_tests {
         state.known_hosts.push(host);
         state.profiles.push(profile);
         state
+    }
+
+    /// The gamepad shell's two profile writes: a pin toggles once per press and a card key
+    /// (`host\0profile`) addresses the host; the default bind refuses an unknown profile.
+    #[test]
+    fn pins_and_host_bindings_write_the_record_once() {
+        let profile = StreamProfile::new("Work");
+        let pid = profile.id.clone();
+        let mut state = state_with(profile, |_| {});
+        let key = known_host_key(&state.known_hosts[0]);
+        assert!(set_pin(&mut state, &key, pid.clone(), true));
+        assert!(!set_pin(&mut state, &key, pid.clone(), true), "a repeat is a no-op");
+        assert_eq!(state.known_hosts[0].pinned_profiles, vec![pid.clone()]);
+        let card_key = format!("{key}\0{pid}");
+        assert!(set_pin(&mut state, &card_key, pid.clone(), false));
+        assert!(state.known_hosts[0].pinned_profiles.is_empty());
+        assert!(!bind_host_profile(&mut state, &key, Some("nothing".into())));
+        assert!(bind_host_profile(&mut state, &key, Some(pid.clone())));
+        assert_eq!(state.known_hosts[0].profile_id.as_deref(), Some(pid.as_str()));
+        assert!(bind_host_profile(&mut state, &key, None));
+        assert!(!set_pin(&mut state, "10.9.9.9:1", pid, true), "unknown host");
     }
 
     /// A title binding beats the host's default; a dangling id falls through to it; the
