@@ -37,6 +37,13 @@ pub(super) fn run_ui_flow(
     // Both menus need it now; without a GL context there is nothing to draw with.
     let gl = console_flow::bring_up(gl, canvas).context("menu: GL host")?;
     let kit_fonts = std::rc::Rc::new(pf_console_ui::theme::build_fonts().context("menu: kit fonts")?);
+    tracing::info!(
+        "menu fonts: {} (the kit's embedded faces)",
+        kit_fonts
+            .font(pf_console_ui::theme::W::Regular, 16.0)
+            .typeface()
+            .family_name()
+    );
     let mut app = App::new(identity.clone(), kit_fonts.clone());
     // The kit widgets step on real time, like the shell's do.
     let mut last_frame = Instant::now();

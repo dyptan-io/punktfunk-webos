@@ -16,8 +16,7 @@ pub(crate) mod list;
 pub(crate) mod settings;
 
 use pf_console_ui::theme::{self, Fonts, PanelStroke, W};
-use skia_safe::canvas::SaveLayerRec;
-use skia_safe::{image_filters, Canvas, ClipOp, RRect, Rect, TileMode};
+use skia_safe::{Canvas, RRect, Rect};
 
 use crate::app::App;
 use crate::core::screen::Screen;
@@ -115,22 +114,27 @@ pub(crate) fn wrap(fonts: &Fonts, text: &str, w: W, size: f64, max_w: f64) -> Ve
     lines
 }
 
-/// Blur sigma under a raised card, design units. Wide enough that a grid of covers reads as
-/// a wash rather than as shapes, which is what the frosted look was.
-pub(crate) const GLASS_BLUR: f32 = 14.0;
-
-/// A raised glass card: the frame under `rect` blurred, then the kit's panel over it. The
-/// blur is what the SDL compositor's frost chain was; the panel is every console surface.
+/// A raised card: an opaque face lifted off the ground toward the accent, the kit's panel
+/// tint and hairline over it. Opaque on purpose: the TV's GL has no backdrop blur to make a
+/// translucent card read as glass, and a plain translucent card over a grid of covers read
+/// as a mistake.
 pub(crate) fn glass_card(canvas: &Canvas, rect: Rect, corner: f32, k: f32) {
     let rr = RRect::new_rect_xy(rect, corner * k, corner * k);
-    if let Some(blur) = image_filters::blur((GLASS_BLUR * k, GLASS_BLUR * k), TileMode::Clamp, None, None) {
-        canvas.save();
-        canvas.clip_rrect(rr, ClipOp::Intersect, true);
-        canvas.save_layer(&SaveLayerRec::default().bounds(&rect).backdrop(&blur));
-        canvas.restore();
-        canvas.restore();
-    }
+    canvas.draw_rrect(rr, &theme::fill(surface()));
     theme::panel(canvas, rect, corner, None, PanelStroke::Gradient, k);
+}
+
+/// The face of a raised card.
+pub(crate) fn surface() -> skia_safe::Color4f {
+    theme::card_face(0.16)
+}
+
+/// The dim over whatever a modal covers, at the modal's alpha.
+pub(crate) fn scrim(canvas: &Canvas, w: f32, h: f32, alpha: f32) {
+    canvas.draw_rect(
+        Rect::from_xywh(0.0, 0.0, w, h),
+        &theme::fill(theme::shade(0.45 * alpha)),
+    );
 }
 
 /// An `ui::render::Rect` as Skia's.
@@ -145,9 +149,9 @@ pub(crate) fn ground() -> skia_safe::Color4f {
     skia_safe::Color4f::new(r as f32, g as f32, b as f32, 1.0)
 }
 
-/// The sidebar's opaque panel: the ground lifted a step toward the accent.
+/// The sidebar's opaque panel: the ground lifted a step toward the accent, under [`surface`].
 pub(crate) fn panel() -> skia_safe::Color4f {
-    theme::card_face(0.12)
+    theme::card_face(0.10)
 }
 
 thread_local! {
@@ -203,6 +207,10 @@ impl App {
     /// One ported card. `live` is whether it is the screen the cursor is on: a card on its
     /// way out keeps its last focus but takes no pop and no press.
     fn draw_modal_screen(&mut self, f: &Frame<'_>, screen: Screen, alpha: f32, live: bool, dt: f64) {
+        // Over live video the card is all there is; over the menu it sits on a dim.
+        if !crate::app::screens::over_video(screen) {
+            scrim(f.canvas, f.w, f.h, alpha);
+        }
         let dy = ui::animation::modal_rise(alpha) as f32;
         let focus = self.nav.cursor(crate::app::nav::ScreenKey::of(screen));
         if matches!(
@@ -433,6 +441,12 @@ impl App {
             return;
         }
         let len = self.row_count();
+        let cursor = self.nav.cursor(crate::app::nav::ScreenKey::of(screen));
+        // On a settings row Left leaves for the page column unless the row is a slider, so
+        // the value must not slip as if it had stepped.
+        if ev == E::Left && screen == Screen::SettingsPage && !self.settings_row_is_slider(cursor) {
+            return;
+        }
         let kit = match ev {
             E::Up => K::Move(MenuDir::Up),
             E::Down => K::Move(MenuDir::Down),
@@ -441,7 +455,6 @@ impl App {
             E::Confirm => K::Confirm,
             E::Back | E::Secondary => return,
         };
-        let cursor = self.nav.cursor(crate::app::nav::ScreenKey::of(screen));
         let list = self.kit_list(screen);
         list.cursor = cursor;
         let _ = list.menu(kit, len);
