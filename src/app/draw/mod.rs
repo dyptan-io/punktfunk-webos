@@ -46,6 +46,7 @@ pub(crate) const fn ported(screen: Screen) -> bool {
             | Screen::SpeedTest
             | Screen::Collections
             | Screen::HdrCalibration
+            | Screen::PickProfile
     )
 }
 
@@ -53,7 +54,7 @@ pub(crate) const fn ported(screen: Screen) -> bool {
 pub(crate) const fn is_list(screen: Screen) -> bool {
     matches!(
         screen,
-        Screen::HostMenu | Screen::HostPower | Screen::Collections | Screen::HdrCalibration
+        Screen::HostMenu | Screen::HostPower | Screen::Collections | Screen::HdrCalibration | Screen::PickProfile
     )
 }
 
@@ -357,6 +358,11 @@ impl App {
                     rows,
                 }
             }
+            Screen::PickProfile => ListCard {
+                title: self.profile_pick()?.title().to_string(),
+                subtitle: self.pick_profile_subtitle(),
+                rows: self.pick_profile_rows().iter().map(list::row_spec).collect(),
+            },
             Screen::HdrCalibration => {
                 let hdr = self.screens.hdr.as_ref()?;
                 let stalled = hdr

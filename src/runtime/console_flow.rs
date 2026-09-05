@@ -526,6 +526,7 @@ fn start_launch(
         port,
         fingerprint,
         launch,
+        profile: None,
     };
     let handle = spawn_connect(identity.clone(), target, settings.clone())?;
     Ok((handle, settings, gamepad_auto))

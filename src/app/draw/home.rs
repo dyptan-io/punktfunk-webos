@@ -17,6 +17,7 @@ use skia_safe::{
 
 use super::{line_h, panel, sk, Frame};
 use crate::app::grid::{Entrance, GridLayout};
+use crate::app::hosts::HostEntry;
 use crate::app::state::cardmenu::CardMenuRow;
 use crate::app::{hero, view, App, HomeFocus, Screen, CARD_GROWTH, LAUNCH_GROWTH, STATUS_BG_PAD};
 use crate::core::model::GameEntry;
@@ -263,6 +264,7 @@ impl App {
                 c.draw_rrect(rr(rect), &theme::fill(theme::accent(0.14)));
             }
             let (mark, label): (&str, &str) = match entries.get(i) {
+                Some(entry @ HostEntry::Pinned { .. }) => ("pin", entry.name()),
                 Some(entry) => (if entry.is_paired() { "tv" } else { "lock" }, entry.name()),
                 None if i == add_row => ("plus", "Add host"),
                 None => ("settings", "Settings"),
@@ -277,7 +279,7 @@ impl App {
             if let Some(m) = by_name(mark) {
                 draw_icon(c, m, icon.center_x(), icon.center_y(), SIDEBAR_ICON, tone);
             }
-            let has_menu = i < entries.len();
+            let has_menu = entries.get(i).is_some_and(HostEntry::has_menu);
             let reserve = if has_menu {
                 ui::widgets::SIDEBAR_MENU_BTN as f32 + 10.0
             } else {
@@ -296,7 +298,7 @@ impl App {
                 tone,
                 f64::from(max_w),
             );
-            if let Some(entry) = entries.get(i) {
+            if let Some(entry) = entries.get(i).filter(|e| e.has_menu()) {
                 // Badged onto the icon's corner: a presence dot on the thing it describes.
                 if let Some(online) = self.entry_online(entry) {
                     let (cx, cy) = (icon.right - 1.0, icon.bottom - 2.0);
@@ -568,6 +570,7 @@ impl App {
                 let (mark, label) = match kind {
                     CardMenuRow::MoveTo => ("pin", view::collections::menu_row_label(self.card_is_held(pin_id))),
                     CardMenuRow::Remove => ("trash-2", "Remove"),
+                    CardMenuRow::Profile => ("wrench", "Settings profile\u{2026}"),
                     CardMenuRow::Settings => ("settings", "Settings"),
                 };
                 let icon_x = row.left + MENU_ICON_INSET;

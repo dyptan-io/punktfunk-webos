@@ -51,11 +51,19 @@ pub fn row_body_rect(row: Rect, has_menu: bool) -> Rect {
 /// Whether `(x, y)` is on host row `index`'s ⋯ button. Checked *before*
 /// [`hit_test_row`] by the click handler, since the button sits inside the row
 /// it belongs to and would otherwise just read as a click on the row.
-pub fn hit_test_menu_button(x: i32, y: i32, host_count: usize, row_count: usize, screen_h: u32) -> Option<usize> {
+pub fn hit_test_menu_button(
+    x: i32,
+    y: i32,
+    entries: &[crate::app::hosts::HostEntry],
+    row_count: usize,
+    screen_h: u32,
+) -> Option<usize> {
     nav_rows(row_count, screen_h)
         .into_iter()
-        .take(host_count)
-        .position(|row| ui::widgets::sidebar_menu_button_rect(row).contains_point((x, y)))
+        .take(entries.len())
+        .enumerate()
+        .find(|(i, row)| entries[*i].has_menu() && ui::widgets::sidebar_menu_button_rect(*row).contains_point((x, y)))
+        .map(|(i, _)| i)
 }
 
 /// `None` when `(x, y)` falls outside the sidebar's horizontal band at all — lets

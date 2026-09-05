@@ -48,6 +48,8 @@ pub(crate) struct ScreenSlots {
     pub(crate) settings_page: SettingsPage,
     /// The name being typed for the profile in scope (`Screen::RenameProfile`).
     pub(crate) profile_name: TextField,
+    /// What `Screen::PickProfile` is picking for.
+    pub(crate) profile_pick: Option<crate::app::state::profilepick::ProfilePick>,
     /// The About document's first visible line.
     pub(crate) about_scroll: usize,
     /// The card `Screen::Collections` is moving, and its title — see [`CollectionsState`].

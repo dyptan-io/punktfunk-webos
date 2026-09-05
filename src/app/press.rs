@@ -29,6 +29,7 @@ impl App {
             Screen::ForgetHost => self.handle_forget_host_event(ev),
             Screen::HostMenu => self.handle_host_menu_event(ev),
             Screen::HostPower => self.handle_host_power_event(ev),
+            Screen::PickProfile => self.handle_pick_profile_event(ev),
             Screen::SpeedTest => self.handle_speed_test_event(ev),
             Screen::EditHost => self.handle_edit_host_event(ev),
             Screen::About => self.handle_about_event(ev, screen_w, screen_h),
@@ -99,6 +100,7 @@ impl App {
             | Screen::About
             | Screen::HostMenu
             | Screen::HostPower
+            | Screen::PickProfile
             | Screen::HdrCalibration
             | Screen::Collections
             | Screen::RenameCollection => false,

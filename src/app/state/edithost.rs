@@ -68,6 +68,7 @@ impl App {
                 exit_action: old.exit_action,
                 games: old.games.clone(),
                 profile_id: old.profile_id.clone(),
+                pinned_profiles: old.pinned_profiles.clone(),
                 collections: old.collections.clone(),
             },
         );

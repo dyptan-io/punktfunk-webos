@@ -16,6 +16,8 @@ pub struct ConnectTarget {
     pub fingerprint: [u8; 32],
     /// Library entry id to launch, or `None` for desktop.
     pub launch: Option<String>,
+    /// A profile for this launch alone ("Connect with", a pinned card), over every binding.
+    pub profile: Option<String>,
 }
 
 /// `Default` is both how the literals that build one spread over the fields they don't care about
@@ -49,6 +51,10 @@ pub struct KnownHost {
     /// its own streams with (the shared `KnownHost::profile_id`). `None` is the global document.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,
+    /// Profiles shown as their own cards under this host in the sidebar (the shared
+    /// `KnownHost::pinned_profiles`); each streams the desktop with that profile.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_profiles: Vec<String>,
     /// Grid section order, Library included as the [`Collection::dynamic`] entry. One vector
     /// carries everything: order, names and membership. `None` means "never migrated" — see
     /// `services::store::load`, which is the only place that may leave it so.

@@ -120,7 +120,7 @@ impl App {
         // One split for the whole sidebar — the same `Vec<Rect>` the painter and both hit
         // tests read, so focus can't disagree with what is on screen.
         for (index, row) in view::sidebar::nav_rows(sidebar_len, screen_h).into_iter().enumerate() {
-            let has_menu = index < host_count;
+            let has_menu = index < host_count && self.hosts.entries[index].has_menu();
             if has_menu {
                 map.item(
                     HomeFocus::SidebarMenu(index),
@@ -390,6 +390,10 @@ impl App {
     pub(crate) fn confirm_sidebar_host(&mut self, idx: usize) {
         let entry = self.hosts.entries[idx].clone();
         match entry {
+            HostEntry::Pinned { host, profile_id, .. } => {
+                let (addr, port) = (host.host.clone(), host.port);
+                self.connect_desktop_with(&addr, port, Some(profile_id));
+            }
             HostEntry::Known(h) if h.is_paired() => {
                 let (host, port, mgmt_port) = (h.host, h.port, h.mgmt_port);
                 // Re-confirming the already-active host refreshes its library too — a
@@ -618,9 +622,44 @@ impl App {
             port,
             fingerprint,
             launch,
+            profile: None,
         });
         // Not `grid_dirty`: contents are unchanged, and dirtying rebuilds every card tile and
         // re-arms the loading spinner right as the zoom starts.
+    }
+
+    /// Streams `host`'s desktop with `profile` for this session only: "Connect with ▸" and the
+    /// pinned sidebar cards. The host becomes the selected one too, so the library is what
+    /// the stream returns to.
+    pub(crate) fn connect_desktop_with(&mut self, host: &str, port: u16, profile: Option<String>) {
+        if self.launch_ready.is_some() || self.launch_anim.is_some() {
+            return;
+        }
+        let Some(known) = self.known_host(host, port) else {
+            return;
+        };
+        let Some(fingerprint) = known.fingerprint else {
+            return;
+        };
+        let mgmt_port = known.mgmt_port;
+        if self
+            .library
+            .selected_host
+            .as_ref()
+            .is_none_or(|(h, p)| h != host || *p != port)
+        {
+            self.select_host(host.to_string(), port, mgmt_port);
+        }
+        self.render.hero.arm(None);
+        self.set_home_status(None, false);
+        self.launch_anim_idx = None;
+        self.launch_ready = Some(ConnectTarget {
+            host: host.to_string(),
+            port,
+            fingerprint,
+            launch: None,
+            profile,
+        });
     }
 
     /// Takes the `ConnectTarget` `confirm_grid_card` armed, if any — the runtime's tick loop

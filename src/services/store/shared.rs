@@ -45,6 +45,8 @@ pub fn to_shared_host(h: &crate::core::model::KnownHost) -> trust::KnownHost {
         mac: h.mac.clone(),
         os: h.os.clone(),
         mgmt_port: h.mgmt_port,
+        profile_id: h.profile_id.clone(),
+        pinned_profiles: h.pinned_profiles.clone(),
         id: None,
         ..trust::KnownHost::default()
     }

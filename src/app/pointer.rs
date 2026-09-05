@@ -113,7 +113,7 @@ impl App {
                 // The ⋯ button sits inside its row, so it's tested first — same order
                 // as `handle_mouse_click`, so hover previews exactly what a click hits.
                 if let Some(idx) =
-                    view::sidebar::hit_test_menu_button(x, y, self.hosts.entries.len(), self.sidebar_len(), screen_h)
+                    view::sidebar::hit_test_menu_button(x, y, &self.hosts.entries, self.sidebar_len(), screen_h)
                 {
                     return HoverChange::row(self.set_home_focus(HomeFocus::SidebarMenu(idx)));
                 }
@@ -174,7 +174,7 @@ impl App {
             }
             // A list drawn on the kit: hover focuses the row under the pointer, through the
             // list's own last-drawn rects (`app::draw::list`).
-            screen @ (Screen::HostMenu | Screen::HostPower) => {
+            screen @ (Screen::HostMenu | Screen::HostPower | Screen::PickProfile) => {
                 let Some(i) = self.kit_list_row_at(x, y) else {
                     return HoverChange::NONE;
                 };
@@ -305,7 +305,7 @@ impl App {
                 // The ⋯ button sits inside its row, so it has to be tested first or the
                 // click just reads as a click on the host.
                 if let Some(idx) =
-                    view::sidebar::hit_test_menu_button(x, y, self.hosts.entries.len(), self.sidebar_len(), screen_h)
+                    view::sidebar::hit_test_menu_button(x, y, &self.hosts.entries, self.sidebar_len(), screen_h)
                 {
                     self.set_home_focus(HomeFocus::SidebarMenu(idx));
                     self.open_host_menu(idx);
@@ -373,7 +373,7 @@ impl App {
             }
             // A click on a kit list picks the row under it; off the rows it confirms the
             // focused one, as an OK press does.
-            screen @ (Screen::HostMenu | Screen::HostPower) => {
+            screen @ (Screen::HostMenu | Screen::HostPower | Screen::PickProfile) => {
                 if let Some(row) = self.kit_list_row_at(x, y) {
                     self.nav.set_cursor(ScreenKey::of(screen), row);
                 }
