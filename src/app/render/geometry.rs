@@ -359,6 +359,8 @@ impl App {
         fonts: &ui::text::Fonts,
     ) -> Option<Rect> {
         match screen {
+            // Drawn on the kit, focus and all (`app::draw`).
+            screen if crate::app::draw::ported(screen) => None,
             // The scrolling row lists: one focused row, positioned the same way on both.
             Screen::Settings(_) | Screen::Collections => {
                 let (total, _, _, content) = self.scroll_geometry_for(screen, screen_w, screen_h, fonts)?;
@@ -459,7 +461,14 @@ impl App {
         // the borrowed `ConfirmButton`s below outlive the call.
         let confirm = self.confirm_of();
         Some(match self.nav.screen {
-            Screen::Home => return None,
+            // A screen drawn on the kit has no tile-side modal at all (`app::draw`); the five
+            // dialogs are listed below so the match stays exhaustive.
+            Screen::Home
+            | Screen::ForgetHost
+            | Screen::SendLogs
+            | Screen::RemoveCollection
+            | Screen::ResetHdrCalibration
+            | Screen::ResetGameSettings => return None,
             // One screen, two scopes: the dim title suffix is the only thing the per-game
             // one adds, and it comes from the scratch copy that scope implies.
             Screen::Settings(set) => f(&view::settings::Modal {
@@ -481,10 +490,6 @@ impl App {
             Screen::Wake => f(&view::wake::Modal {
                 wake: self.screens.wake.as_ref()?,
                 confirm: confirm.as_ref(),
-            }),
-            Screen::ForgetHost => f(&view::confirm::Modal {
-                title: view::forget::TITLE,
-                confirm: confirm.as_ref()?,
             }),
             Screen::HostMenu => f(&view::hostmenu::Modal {
                 title: self.host_menu_host_name().unwrap_or_default(),
@@ -524,22 +529,6 @@ impl App {
             Screen::CursorSettings(_) => f(&view::cursorsettings::Modal {
                 settings: self.settings_target(),
                 over: &self.editing_override(),
-            }),
-            Screen::SendLogs => f(&view::confirm::Modal {
-                title: view::sendlogs::TITLE,
-                confirm: confirm.as_ref()?,
-            }),
-            Screen::RemoveCollection => f(&view::confirm::Modal {
-                title: view::collections::REMOVE_TITLE,
-                confirm: confirm.as_ref()?,
-            }),
-            Screen::ResetHdrCalibration => f(&view::confirm::Modal {
-                title: view::hdrcalibration::RESET_TITLE,
-                confirm: confirm.as_ref()?,
-            }),
-            Screen::ResetGameSettings => f(&view::confirm::Modal {
-                title: view::resetgame::TITLE,
-                confirm: confirm.as_ref()?,
             }),
         })
     }

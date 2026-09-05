@@ -68,7 +68,8 @@ pub(super) fn run_ui_flow(
     canvas.window_mut().show();
     // Both menus need it now; without a GL context there is nothing to draw with.
     let gl = console_flow::bring_up(gl, canvas).context("menu: GL host")?;
-    let mut app = App::new(identity.clone());
+    let kit_fonts = pf_console_ui::theme::build_fonts().context("menu: kit fonts")?;
+    let mut app = App::new(identity.clone(), kit_fonts);
     // Re-poll pad type (ControllerDeviceAdded fires once per connect, not per menu entry).
     app.set_gamepad_type(gamepad::detect_type(game_controller));
     // Seeded here for the same reason: the hotplug events fire once per connect, and this
@@ -552,6 +553,15 @@ pub(super) fn run_ui_flow(
                 dh as f32 / display_mode.h.max(1) as f32,
             ));
             images.present(c, &cmds);
+            // The screens drawn on the kit, over the tiles (`app::draw`).
+            app.apply_ink();
+            app.fonts.begin_frame();
+            app.draw_modals(&crate::app::draw::Frame::new(
+                c,
+                &app.fonts,
+                display_mode.w as u32,
+                display_mode.h as u32,
+            ));
         }
         gl.flush();
         canvas.window().gl_swap_window();

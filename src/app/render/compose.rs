@@ -76,23 +76,27 @@ impl App {
         } else {
             self.render.modal.fade.open_alpha()
         };
-        // m is cross-fade's leaving card inverse (see ModalFade).
+        // m is cross-fade's leaving card inverse (see ModalFade). The fade says whether a
+        // card is leaving; `prev` says whether there are pixels of it to draw — a card drawn
+        // on the kit fades out from state instead (`App::draw_modals`).
+        let leaving = self.render.modal.fade.closing_frame_against(m);
         let closing = self
             .render
             .modal
             .prev
-            .zip(self.render.modal.fade.closing_frame_against(m))
+            .zip(leaving)
             .map(|(prev, (alpha, _))| (alpha, prev));
         // Backdrop is "modal up", not per-card; only fades when modal layer appears/disappears.
-        let scrim = if closing.is_some() && !matches!(screen, Screen::Home) {
+        let scrim = if leaving.is_some() && !matches!(screen, Screen::Home) {
             1.0
         } else {
-            m.max(closing.map_or(0.0, |(alpha, _)| alpha))
+            m.max(leaving.map_or(0.0, |(alpha, _)| alpha))
         };
+        let tiled = !matches!(screen, Screen::Home) && !crate::app::draw::ported(screen);
         // Frost panes before scrim (compositor captures blur at first Frost; ordering matters
         // to avoid two-phase blur of dimmed screen when opening from sidebar vs card).
         // Invariant: nothing tinting whole screen before a frost pane.
-        if !matches!(screen, Screen::Home) {
+        if tiled {
             let region = self.render.modal.tile_region.offset(0, ui::animation::modal_rise(m));
             Self::push_frost(cmds, region, ui::widgets::MODAL_RADIUS, (255.0 * m) as u8);
         }
@@ -110,7 +114,7 @@ impl App {
                 color: ui::theme::palette().scrim.with_alpha_scaled(scrim),
             });
         }
-        if !matches!(screen, Screen::Home) {
+        if tiled {
             self.compose_modal_card(tiles, screen, ui::render::Size::new(screen_w, screen_h), fonts, m, cmds);
         }
         // Last, so it fades away *over* what it uncovers: the entering card is often the
